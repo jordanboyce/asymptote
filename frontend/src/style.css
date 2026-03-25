@@ -1,0 +1,105 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+   themes: all;
+}
+
+/* Custom styles for hover-3d logo variations */
+.hover-3d-logo {
+  --ease: cubic-bezier(0.2, 0.6, 0.3, 1);
+}
+
+.hover-3d-logo > :first-child {
+  transition: transform 0.4s var(--ease);
+}
+
+/* Smaller variant for header */
+.hover-3d-sm {
+  display: inline-grid;
+}
+
+.hover-3d-sm > :first-child {
+  grid-area: 1 / 1 / 4 / 4;
+}
+
+/* Theme-aware logo switching using DaisyUI's color-scheme */
+/* Light themes show black logo, dark themes show white logo */
+.logo-light {
+  display: block;
+}
+.logo-dark {
+  display: none;
+}
+
+/* Dark themes based on DaisyUI's color-scheme */
+[data-theme="dark"] .logo-light,
+[data-theme="synthwave"] .logo-light,
+[data-theme="cyberpunk"] .logo-light,
+[data-theme="halloween"] .logo-light,
+[data-theme="forest"] .logo-light,
+[data-theme="aqua"] .logo-light,
+[data-theme="black"] .logo-light,
+[data-theme="luxury"] .logo-light,
+[data-theme="dracula"] .logo-light,
+[data-theme="business"] .logo-light,
+[data-theme="night"] .logo-light,
+[data-theme="coffee"] .logo-light,
+[data-theme="dim"] .logo-light,
+[data-theme="sunset"] .logo-light,
+[data-theme="abyss"] .logo-light,
+[data-theme="valentine"] .logo-light {
+  display: none;
+}
+
+[data-theme="dark"] .logo-dark,
+[data-theme="synthwave"] .logo-dark,
+[data-theme="cyberpunk"] .logo-dark,
+[data-theme="halloween"] .logo-dark,
+[data-theme="forest"] .logo-dark,
+[data-theme="aqua"] .logo-dark,
+[data-theme="black"] .logo-dark,
+[data-theme="luxury"] .logo-dark,
+[data-theme="dracula"] .logo-dark,
+[data-theme="business"] .logo-dark,
+[data-theme="night"] .logo-dark,
+[data-theme="coffee"] .logo-dark,
+[data-theme="dim"] .logo-dark,
+[data-theme="sunset"] .logo-dark,
+[data-theme="abyss"] .logo-dark,
+[data-theme="valentine"] .logo-dark {
+  display: block;
+}
+
+/* Header logo - uses currentColor via CSS filter trick */
+/* The logo inherits the text color from its container (primary-content) */
+.logo-header {
+  /* Make the black SVG take on the currentColor (primary-content) */
+  filter: brightness(0) saturate(100%);
+  /* This creates a mask effect - the SVG becomes the same color as text */
+}
+
+/* For light primary-content (dark primary backgrounds) - invert to white */
+.bg-primary .logo-header {
+  filter: brightness(0) invert(1);
+  opacity: 0.9;
+}
+
+/* For themes with light primary backgrounds where primary-content is dark */
+[data-theme="cupcake"] .bg-primary .logo-header,
+[data-theme="bumblebee"] .bg-primary .logo-header,
+[data-theme="emerald"] .bg-primary .logo-header,
+[data-theme="corporate"] .bg-primary .logo-header,
+[data-theme="garden"] .bg-primary .logo-header,
+[data-theme="lofi"] .bg-primary .logo-header,
+[data-theme="pastel"] .bg-primary .logo-header,
+[data-theme="wireframe"] .bg-primary .logo-header,
+[data-theme="cmyk"] .bg-primary .logo-header,
+[data-theme="autumn"] .bg-primary .logo-header,
+[data-theme="acid"] .bg-primary .logo-header,
+[data-theme="lemonade"] .bg-primary .logo-header,
+[data-theme="winter"] .bg-primary .logo-header,
+[data-theme="nord"] .bg-primary .logo-header,
+[data-theme="caramellatte"] .bg-primary .logo-header,
+[data-theme="silk"] .bg-primary .logo-header {
+  filter: brightness(0);
+  opacity: 0.8;
+}

@@ -1,0 +1,27 @@
+services:
+  asymptote:
+    build:
+      context: .
+      dockerfile: Dockerfile.corporate
+    container_name: asymptote-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist data directory (PDFs and indexes)
+      - ./data:/app/data
+    environment:
+      # Override these in a .env file if needed
+      - DATA_DIR=/app/data
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - CHUNK_SIZE=600
+      - CHUNK_OVERLAP=100
+      - DEFAULT_TOP_K=10
+      - HOST=0.0.0.0
+      - PORT=8000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

@@ -1,0 +1,113 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Node.js / Frontend
+frontend/node_modules/
+node_modules/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Environment variables
+.env
+.env.*
+.env.local
+.env.*.local
+!.env.example
+!.env.*.example
+# Data directory (contains uploaded PDFs and indexes)
+data/
+
+# Backup files
+*.backup
+*.bak
+*.json.backup
+*.db.backup
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+.docker/
+
+# SSL Certificates
+certs/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Temporary files
+*.tmp
+*.temp
+~*
+
+# Desktop build artifacts
+desktop/dist/
+desktop/build/
+installer_output/
+*.spec.log
+
+.claude
+.continue
+CLAUDE.md
+AGENTS.md
+.mcp.json
