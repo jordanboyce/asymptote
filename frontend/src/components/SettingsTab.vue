@@ -2,246 +2,288 @@
   <div class="space-y-6">
     <h2 class="text-2xl font-bold">Settings</h2>
 
+    <!-- System Info -->
+    <div class="card bg-base-200">
+      <div class="card-body space-y-3">
+        <div>
+          <h3 class="card-title text-base">System</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">Database backend and multi-user configuration. These are set via environment variables.</p>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="bg-base-100 rounded-lg p-3">
+            <div class="text-xs text-base-content/50 mb-1">Database Backend</div>
+            <div class="font-semibold text-sm flex items-center gap-1.5">
+              <span class="badge badge-sm" :class="systemInfo.db_backend === 'postgresql' ? 'badge-primary' : 'badge-ghost'">
+                {{ systemInfo.db_backend === 'postgresql' ? 'PostgreSQL' : 'SQLite' }}
+              </span>
+            </div>
+          </div>
+          <div class="bg-base-100 rounded-lg p-3">
+            <div class="text-xs text-base-content/50 mb-1">Multi-User Mode</div>
+            <div class="font-semibold text-sm flex items-center gap-1.5">
+              <span class="badge badge-sm" :class="systemInfo.multi_user ? 'badge-success' : 'badge-ghost'">
+                {{ systemInfo.multi_user ? 'Enabled' : 'Disabled' }}
+              </span>
+            </div>
+          </div>
+          <div class="bg-base-100 rounded-lg p-3">
+            <div class="text-xs text-base-content/50 mb-1">Current User</div>
+            <div class="font-semibold text-sm truncate">{{ systemInfo.user_id || 'default' }}</div>
+          </div>
+        </div>
+        <p class="text-xs text-base-content/50">
+          Set <code>DB_BACKEND=postgresql</code> and <code>ENABLE_MULTI_USER=true</code> in your .env for multi-user enterprise mode.
+        </p>
+      </div>
+    </div>
+
     <!-- AI Integration -->
     <div class="card bg-base-200">
-      <div class="card-body">
-        <h3 class="card-title">AI Integration</h3>
-        <p class="text-sm text-base-content/70 mb-2">
-          Connect your own AI provider to get answers from your sources, not just search results.
-          Your key is stored only in your browser and sent per request.
-        </p>
-
-        <!-- Provider Selection -->
-        <div class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-          <label class="label p-0">
-            <span class="label-text text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Provider</span>
-          </label>
-          <p class="mt-1 text-xs text-base-content/60">
-            Pick the backend for reranking and answer synthesis.
+      <div class="card-body space-y-4">
+        <div>
+          <h3 class="card-title">AI Providers</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">
+            Configure providers here. Select which ones to use and choose a model per-search in the Search tab. API keys are stored in your browser only, never on the server.
           </p>
-          <div class="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
-            <button
-              class="btn btn-sm relative min-h-12 justify-start px-4 text-left"
-              :class="aiSettings.provider === 'anthropic' ? 'btn-primary' : 'btn-ghost border border-base-300 bg-base-200/40'"
-              @click="setProvider('anthropic')"
-            >
-              Anthropic
-              <span v-if="hasAnthropicKey" class="absolute right-2 top-2 badge badge-success badge-xs">&#10003;</span>
-            </button>
-            <button
-              class="btn btn-sm relative min-h-12 justify-start px-4 text-left"
-              :class="aiSettings.provider === 'openai' ? 'btn-primary' : 'btn-ghost border border-base-300 bg-base-200/40'"
-              @click="setProvider('openai')"
-            >
-              OpenAI
-              <span v-if="hasOpenAIKey" class="absolute right-2 top-2 badge badge-success badge-xs">&#10003;</span>
-            </button>
-            <button
-              class="btn btn-sm relative min-h-12 justify-start px-4 text-left"
-              :class="aiSettings.provider === 'inl_hpc' ? 'btn-primary' : 'btn-ghost border border-base-300 bg-base-200/40'"
-              @click="setProvider('inl_hpc')"
-            >
-              INL HPC API
-              <span v-if="hasINLHpcKey" class="absolute right-2 top-2 badge badge-success badge-xs">&#10003;</span>
-            </button>
-            <button
-              class="btn btn-sm relative min-h-12 justify-start px-4 text-left"
-              :class="aiSettings.provider === 'ollama' ? 'btn-primary' : 'btn-ghost border border-base-300 bg-base-200/40'"
-              @click="setProvider('ollama')"
-            >
-              Ollama
-              <span v-if="ollamaAvailable" class="absolute right-2 top-2 badge badge-success badge-xs">&#10003;</span>
-            </button>
-          </div>
         </div>
 
-        <!-- Ollama Model Selection -->
-        <div v-if="aiSettings.provider === 'ollama'" class="form-control">
-          <div v-if="checkingOllama" class="flex justify-center py-4">
-            <span class="loading loading-spinner"></span>
-          </div>
+        <!-- Provider Table -->
+        <div class="rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
 
-          <div v-else-if="!ollamaAvailable" class="alert alert-warning">
-            <div>
-              <div class="font-bold">Ollama not detected</div>
-              <div class="text-sm">Install from <a href="https://ollama.com" target="_blank" class="link link-primary">ollama.com</a></div>
+          <!-- Built-in Provider Rows -->
+          <div v-for="def in PROVIDER_DEFS" :key="def.id">
+            <!-- Row header -->
+            <div
+              class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
+              @click="toggleExpand(def.id)"
+            >
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-medium text-sm">{{ def.name }}</span>
+                  <span v-if="def.type === 'local'" class="badge badge-info badge-xs badge-outline">local</span>
+                </div>
+                <div v-if="getProviderModelLabel(def.id)" class="text-xs text-base-content/50 mt-0.5 truncate">{{ getProviderModelLabel(def.id) }}</div>
+              </div>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <span v-if="isProviderConfigured(def.id)" class="badge badge-success badge-xs">Configured</span>
+                <span v-else class="text-base-content/35 text-xs hidden sm:block">Not set up</span>
+                <span class="text-base-content/35 text-xs">{{ expandedProvider === def.id ? '▲' : '▼' }}</span>
+              </div>
+            </div>
+
+            <!-- Config panel -->
+            <div v-if="expandedProvider === def.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+
+              <!-- Ollama config -->
+              <template v-if="def.id === 'ollama'">
+                <div class="form-control">
+                  <label class="label p-0 pb-1">
+                    <span class="label-text font-medium">Base URL</span>
+                  </label>
+                  <input
+                    v-model="editBuffer.baseUrl"
+                    type="url"
+                    placeholder="http://localhost:11434"
+                    class="input input-bordered input-sm w-full"
+                  />
+                  <p class="text-xs text-base-content/50 mt-1">Change this to connect to a remote Ollama instance.</p>
+                </div>
+
+                <div v-if="ollamaCheckStatus === 'checking'" class="flex items-center gap-2 text-sm text-base-content/60">
+                  <span class="loading loading-spinner loading-xs"></span> Detecting models…
+                </div>
+                <div v-else-if="ollamaCheckStatus === 'available'" class="space-y-2">
+                  <div class="alert alert-success py-2 text-sm">
+                    Ollama running · {{ detectedOllamaModels.length }} model(s) available
+                  </div>
+                  <div class="form-control">
+                    <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
+                    <select v-model="editBuffer.model" class="select select-bordered select-sm w-full">
+                      <option v-for="m in detectedOllamaModels" :key="m.name" :value="m.name">
+                        {{ m.name }} ({{ formatBytes(m.size) }})
+                      </option>
+                    </select>
+                  </div>
+                </div>
+                <div v-else-if="ollamaCheckStatus === 'unavailable'" class="alert alert-warning py-2 text-sm">
+                  Ollama not detected at <code class="font-mono">{{ editBuffer.baseUrl || 'http://localhost:11434' }}</code>.
+                  <a href="https://ollama.com" target="_blank" class="link link-primary ml-1">Install Ollama</a>
+                </div>
+
+                <div class="flex gap-2">
+                  <button class="btn btn-sm btn-ghost" @click="detectOllama">Detect</button>
+                  <button
+                    v-if="ollamaCheckStatus === 'available'"
+                    class="btn btn-sm btn-primary"
+                    @click="saveOllamaConfig"
+                    :disabled="savingProvider === 'ollama'"
+                  >
+                    <span v-if="savingProvider === 'ollama'" class="loading loading-spinner loading-xs"></span>
+                    Save
+                  </button>
+                  <button
+                    v-if="isProviderConfigured('ollama')"
+                    class="btn btn-sm btn-ghost text-error"
+                    @click="removeProvider('ollama')"
+                  >Remove</button>
+                </div>
+              </template>
+
+              <!-- Cloud provider config -->
+              <template v-else>
+                <div class="form-control">
+                  <label class="label p-0 pb-1">
+                    <span class="label-text font-medium">API Key</span>
+                    <a v-if="def.keyLink" :href="def.keyLink" target="_blank" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
+                  </label>
+                  <div class="join w-full">
+                    <input
+                      v-model="editBuffer.apiKey"
+                      :type="showEditKey ? 'text' : 'password'"
+                      :placeholder="def.keyPlaceholder || 'API key…'"
+                      class="input input-bordered input-sm join-item flex-1"
+                      @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''"
+                    />
+                    <button class="btn btn-sm join-item" @click="showEditKey = !showEditKey">
+                      {{ showEditKey ? 'Hide' : 'Show' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="def.models && def.models.length" class="form-control">
+                  <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
+                  <p class="text-xs text-base-content/50 mb-1">Override the default model. Leave blank to use provider defaults.</p>
+                  <select v-model="editBuffer.model" class="select select-bordered select-sm w-full">
+                    <option value="">Use provider defaults</option>
+                    <option v-for="m in def.models" :key="m.id" :value="m.id">{{ m.label }}</option>
+                  </select>
+                </div>
+
+                <div class="flex items-center gap-2 flex-wrap">
+                  <button
+                    class="btn btn-sm btn-primary"
+                    @click="validateAndSave(def.id)"
+                    :disabled="validatingProvider === def.id || !editBuffer.apiKey?.trim()"
+                  >
+                    <span v-if="validatingProvider === def.id" class="loading loading-spinner loading-xs"></span>
+                    {{ validatingProvider === def.id ? '' : 'Validate & Save' }}
+                  </button>
+                  <button
+                    v-if="isProviderConfigured(def.id) && !editBuffer.keyDirty"
+                    class="btn btn-sm btn-ghost text-error"
+                    @click="removeProvider(def.id)"
+                  >Remove</button>
+                  <span v-if="editBuffer.keyStatus === 'valid'" class="text-success text-sm font-semibold">✓ Key valid</span>
+                  <span v-else-if="editBuffer.keyStatus === 'invalid'" class="text-error text-sm font-semibold">✗ Invalid</span>
+                  <span v-else-if="editBuffer.keyStatus === 'saved'" class="text-success text-sm font-semibold">Saved</span>
+                  <span v-if="editBuffer.keyError" class="text-error text-xs">{{ editBuffer.keyError }}</span>
+                </div>
+              </template>
             </div>
           </div>
 
-          <div v-else class="space-y-3">
-            <div class="alert alert-success py-2">
-              <span class="text-sm">Ollama running - {{ ollamaModels.length }} model(s) available</span>
+          <!-- Custom Provider Rows -->
+          <div v-for="cp in customProvidersConfig" :key="cp.id">
+            <div
+              class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
+              @click="toggleExpand(cp.id)"
+            >
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-medium text-sm">{{ cp.name }}</span>
+                  <span class="badge badge-neutral badge-xs badge-outline">custom</span>
+                </div>
+                <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
+              </div>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <span class="badge badge-success badge-xs">Configured</span>
+                <span class="text-base-content/35 text-xs">{{ expandedProvider === cp.id ? '▲' : '▼' }}</span>
+              </div>
             </div>
 
-            <select
-              v-model="selectedOllamaModel"
-              class="select select-bordered w-full"
-              @change="saveOllamaModel"
-            >
-              <option v-for="model in ollamaModels" :key="model.name" :value="model.name">
-                {{ model.name }} ({{ formatBytes(model.size) }})
-              </option>
-            </select>
-          </div>
-
-          <button class="btn btn-sm btn-ghost mt-2" @click="checkOllamaStatus">
-            Refresh
-          </button>
-        </div>
-
-        <!-- API Key Input (Cloud Providers) -->
-        <div v-else class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-          <label class="label p-0 pb-1">
-            <span class="label-text text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Credentials</span>
-          </label>
-          <p class="mb-3 text-xs text-base-content/60">
-            {{ providerDisplayName }} is used only when you enable AI reranking or synthesis.
-          </p>
-          <label class="label p-0 pb-1">
-            <span class="label-text font-medium">{{ providerDisplayName }} API Key</span>
-          </label>
-          <div class="join join-vertical w-full md:join-horizontal">
-            <input
-              v-model="apiKey"
-              :type="showKey ? 'text' : 'password'"
-              :placeholder="providerPlaceholder"
-              class="input input-bordered join-item flex-1"
-              @input="apiKeyDirty = true; apiKeyStatus = ''"
-            />
-            <button class="btn join-item md:w-24" @click="showKey = !showKey">
-              {{ showKey ? 'Hide' : 'Show' }}
-            </button>
-            <button
-              class="btn btn-primary join-item md:w-24"
-              @click="validateAndSaveKey"
-              :disabled="validatingKey || !apiKey.trim()"
-            >
-              <span v-if="validatingKey" class="loading loading-spinner loading-xs"></span>
-              {{ validatingKey ? '' : 'Save' }}
-            </button>
-          </div>
-          <div class="mt-3 flex flex-col gap-2 text-sm md:flex-row md:items-center md:justify-between">
-            <span class="text-base-content/70">
-              <a v-if="aiSettings.provider === 'openai'" href="https://platform.openai.com/api-keys" target="_blank" class="link link-primary">Get an OpenAI key</a>
-              <a v-else-if="aiSettings.provider === 'anthropic'" href="https://console.anthropic.com/settings/keys" target="_blank" class="link link-primary">Get an Anthropic key</a>
-              <span v-else>Use your INL HPC API key</span>
-            </span>
-            <span v-if="apiKeyStatus === 'valid'" class="font-semibold text-success">Key valid</span>
-            <span v-else-if="apiKeyStatus === 'invalid'" class="font-semibold text-error">Invalid key</span>
-            <span v-else-if="apiKeyStatus === 'saved'" class="font-semibold text-success">Saved</span>
-          </div>
-        </div>
-
-        <!-- INL HPC Model Selection -->
-        <div v-if="aiSettings.provider === 'inl_hpc'" class="form-control mt-3">
-          <div v-if="checkingInlHpc" class="flex justify-center py-3">
-            <span class="loading loading-spinner"></span>
-          </div>
-
-          <div v-else-if="!hasStoredKey" class="alert alert-info py-2">
-            <span class="text-sm">Save your INL HPC key to load available models</span>
-          </div>
-
-          <div v-else-if="inlHpcModels.length === 0" class="alert alert-warning py-2">
-            <span class="text-sm">No INL HPC models found for this key</span>
-          </div>
-
-          <div v-else class="space-y-3">
-            <div class="alert alert-success py-2">
-              <span class="text-sm">INL HPC - {{ inlHpcModels.length }} model(s) available</span>
+            <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <div class="form-control">
+                  <label class="label p-0 pb-1"><span class="label-text font-medium">Name</span></label>
+                  <input v-model="editBuffer.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+                </div>
+                <div class="form-control">
+                  <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
+                  <input v-model="editBuffer.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
+                </div>
+              </div>
+              <div class="form-control">
+                <label class="label p-0 pb-1"><span class="label-text font-medium">Base URL</span></label>
+                <input v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+                <p class="text-xs text-base-content/50 mt-1">Must be an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter).</p>
+              </div>
+              <div class="form-control">
+                <label class="label p-0 pb-1">
+                  <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
+                </label>
+                <input v-model="editBuffer.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
+              </div>
+              <div class="flex gap-2">
+                <button class="btn btn-sm btn-primary" @click="saveCustomProvider(cp.id)" :disabled="!editBuffer.baseUrl?.trim() || !editBuffer.name?.trim()">Save</button>
+                <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
+              </div>
             </div>
-
-            <select
-              v-model="selectedInlHpcModel"
-              class="select select-bordered w-full"
-              @change="saveInlHpcModel"
-            >
-              <option v-for="model in inlHpcModels" :key="model.id" :value="model.id">
-                {{ formatInlHpcModel(model) }}
-              </option>
-            </select>
           </div>
 
-          <button class="btn btn-sm btn-ghost mt-2" @click="checkInlHpcStatus">
-            Refresh
-          </button>
+          <!-- Add Custom Provider row -->
+          <div v-if="showAddCustomForm" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+            <p class="text-sm font-medium">New Custom Endpoint</p>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="form-control">
+                <label class="label p-0 pb-1"><span class="label-text font-medium">Name</span></label>
+                <input v-model="newCustom.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+              </div>
+              <div class="form-control">
+                <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
+                <input v-model="newCustom.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
+              </div>
+            </div>
+            <div class="form-control">
+              <label class="label p-0 pb-1"><span class="label-text font-medium">Base URL</span></label>
+              <input v-model="newCustom.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+              <p class="text-xs text-base-content/50 mt-1">OpenAI-compatible endpoint (vLLM, LM Studio, Groq, OpenRouter, etc.).</p>
+            </div>
+            <div class="form-control">
+              <label class="label p-0 pb-1">
+                <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
+              </label>
+              <input v-model="newCustom.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
+            </div>
+            <div class="flex gap-2">
+              <button class="btn btn-sm btn-primary" @click="addCustomProvider" :disabled="!newCustom.baseUrl?.trim() || !newCustom.name?.trim()">Add</button>
+              <button class="btn btn-sm btn-ghost" @click="showAddCustomForm = false">Cancel</button>
+            </div>
+          </div>
         </div>
 
-        <!-- Anthropic Model Selection -->
-        <div v-if="aiSettings.provider === 'anthropic' && hasStoredKey" class="form-control mt-3">
-          <label class="label p-0 pb-1">
-            <span class="label-text text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Model</span>
-          </label>
-          <p class="mb-2 text-xs text-base-content/60">Select which model to use for reranking and synthesis. Leave blank to use provider defaults.</p>
-          <select
-            v-model="selectedAnthropicModel"
-            class="select select-bordered w-full"
-            @change="saveAnthropicModel"
-          >
-            <option value="">Use defaults (Haiku for rerank, Sonnet for synthesis)</option>
-            <option v-for="model in ANTHROPIC_MODELS" :key="model.id" :value="model.id">
-              {{ model.label }}
-            </option>
-          </select>
-        </div>
-
-        <!-- OpenAI Model Selection -->
-        <div v-if="aiSettings.provider === 'openai' && hasStoredKey" class="form-control mt-3">
-          <label class="label p-0 pb-1">
-            <span class="label-text text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Model</span>
-          </label>
-          <p class="mb-2 text-xs text-base-content/60">Select which model to use for reranking and synthesis. Leave blank to use provider defaults.</p>
-          <select
-            v-model="selectedOpenAIModel"
-            class="select select-bordered w-full"
-            @change="saveOpenAIModel"
-          >
-            <option value="">Use defaults (GPT-4o Mini for rerank, GPT-4o for synthesis)</option>
-            <option v-for="model in OPENAI_MODELS" :key="model.id" :value="model.id">
-              {{ model.label }}
-            </option>
-          </select>
-        </div>
-
-        <!-- Remove Key -->
-        <div v-if="aiSettings.provider !== 'ollama' && hasStoredKey && !apiKeyDirty" class="mt-2">
-          <button class="btn btn-ghost btn-sm text-error" @click="removeKey">
-            Remove stored key
-          </button>
-        </div>
+        <button v-if="!showAddCustomForm" class="btn btn-ghost btn-sm self-start gap-1" @click="showAddCustomForm = true">
+          + Add Custom Endpoint
+        </button>
 
         <!-- AI Feature Toggles -->
-        <div v-if="hasStoredKey || (aiSettings.provider === 'ollama' && ollamaAvailable)" class="divider"></div>
-        <div v-if="hasStoredKey || (aiSettings.provider === 'ollama' && ollamaAvailable)" class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-          <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">AI Features</h4>
-          <p class="mt-1 text-xs text-base-content/60">
-            Enable these only if you want the external model involved in ranking or answering.
-          </p>
-
-          <div class="mt-4 space-y-3">
+        <div v-if="configuredProviderIds.length > 0" class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm space-y-3">
+          <div>
+            <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">AI Features (Defaults)</h4>
+            <p class="mt-1 text-xs text-base-content/60">Default on/off state for reranking and synthesis when you run a search. You can also toggle these live in the Search tab.</p>
+          </div>
+          <div class="space-y-2">
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-3">
               <label class="label cursor-pointer justify-start gap-4 p-0">
-                <input
-                  type="checkbox"
-                  class="toggle toggle-primary toggle-sm"
-                  :checked="aiSettings.rerank"
-                  @change="toggleAI('rerank')"
-                />
+                <input type="checkbox" class="toggle toggle-primary toggle-sm" :checked="aiSettings.rerank" @change="toggleAIFeature('rerank')" />
                 <div>
                   <span class="label-text font-medium">Result Reranking</span>
                   <p class="text-xs text-base-content/60">Use AI to judge which results actually answer your question.</p>
                 </div>
               </label>
             </div>
-
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-3">
               <label class="label cursor-pointer justify-start gap-4 p-0">
-                <input
-                  type="checkbox"
-                  class="toggle toggle-primary toggle-sm"
-                  :checked="aiSettings.synthesize"
-                  @change="toggleAI('synthesize')"
-                />
+                <input type="checkbox" class="toggle toggle-primary toggle-sm" :checked="aiSettings.synthesize" @change="toggleAIFeature('synthesize')" />
                 <div>
                   <span class="label-text font-medium">Answer Synthesis</span>
                   <p class="text-xs text-base-content/60">Generate a direct answer from your indexed sources with citations.</p>
@@ -516,10 +558,32 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { useCollectionStore } from '../stores/collectionStore'
+import {
+  PROVIDER_DEFS,
+  getProvidersConfig,
+  getProviderConfig,
+  upsertProviderConfig,
+  removeProviderConfig,
+  getAISettings,
+  getConfiguredProviderIds,
+  migrateLegacySettings,
+} from '../utils/aiProviders.js'
 
 const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab'])
 
 const collectionStore = useCollectionStore()
+
+// System info
+const systemInfo = ref({ db_backend: 'sqlite', multi_user: false, user_id: 'default' })
+
+async function loadSystemInfo() {
+  try {
+    const response = await axios.get('/api/user/me')
+    systemInfo.value = response.data
+  } catch (err) {
+    console.error('Failed to load system info:', err)
+  }
+}
 
 // Theme
 const selectedTheme = ref('light')
@@ -531,50 +595,190 @@ const clearError = ref('')
 const clearModal = ref(null)
 
 // AI integration state
-const apiKey = ref('')
-const showKey = ref(false)
-const validatingKey = ref(false)
-const apiKeyStatus = ref('')
-const apiKeyDirty = ref(false)
-const hasStoredKey = ref(false)
-const aiSettings = ref({
-  provider: 'anthropic',
-  rerank: false,
-  synthesize: false,
-})
+const aiSettings = ref({ rerank: false, synthesize: false })
 
-// Ollama state
-const checkingOllama = ref(false)
-const ollamaAvailable = ref(false)
-const ollamaModels = ref([])
-const selectedOllamaModel = ref('')
+// Ids of all currently-configured providers (drives AI Features visibility)
+const configuredProviderIds = computed(() => getConfiguredProviderIds())
 
-// INL HPC state
-const checkingInlHpc = ref(false)
-const inlHpcModels = ref([])
-const selectedInlHpcModel = ref('')
+// Expand/edit state
+const expandedProvider = ref(null)
+const editBuffer = ref({})
+const showEditKey = ref(false)
+const validatingProvider = ref(null)
+const savingProvider = ref(null)
 
-// Anthropic model state
-const ANTHROPIC_MODELS = [
-  { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 (default)' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)' },
-  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-  { id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
-  { id: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
-  { id: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
-  { id: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
-]
-const selectedAnthropicModel = ref(localStorage.getItem('anthropic_model') || '')
+// Ollama detection state
+const ollamaCheckStatus = ref(null) // null | 'checking' | 'available' | 'unavailable'
+const detectedOllamaModels = ref([])
 
-// OpenAI model state
-const OPENAI_MODELS = [
-  { id: 'gpt-4o', label: 'GPT-4o (default quality)' },
-  { id: 'gpt-4o-mini', label: 'GPT-4o Mini (default fast)' },
-  { id: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
-  { id: 'gpt-4', label: 'GPT-4' },
-  { id: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
-]
-const selectedOpenAIModel = ref(localStorage.getItem('openai_model') || '')
+// Custom provider add form
+const showAddCustomForm = ref(false)
+const newCustom = ref({ name: '', baseUrl: '', apiKey: '', model: '' })
+
+// Derived: all custom provider configs
+const customProvidersConfig = computed(() => getProvidersConfig().filter(p => p.isCustom))
+
+const isProviderConfigured = (id) => {
+  const cfg = getProviderConfig(id)
+  if (!cfg) return false
+  const def = PROVIDER_DEFS.find(d => d.id === id)
+  if (!def) return !!cfg.baseUrl  // custom
+  if (def.type === 'local') return !!cfg.available
+  return !!cfg.apiKey
+}
+
+const getProviderModelLabel = (id) => {
+  const cfg = getProviderConfig(id)
+  return cfg?.model || ''
+}
+
+const toggleExpand = (id) => {
+  if (expandedProvider.value === id) {
+    expandedProvider.value = null
+    return
+  }
+  expandedProvider.value = id
+  showEditKey.value = false
+  // Init edit buffer from stored config
+  const cfg = getProviderConfig(id) || {}
+  editBuffer.value = {
+    apiKey: cfg.apiKey || '',
+    model: cfg.model || '',
+    baseUrl: cfg.baseUrl || (id === 'ollama' ? 'http://localhost:11434' : ''),
+    name: cfg.name || '',
+    keyDirty: false,
+    keyStatus: cfg.apiKey ? 'saved' : '',
+    keyError: '',
+  }
+  if (id === 'ollama' && ollamaCheckStatus.value === null) {
+    detectOllama()
+  }
+}
+
+const toggleAIFeature = (feature) => {
+  aiSettings.value[feature] = !aiSettings.value[feature]
+  const settings = getAISettings()
+  localStorage.setItem('ai_settings', JSON.stringify({ ...settings, ...aiSettings.value }))
+}
+
+const validateAndSave = async (id) => {
+  const key = editBuffer.value.apiKey?.trim()
+  if (!key) return
+  validatingProvider.value = id
+  editBuffer.value.keyStatus = ''
+  editBuffer.value.keyError = ''
+
+  try {
+    const response = await axios.post('/api/ai/validate-key', null, {
+      headers: {
+        'X-AI-Key': key,
+        'X-AI-Provider': id,
+        ...(editBuffer.value.model ? { 'X-AI-Model': editBuffer.value.model } : {}),
+      },
+    })
+    if (response.data.valid) {
+      upsertProviderConfig(id, {
+        apiKey: key,
+        model: editBuffer.value.model || '',
+      })
+      editBuffer.value.keyStatus = 'valid'
+      editBuffer.value.keyDirty = false
+    } else {
+      editBuffer.value.keyStatus = 'invalid'
+      editBuffer.value.keyError = response.data.error || ''
+    }
+  } catch {
+    editBuffer.value.keyStatus = 'invalid'
+    editBuffer.value.keyError = 'Request failed'
+  } finally {
+    validatingProvider.value = null
+  }
+}
+
+const removeProvider = (id) => {
+  removeProviderConfig(id)
+  expandedProvider.value = null
+}
+
+// Ollama
+const detectOllama = async () => {
+  ollamaCheckStatus.value = 'checking'
+  const baseUrl = editBuffer.value.baseUrl?.trim() || 'http://localhost:11434'
+  try {
+    const response = await axios.get('/api/ollama/status', {
+      params: { base_url: baseUrl },
+    })
+    if (response.data.available) {
+      ollamaCheckStatus.value = 'available'
+      detectedOllamaModels.value = response.data.models || []
+      // Pre-select first model if none chosen
+      const stored = getProviderConfig('ollama')?.model
+      if (stored && detectedOllamaModels.value.find(m => m.name === stored)) {
+        editBuffer.value.model = stored
+      } else if (detectedOllamaModels.value.length > 0) {
+        editBuffer.value.model = detectedOllamaModels.value[0].name
+      }
+    } else {
+      ollamaCheckStatus.value = 'unavailable'
+    }
+  } catch {
+    ollamaCheckStatus.value = 'unavailable'
+  }
+}
+
+const saveOllamaConfig = () => {
+  savingProvider.value = 'ollama'
+  const baseUrl = editBuffer.value.baseUrl?.trim() || 'http://localhost:11434'
+  upsertProviderConfig('ollama', {
+    baseUrl,
+    model: editBuffer.value.model || '',
+    available: ollamaCheckStatus.value === 'available',
+  })
+  savingProvider.value = null
+}
+
+// Custom provider CRUD
+const addCustomProvider = () => {
+  if (!newCustom.value.baseUrl?.trim() || !newCustom.value.name?.trim()) return
+  const id = `custom_${Date.now()}`
+  upsertProviderConfig(id, {
+    id,
+    name: newCustom.value.name.trim(),
+    baseUrl: newCustom.value.baseUrl.trim(),
+    apiKey: newCustom.value.apiKey?.trim() || '',
+    model: newCustom.value.model?.trim() || '',
+    isCustom: true,
+  })
+  newCustom.value = { name: '', baseUrl: '', apiKey: '', model: '' }
+  showAddCustomForm.value = false
+}
+
+const saveCustomProvider = (id) => {
+  upsertProviderConfig(id, {
+    name: editBuffer.value.name?.trim(),
+    baseUrl: editBuffer.value.baseUrl?.trim(),
+    apiKey: editBuffer.value.apiKey?.trim() || '',
+    model: editBuffer.value.model?.trim() || '',
+  })
+  expandedProvider.value = null
+}
+
+const formatBytes = (bytes) => {
+  if (!bytes) return ''
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
+}
+
+const loadAIState = () => {
+  migrateLegacySettings()
+  const settings = getAISettings()
+  aiSettings.value = {
+    rerank: !!settings.rerank,
+    synthesize: !!settings.synthesize,
+  }
+}
 
 // MCP state
 const mcpLoading = ref(false)
@@ -594,279 +798,6 @@ const mcpSettings = ref({
   mcp_include_sources: true,
   mcp_max_source_length: 500,
 })
-
-// Computed
-const hasAnthropicKey = computed(() => !!localStorage.getItem('ai_api_key_anthropic'))
-const hasOpenAIKey = computed(() => !!localStorage.getItem('ai_api_key_openai'))
-const hasINLHpcKey = computed(() => !!localStorage.getItem('ai_api_key_inl_hpc'))
-const providerDisplayName = computed(() => {
-  if (aiSettings.value.provider === 'openai') return 'OpenAI'
-  if (aiSettings.value.provider === 'inl_hpc') return 'INL HPC'
-  return 'Anthropic'
-})
-const providerPlaceholder = computed(() => {
-  if (aiSettings.value.provider === 'openai') return 'sk-...'
-  if (aiSettings.value.provider === 'inl_hpc') return 'api_...'
-  return 'sk-ant-...'
-})
-
-// AI Methods
-const setProvider = (provider) => {
-  aiSettings.value.provider = provider
-  localStorage.setItem('ai_settings', JSON.stringify(aiSettings.value))
-  loadProviderKey()
-  if (provider === 'ollama') {
-    checkOllamaStatus()
-  } else if (provider === 'inl_hpc') {
-    loadInlHpcModelsFromStorage()
-    if (hasStoredKey.value) {
-      checkInlHpcStatus()
-    }
-  }
-}
-
-const validateAndSaveKey = async () => {
-  if (!apiKey.value.trim()) return
-  validatingKey.value = true
-  apiKeyStatus.value = ''
-
-  try {
-    const response = await axios.post('/api/ai/validate-key', null, {
-      headers: {
-        'X-AI-Key': apiKey.value.trim(),
-        'X-AI-Provider': aiSettings.value.provider,
-      }
-    })
-    if (response.data.valid) {
-      const keyName = `ai_api_key_${aiSettings.value.provider}`
-      localStorage.setItem(keyName, apiKey.value.trim())
-      if (aiSettings.value.provider === 'inl_hpc') {
-        applyInlHpcModels(Array.isArray(response.data.models) ? response.data.models : [])
-      }
-      localStorage.setItem('ai_settings', JSON.stringify(aiSettings.value))
-      hasStoredKey.value = true
-      apiKeyDirty.value = false
-      apiKeyStatus.value = 'valid'
-    } else {
-      if (aiSettings.value.provider === 'inl_hpc') {
-        inlHpcModels.value = []
-        selectedInlHpcModel.value = ''
-        localStorage.removeItem('inl_hpc_models')
-        localStorage.removeItem('inl_hpc_model')
-      }
-      apiKeyStatus.value = 'invalid'
-    }
-  } catch {
-    if (aiSettings.value.provider === 'inl_hpc') {
-      inlHpcModels.value = []
-      selectedInlHpcModel.value = ''
-      localStorage.removeItem('inl_hpc_models')
-      localStorage.removeItem('inl_hpc_model')
-    }
-    apiKeyStatus.value = 'invalid'
-  } finally {
-    validatingKey.value = false
-  }
-}
-
-const removeKey = () => {
-  const keyName = `ai_api_key_${aiSettings.value.provider}`
-  localStorage.removeItem(keyName)
-  if (aiSettings.value.provider === 'inl_hpc') {
-    localStorage.removeItem('inl_hpc_models')
-    localStorage.removeItem('inl_hpc_model')
-    inlHpcModels.value = []
-    selectedInlHpcModel.value = ''
-  } else if (aiSettings.value.provider === 'anthropic') {
-    localStorage.removeItem('anthropic_model')
-    selectedAnthropicModel.value = ''
-  } else if (aiSettings.value.provider === 'openai') {
-    localStorage.removeItem('openai_model')
-    selectedOpenAIModel.value = ''
-  }
-  apiKey.value = ''
-  hasStoredKey.value = false
-  apiKeyStatus.value = ''
-  apiKeyDirty.value = false
-  localStorage.setItem('ai_settings', JSON.stringify(aiSettings.value))
-}
-
-const toggleAI = (feature) => {
-  aiSettings.value[feature] = !aiSettings.value[feature]
-  localStorage.setItem('ai_settings', JSON.stringify(aiSettings.value))
-}
-
-const loadProviderKey = () => {
-  const keyName = `ai_api_key_${aiSettings.value.provider}`
-  const storedKey = localStorage.getItem(keyName)
-  if (storedKey) {
-    apiKey.value = storedKey
-    hasStoredKey.value = true
-    apiKeyDirty.value = false
-    apiKeyStatus.value = 'saved'
-  } else {
-    apiKey.value = ''
-    hasStoredKey.value = false
-    apiKeyDirty.value = false
-    apiKeyStatus.value = ''
-  }
-}
-
-const loadAISettings = () => {
-  const storedSettings = localStorage.getItem('ai_settings')
-  if (storedSettings) {
-    try {
-      const parsed = JSON.parse(storedSettings)
-      const validProviders = ['anthropic', 'openai', 'inl_hpc', 'ollama']
-      aiSettings.value = {
-        provider: validProviders.includes(parsed.provider) ? parsed.provider : 'anthropic',
-        rerank: !!parsed.rerank,
-        synthesize: !!parsed.synthesize,
-      }
-    } catch { /* use defaults */ }
-  }
-  loadProviderKey()
-  if (aiSettings.value.provider === 'inl_hpc') {
-    loadInlHpcModelsFromStorage()
-  }
-}
-
-// Ollama Methods
-const checkOllamaStatus = async () => {
-  checkingOllama.value = true
-  try {
-    const response = await axios.get('/api/ollama/status')
-    ollamaAvailable.value = response.data.available
-    ollamaModels.value = response.data.models || []
-
-    const savedModel = localStorage.getItem('ollama_model')
-    if (savedModel && ollamaModels.value.find(m => m.name === savedModel)) {
-      selectedOllamaModel.value = savedModel
-    } else if (ollamaModels.value.length > 0) {
-      selectedOllamaModel.value = ollamaModels.value[0].name
-      localStorage.setItem('ollama_model', selectedOllamaModel.value)
-    }
-  } catch {
-    ollamaAvailable.value = false
-    ollamaModels.value = []
-  } finally {
-    checkingOllama.value = false
-  }
-}
-
-const saveOllamaModel = () => {
-  localStorage.setItem('ollama_model', selectedOllamaModel.value)
-}
-
-const saveAnthropicModel = () => {
-  if (selectedAnthropicModel.value) {
-    localStorage.setItem('anthropic_model', selectedAnthropicModel.value)
-  } else {
-    localStorage.removeItem('anthropic_model')
-  }
-}
-
-const saveOpenAIModel = () => {
-  if (selectedOpenAIModel.value) {
-    localStorage.setItem('openai_model', selectedOpenAIModel.value)
-  } else {
-    localStorage.removeItem('openai_model')
-  }
-}
-
-const normalizeInlHpcModels = (models) => {
-  if (!Array.isArray(models)) return []
-  return models
-    .map((model) => {
-      if (typeof model === 'string') return { id: model }
-      if (model && typeof model === 'object' && model.id) return model
-      return null
-    })
-    .filter(Boolean)
-}
-
-const applyInlHpcModels = (models) => {
-  const normalized = normalizeInlHpcModels(models)
-  inlHpcModels.value = normalized
-  localStorage.setItem('inl_hpc_models', JSON.stringify(normalized))
-
-  const savedModel = localStorage.getItem('inl_hpc_model')
-  if (savedModel && normalized.find((m) => m.id === savedModel)) {
-    selectedInlHpcModel.value = savedModel
-  } else if (normalized.length > 0) {
-    selectedInlHpcModel.value = normalized[0].id
-    localStorage.setItem('inl_hpc_model', selectedInlHpcModel.value)
-  } else {
-    selectedInlHpcModel.value = ''
-    localStorage.removeItem('inl_hpc_model')
-  }
-}
-
-const loadInlHpcModelsFromStorage = () => {
-  try {
-    const raw = localStorage.getItem('inl_hpc_models')
-    const parsed = raw ? JSON.parse(raw) : []
-    applyInlHpcModels(parsed)
-  } catch {
-    inlHpcModels.value = []
-    selectedInlHpcModel.value = ''
-  }
-}
-
-const checkInlHpcStatus = async () => {
-  const key = apiKey.value.trim() || localStorage.getItem('ai_api_key_inl_hpc')
-  if (!key) return
-
-  checkingInlHpc.value = true
-  try {
-    const response = await axios.post('/api/ai/validate-key', null, {
-      headers: {
-        'X-AI-Key': key,
-        'X-AI-Provider': 'inl_hpc',
-      }
-    })
-
-    if (response.data.valid) {
-      applyInlHpcModels(response.data.models || [])
-      apiKeyStatus.value = hasStoredKey.value ? 'saved' : apiKeyStatus.value
-    } else {
-      inlHpcModels.value = []
-      selectedInlHpcModel.value = ''
-      localStorage.removeItem('inl_hpc_models')
-      localStorage.removeItem('inl_hpc_model')
-    }
-  } catch {
-    inlHpcModels.value = []
-    selectedInlHpcModel.value = ''
-    localStorage.removeItem('inl_hpc_models')
-    localStorage.removeItem('inl_hpc_model')
-  } finally {
-    checkingInlHpc.value = false
-  }
-}
-
-const saveInlHpcModel = () => {
-  localStorage.setItem('inl_hpc_model', selectedInlHpcModel.value)
-}
-
-const formatInlHpcModel = (model) => {
-  if (!model || !model.id) return ''
-  if (model.max_model_len) {
-    const contextLen = Number(model.max_model_len)
-    if (!Number.isNaN(contextLen) && contextLen > 0) {
-      return `${model.id} (ctx ${contextLen.toLocaleString()})`
-    }
-  }
-  return model.id
-}
-
-const formatBytes = (bytes) => {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i]
-}
 
 
 const loadMcpCollections = async () => {
@@ -1052,7 +983,8 @@ const clearAllData = async () => {
 
 // Lifecycle
 onMounted(() => {
-  loadAISettings()
+  loadAIState()
+  loadSystemInfo()
 
   // Load theme
   const savedTheme = localStorage.getItem('theme')
@@ -1061,16 +993,6 @@ onMounted(() => {
   } else {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
     selectedTheme.value = prefersDark ? 'dark' : 'light'
-  }
-
-  // Check Ollama if that's the selected provider
-  if (aiSettings.value.provider === 'ollama') {
-    checkOllamaStatus()
-  } else if (aiSettings.value.provider === 'inl_hpc') {
-    loadInlHpcModelsFromStorage()
-    if (hasStoredKey.value) {
-      checkInlHpcStatus()
-    }
   }
 
   loadMcpCollections()

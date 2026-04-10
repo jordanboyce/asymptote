@@ -1,10 +1,10 @@
-"""AI enhancement service supporting Anthropic, OpenAI, INL HPC, and Ollama providers.
+"""AI enhancement service supporting Anthropic, OpenAI, and Ollama providers.
 
 Provides optional AI-powered search enhancements:
 - Result reranking: reorder results by actual relevance using LLM judgment
 - Result synthesis: generate a coherent answer with citations from top results
 
-Users provide their own API keys for cloud providers (Anthropic, OpenAI, INL HPC).
+Users provide their own API keys for cloud providers (Anthropic, OpenAI).
 Ollama runs locally and requires no API key.
 """
 
@@ -164,9 +164,13 @@ class OpenAIProvider(AIProvider):
     FAST_MODEL = "gpt-4o-mini"
     QUALITY_MODEL = "gpt-4o"
 
-    def __init__(self, api_key: str, model: Optional[str] = None):
+    def __init__(self, api_key: str, model: Optional[str] = None, base_url: Optional[str] = None):
         from openai import OpenAI
-        self.client = OpenAI(api_key=api_key)
+        client_kwargs: dict = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._base_url = base_url
+        self.client = OpenAI(**client_kwargs)
         if model:
             self.FAST_MODEL = model
             self.QUALITY_MODEL = model
@@ -189,7 +193,10 @@ class OpenAIProvider(AIProvider):
     def complete_with_image(self, prompt: str, image_base64: str, media_type: str, max_tokens: int, model: str) -> dict:
         from openai import OpenAI
         # Use a dedicated client with longer timeouts for vision (large image payloads)
-        vision_client = OpenAI(api_key=self.client.api_key, timeout=120.0)
+        vision_kwargs: dict = {"api_key": self.client.api_key, "timeout": 120.0}
+        if getattr(self, '_base_url', None):
+            vision_kwargs["base_url"] = self._base_url
+        vision_client = OpenAI(**vision_kwargs)
         response = vision_client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
@@ -237,138 +244,6 @@ class OpenAIProvider(AIProvider):
                 return True  # Key is valid, just rate limited
         except Exception as e:
             logger.error(f"OpenAI validation error: {e}")
-            raise
-
-
-class INLHPCProvider(AIProvider):
-    """INL HPC AI provider (OpenAI-compatible API)."""
-
-    FAST_MODEL = "gpt-oss-20b"
-    QUALITY_MODEL = "gpt-oss-120b"
-
-    def __init__(
-        self,
-        api_key: str,
-        base_url: str = "https://api.hpc.inl.gov/llm/v1",
-        model: Optional[str] = None,
-    ):
-        from openai import OpenAI
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-        self.client = OpenAI(api_key=api_key, base_url=self.base_url)
-        self._models_cache: List[Dict] = []
-
-        # Mirror Ollama's single-model behavior when user chooses a model.
-        if model:
-            self.FAST_MODEL = model
-            self.QUALITY_MODEL = model
-
-    @property
-    def available_models(self) -> List[Dict]:
-        """Return the cached model list from the latest successful validation/list call."""
-        return self._models_cache
-
-    def list_models(self) -> List[Dict]:
-        """List available models using the INL HPC /models endpoint."""
-        import httpx
-
-        response = httpx.get(
-            f"{self.base_url}/models",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=10.0,
-        )
-        response.raise_for_status()
-
-        payload = response.json()
-        if isinstance(payload, dict):
-            model_entries = payload.get("data")
-            if model_entries is None:
-                model_entries = payload.get("models", [])
-        else:
-            model_entries = payload
-
-        models = []
-        if isinstance(model_entries, list):
-            for entry in model_entries:
-                if isinstance(entry, str):
-                    models.append({
-                        "id": entry,
-                        "object": "model",
-                    })
-                    continue
-                if isinstance(entry, dict):
-                    model_name = entry.get("id") or entry.get("name") or entry.get("model")
-                    if model_name:
-                        normalized = dict(entry)
-                        normalized["id"] = model_name
-                        models.append(normalized)
-
-        self._models_cache = models
-        return models
-
-    def complete(self, prompt: str, max_tokens: int, model: str) -> dict:
-        response = self.client.chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = (response.choices[0].message.content or "").strip()
-        usage = response.usage
-        return {
-            "text": text,
-            "usage": {
-                "input_tokens": usage.prompt_tokens if usage else 0,
-                "output_tokens": usage.completion_tokens if usage else 0,
-                "model": model,
-            },
-        }
-
-    def complete_with_image(self, prompt: str, image_base64: str, media_type: str, max_tokens: int, model: str) -> dict:
-        """Send prompt + image using the INL HPC OpenAI-compatible vision API."""
-        from openai import OpenAI
-        vision_client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=120.0)
-        response = vision_client.chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{media_type};base64,{image_base64}"},
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-        )
-        text = (response.choices[0].message.content or "").strip()
-        usage = response.usage
-        return {
-            "text": text,
-            "usage": {
-                "input_tokens": usage.prompt_tokens if usage else 0,
-                "output_tokens": usage.completion_tokens if usage else 0,
-                "model": model,
-            },
-        }
-
-    def validate(self) -> bool:
-        import httpx
-        try:
-            # Validation requirement: call /models with the user-provided API key.
-            self.list_models()
-            return True
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403):
-                logger.warning("INL HPC authentication failed")
-                return False
-            logger.error(f"INL HPC validation HTTP error: {e}")
-            raise
-        except httpx.RequestError as e:
-            logger.error(f"INL HPC validation request error: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"INL HPC validation error: {e}")
             raise
 
 
@@ -510,37 +385,173 @@ class OllamaProvider(AIProvider):
             return False
 
 
+class GrokProvider(OpenAIProvider):
+    """Grok (xAI) provider — OpenAI-compatible API."""
+
+    FAST_MODEL = "grok-3-mini"
+    QUALITY_MODEL = "grok-3"
+
+    def __init__(self, api_key: str, model: Optional[str] = None):
+        super().__init__(api_key, model=model, base_url="https://api.x.ai/v1")
+
+    def validate(self) -> bool:
+        from openai import AuthenticationError, RateLimitError
+        try:
+            self.client.chat.completions.create(
+                model=self.FAST_MODEL,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            return True
+        except AuthenticationError:
+            logger.warning("Grok authentication failed")
+            return False
+        except RateLimitError:
+            return True
+        except Exception as e:
+            logger.error(f"Grok validation error: {e}")
+            raise
+
+
+class GoogleProvider(OpenAIProvider):
+    """Google Gemini provider via the OpenAI-compatible endpoint."""
+
+    FAST_MODEL = "gemini-2.0-flash"
+    QUALITY_MODEL = "gemini-2.5-pro-preview-03-25"
+
+    def __init__(self, api_key: str, model: Optional[str] = None):
+        super().__init__(
+            api_key,
+            model=model,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+
+    def validate(self) -> bool:
+        from openai import AuthenticationError, RateLimitError
+        try:
+            self.client.chat.completions.create(
+                model=self.FAST_MODEL,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            return True
+        except AuthenticationError:
+            logger.warning("Google authentication failed")
+            return False
+        except RateLimitError:
+            return True
+        except Exception as e:
+            logger.error(f"Google validation error: {e}")
+            raise
+
+
+class GitHubProvider(OpenAIProvider):
+    """GitHub Models provider — OpenAI-compatible API.
+
+    Lets users access models hosted on the GitHub Models marketplace
+    (gpt-4o, Llama, Phi, Mistral, DeepSeek, etc.) via a GitHub Personal
+    Access Token. Available to anyone with a GitHub account; rate limits
+    are higher for paid Copilot subscribers.
+
+    Auth: GitHub PAT with the `models:read` scope.
+    Endpoint: https://models.github.ai/inference (OpenAI-compatible).
+    Model IDs are namespaced like `openai/gpt-4o`, `meta/Llama-3.3-70B-Instruct`.
+    """
+
+    FAST_MODEL = "openai/gpt-4o-mini"
+    QUALITY_MODEL = "openai/gpt-4o"
+
+    def __init__(self, api_key: str, model: Optional[str] = None):
+        super().__init__(
+            api_key,
+            model=model,
+            base_url="https://models.github.ai/inference",
+        )
+
+    def validate(self) -> bool:
+        from openai import AuthenticationError, RateLimitError
+        try:
+            self.client.chat.completions.create(
+                model=self.FAST_MODEL,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            return True
+        except AuthenticationError:
+            logger.warning("GitHub Models authentication failed")
+            return False
+        except RateLimitError:
+            return True
+        except Exception as e:
+            logger.error(f"GitHub Models validation error: {e}")
+            raise
+
+
+class OpenAICompatibleProvider(OpenAIProvider):
+    """Generic OpenAI-compatible provider for custom endpoints (vLLM, LM Studio, Groq, etc.)."""
+
+    def __init__(self, api_key: str, base_url: str, model: str = "default"):
+        super().__init__(api_key or "none", model=model, base_url=base_url)
+        self.FAST_MODEL = model
+        self.QUALITY_MODEL = model
+
+    def validate(self) -> bool:
+        try:
+            self.client.chat.completions.create(
+                model=self.FAST_MODEL,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            return True
+        except Exception as e:
+            logger.error(f"OpenAI-compatible validation error: {e}")
+            return False
+
+
 def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProvider:
     """Create an AI provider instance.
 
     Args:
-        provider_name: Provider name (anthropic, openai, inl_hpc, ollama)
-        api_key: API key for cloud providers (not needed for Ollama)
-        **kwargs: Additional provider-specific arguments
-            - For INL HPC: base_url (default: https://api.hpc.inl.gov/llm/v1)
-              and model (optional; if set, used for both rerank and synthesis)
-            - For Ollama: base_url (default: http://localhost:11434), model (default: llama3.2)
+        provider_name: Provider name — anthropic, openai, grok, google, github, openai_compatible, ollama
+        api_key: API key for cloud providers (not needed for Ollama or key-less endpoints)
+        **kwargs:
+            model       – model name override
+            base_url    – custom base URL (for openai, openai_compatible, ollama)
     """
     if provider_name == "anthropic":
         if not api_key:
             raise ValueError("API key required for Anthropic")
-        model = kwargs.get("model")
-        return AnthropicProvider(api_key, model=model)
+        return AnthropicProvider(api_key, model=kwargs.get("model"))
     elif provider_name == "openai":
         if not api_key:
             raise ValueError("API key required for OpenAI")
-        model = kwargs.get("model")
-        return OpenAIProvider(api_key, model=model)
-    elif provider_name == "inl_hpc":
+        return OpenAIProvider(api_key, model=kwargs.get("model"), base_url=kwargs.get("base_url"))
+    elif provider_name == "grok":
         if not api_key:
-            raise ValueError("API key required for INL HPC")
-        base_url = kwargs.get("base_url", "https://api.hpc.inl.gov/llm/v1")
-        model = kwargs.get("model")
-        return INLHPCProvider(api_key=api_key, base_url=base_url, model=model)
+            raise ValueError("API key required for Grok")
+        return GrokProvider(api_key, model=kwargs.get("model"))
+    elif provider_name == "google":
+        if not api_key:
+            raise ValueError("API key required for Google")
+        return GoogleProvider(api_key, model=kwargs.get("model"))
+    elif provider_name == "github":
+        if not api_key:
+            raise ValueError("API key required for GitHub Models (GitHub PAT with models:read scope)")
+        return GitHubProvider(api_key, model=kwargs.get("model"))
+    elif provider_name == "openai_compatible":
+        base_url = kwargs.get("base_url")
+        if not base_url:
+            raise ValueError("base_url required for openai_compatible provider")
+        return OpenAICompatibleProvider(
+            api_key or "none",
+            base_url=base_url,
+            model=kwargs.get("model", "default"),
+        )
     elif provider_name == "ollama":
-        base_url = kwargs.get("base_url", "http://localhost:11434")
-        model = kwargs.get("model", "llama3.2")
-        return OllamaProvider(base_url=base_url, model=model)
+        return OllamaProvider(
+            base_url=kwargs.get("base_url", "http://localhost:11434"),
+            model=kwargs.get("model", "llama3.2"),
+        )
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
 

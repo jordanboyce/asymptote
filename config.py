@@ -1,7 +1,7 @@
 """Configuration management for Asymptote API."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,11 +36,16 @@ class Settings(BaseSettings):
     mcp_semantic_weight: float = 0.7
     mcp_include_sources: bool = True
     mcp_max_source_length: int = 500
-    mcp_ai_provider: str = "none"   # AI provider for MCP synthesis: "none" | "anthropic" | "openai" | "inl_hpc" | "ollama"
+    mcp_ai_provider: str = "none"   # AI provider for MCP synthesis: "none" | "anthropic" | "openai" | "ollama"
     mcp_ollama_model: str = ""      # Ollama model to use when mcp_ai_provider = "ollama"
 
-    # Multi-user mode (simple browser-based user isolation)
+    # Database backend: "sqlite" for single-user/simple, "postgresql" for multi-user/enterprise
+    db_backend: Literal["sqlite", "postgresql"] = "sqlite"
+    postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/asymptote
+
+    # Multi-user mode (user isolation via X-User-ID header from auth proxy)
     enable_multi_user: bool = False  # Set to True for per-user data isolation
+    default_user_id: str = "default"  # User ID used in single-user mode
 
     # OCR configuration
     enable_ocr: bool = False  # Enable OCR for scanned PDFs

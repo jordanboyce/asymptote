@@ -1,0 +1,100 @@
+# Asymptote API — Enterprise Production Dockerfile
+# Multi-stage build with security hardening, OCR support, and corporate SSL
+
+# ============================================================
+# Stage 1: Build dependencies
+# ============================================================
+FROM python:3.13-slim AS builder
+
+WORKDIR /build
+
+# Install build-time system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+# Install Python deps into a prefix we can copy later
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ============================================================
+# Stage 2: Production runtime
+# ============================================================
+FROM python:3.13-slim AS runtime
+
+LABEL maintainer="Asymptote Enterprise"
+LABEL description="Asymptote — self-hosted semantic search for enterprise documents"
+
+# ---- System dependencies (runtime only) --------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Networking / health-check
+    curl \
+    ca-certificates \
+    # Tesseract OCR engine + English language data
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    # PDF-to-image conversion (pdf2image / poppler)
+    poppler-utils \
+    # Image processing libs for Pillow
+    libjpeg62-turbo \
+    libpng16-16 \
+    libtiff6 \
+    libwebp7 \
+    # PostgreSQL client library (for psycopg2)
+    libpq5 \
+    # Timezone data for log timestamps
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Corporate SSL certificates (optional) -----------------
+# Place .crt files in certs/ before building; if dir is empty this is a no-op
+COPY certs/ /tmp/certs/
+RUN if ls /tmp/certs/*.crt 1>/dev/null 2>&1; then \
+      cp /tmp/certs/*.crt /usr/local/share/ca-certificates/ && \
+      update-ca-certificates; \
+    fi && rm -rf /tmp/certs
+
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+# ---- Python packages from builder -------------------------
+COPY --from=builder /install /usr/local
+
+# ---- Application code --------------------------------------
+WORKDIR /app
+COPY . .
+
+# ---- Non-root user -----------------------------------------
+RUN groupadd -r asymptote && useradd -r -g asymptote -d /app -s /sbin/nologin asymptote
+
+# ---- Data directories (volume mount points) ----------------
+RUN mkdir -p /app/data/documents /app/data/indexes /app/data/collections /app/data/backups \
+    && chown -R asymptote:asymptote /app
+
+# ---- Embedding model cache (writable by app) ---------------
+RUN mkdir -p /home/asymptote/.cache && chown -R asymptote:asymptote /home/asymptote
+
+# ---- Environment defaults ----------------------------------
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DATA_DIR=/app/data
+ENV HOST=0.0.0.0
+ENV PORT=8000
+
+# ---- Health check ------------------------------------------
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# ---- Expose port -------------------------------------------
+EXPOSE 8000
+
+# ---- Drop to non-root -------------------------------------
+USER asymptote
+
+# ---- Entrypoint --------------------------------------------
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--limit-concurrency", "100", "--timeout-keep-alive", "65"]

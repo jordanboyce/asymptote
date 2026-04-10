@@ -9,6 +9,8 @@ export const useCollectionStore = defineStore('collection', () => {
   const currentCollectionId = ref('default')
   const loading = ref(false)
   const error = ref(null)
+  const multiUser = ref(false)
+  const userId = ref('')
 
   // Computed
   const currentCollection = computed(() => {
@@ -16,12 +18,28 @@ export const useCollectionStore = defineStore('collection', () => {
   })
 
   const sortedCollections = computed(() => {
-    // Put default first, then sort by name
-    return [...collections.value].sort((a, b) => {
+    // Owned first (default at top), then shared
+    const owned = collections.value.filter(c => !c.shared)
+    const shared = collections.value.filter(c => c.shared)
+    owned.sort((a, b) => {
       if (a.id === 'default') return -1
       if (b.id === 'default') return 1
       return a.name.localeCompare(b.name)
     })
+    shared.sort((a, b) => a.name.localeCompare(b.name))
+    return [...owned, ...shared]
+  })
+
+  const ownedCollections = computed(() => collections.value.filter(c => !c.shared))
+  const sharedCollections = computed(() => collections.value.filter(c => c.shared))
+
+  const currentPermission = computed(() => {
+    const c = currentCollection.value
+    return c?.permission || 'owner'
+  })
+
+  const canEditCurrent = computed(() => {
+    return currentPermission.value === 'owner' || currentPermission.value === 'readwrite'
   })
 
   // Actions
@@ -31,6 +49,8 @@ export const useCollectionStore = defineStore('collection', () => {
     try {
       const response = await axios.get('/api/collections')
       collections.value = response.data.collections || []
+      multiUser.value = response.data.multi_user || false
+      userId.value = response.data.user_id || ''
 
       // Ensure current collection still exists
       const exists = collections.value.some(c => c.id === currentCollectionId.value)
@@ -136,9 +156,15 @@ export const useCollectionStore = defineStore('collection', () => {
     currentCollectionId,
     loading,
     error,
+    multiUser,
+    userId,
     // Computed
     currentCollection,
     sortedCollections,
+    ownedCollections,
+    sharedCollections,
+    currentPermission,
+    canEditCurrent,
     // Actions
     loadCollections,
     createCollection,

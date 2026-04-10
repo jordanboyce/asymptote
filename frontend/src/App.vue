@@ -30,11 +30,21 @@
             >
               <div class="w-2.5 h-2.5 rounded-full flex-shrink-0" :style="{ backgroundColor: collection.color }"></div>
               <span class="flex-1 truncate">{{ collection.name }}</span>
+              <span v-if="collection.shared" class="badge badge-xs badge-outline badge-info">shared</span>
               <span class="badge badge-sm badge-ghost">{{ collection.document_count || 0 }}</span>
+              <button
+                v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                @click.stop="openShareModal(collection)"
+                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                title="Share collection"
+              >
+                <Share2 :size="13" />
+              </button>
               <button
                 @click.stop="openEditCollectionModal(collection)"
                 class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity p-1"
                 title="Edit collection"
+                :disabled="collection.shared && collection.permission === 'read'"
               >
                 <Pencil :size="13" />
               </button>
@@ -60,6 +70,12 @@
         <span>{{ stats.pages }} pages</span>
         <span class="w-px h-3 bg-base-300"></span>
         <span>{{ stats.chunks }} chunks</span>
+      </div>
+
+      <!-- User identity (multi-user mode) -->
+      <div v-if="userStore.isMultiUser" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50 mr-1">
+        <Users :size="12" />
+        <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
 
       <!-- Jobs button -->
@@ -379,6 +395,15 @@
       </form>
     </dialog>
 
+    <!-- Share Modal -->
+    <ShareModal
+      :visible="showShareModal"
+      :collection-id="shareCollectionId"
+      :collection-name="shareCollectionName"
+      @close="showShareModal = false"
+      @shared="handleShared"
+    />
+
     <!-- Background Jobs Sidebar Drawer -->
     <div
       v-if="showJobsDrawer"
@@ -501,7 +526,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users } from 'lucide-vue-next'
 
 const tabs = [
   { id: 'search', label: 'Search', icon: Search },
@@ -515,13 +540,16 @@ import OCRPlaygroundTab from './components/OCRPlaygroundTab.vue'
 import TokenizerTab from './components/TokenizerTab.vue'
 import ChatTab from './components/ChatTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
+import ShareModal from './components/ShareModal.vue'
 import { useCollectionStore } from './stores/collectionStore'
+import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
 import { useBackgroundJobsStore } from './stores/backgroundJobsStore'
 
 const collectionStore = useCollectionStore()
 const searchStore = useSearchStore()
 const backgroundJobsStore = useBackgroundJobsStore()
+const userStore = useUserStore()
 
 const activeTab = ref('search')
 const currentTheme = ref('light')
@@ -583,6 +611,11 @@ const updatingCollection = ref(false)
 const showDeleteConfirmModal = ref(false)
 const deletingCollection = ref(false)
 const deleteError = ref('')
+
+// Share modal state
+const showShareModal = ref(false)
+const shareCollectionId = ref('')
+const shareCollectionName = ref('')
 
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
@@ -691,6 +724,16 @@ const updateCollection = async () => {
   }
 }
 
+const openShareModal = (collection) => {
+  shareCollectionId.value = collection.id
+  shareCollectionName.value = collection.name
+  showShareModal.value = true
+}
+
+const handleShared = () => {
+  collectionStore.loadCollections()
+}
+
 const confirmDeleteCollection = () => {
   deleteError.value = ''
   showDeleteConfirmModal.value = true
@@ -762,6 +805,9 @@ const cancelJob = async (jobId) => {
 }
 
 onMounted(async () => {
+  // Load user info
+  await userStore.loadCurrentUser()
+
   // Load collections first
   await collectionStore.loadCollections()
 

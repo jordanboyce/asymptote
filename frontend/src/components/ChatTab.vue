@@ -8,10 +8,55 @@
           <p class="text-sm text-base-content/60">Converse with your indexed documents</p>
         </div>
         <div class="flex items-center gap-2">
+          <!-- Session switcher -->
+          <div class="dropdown dropdown-end">
+            <label tabindex="0" class="btn btn-sm btn-ghost gap-1" title="Switch chat session">
+              <History :size="14" />
+              <span class="hidden sm:inline truncate max-w-[140px]">{{ activeSessionTitle }}</span>
+              <ChevronDown :size="12" />
+            </label>
+            <ul tabindex="0" class="dropdown-content z-[60] menu p-2 shadow-lg bg-base-100 border border-base-300 rounded-box w-72 max-h-96 overflow-y-auto">
+              <li class="menu-title">
+                <span class="text-xs">Chat sessions ({{ sessions.length }})</span>
+              </li>
+              <li v-for="session in sessions" :key="session.id">
+                <div
+                  class="flex items-start gap-2 group"
+                  :class="{ 'bg-primary/10': session.id === activeSessionId }"
+                >
+                  <button class="flex-1 text-left" @click="switchSession(session.id)">
+                    <div class="text-sm font-medium truncate">{{ session.title || 'New chat' }}</div>
+                    <div class="text-xs text-base-content/50">
+                      {{ session.messages.length }} message{{ session.messages.length !== 1 ? 's' : '' }}
+                      · {{ formatRelativeTime(session.updatedAt) }}
+                    </div>
+                  </button>
+                  <button
+                    class="btn btn-xs btn-ghost btn-circle opacity-0 group-hover:opacity-100"
+                    title="Delete session"
+                    @click.stop="deleteSession(session.id)"
+                  >
+                    <Trash2 :size="12" />
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <button
+            class="btn btn-sm btn-primary gap-1"
+            @click="startNewChat"
+            title="Start a new chat session"
+          >
+            <Plus :size="14" />
+            New chat
+          </button>
+
           <button
             v-if="messages.length > 0"
             class="btn btn-sm btn-ghost gap-1"
             @click="clearChat"
+            title="Clear messages in this session"
           >
             <Trash2 :size="14" />
             Clear
@@ -102,43 +147,15 @@
               >{{ providerDisplayName(selectedProvider) }}</span>
             </div>
             <div class="flex flex-wrap gap-2">
-              <!-- Private/local -->
               <label
-                v-if="hasINLHpcKey"
+                v-for="pid in configuredProviders"
+                :key="pid"
                 class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer border transition-colors text-sm"
-                :class="selectedProvider === 'inl_hpc' ? 'bg-warning/20 border-warning font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
+                :class="selectedProvider === pid ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
               >
-                <input type="radio" class="radio radio-xs radio-warning" :checked="selectedProvider === 'inl_hpc'" @change="selectProvider('inl_hpc')" />
-                INL HPC
-                <span class="badge badge-xs badge-outline">private</span>
-              </label>
-              <label
-                v-if="ollamaAvailable"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer border transition-colors text-sm"
-                :class="selectedProvider === 'ollama' ? 'bg-info/20 border-info font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
-              >
-                <input type="radio" class="radio radio-xs radio-info" :checked="selectedProvider === 'ollama'" @change="selectProvider('ollama')" />
-                Ollama
-                <span class="badge badge-xs badge-outline">local</span>
-              </label>
-              <!-- Cloud -->
-              <label
-                v-if="hasAnthropicKey"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer border transition-colors text-sm"
-                :class="selectedProvider === 'anthropic' ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
-              >
-                <input type="radio" class="radio radio-xs radio-primary" :checked="selectedProvider === 'anthropic'" @change="selectProvider('anthropic')" />
-                Anthropic
-                <span class="badge badge-xs badge-outline">cloud</span>
-              </label>
-              <label
-                v-if="hasOpenAIKey"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer border transition-colors text-sm"
-                :class="selectedProvider === 'openai' ? 'bg-success/20 border-success font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
-              >
-                <input type="radio" class="radio radio-xs radio-success" :checked="selectedProvider === 'openai'" @change="selectProvider('openai')" />
-                OpenAI
-                <span class="badge badge-xs badge-outline">cloud</span>
+                <input type="radio" class="radio radio-xs radio-primary" :checked="selectedProvider === pid" @change="selectProvider(pid)" />
+                {{ providerDisplayName(pid) }}
+                <span class="badge badge-xs badge-outline">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
               </label>
             </div>
           </div>
@@ -286,9 +303,16 @@
 <script setup>
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import axios from 'axios'
-import { Bot, FileText, Send, Trash2, MessageSquare, Layers, Database } from 'lucide-vue-next'
+import { Bot, FileText, Send, Trash2, MessageSquare, Layers, Database, Plus, History, ChevronDown } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
+import {
+  getConfiguredProviderIds,
+  buildProviderHeaders,
+  getAPIProviderName,
+  getProviderDisplayName,
+  isLocalProvider,
+} from '../utils/aiProviders.js'
 
 const props = defineProps({
   chunkCount: { type: Number, default: 0 }
@@ -312,17 +336,48 @@ const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 
 // Provider state
-const hasAnthropicKey = computed(() => !!localStorage.getItem('ai_api_key_anthropic'))
-const hasOpenAIKey = computed(() => !!localStorage.getItem('ai_api_key_openai'))
-const hasINLHpcKey = computed(() => !!localStorage.getItem('ai_api_key_inl_hpc'))
-const ollamaAvailable = ref(false)
+const configuredProviders = computed(() => getConfiguredProviderIds())
 const selectedProvider = ref(localStorage.getItem('chat_provider') || '')
-
-const hasAnyProvider = computed(() =>
-  hasAnthropicKey.value || hasOpenAIKey.value || hasINLHpcKey.value || ollamaAvailable.value
-)
+const hasAnyProvider = computed(() => configuredProviders.value.length > 0)
 
 const messages = computed(() => chatStore.getMessages(collectionStore.currentCollectionId))
+const sessions = computed(() => chatStore.getSessions(collectionStore.currentCollectionId))
+const activeSessionId = computed(() => chatStore.getActiveSessionId(collectionStore.currentCollectionId))
+const activeSessionTitle = computed(() => {
+  const s = sessions.value.find((x) => x.id === activeSessionId.value)
+  return s?.title || 'New chat'
+})
+
+const formatRelativeTime = (ts) => {
+  if (!ts) return ''
+  const diff = Date.now() - ts
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60) return 'just now'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  if (day < 7) return `${day}d ago`
+  return new Date(ts).toLocaleDateString()
+}
+
+const startNewChat = () => {
+  chatStore.newSession(collectionStore.currentCollectionId)
+}
+
+const switchSession = (sessionId) => {
+  chatStore.selectSession(collectionStore.currentCollectionId, sessionId)
+  // Close dropdown by blurring active element
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  scrollToBottom()
+}
+
+const deleteSession = (sessionId) => {
+  if (confirm('Delete this chat session? This cannot be undone.')) {
+    chatStore.deleteSession(collectionStore.currentCollectionId, sessionId)
+  }
+}
 
 const suggestions = [
   'Summarize the key topics in these documents',
@@ -330,16 +385,15 @@ const suggestions = [
   'List the most important conclusions',
 ]
 
-const providerDisplayName = (provider) => {
-  const names = { anthropic: 'Anthropic', openai: 'OpenAI', inl_hpc: 'INL HPC', ollama: 'Ollama' }
-  return names[provider] || provider
-}
+const providerDisplayName = getProviderDisplayName
 
 const providerBadgeClass = (provider) => ({
   'badge-primary': provider === 'anthropic',
   'badge-success': provider === 'openai',
-  'badge-warning': provider === 'inl_hpc',
   'badge-info': provider === 'ollama',
+  'badge-warning': provider === 'grok',
+  'badge-accent': provider === 'google',
+  'badge-neutral': !['anthropic','openai','ollama','grok','google'].includes(provider),
 })
 
 const selectProvider = (provider) => {
@@ -347,29 +401,11 @@ const selectProvider = (provider) => {
   localStorage.setItem('chat_provider', provider)
 }
 
-const isProviderAvailable = (p) => {
-  if (p === 'anthropic') return hasAnthropicKey.value
-  if (p === 'openai') return hasOpenAIKey.value
-  if (p === 'inl_hpc') return hasINLHpcKey.value
-  if (p === 'ollama') return ollamaAvailable.value
-  return false
-}
-
 const ensureValidProvider = () => {
-  if (!selectedProvider.value || !isProviderAvailable(selectedProvider.value)) {
-    const available = ['anthropic', 'openai', 'inl_hpc', 'ollama'].find(p => isProviderAvailable(p))
-    if (available) selectProvider(available)
+  if (!selectedProvider.value || !configuredProviders.value.includes(selectedProvider.value)) {
+    const first = configuredProviders.value[0]
+    if (first) selectProvider(first)
   }
-}
-
-const checkOllama = async () => {
-  try {
-    const response = await axios.get('/api/ollama/status')
-    ollamaAvailable.value = response.data.available === true
-  } catch {
-    ollamaAvailable.value = false
-  }
-  ensureValidProvider()
 }
 
 const scrollToBottom = async () => {
@@ -394,22 +430,7 @@ const sendMessage = async () => {
   loading.value = true
 
   try {
-    const headers = {}
-    if (selectedProvider.value === 'ollama') {
-      headers['X-Ollama-Model'] = localStorage.getItem('ollama_model') || 'llama3.2'
-    } else {
-      const key = localStorage.getItem(`ai_api_key_${selectedProvider.value}`)
-      if (key) headers['X-AI-Key'] = key
-      if (selectedProvider.value === 'inl_hpc') {
-        headers['X-INL-HPC-Model'] = localStorage.getItem('inl_hpc_model') || 'gpt-oss-120b'
-      } else if (selectedProvider.value === 'anthropic') {
-        const m = localStorage.getItem('anthropic_model')
-        if (m) headers['X-Anthropic-Model'] = m
-      } else if (selectedProvider.value === 'openai') {
-        const m = localStorage.getItem('openai_model')
-        if (m) headers['X-OpenAI-Model'] = m
-      }
-    }
+    const headers = buildProviderHeaders(selectedProvider.value)
 
     // Pass only role+content to the API (strip UI-only fields)
     const apiMessages = messages.value.map(m => ({ role: m.role, content: m.content }))
@@ -458,7 +479,7 @@ watch(settingsCollapsed, (v) => localStorage.setItem('chat_settings_collapsed', 
 watch(messages, async () => { await scrollToBottom() }, { deep: true })
 
 onMounted(() => {
-  checkOllama()
+  ensureValidProvider()
   scrollToBottom()
 })
 </script>

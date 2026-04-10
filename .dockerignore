@@ -25,8 +25,11 @@ data/
 .idea/
 *.swp
 
-# Environment
+# Environment (secrets — never bake into images)
 .env
+.env.*
+!.env.example
+!.env.enterprise
 
 # Documentation
 *.md
@@ -35,8 +38,20 @@ data/
 tests/
 .pytest_cache/
 
-# Docker
+# Docker (don't embed Docker configs inside image)
 Dockerfile
-Dockerfile.corporate
-docker-compose.yml
+Dockerfile.*
+docker-compose*.yml
 .dockerignore
+
+# Nginx config (mounted as volume, not baked in)
+nginx/
+
+# Desktop app (not needed in server image)
+desktop/
+
+# Frontend source (pre-built assets are in static/)
+frontend/node_modules/
+
+# SSL certs dir marker (actual certs handled by Dockerfile COPY)
+nginx/ssl/

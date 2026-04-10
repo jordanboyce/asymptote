@@ -1,0 +1,193 @@
+# ============================================================
+# Asymptote Enterprise — Docker Compose
+# Turnkey deployment with TLS reverse proxy, optional Ollama,
+# named volumes, resource limits, and network isolation.
+# ============================================================
+#
+# Quick start:
+#   1. cp .env.enterprise .env
+#   2. bash nginx/generate-self-signed-cert.sh   (or provide real certs)
+#   3. mkdir -p certs && touch certs/.gitkeep     (add corporate CAs if needed)
+#   4. docker compose -f docker-compose.enterprise.yml up -d
+#
+# Profiles:
+#   Default  — Asymptote API + Nginx reverse proxy
+#   ollama   — adds a local Ollama container for AI features
+#              docker compose -f docker-compose.enterprise.yml --profile ollama up -d
+# ============================================================
+
+name: asymptote-enterprise
+
+# ── Named volumes ────────────────────────────────────────────
+volumes:
+  asymptote-data:
+    driver: local
+    name: asymptote-data
+  asymptote-models:
+    driver: local
+    name: asymptote-models
+  asymptote-pgdata:
+    driver: local
+    name: asymptote-pgdata
+  ollama-data:
+    driver: local
+    name: asymptote-ollama-data
+
+# ── Networks ─────────────────────────────────────────────────
+networks:
+  frontend:
+    name: asymptote-frontend
+  backend:
+    name: asymptote-backend
+    internal: true            # no direct internet access for app ↔ db traffic
+
+# ── Services ─────────────────────────────────────────────────
+services:
+
+  # ── Nginx reverse proxy ──────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: asymptote-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-8080}:80"
+      # Uncomment below and mount ssl certs to enable TLS:
+      # - "${NGINX_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Uncomment below to enable TLS (place certs in nginx/ssl/):
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      asymptote-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+
+  # ── Asymptote API ────────────────────────────────────────
+  asymptote-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.enterprise
+    image: asymptote-enterprise:latest
+    container_name: asymptote-api
+    restart: unless-stopped
+    expose:
+      - "8000"                # only reachable via nginx on the backend network
+    volumes:
+      - asymptote-data:/app/data
+      - asymptote-models:/home/asymptote/.cache    # embedding model cache
+    env_file:
+      - .env
+    environment:
+      - DATA_DIR=/app/data
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      - POSTGRES_URL=${POSTGRES_URL:-postgresql://asymptote:asymptote@postgres:5432/asymptote}
+      - ENABLE_MULTI_USER=${ENABLE_MULTI_USER:-false}
+      - DEFAULT_USER_ID=${DEFAULT_USER_ID:-default}
+    networks:
+      - frontend       # internet access (needed for model download + AI API calls)
+      - backend        # internal communication with ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s       # first run downloads embedding model (~90 MB)
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEMORY_LIMIT:-4G}
+          cpus: "${API_CPU_LIMIT:-4}"
+        reservations:
+          memory: ${API_MEMORY_RESERVATION:-1G}
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── PostgreSQL (optional — activate with --profile postgres) ─
+  postgres:
+    image: postgres:16-alpine
+    container_name: asymptote-postgres
+    profiles:
+      - postgres
+    restart: unless-stopped
+    expose:
+      - "5432"
+    volumes:
+      - asymptote-pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-asymptote}
+      POSTGRES_USER: ${POSTGRES_USER:-asymptote}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-asymptote}
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asymptote"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_MEMORY_LIMIT:-1G}
+          cpus: "${PG_CPU_LIMIT:-2}"
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ── Ollama (optional — activate with --profile ollama) ───
+  ollama:
+    image: ollama/ollama:latest
+    container_name: asymptote-ollama
+    profiles:
+      - ollama
+    restart: unless-stopped
+    expose:
+      - "11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - backend
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${OLLAMA_MEMORY_LIMIT:-8G}
+          cpus: "${OLLAMA_CPU_LIMIT:-4}"
+        reservations:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

@@ -183,7 +183,7 @@ class DocumentExtractor:
         if not self.vision_ocr_provider or self.vision_ocr_provider == "none":
             return None
 
-        needs_key = self.vision_ocr_provider in ("anthropic", "openai", "inl_hpc")
+        needs_key = self.vision_ocr_provider in ("anthropic", "openai")
         if needs_key and not self.vision_ocr_api_key:
             logger.warning(f"Vision OCR provider '{self.vision_ocr_provider}' requires an API key")
             return None
@@ -450,7 +450,7 @@ class DocumentExtractor:
     def is_ocr_available(self) -> bool:
         """Check if OCR is available with current configuration."""
         if self.vision_ocr_provider and self.vision_ocr_provider != "none":
-            needs_key = self.vision_ocr_provider in ("anthropic", "openai", "inl_hpc")
+            needs_key = self.vision_ocr_provider in ("anthropic", "openai")
             return not needs_key or bool(self.vision_ocr_api_key)
         return DOCLING_AVAILABLE
 

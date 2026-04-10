@@ -141,7 +141,7 @@ class UploadJobResponse(BaseModel):
 class AIOptions(BaseModel):
     """Optional AI enhancement settings for search."""
 
-    provider: str = Field("anthropic", description="AI provider: 'anthropic', 'openai', 'inl_hpc', or 'ollama'")
+    provider: str = Field("anthropic", description="AI provider: 'anthropic', 'openai', or 'ollama'")
     rerank: bool = Field(False, description="Rerank results using AI for better relevance")
     synthesize: bool = Field(False, description="Generate an AI summary with citations")
 
@@ -305,11 +305,11 @@ class ChatRequest(BaseModel):
     """Request body for the chat endpoint."""
 
     messages: List[ChatMessage] = Field(..., description="Conversation history including the latest user message")
-    provider: str = Field("anthropic", description="AI provider: 'anthropic', 'openai', 'inl_hpc', or 'ollama'")
-    top_k: int = Field(5, description="Number of context chunks to retrieve", ge=1, le=20)
+    provider: str = Field("anthropic", description="AI provider: 'anthropic', 'openai', or 'ollama'")
     mode: SearchMode = Field(SearchMode.SEMANTIC, description="Search mode for context retrieval")
     scope: str = Field("current", description="Collection scope: 'current' (single collection) or 'all' (search across all collections)")
     rerank: bool = Field(False, description="Rerank retrieved context chunks using AI before generating a response")
+    top_k: int = Field(5, description="Number of source chunks to consider", ge=1, le=20)
 
 
 class ChatResponse(BaseModel):

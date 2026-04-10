@@ -1,0 +1,165 @@
+"""Collection sharing service.
+
+Allows users to create shareable links to their indexed collections.
+Other users on the same deployment can accept shares and access collections
+with read or read-write permissions.
+"""
+
+import logging
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
+
+from services.app_database import app_db
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class SharingService:
+    """Manages collection sharing between users."""
+
+    def create_share(
+        self,
+        collection_id: str,
+        owner_id: str,
+        permission: str = "read",
+        expires_days: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create a share link for a collection.
+
+        Args:
+            collection_id: Collection to share
+            owner_id: User creating the share (must own the collection)
+            permission: 'read' or 'readwrite'
+            expires_days: Optional expiry in days (None = never expires)
+
+        Returns:
+            Share details including the share token
+        """
+        # Verify ownership
+        collection = app_db.get_collection(collection_id)
+        if not collection:
+            raise ValueError(f"Collection {collection_id} not found")
+        if collection.get("owner_id") != owner_id:
+            raise PermissionError("Only the collection owner can create shares")
+
+        expires_at = None
+        if expires_days:
+            expires_at = (datetime.utcnow() + timedelta(days=expires_days)).isoformat()
+
+        share_id = app_db.create_share(
+            collection_id=collection_id,
+            owner_id=owner_id,
+            permission=permission,
+            expires_at=expires_at,
+        )
+
+        logger.info(f"Created share {share_id} for collection {collection_id} (permission={permission})")
+
+        return {
+            "share_id": share_id,
+            "collection_id": collection_id,
+            "permission": permission,
+            "expires_at": expires_at,
+        }
+
+    def accept_share(self, share_token: str, user_id: str) -> Dict[str, Any]:
+        """Accept a share link.
+
+        Args:
+            share_token: The share ID/token from the share link
+            user_id: User accepting the share
+
+        Returns:
+            Accepted share details
+        """
+        share = app_db.get_share(share_token)
+        if not share:
+            raise ValueError("Share link not found")
+        if not share.get("is_active"):
+            raise ValueError("Share link has expired or been revoked")
+        if share["owner_id"] == user_id:
+            raise ValueError("Cannot accept your own share")
+
+        # Auto-provision user
+        app_db.upsert_user(user_id)
+
+        app_db.accept_share(share_token, user_id)
+
+        collection = app_db.get_collection(share["collection_id"])
+        logger.info(f"User {user_id} accepted share {share_token} for collection {share['collection_id']}")
+
+        return {
+            "share_id": share_token,
+            "collection_id": share["collection_id"],
+            "collection_name": collection["name"] if collection else "Unknown",
+            "permission": share["permission"],
+            "owner_id": share["owner_id"],
+        }
+
+    def get_shares_for_collection(self, collection_id: str, owner_id: str) -> List[Dict[str, Any]]:
+        """List active shares for a collection.
+
+        Args:
+            collection_id: Collection ID
+            owner_id: Must be the collection owner
+
+        Returns:
+            List of share details
+        """
+        collection = app_db.get_collection(collection_id)
+        if not collection or collection.get("owner_id") != owner_id:
+            raise PermissionError("Only the collection owner can view shares")
+
+        return app_db.get_shares_for_collection(collection_id)
+
+    def get_shared_with_me(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get collections shared with the current user.
+
+        Args:
+            user_id: Current user
+
+        Returns:
+            List of shared collection details
+        """
+        return app_db.get_shared_collections(user_id)
+
+    def revoke_share(self, share_id: str, owner_id: str):
+        """Revoke a share link.
+
+        Args:
+            share_id: Share to revoke
+            owner_id: Must be the share owner
+        """
+        share = app_db.get_share(share_id)
+        if not share:
+            raise ValueError("Share not found")
+        if share["owner_id"] != owner_id:
+            raise PermissionError("Only the share creator can revoke it")
+
+        app_db.revoke_share(share_id)
+        logger.info(f"Revoked share {share_id}")
+
+    def check_collection_access(self, collection_id: str, user_id: str) -> Optional[str]:
+        """Check if a user has access to a collection.
+
+        Returns the permission level: 'owner', 'readwrite', 'read', or None.
+        In single-user mode, always returns 'owner'.
+        """
+        if not settings.enable_multi_user:
+            return "owner"
+
+        collection = app_db.get_collection(collection_id)
+        if not collection:
+            return None
+
+        # Owner always has full access
+        if collection.get("owner_id") == user_id:
+            return "owner"
+
+        # Check share access
+        return app_db.check_share_access(collection_id, user_id)
+
+
+# Global instance
+sharing_service = SharingService()

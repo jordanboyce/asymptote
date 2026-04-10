@@ -46,6 +46,17 @@
       <div v-if="searchDisabled" class="text-sm text-warning mt-2">
         No data indexed in this collection. Add sources first.
       </div>
+      <!-- Pre-search AI indicator -->
+      <div v-else-if="aiActive && !loading" class="flex flex-wrap items-center gap-2 mt-2 text-xs text-base-content/60">
+        <span v-if="localSynthesize && selectedProviders.length > 1" class="text-secondary font-medium">
+          ↗ {{ selectedProviders.length }} AI answers on search
+        </span>
+        <span v-else-if="localSynthesize" class="text-primary font-medium">
+          ↗ AI synthesis on search
+        </span>
+        <span v-if="localRerank">· reranking on</span>
+        <span v-if="selectedExternalCount > 0" class="text-warning">· cloud providers selected</span>
+      </div>
       <div v-else-if="loading" class="mt-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
         <div class="flex items-center gap-2">
           <span class="loading loading-spinner loading-sm text-primary"></span>
@@ -64,198 +75,100 @@
       </div>
     </div>
 
-    <!-- Collapsible Search Settings -->
+    <!-- Combined Search Options (collapsible) -->
     <div class="card border border-base-300 bg-base-100/80 shadow-sm">
-      <button class="flex w-full items-start justify-between gap-3 px-4 py-3 text-left" @click="searchSettingsCollapsed = !searchSettingsCollapsed">
-        <div>
-          <div class="text-sm font-semibold">Search Settings</div>
-          <p class="text-xs text-base-content/60">Refine mode, relevance weighting, and AI provider behavior.</p>
+      <button class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left" @click="searchSettingsCollapsed = !searchSettingsCollapsed">
+        <div class="flex items-center gap-2 text-sm font-semibold text-base-content/70">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+          </svg>
+          Options
         </div>
-        <div class="flex items-center gap-2">
-          <span class="badge badge-sm badge-outline">Top {{ searchStore.topK }}</span>
-          <span class="badge badge-sm badge-outline">{{ searchModeLabel }}</span>
-          <span v-if="aiActive" class="badge badge-sm badge-outline badge-primary">AI on</span>
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 transition-transform" :class="searchSettingsCollapsed ? '' : 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div class="flex items-center gap-1.5 flex-wrap justify-end">
+          <span class="badge badge-sm badge-ghost">Top {{ searchStore.topK }}</span>
+          <span class="badge badge-sm badge-ghost">{{ searchModeLabel }}</span>
+          <template v-if="hasAnyProvider">
+            <span v-if="localRerank" class="badge badge-sm badge-primary badge-outline">Rerank</span>
+            <span v-if="localSynthesize" class="badge badge-sm badge-secondary badge-outline">Synthesize</span>
+            <span v-for="pid in selectedProviders" :key="pid" class="badge badge-sm badge-ghost">{{ getProviderDisplayNameLocal(pid) }}</span>
+          </template>
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 flex-shrink-0 transition-transform ml-1" :class="searchSettingsCollapsed ? '' : 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>
         </div>
       </button>
 
       <div v-show="!searchSettingsCollapsed" class="border-t border-base-300 px-4 py-4 space-y-4">
-        <!-- Search Options Row -->
-    <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-      <!-- Number of Results -->
-      <div class="form-control w-full">
-        <label class="label">
-          <span class="label-text">Max Number of results</span>
-        </label>
-        <input v-model.number="searchStore.topK" type="number" min="1" max="50"
-          class="input input-bordered w-full" />
-      </div>
-
-      <!-- Search Mode -->
-      <div class="form-control w-full">
-        <label class="label">
-          <span class="label-text">Search Mode</span>
-        </label>
-        <select v-model="searchMode" class="select select-bordered w-full">
-          <option value="semantic">Semantic (meaning-based)</option>
-          <option value="keyword">Keyword (exact terms)</option>
-          <option value="hybrid">Hybrid (both combined)</option>
-        </select>
-      </div>
-
-      <!-- Semantic Weight (only show for hybrid mode) -->
-      <div v-if="searchMode === 'hybrid'" class="form-control w-full">
-        <label class="label">
-          <span class="label-text">Semantic Weight: {{ Math.round(semanticWeight * 100) }}%</span>
-        </label>
-        <input v-model.number="semanticWeight" type="range" min="0" max="1" step="0.1" class="range range-primary" />
-        <div class="w-full flex justify-between text-xs px-2 mt-1">
-          <span>Keywords</span>
-          <span>Balanced</span>
-          <span>Semantic</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Search Mode Info -->
-    <div v-if="searchMode !== 'semantic'" class="alert alert-info py-2">
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-5 h-5">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-      </svg>
-      <div class="text-sm">
-        <span v-if="searchMode === 'keyword'">
-          <strong>Keyword search</strong> matches exact terms using BM25. Best for product codes, IDs, or technical
-          terms.
-        </span>
-        <span v-else-if="searchMode === 'hybrid'">
-          <strong>Hybrid search</strong> combines semantic understanding with keyword matching. Best of both worlds.
-        </span>
-      </div>
-    </div>
-
-    <!-- AI Provider Selection -->
-    <div v-if="hasAnyProvider" class="card bg-base-200 border border-base-300 p-4">
-      <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
-        <div>
-          <span class="font-semibold text-sm">AI Enhancements</span>
-          <p class="text-xs text-base-content/70 mt-0.5">
-            Choose which providers to use and what AI features to apply to results.
-          </p>
-        </div>
-        <!-- Rerank + Synthesize toggles -->
-        <div class="flex items-center gap-4">
-          <label class="flex items-center gap-2 cursor-pointer select-none">
-            <input type="checkbox" class="toggle toggle-xs toggle-primary" v-model="localRerank" />
-            <span class="text-sm">Rerank</span>
-          </label>
-          <label class="flex items-center gap-2 cursor-pointer select-none">
-            <input type="checkbox" class="toggle toggle-xs toggle-secondary" v-model="localSynthesize" />
-            <span class="text-sm">Synthesize</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="grid gap-3 lg:grid-cols-2">
-        <div class="rounded-xl border border-success/40 bg-success/5 p-3">
-          <div class="flex items-start justify-between gap-2 mb-2">
-            <div>
-              <h5 class="font-semibold text-sm">Private / Local</h5>
-              <p class="text-xs text-base-content/70">Recommended for sensitive content and internal-only data.</p>
-            </div>
-            <span class="badge badge-success badge-sm">Preferred</span>
+        <!-- Search Mode / TopK -->
+        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div class="form-control w-full">
+            <label class="label"><span class="label-text">Max results</span></label>
+            <input v-model.number="searchStore.topK" type="number" min="1" max="50" class="input input-bordered w-full" />
           </div>
-          <div class="space-y-2">
-            <label v-if="hasINLHpcKey"
-              class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors"
-              :class="selectedProviders.includes('inl_hpc') ? 'bg-warning/20 border-warning' : 'bg-base-100/70 border-base-300 hover:bg-base-100'">
-              <input type="checkbox" class="checkbox checkbox-xs checkbox-warning"
-                :checked="selectedProviders.includes('inl_hpc')" @change="toggleProvider('inl_hpc')" />
-              <span class="text-sm font-medium">INL HPC</span>
-              <span class="badge badge-outline badge-xs">private</span>
-            </label>
+          <div class="form-control w-full">
+            <label class="label"><span class="label-text">Search Mode</span></label>
+            <select v-model="searchMode" class="select select-bordered w-full">
+              <option value="semantic">Semantic (meaning-based)</option>
+              <option value="keyword">Keyword (exact terms)</option>
+              <option value="hybrid">Hybrid (both combined)</option>
+            </select>
+          </div>
+          <div v-if="searchMode === 'hybrid'" class="form-control w-full">
+            <label class="label"><span class="label-text">Semantic Weight: {{ Math.round(semanticWeight * 100) }}%</span></label>
+            <input v-model.number="semanticWeight" type="range" min="0" max="1" step="0.1" class="range range-primary" />
+            <div class="w-full flex justify-between text-xs px-2 mt-1">
+              <span>Keywords</span><span>Balanced</span><span>Semantic</span>
+            </div>
+          </div>
+        </div>
 
-            <div v-if="ollamaAvailable" class="tooltip tooltip-bottom"
-              data-tip="Runs locally. Usually slower than cloud models, but private.">
-              <label class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors"
-                :class="selectedProviders.includes('ollama') ? 'bg-info/20 border-info' : 'bg-base-100/70 border-base-300 hover:bg-base-100'">
-                <input type="checkbox" class="checkbox checkbox-xs checkbox-info"
-                  :checked="selectedProviders.includes('ollama')" @change="toggleProvider('ollama')" />
-                <span class="text-sm font-medium">Ollama</span>
-                <span class="badge badge-outline badge-xs">local</span>
+        <!-- AI Enhancements -->
+        <template v-if="hasAnyProvider">
+          <div class="divider my-0 text-xs text-base-content/40">AI Enhancements</div>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-4">
+              <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" class="toggle toggle-xs toggle-primary" v-model="localRerank" />
+                <span class="text-sm">Rerank</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" class="toggle toggle-xs toggle-secondary" v-model="localSynthesize" />
+                <span class="text-sm">Synthesize</span>
               </label>
             </div>
+            <p v-if="selectedExternalCount > 0" class="text-xs text-warning/80">Cloud providers will receive your query.</p>
           </div>
-          <p v-if="!hasINLHpcKey && !ollamaAvailable" class="text-xs text-base-content/60 mt-2">
-            No private/local providers configured.
-          </p>
-        </div>
-
-        <div class="rounded-xl border border-warning/40 bg-warning/5 p-3">
-          <div class="mb-2">
-            <h5 class="font-semibold text-sm">External / Cloud</h5>
-            <p class="text-xs text-base-content/70">Fast and powerful, but query content is sent to provider APIs.</p>
-          </div>
-          <div class="space-y-2">
-            <label v-if="hasAnthropicKey"
-              class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors"
-              :class="selectedProviders.includes('anthropic') ? 'bg-primary/20 border-primary' : 'bg-base-100/70 border-base-300 hover:bg-base-100'">
-              <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
-                :checked="selectedProviders.includes('anthropic')" @change="toggleProvider('anthropic')" />
-              <span class="text-sm font-medium">Anthropic</span>
-              <span class="badge badge-outline badge-xs">cloud</span>
-            </label>
-
-            <label v-if="hasOpenAIKey"
-              class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors"
-              :class="selectedProviders.includes('openai') ? 'bg-success/20 border-success' : 'bg-base-100/70 border-base-300 hover:bg-base-100'">
-              <input type="checkbox" class="checkbox checkbox-xs checkbox-success"
-                :checked="selectedProviders.includes('openai')" @change="toggleProvider('openai')" />
-              <span class="text-sm font-medium">OpenAI</span>
-              <span class="badge badge-outline badge-xs">cloud</span>
+          <div class="divide-y divide-base-300 rounded-lg border border-base-300 overflow-hidden">
+            <label
+              v-for="pid in configuredProviderIds"
+              :key="pid"
+              class="flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors"
+              :class="selectedProviders.includes(pid) ? 'bg-primary/5' : 'hover:bg-base-200/40'"
+            >
+              <input type="checkbox" class="checkbox checkbox-sm checkbox-primary flex-shrink-0" :checked="selectedProviders.includes(pid)" @change="toggleProvider(pid)" />
+              <div class="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
+                <span class="text-sm font-medium">{{ getProviderDisplayNameLocal(pid) }}</span>
+                <span class="badge badge-xs badge-outline" :class="isLocalProvider(pid) ? 'badge-info' : 'badge-warning'">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
+              </div>
+              <div class="flex-shrink-0" @click.stop>
+                <select v-if="getModelsForProvider(pid).length > 1" v-model="providerModelOverrides[pid]" class="select select-xs select-bordered max-w-[180px]">
+                  <option value="">Default ({{ getDefaultModelLabel(pid) }})</option>
+                  <option v-for="m in getModelsForProvider(pid)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                </select>
+                <span v-else-if="getDefaultModelLabel(pid)" class="text-xs text-base-content/50">{{ getDefaultModelLabel(pid) }}</span>
+              </div>
             </label>
           </div>
-          <p v-if="!hasAnthropicKey && !hasOpenAIKey" class="text-xs text-base-content/60 mt-2">
-            No external/cloud providers configured.
-          </p>
+        </template>
+
+        <!-- No-provider nudge (inside expanded panel) -->
+        <div v-if="!hasAnyProvider" class="flex items-center gap-3 rounded-lg border border-info/30 bg-info/5 px-3 py-2.5">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-5 h-5">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <p class="text-sm flex-1">Add an AI provider in Settings to enable reranking and synthesis.</p>
+          <button class="btn btn-xs btn-primary flex-shrink-0" @click="$emit('switch-tab', 'settings')">Settings</button>
         </div>
-      </div>
-
-      <div class="flex flex-wrap gap-2 mt-3">
-        <span class="badge badge-sm badge-success badge-outline">Private selected: {{ selectedPrivateCount }}</span>
-        <span class="badge badge-sm badge-warning badge-outline">External selected: {{ selectedExternalCount }}</span>
-      </div>
-
-      <p v-if="selectedProviders.length === 0" class="text-xs text-base-content/60 mt-2">
-        No providers selected. Search will run without AI reranking/synthesis.
-      </p>
-      <p v-else class="text-xs text-base-content/70 mt-2">
-        {{ selectedProviders.length }} provider{{ selectedProviders.length > 1 ? 's' : '' }} selected.
-        <span v-if="selectedExternalCount > 0">External providers will process your query content.</span>
-        <span v-else>All selected AI providers are private/local.</span>
-      </p>
-      <p v-if="selectedProviders.includes('ollama') && selectedProviders.length === 1" class="text-xs text-info mt-1">
-        Ollama runs locally. It is private and free, but often slower.
-      </p>
-    </div>
-
-    <!-- AI Feature Prompt (only show if no AI configured) -->
-    <div v-if="!hasAnyProvider" class="alert alert-info">
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-6 h-6">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-      </svg>
-      <div class="flex-1">
-        <h4 class="font-semibold">Want privacy-focused AI enhancements?</h4>
-        <p class="text-sm">Add your AI provider in Settings to enable reranking and answer synthesis. Use private/local providers for sensitive materials. API keys stay in your browser and are never stored on the server.</p>
-      </div>
-      <button class="btn btn-sm btn-primary" @click="$emit('switch-tab', 'settings')">
-        Go to Settings
-      </button>
-    </div>
-
       </div>
     </div>
 
@@ -320,12 +233,11 @@
             <span class="badge badge-sm" :class="{
               'badge-success': aiResponse.provider === 'openai',
               'badge-primary': aiResponse.provider === 'anthropic',
-              'badge-warning': aiResponse.provider === 'inl_hpc',
               'badge-info': aiResponse.provider === 'ollama'
             }">
               AI
             </span>
-            {{ getProviderDisplayName(aiResponse.provider) }} Answer
+            {{ getProviderDisplayNameLocal(aiResponse.provider) }} Answer
           </h3>
           <div v-if="aiResponse.synthesis" class="prose prose-sm max-w-none whitespace-pre-wrap">{{ aiResponse.synthesis
           }}</div>
@@ -597,6 +509,17 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
+import {
+  getConfiguredProviderIds,
+  buildProviderHeaders,
+  getAPIProviderName,
+  getProviderDisplayName,
+  getProviderModels,
+  getProviderConfig,
+  isLocalProvider,
+  getAISettings,
+  migrateLegacySettings,
+} from '../utils/aiProviders.js'
 
 const props = defineProps({
   chunkCount: {
@@ -649,33 +572,73 @@ const searchSettingsCollapsed = ref(true)
 // API keys and feature toggles (rerank/synthesize) are managed in Settings
 // Provider selection for each search is managed here
 
-// Check which providers have keys/models configured
-const hasAnthropicKey = computed(() => !!localStorage.getItem('ai_api_key_anthropic'))
-const hasOpenAIKey = computed(() => !!localStorage.getItem('ai_api_key_openai'))
-const hasINLHpcKey = computed(() => !!localStorage.getItem('ai_api_key_inl_hpc'))
-const hasOllamaModel = computed(() => !!localStorage.getItem('ollama_model'))
-const hasAnyProvider = computed(() => hasAnthropicKey.value || hasOpenAIKey.value || hasINLHpcKey.value || ollamaAvailable.value)
+// Check which providers are configured
+const configuredProviderIds = ref([])
+const hasAnyProvider = computed(() => configuredProviderIds.value.length > 0)
 
-// Provider availability (for Ollama, we need to check if it's actually running)
-const ollamaAvailable = ref(false)
+// Provider availability (for backwards compat)
+const ollamaAvailable = computed(() => configuredProviderIds.value.includes('ollama'))
 
 // Selected providers for this search session
 const PROVIDER_SELECTION_KEY = 'asymptote_selected_providers'
+const PROVIDER_MODEL_OVERRIDES_KEY = 'asymptote_search_model_overrides'
 const selectedProviders = ref([])
-const privateProviderIds = ['inl_hpc', 'ollama']
-const externalProviderIds = ['anthropic', 'openai']
-const selectedPrivateCount = computed(() => selectedProviders.value.filter(p => privateProviderIds.includes(p)).length)
-const selectedExternalCount = computed(() => selectedProviders.value.filter(p => externalProviderIds.includes(p)).length)
+const selectedPrivateCount = computed(() => selectedProviders.value.filter(p => isLocalProvider(p)).length)
+const selectedExternalCount = computed(() => selectedProviders.value.filter(p => !isLocalProvider(p)).length)
+
+// Per-search model overrides: { providerId: 'model-id' | '' }
+const providerModelOverrides = ref({})
+
+// Get available models for a provider (delegates to PROVIDER_DEFS)
+const getModelsForProvider = (pid) => getProviderModels(pid)
+
+// Get the display label for a provider's currently configured (default) model
+const getDefaultModelLabel = (pid) => {
+  const cfg = getProviderConfig(pid)
+  if (!cfg?.model) return ''
+  const models = getProviderModels(pid)
+  const found = models.find(m => m.id === cfg.model)
+  return found ? found.label : cfg.model
+}
+
+// Persist model override changes
+watch(providerModelOverrides, (val) => {
+  try { localStorage.setItem(PROVIDER_MODEL_OVERRIDES_KEY, JSON.stringify(val)) } catch { /* ignore */ }
+}, { deep: true })
 
 // Initialize selected providers from localStorage
 const initializeProviders = () => {
+  migrateLegacySettings()
+  configuredProviderIds.value = getConfiguredProviderIds()
+
   const saved = localStorage.getItem(PROVIDER_SELECTION_KEY)
+  let savedSelection = []
   if (saved) {
-    try {
-      selectedProviders.value = JSON.parse(saved)
-    } catch (e) {
-      selectedProviders.value = []
+    try { savedSelection = JSON.parse(saved) } catch { savedSelection = [] }
+  }
+
+  // Filter to only configured providers
+  const validProviders = savedSelection.filter(p => configuredProviderIds.value.includes(p))
+
+  // Default to all configured if no valid saved selection
+  if (validProviders.length > 0) {
+    selectedProviders.value = validProviders
+  } else {
+    selectedProviders.value = [...configuredProviderIds.value]
+  }
+  localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(selectedProviders.value))
+
+  // Restore model overrides
+  try {
+    const savedOverrides = JSON.parse(localStorage.getItem(PROVIDER_MODEL_OVERRIDES_KEY) || '{}')
+    // Only keep overrides for still-configured providers
+    const cleaned = {}
+    for (const pid of configuredProviderIds.value) {
+      if (savedOverrides[pid]) cleaned[pid] = savedOverrides[pid]
     }
+    providerModelOverrides.value = cleaned
+  } catch {
+    providerModelOverrides.value = {}
   }
 }
 
@@ -690,48 +653,8 @@ const toggleProvider = (provider) => {
   localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(selectedProviders.value))
 }
 
-// Check Ollama availability and initialize providers on mount
-const checkOllamaAvailability = async () => {
-  try {
-    const response = await axios.get('/api/ollama/status')
-    ollamaAvailable.value = response.data.available === true
-    // If Ollama is available and no model is saved, save the first available model
-    if (ollamaAvailable.value && !hasOllamaModel.value && response.data.models?.length > 0) {
-      localStorage.setItem('ollama_model', response.data.models[0].name)
-    }
-  } catch (e) {
-    ollamaAvailable.value = false
-  }
-
-  // After checking availability, initialize/validate selected providers
-  initializeProviders()
-
-  // Filter out any providers that are no longer available
-  const validProviders = selectedProviders.value.filter(p => {
-    if (p === 'anthropic') return hasAnthropicKey.value
-    if (p === 'openai') return hasOpenAIKey.value
-    if (p === 'inl_hpc') return hasINLHpcKey.value
-    if (p === 'ollama') return ollamaAvailable.value
-    return false
-  })
-
-  // If no saved selection or all were invalid, default to all available
-  if (selectedProviders.value.length === 0 || validProviders.length === 0) {
-    const defaults = []
-    if (hasAnthropicKey.value) defaults.push('anthropic')
-    if (hasOpenAIKey.value) defaults.push('openai')
-    if (hasINLHpcKey.value) defaults.push('inl_hpc')
-    if (ollamaAvailable.value) defaults.push('ollama')
-    selectedProviders.value = defaults
-    localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(defaults))
-  } else {
-    selectedProviders.value = validProviders
-    localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(validProviders))
-  }
-}
-
 onMounted(() => {
-  checkOllamaAvailability()
+  initializeProviders()
   const savedCollapsed = localStorage.getItem(SEARCH_SETTINGS_COLLAPSED_KEY)
   if (savedCollapsed !== null) {
     searchSettingsCollapsed.value = savedCollapsed === 'true'
@@ -743,18 +666,6 @@ onBeforeUnmount(() => {
 })
 
 // Get configured AI settings from Settings tab (features only - rerank/synthesize)
-const getAISettings = () => {
-  try {
-    const saved = localStorage.getItem('ai_settings')
-    if (saved) {
-      return JSON.parse(saved)
-    }
-  } catch (e) {
-    console.error('Failed to load AI settings:', e)
-  }
-  return { rerank: false, synthesize: false }
-}
-
 // Inline AI feature toggles (read initial value from shared ai_settings, write back on change)
 const _initialAISettings = getAISettings()
 const localRerank = ref(_initialAISettings.rerank ?? false)
@@ -849,15 +760,7 @@ const historyEntries = computed(() => {
     .sort((a, b) => b.timestamp - a.timestamp)
 })
 
-const getProviderDisplayName = (provider) => {
-  const names = {
-    'anthropic': 'Anthropic Claude',
-    'openai': 'OpenAI GPT',
-    'inl_hpc': 'INL HPC AI',
-    'ollama': 'Ollama'
-  }
-  return names[provider] || provider
-}
+const getProviderDisplayNameLocal = getProviderDisplayName
 
 // Code file extensions for display logic
 const CODE_EXTENSIONS = ['.pas', '.dpr', '.dpk', '.pp', '.inc', '.dfm', '.mod', '.def', '.mi', '.asm', '.s']
@@ -1038,28 +941,13 @@ const executeSearch = async (queryEmbedding = null) => {
           mode: searchMode.value,
           semantic_weight: semanticWeight.value,
           ai: {
-            provider: provider,
+            provider: getAPIProviderName(provider),
             rerank: !!aiSettings.rerank,
             synthesize: !!aiSettings.synthesize
           }
         }
 
-        let headers = {}
-        if (provider === 'ollama') {
-          headers['X-Ollama-Model'] = localStorage.getItem('ollama_model') || 'llama3.2'
-        } else {
-          const key = localStorage.getItem(`ai_api_key_${provider}`)
-          if (key) headers['X-AI-Key'] = key
-          if (provider === 'inl_hpc') {
-            headers['X-INL-HPC-Model'] = localStorage.getItem('inl_hpc_model') || 'gpt-oss-120b'
-          } else if (provider === 'anthropic') {
-            const m = localStorage.getItem('anthropic_model')
-            if (m) headers['X-Anthropic-Model'] = m
-          } else if (provider === 'openai') {
-            const m = localStorage.getItem('openai_model')
-            if (m) headers['X-OpenAI-Model'] = m
-          }
-        }
+        const headers = buildProviderHeaders(provider, providerModelOverrides.value[provider] || null)
 
         try {
           const collectionId = collectionStore.currentCollectionId

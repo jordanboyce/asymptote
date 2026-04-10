@@ -30,7 +30,9 @@ from services.ai_service import AIService, create_provider, detect_ollama
 from services.config_manager import config_manager
 from services.reindex_service import reindex_service
 from services.collection_service import collection_service
+from services.sharing_service import sharing_service
 from services.indexer_manager import indexer_manager
+from middleware.user_context import get_current_user_id
 from services.mcp_server import (
     MCP_CONFIG_FIELDS,
     build_mcp_export_payload,
@@ -75,7 +77,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CLOUD_AI_PROVIDERS = ("anthropic", "openai", "inl_hpc")
+CLOUD_AI_PROVIDERS = ("anthropic", "openai", "grok", "google", "github", "openai_compatible")
 ALL_AI_PROVIDERS = CLOUD_AI_PROVIDERS + ("ollama",)
 
 
@@ -848,9 +850,10 @@ async def search_documents(
     collection_id: str = "default",
     x_ai_key: str = Header(None),
     x_ollama_model: str = Header(None),
-    x_inl_hpc_model: str = Header(None),
     x_anthropic_model: str = Header(None),
     x_openai_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
 ) -> SearchResponse:
     """
     Perform semantic similarity search over indexed documents.
@@ -860,9 +863,9 @@ async def search_documents(
         collection_id: Collection to search (default: "default")
 
     Optionally enable AI enhancements by including 'ai' options in the request body.
-    Supports Anthropic, OpenAI, INL HPC, and Ollama providers.
+    Supports Anthropic, OpenAI, and Ollama providers.
 
-    For cloud providers (Anthropic, OpenAI, INL HPC):
+    For cloud providers (Anthropic, OpenAI):
     - Pass API key via X-AI-Key header
     - Set provider in request body ai.provider
 
@@ -870,9 +873,6 @@ async def search_documents(
     - Pass model name via X-Ollama-Model header (e.g., llama3.2)
     - Set provider to 'ollama' in request body ai.provider
     - No API key required
-
-    For INL HPC:
-    - Optionally pass model name via X-INL-HPC-Model header
     """
     try:
         import time
@@ -895,29 +895,23 @@ async def search_documents(
         if ai_options:
             try:
                 if ai_options.provider == "ollama":
-                    # Ollama doesn't need API key
-                    model = x_ollama_model or "llama3.2"
-                    provider = create_provider("ollama", model=model)
+                    model = x_ai_model or x_ollama_model or "llama3.2"
+                    extra: dict = {"model": model}
+                    if x_ai_base_url:
+                        extra["base_url"] = x_ai_base_url
+                    provider = create_provider("ollama", **extra)
                     ai_service = AIService(provider=provider)
                     ai_provider_used = "ollama"
-                elif ai_options.provider == "inl_hpc":
-                    if not x_ai_key:
-                        logger.warning("AI key required for provider: inl_hpc")
-                    else:
-                        model = x_inl_hpc_model or "gpt-oss-120b"
-                        provider = create_provider("inl_hpc", x_ai_key, model=model)
-                        ai_service = AIService(provider=provider)
-                        ai_provider_used = "inl_hpc"
                 else:
-                    # Cloud providers need API key
-                    if not x_ai_key:
+                    if not x_ai_key and ai_options.provider != "openai_compatible":
                         logger.warning(f"AI key required for provider: {ai_options.provider}")
                     else:
                         extra = {}
-                        if ai_options.provider == "anthropic" and x_anthropic_model:
-                            extra["model"] = x_anthropic_model
-                        elif ai_options.provider == "openai" and x_openai_model:
-                            extra["model"] = x_openai_model
+                        model = x_ai_model or x_anthropic_model or x_openai_model
+                        if model:
+                            extra["model"] = model
+                        if x_ai_base_url:
+                            extra["base_url"] = x_ai_base_url
                         provider = create_provider(ai_options.provider, x_ai_key, **extra)
                         ai_service = AIService(provider=provider)
                         ai_provider_used = ai_options.provider
@@ -985,6 +979,55 @@ async def search_documents(
         )
 
 
+def _build_collection_overview(collection_ids: List[str]) -> str:
+    """Build a compact, plain-text summary of one or more collections for chat context.
+
+    Includes name, document count, page total, date range, and filenames so the LLM
+    can answer meta-questions like "how many files are in here?" or "do you have
+    anything from March?" without having to retrieve content chunks.
+    """
+    lines: List[str] = []
+    MAX_FILENAMES = 50
+
+    for col_id in collection_ids:
+        col = collection_service.get_collection(col_id)
+        if not col:
+            continue
+
+        try:
+            indexer = get_indexer(col_id)
+            docs = indexer.list_documents()
+        except Exception as e:
+            logger.warning(f"Overview: failed to list documents for '{col_id}': {e}")
+            docs = []
+
+        doc_count = len(docs)
+        page_total = sum((d.get("total_pages") or d.get("num_pages") or 0) for d in docs)
+        chunk_total = sum((d.get("total_chunks") or d.get("num_chunks") or 0) for d in docs)
+
+        timestamps = [d.get("upload_timestamp") for d in docs if d.get("upload_timestamp")]
+        date_range = ""
+        if timestamps:
+            timestamps.sort()
+            date_range = f"{timestamps[0][:10]} to {timestamps[-1][:10]}"
+
+        lines.append(f"- Collection: {col.get('name', col_id)}")
+        if col.get("description"):
+            lines.append(f"  Description: {col['description']}")
+        lines.append(f"  Documents: {doc_count}, Pages: {page_total}, Chunks: {chunk_total}")
+        if date_range:
+            lines.append(f"  Indexed date range: {date_range}")
+
+        if docs:
+            filenames = [d["filename"] for d in docs[:MAX_FILENAMES]]
+            files_str = ", ".join(filenames)
+            if doc_count > MAX_FILENAMES:
+                files_str += f", ... (+{doc_count - MAX_FILENAMES} more)"
+            lines.append(f"  Filenames: {files_str}")
+
+    return "\n".join(lines) if lines else "(No collection metadata available.)"
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_with_documents(
     chat_request: ChatRequest,
@@ -992,9 +1035,10 @@ async def chat_with_documents(
     collection_id: str = "default",
     x_ai_key: str = Header(None),
     x_ollama_model: str = Header(None),
-    x_inl_hpc_model: str = Header(None),
     x_anthropic_model: str = Header(None),
     x_openai_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
 ) -> ChatResponse:
     """
     Chat with your indexed documents using conversational AI.
@@ -1018,24 +1062,23 @@ async def chat_with_documents(
         # --- Build AI provider (needed before search for query reformulation) ---
         try:
             if chat_request.provider == "ollama":
-                model = x_ollama_model or "llama3.2"
-                provider = create_provider("ollama", model=model)
-            elif chat_request.provider == "inl_hpc":
-                if not x_ai_key:
-                    raise HTTPException(status_code=400, detail="API key required for INL HPC")
-                model = x_inl_hpc_model or "gpt-oss-120b"
-                provider = create_provider("inl_hpc", x_ai_key, model=model)
+                model = x_ai_model or x_ollama_model or "llama3.2"
+                extra: dict = {"model": model}
+                if x_ai_base_url:
+                    extra["base_url"] = x_ai_base_url
+                provider = create_provider("ollama", **extra)
             else:
-                if not x_ai_key:
+                if not x_ai_key and chat_request.provider != "openai_compatible":
                     raise HTTPException(
                         status_code=400,
                         detail=f"API key required for {chat_request.provider}",
                     )
                 extra = {}
-                if chat_request.provider == "anthropic" and x_anthropic_model:
-                    extra["model"] = x_anthropic_model
-                elif chat_request.provider == "openai" and x_openai_model:
-                    extra["model"] = x_openai_model
+                model = x_ai_model or x_anthropic_model or x_openai_model
+                if model:
+                    extra["model"] = model
+                if x_ai_base_url:
+                    extra["base_url"] = x_ai_base_url
                 provider = create_provider(chat_request.provider, x_ai_key, **extra)
         except HTTPException:
             raise
@@ -1048,12 +1091,17 @@ async def chat_with_documents(
         # Follow-up questions ("what date was that?") reference prior context that the
         # vector index has no access to. Rewriting them into self-contained queries
         # (e.g. "Maverick Adventure First Stop receipt purchase date") dramatically
-        # improves retrieval accuracy on multi-turn conversations.
-        history_for_reformulation = [
-            {"role": m.role, "content": m.content}
-            for m in chat_request.messages[:-1]  # all messages except the current one
-        ]
-        search_query = ai_service.reformulate_query(history_for_reformulation, latest_query)
+        # improves retrieval accuracy on multi-turn conversations. Skip on single-turn
+        # queries to avoid an unnecessary LLM call (and the failure mode when the
+        # provider is unreachable).
+        prior_messages = chat_request.messages[:-1]
+        if prior_messages:
+            history_for_reformulation = [
+                {"role": m.role, "content": m.content} for m in prior_messages
+            ]
+            search_query = ai_service.reformulate_query(history_for_reformulation, latest_query)
+        else:
+            search_query = latest_query
 
         # --- Retrieve context chunks ---
         # Track which collection each result came from so URLs are correct
@@ -1140,13 +1188,28 @@ async def chat_with_documents(
             history_parts.append(f"{prefix}: {msg.content}")
         history_text = "\n\n".join(history_parts) if history_parts else "(Start of conversation)"
 
+        # --- Build collection overview (handles meta-questions like "how many files") ---
+        if chat_request.scope == "all":
+            overview_ids = [c["id"] for c in collection_service.get_all_collections()]
+        else:
+            overview_ids = [collection_id]
+        try:
+            collection_overview = _build_collection_overview(overview_ids)
+        except Exception as e:
+            logger.warning(f"Failed to build collection overview: {e}")
+            collection_overview = "(Collection overview unavailable.)"
+
         scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
         prompt = (
             f"You are a helpful assistant with access to a private document knowledge base ({scope_note}). "
-            "Answer the user's question based on the retrieved context below. "
-            "Cite sources using [Source N] notation when referencing specific content. "
-            "If the context does not contain enough information, say so clearly and provide "
-            "what help you can from your general knowledge.\n\n"
+            "Answer the user's question using the COLLECTION OVERVIEW and RETRIEVED CONTEXT below. "
+            "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
+            "(file counts, available documents, date ranges, what's in here). "
+            "Use the RETRIEVED CONTEXT for questions about the contents of specific documents, "
+            "and cite sources using [Source N] notation when referencing specific content. "
+            "If neither the overview nor the retrieved context contains enough information, "
+            "say so clearly and provide what help you can from your general knowledge.\n\n"
+            f"COLLECTION OVERVIEW:\n{collection_overview}\n\n"
             f"RETRIEVED CONTEXT:\n{context_text}\n\n"
             f"CONVERSATION HISTORY:\n{history_text}\n\n"
             f"User: {latest_query}\nAssistant:"
@@ -1876,11 +1939,13 @@ async def validate_api_key(
     x_ai_key: str = Header(None),
     x_ai_provider: str = Header("anthropic"),
     x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
 ):
     """
     Validate an API key or Ollama model availability.
 
-    For cloud providers (Anthropic, OpenAI, INL HPC):
+    For cloud providers (Anthropic, OpenAI):
     - Pass the key via X-AI-Key header
     - Pass provider via X-AI-Provider header
 
@@ -1898,24 +1963,27 @@ async def validate_api_key(
             }
 
         if x_ai_provider == "ollama":
-            # Ollama doesn't need API key
-            model = x_ollama_model or "llama3.2"
-            provider = create_provider("ollama", model=model)
-        elif x_ai_provider == "inl_hpc":
-            # INL HPC key validation must call /models with user-provided key
-            if not x_ai_key:
-                return {"valid": False, "error": "API key is required for cloud providers"}
-            provider = create_provider("inl_hpc", x_ai_key)
-            valid = provider.validate()
-            if not valid:
-                return {"valid": False, "error": "Invalid API key", "models": []}
-            models = provider.available_models if hasattr(provider, "available_models") else []
-            return {"valid": True, "error": None, "models": models}
+            model = x_ai_model or x_ollama_model or "llama3.2"
+            extra: dict = {"model": model}
+            if x_ai_base_url:
+                extra["base_url"] = x_ai_base_url
+            provider = create_provider("ollama", **extra)
+        elif x_ai_provider == "openai_compatible":
+            if not x_ai_base_url:
+                return {"valid": False, "error": "base_url required for openai_compatible provider"}
+            provider = create_provider(
+                "openai_compatible",
+                api_key=x_ai_key,
+                base_url=x_ai_base_url,
+                model=x_ai_model or "default",
+            )
         else:
-            # Cloud providers need API key
             if not x_ai_key:
                 return {"valid": False, "error": "API key is required for cloud providers"}
-            provider = create_provider(x_ai_provider, x_ai_key)
+            extra = {}
+            if x_ai_model:
+                extra["model"] = x_ai_model
+            provider = create_provider(x_ai_provider, x_ai_key, **extra)
 
         valid = provider.validate()
         return {"valid": valid, "error": None}
@@ -1943,9 +2011,10 @@ async def ask_question(
     x_ai_key: str = Header(None),
     x_ai_provider: str = Header("anthropic"),
     x_ollama_model: str = Header(None),
-    x_inl_hpc_model: str = Header(None),
     x_anthropic_model: str = Header(None),
     x_openai_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
 ):
     """
     Ask a question and get a synthesized answer from indexed documents.
@@ -1961,7 +2030,7 @@ async def ask_question(
     **API Key Options** (in order of precedence):
     1. Pass via X-AI-Key header (per-request)
     2. Use server-stored key (configured via /api/agent/config)
-    3. For cloud providers (Anthropic/OpenAI/INL HPC), set X-AI-Provider accordingly
+    3. For cloud providers (Anthropic/OpenAI), set X-AI-Provider accordingly
     4. For Ollama: no key needed, just set X-AI-Provider: ollama
 
     **Response Formats**:
@@ -2006,34 +2075,20 @@ async def ask_question(
 
     # Validate AI provider is configured
     if x_ai_provider == "ollama":
-        model = x_ollama_model or "llama3.2"
+        model = x_ai_model or x_ollama_model or "llama3.2"
         try:
-            provider = create_provider("ollama", model=model)
+            extra_ollama: dict = {"model": model}
+            if x_ai_base_url:
+                extra_ollama["base_url"] = x_ai_base_url
+            provider = create_provider("ollama", **extra_ollama)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Ollama not available: {e}",
             )
-    elif x_ai_provider == "inl_hpc":
-        api_key = x_ai_key or app_db.get_agent_api_key(x_ai_provider)
-        if not api_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"No API key configured for {x_ai_provider}. "
-                       f"Either pass X-AI-Key header or configure via /api/agent/config.",
-            )
-        try:
-            model = x_inl_hpc_model or "gpt-oss-120b"
-            provider = create_provider("inl_hpc", api_key, model=model)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e),
-            )
     else:
-        # Try header key first, then fall back to server-stored key
         api_key = x_ai_key or app_db.get_agent_api_key(x_ai_provider)
-        if not api_key:
+        if not api_key and x_ai_provider != "openai_compatible":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"No API key configured for {x_ai_provider}. "
@@ -2041,10 +2096,11 @@ async def ask_question(
             )
         try:
             extra = {}
-            if x_ai_provider == "anthropic" and x_anthropic_model:
-                extra["model"] = x_anthropic_model
-            elif x_ai_provider == "openai" and x_openai_model:
-                extra["model"] = x_openai_model
+            model = x_ai_model or x_anthropic_model or x_openai_model
+            if model:
+                extra["model"] = model
+            if x_ai_base_url:
+                extra["base_url"] = x_ai_base_url
             provider = create_provider(x_ai_provider, api_key, **extra)
         except ValueError as e:
             raise HTTPException(
@@ -2251,7 +2307,7 @@ async def set_agent_config(
     the X-AI-Key header on every request.
 
     Args:
-        provider: AI provider name (anthropic, openai, inl_hpc)
+        provider: AI provider name (anthropic, openai)
         api_key: The API key to store
 
     Note: Keys are stored server-side. For security, ensure your
@@ -2294,7 +2350,7 @@ async def delete_agent_config(provider: str):
     Remove a stored API key.
 
     Args:
-        provider: AI provider name (anthropic, openai, inl_hpc)
+        provider: AI provider name (anthropic, openai)
     """
     from services.app_database import app_db
 
@@ -2767,10 +2823,10 @@ async def get_reindex_status(job_id: int = None):
     summary="List all collections",
     tags=["collections"],
 )
-async def list_collections():
-    """Get all document collections."""
-    collections = collection_service.get_all_collections()
-    return {"collections": collections}
+async def list_collections(request: Request, user_id: str = Depends(get_current_user_id)):
+    """Get all document collections visible to the current user."""
+    collections = collection_service.get_all_collections(user_id=user_id)
+    return {"collections": collections, "user_id": user_id, "multi_user": settings.enable_multi_user}
 
 
 @app.post(
@@ -2779,9 +2835,9 @@ async def list_collections():
     tags=["collections"],
     status_code=status.HTTP_201_CREATED,
 )
-async def create_collection(collection_data: dict):
+async def create_collection(collection_data: dict, user_id: str = Depends(get_current_user_id)):
     """
-    Create a new document collection.
+    Create a new document collection owned by the current user.
 
     Body:
         name: Collection name (required)
@@ -2804,7 +2860,8 @@ async def create_collection(collection_data: dict):
         color=collection_data.get("color", "#3b82f6"),
         chunk_size=collection_data.get("chunk_size", 500),
         chunk_overlap=collection_data.get("chunk_overlap", 50),
-        embedding_model=collection_data.get("embedding_model", "all-MiniLM-L6-v2")
+        embedding_model=collection_data.get("embedding_model", "all-MiniLM-L6-v2"),
+        owner_id=user_id,
     )
 
     return collection
@@ -2815,7 +2872,7 @@ async def create_collection(collection_data: dict):
     summary="Get collection details",
     tags=["collections"],
 )
-async def get_collection(collection_id: str):
+async def get_collection(collection_id: str, user_id: str = Depends(get_current_user_id)):
     """Get details for a specific collection."""
     collection = collection_service.get_collection(collection_id)
     if not collection:
@@ -2823,6 +2880,10 @@ async def get_collection(collection_id: str):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Collection '{collection_id}' not found"
         )
+    access = sharing_service.check_collection_access(collection_id, user_id)
+    if not access:
+        raise HTTPException(status_code=403, detail="You do not have access to this collection")
+    collection['permission'] = access
     return collection
 
 
@@ -2831,9 +2892,9 @@ async def get_collection(collection_id: str):
     summary="Update collection settings",
     tags=["collections"],
 )
-async def update_collection(collection_id: str, updates: dict):
+async def update_collection(collection_id: str, updates: dict, user_id: str = Depends(get_current_user_id)):
     """
-    Update collection settings.
+    Update collection settings. Requires owner or readwrite access.
 
     Body:
         name: New name
@@ -2846,6 +2907,9 @@ async def update_collection(collection_id: str, updates: dict):
     Note: Changing chunk_size, chunk_overlap, or embedding_model
     requires re-indexing the collection's documents.
     """
+    access = sharing_service.check_collection_access(collection_id, user_id)
+    if access not in ("owner", "readwrite"):
+        raise HTTPException(status_code=403, detail="You need owner or write access to update this collection")
     collection = collection_service.update_collection(
         collection_id=collection_id,
         name=updates.get("name"),
@@ -2870,12 +2934,15 @@ async def update_collection(collection_id: str, updates: dict):
     summary="Delete a collection",
     tags=["collections"],
 )
-async def delete_collection(collection_id: str):
+async def delete_collection(collection_id: str, user_id: str = Depends(get_current_user_id)):
     """
-    Delete a collection and all its documents.
+    Delete a collection and all its documents. Requires owner access.
 
     Note: The 'default' collection cannot be deleted.
     """
+    access = sharing_service.check_collection_access(collection_id, user_id)
+    if access != "owner":
+        raise HTTPException(status_code=403, detail="Only the collection owner can delete it")
     if collection_id == "default":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -3277,6 +3344,111 @@ async def delete_document(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete document: {str(e)}",
         )
+
+
+# ── User & Sharing endpoints ──────────────────────────────────
+
+@app.get("/api/user/me", summary="Get current user info", tags=["users"])
+async def get_current_user(user_id: str = Depends(get_current_user_id)):
+    """Get the current user's identity and multi-user status."""
+    from services.app_database import app_db
+    user = app_db.get_user(user_id)
+    return {
+        "user_id": user_id,
+        "display_name": user["display_name"] if user else user_id,
+        "multi_user": settings.enable_multi_user,
+        "db_backend": settings.db_backend,
+    }
+
+
+@app.get("/api/users", summary="List all users", tags=["users"])
+async def list_users():
+    """List all known users (admin view)."""
+    from services.app_database import app_db
+    return {"users": app_db.get_all_users()}
+
+
+@app.post(
+    "/api/collections/{collection_id}/share",
+    summary="Create a share link for a collection",
+    tags=["sharing"],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_share(collection_id: str, body: dict, user_id: str = Depends(get_current_user_id)):
+    """
+    Generate a shareable link for a collection.
+
+    Body:
+        permission: 'read' or 'readwrite' (default: 'read')
+        expires_days: Optional number of days until expiry (null = never)
+    """
+    try:
+        share = sharing_service.create_share(
+            collection_id=collection_id,
+            owner_id=user_id,
+            permission=body.get("permission", "read"),
+            expires_days=body.get("expires_days"),
+        )
+        return share
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get(
+    "/api/collections/{collection_id}/shares",
+    summary="List shares for a collection",
+    tags=["sharing"],
+)
+async def list_collection_shares(collection_id: str, user_id: str = Depends(get_current_user_id)):
+    """Get all active share links for a collection you own."""
+    try:
+        shares = sharing_service.get_shares_for_collection(collection_id, user_id)
+        return {"shares": shares}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.post(
+    "/api/shares/{share_token}/accept",
+    summary="Accept a share link",
+    tags=["sharing"],
+)
+async def accept_share(share_token: str, user_id: str = Depends(get_current_user_id)):
+    """Accept a share link to gain access to a collection."""
+    try:
+        result = sharing_service.accept_share(share_token, user_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
+    "/api/shared-with-me",
+    summary="List collections shared with me",
+    tags=["sharing"],
+)
+async def list_shared_with_me(user_id: str = Depends(get_current_user_id)):
+    """Get all collections that have been shared with the current user."""
+    collections = sharing_service.get_shared_with_me(user_id)
+    return {"collections": collections}
+
+
+@app.delete(
+    "/api/shares/{share_id}",
+    summary="Revoke a share link",
+    tags=["sharing"],
+)
+async def revoke_share(share_id: str, user_id: str = Depends(get_current_user_id)):
+    """Revoke a share link you created."""
+    try:
+        sharing_service.revoke_share(share_id, user_id)
+        return {"message": "Share revoked", "success": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 # Redirect bare /mcp (no trailing slash) to /mcp/ so MCP clients that use the old

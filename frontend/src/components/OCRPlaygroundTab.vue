@@ -48,7 +48,6 @@
                   <option value="none">None (Docling fallback)</option>
                   <option value="openai">OpenAI</option>
                   <option value="anthropic">Anthropic</option>
-                  <option value="inl_hpc">INL HPC</option>
                   <option value="ollama">Ollama (local)</option>
                 </select>
               </div>
@@ -70,17 +69,6 @@
                   <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5 (balanced)</option>
                   <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fastest)</option>
                 </select>
-              </div>
-
-              <!-- INL HPC model -->
-              <div class="form-control" v-else-if="visionProvider === 'inl_hpc'">
-                <label class="label pb-1"><span class="label-text font-medium">Model</span></label>
-                <input
-                  v-model="visionModel"
-                  class="input input-bordered w-full"
-                  placeholder="e.g. gpt-oss-120b"
-                  @change="saveOCRSettings"
-                />
               </div>
 
               <!-- Ollama model -->
@@ -194,7 +182,6 @@
                   <option value="">(same as vision model)</option>
                   <option v-for="m in ollamaAllModels" :key="m.name" :value="m.name">{{ m.name }}</option>
                 </select>
-                <input v-else-if="visionProvider === 'inl_hpc'" v-model="visionCleanupModel" class="input input-bordered w-full" placeholder="(same as vision model)" @change="saveOCRSettings" />
               </div>
             </div>
           </section>
