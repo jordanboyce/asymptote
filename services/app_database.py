@@ -21,7 +21,7 @@ from services.db_backend import DatabaseBackend
 logger = logging.getLogger(__name__)
 
 
-def _get_document_count_from_metadata(collection_id: str, data_dir: Path = Path("data")) -> int:
+def _get_document_count_from_metadata(collection_id: str, data_dir: Path = None) -> int:
     """Get the actual document count from the collection's metadata.db.
 
     This is the source of truth for document counts, avoiding sync issues
@@ -34,6 +34,8 @@ def _get_document_count_from_metadata(collection_id: str, data_dir: Path = Path(
     Returns:
         Number of unique documents in the collection's index
     """
+    if data_dir is None:
+        data_dir = settings.data_dir
     metadata_db_path = data_dir / "collections" / collection_id / "indexes" / "metadata.db"
 
     if not metadata_db_path.exists():
@@ -179,7 +181,7 @@ class SQLiteBackend(DatabaseBackend):
                 CREATE TABLE IF NOT EXISTS mcp_resources (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    collection_id TEXT NOT NULL,
+                    collection_id TEXT NOT NULL UNIQUE,
                     repo_url TEXT,
                     created_at TEXT NOT NULL
                 )

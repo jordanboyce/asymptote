@@ -1,179 +1,253 @@
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <h2 class="text-2xl font-bold">Search Sources</h2>
-      <div class="flex gap-2">
+  <div class="flex flex-col h-full min-h-0">
+
+    <!-- Header row -->
+    <div class="flex items-center justify-end flex-shrink-0">
+      <div class="flex items-center gap-2">
         <button v-if="searchStore.searched" class="btn btn-sm btn-primary gap-1" @click="startNewSearch">
-          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-          </svg>
+          <Plus :size="14" />
           New
         </button>
-        <button v-if="cacheStats.count > 0" class="btn btn-sm btn-ghost gap-2" @click="showHistoryModal = true">
-          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
+        <button v-if="cacheStats.count > 0" class="btn btn-sm btn-ghost gap-1" @click="showHistoryModal = true">
+          <History :size="14" />
           History ({{ cacheStats.count }})
         </button>
       </div>
     </div>
 
-    <!-- Search Form -->
-    <div class="form-control w-full">
-      <label class="label">
-        <span class="label-text">Enter your search query</span>
-      </label>
-      <div class="join w-full">
-        <input v-model="searchStore.query" type="text" placeholder="e.g., machine learning algorithms"
-          class="input input-bordered join-item flex-1" :disabled="searchDisabled" @keyup.enter="search" />
-        <button v-if="!loading" class="btn btn-primary join-item" @click="search"
-          :disabled="!searchStore.query.trim() || searchDisabled">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          Search
-        </button>
-        <button v-else class="btn btn-error join-item" @click="cancelSearch">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-          Cancel
-        </button>
-      </div>
-      <!-- Empty collection notice -->
-      <div v-if="searchDisabled" class="text-sm text-warning mt-2">
-        No data indexed in this collection. Add sources first.
-      </div>
-      <!-- Pre-search AI indicator -->
-      <div v-else-if="aiActive && !loading" class="flex flex-wrap items-center gap-2 mt-2 text-xs text-base-content/60">
-        <span v-if="localSynthesize && selectedProviders.length > 1" class="text-secondary font-medium">
-          ↗ {{ selectedProviders.length }} AI answers on search
-        </span>
-        <span v-else-if="localSynthesize" class="text-primary font-medium">
-          ↗ AI synthesis on search
-        </span>
-        <span v-if="localRerank">· reranking on</span>
-        <span v-if="selectedExternalCount > 0" class="text-warning">· cloud providers selected</span>
-      </div>
-      <div v-else-if="loading" class="mt-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
-        <div class="flex items-center gap-2">
-          <span class="loading loading-spinner loading-sm text-primary"></span>
-          <span class="text-sm font-semibold">{{ loadingHeadline }}</span>
-          <span class="loading loading-dots loading-xs text-primary"></span>
+    <!-- Search Settings Drawer -->
+    <div
+      v-if="searchSettingsOpen"
+      class="fixed inset-0 z-[200]"
+      @click.self="searchSettingsOpen = false"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="search-settings-title"
+    >
+      <div class="absolute inset-0 bg-black/30" @click="searchSettingsOpen = false" aria-hidden="true"></div>
+      <div class="absolute right-0 top-0 h-full w-80 max-w-[85vw] bg-base-100 shadow-2xl flex flex-col">
+        <div class="flex items-center justify-between p-4 border-b border-base-300">
+          <h3 id="search-settings-title" class="text-sm font-bold">Search Settings</h3>
+          <button
+            class="btn btn-ghost btn-sm btn-circle"
+            @click="searchSettingsOpen = false"
+            aria-label="Close search settings"
+          >
+            <X :size="18" />
+          </button>
         </div>
-        <p class="text-xs text-base-content/70 mt-1">{{ loadingPhaseMessage }}</p>
-        <div class="mt-2 flex flex-wrap gap-2">
-          <span class="badge badge-sm badge-outline">{{ searchModeLabel }}</span>
-          <span class="badge badge-sm badge-outline">Top {{ searchStore.topK }}</span>
-          <span v-if="aiActive" class="badge badge-sm badge-outline badge-primary">
-            {{ selectedProviders.length }} AI provider{{ selectedProviders.length > 1 ? 's' : '' }}
-          </span>
-        </div>
-        <progress class="progress progress-primary w-full mt-2"></progress>
-      </div>
-    </div>
+        <div class="flex-1 overflow-y-auto p-4 space-y-5">
 
-    <!-- Combined Search Options (collapsible) -->
-    <div class="card border border-base-300 bg-base-100/80 shadow-sm">
-      <button class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left" @click="searchSettingsCollapsed = !searchSettingsCollapsed">
-        <div class="flex items-center gap-2 text-sm font-semibold text-base-content/70">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-          </svg>
-          Options
-        </div>
-        <div class="flex items-center gap-1.5 flex-wrap justify-end">
-          <span class="badge badge-sm badge-ghost">Top {{ searchStore.topK }}</span>
-          <span class="badge badge-sm badge-ghost">{{ searchModeLabel }}</span>
-          <template v-if="hasAnyProvider">
-            <span v-if="localRerank" class="badge badge-sm badge-primary badge-outline">Rerank</span>
-            <span v-if="localSynthesize" class="badge badge-sm badge-secondary badge-outline">Synthesize</span>
-            <span v-for="pid in selectedProviders" :key="pid" class="badge badge-sm badge-ghost">{{ getProviderDisplayNameLocal(pid) }}</span>
-          </template>
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 flex-shrink-0 transition-transform ml-1" :class="searchSettingsCollapsed ? '' : 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-      </button>
+          <!-- Retrieval -->
+          <div class="space-y-3">
+            <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Retrieval</span>
 
-      <div v-show="!searchSettingsCollapsed" class="border-t border-base-300 px-4 py-4 space-y-4">
-        <!-- Search Mode / TopK -->
-        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <div class="form-control w-full">
-            <label class="label"><span class="label-text">Max results</span></label>
-            <input v-model.number="searchStore.topK" type="number" min="1" max="50" class="input input-bordered w-full" />
-          </div>
-          <div class="form-control w-full">
-            <label class="label"><span class="label-text">Search Mode</span></label>
-            <select v-model="searchMode" class="select select-bordered w-full">
-              <option value="semantic">Semantic (meaning-based)</option>
-              <option value="keyword">Keyword (exact terms)</option>
-              <option value="hybrid">Hybrid (both combined)</option>
-            </select>
-          </div>
-          <div v-if="searchMode === 'hybrid'" class="form-control w-full">
-            <label class="label"><span class="label-text">Semantic Weight: {{ Math.round(semanticWeight * 100) }}%</span></label>
-            <input v-model.number="semanticWeight" type="range" min="0" max="1" step="0.1" class="range range-primary" />
-            <div class="w-full flex justify-between text-xs px-2 mt-1">
-              <span>Keywords</span><span>Balanced</span><span>Semantic</span>
-            </div>
-          </div>
-        </div>
+            <label class="flex items-center justify-between">
+              <span class="text-sm">Max results</span>
+              <input
+                v-model.number="searchStore.topK"
+                type="number"
+                min="1"
+                max="50"
+                class="input input-bordered input-xs w-16 text-center"
+                aria-label="Maximum number of results"
+              />
+            </label>
 
-        <!-- AI Enhancements -->
-        <template v-if="hasAnyProvider">
-          <div class="divider my-0 text-xs text-base-content/40">AI Enhancements</div>
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div class="flex items-center gap-4">
-              <label class="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" class="toggle toggle-xs toggle-primary" v-model="localRerank" />
-                <span class="text-sm">Rerank</span>
-              </label>
-              <label class="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" class="toggle toggle-xs toggle-secondary" v-model="localSynthesize" />
-                <span class="text-sm">Synthesize</span>
-              </label>
-            </div>
-            <p v-if="selectedExternalCount > 0" class="text-xs text-warning/80">Cloud providers will receive your query.</p>
-          </div>
-          <div class="divide-y divide-base-300 rounded-lg border border-base-300 overflow-hidden">
-            <label
-              v-for="pid in configuredProviderIds"
-              :key="pid"
-              class="flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors"
-              :class="selectedProviders.includes(pid) ? 'bg-primary/5' : 'hover:bg-base-200/40'"
-            >
-              <input type="checkbox" class="checkbox checkbox-sm checkbox-primary flex-shrink-0" :checked="selectedProviders.includes(pid)" @change="toggleProvider(pid)" />
-              <div class="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
-                <span class="text-sm font-medium">{{ getProviderDisplayNameLocal(pid) }}</span>
-                <span class="badge badge-xs badge-outline" :class="isLocalProvider(pid) ? 'badge-info' : 'badge-warning'">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
-              </div>
-              <div class="flex-shrink-0" @click.stop>
-                <select v-if="getModelsForProvider(pid).length > 1" v-model="providerModelOverrides[pid]" class="select select-xs select-bordered max-w-[180px]">
-                  <option value="">Default ({{ getDefaultModelLabel(pid) }})</option>
-                  <option v-for="m in getModelsForProvider(pid)" :key="m.id" :value="m.id">{{ m.label }}</option>
-                </select>
-                <span v-else-if="getDefaultModelLabel(pid)" class="text-xs text-base-content/50">{{ getDefaultModelLabel(pid) }}</span>
+            <label class="flex items-center justify-between">
+              <span class="text-sm">Search mode</span>
+              <select v-model="searchMode" class="select select-bordered select-xs" aria-label="Search mode">
+                <option value="semantic">Semantic</option>
+                <option value="keyword">Keyword</option>
+                <option value="hybrid">Hybrid</option>
+              </select>
+            </label>
+
+            <label v-if="searchMode === 'hybrid'" class="space-y-1 block">
+              <span class="text-sm">Semantic weight: {{ Math.round(semanticWeight * 100) }}%</span>
+              <input
+                v-model.number="semanticWeight"
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                class="range range-primary range-xs"
+                :aria-label="`Semantic weight: ${Math.round(semanticWeight * 100)} percent`"
+              />
+              <div class="w-full flex justify-between text-xs px-1 text-base-content/40" aria-hidden="true">
+                <span>Keywords</span><span>Balanced</span><span>Semantic</span>
               </div>
             </label>
           </div>
-        </template>
 
-        <!-- No-provider nudge (inside expanded panel) -->
-        <div v-if="!hasAnyProvider" class="flex items-center gap-3 rounded-lg border border-info/30 bg-info/5 px-3 py-2.5">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-5 h-5">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-          </svg>
-          <p class="text-sm flex-1">Add an AI provider in Settings to enable reranking and synthesis.</p>
-          <button class="btn btn-xs btn-primary flex-shrink-0" @click="$emit('switch-tab', 'settings')">Settings</button>
+          <!-- AI Enhancements -->
+          <template v-if="hasAnyProvider">
+            <div class="space-y-3">
+              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">AI Enhancements</span>
+
+              <label class="flex items-center justify-between cursor-pointer select-none">
+                <span class="text-sm">Rerank</span>
+                <input type="checkbox" class="toggle toggle-sm toggle-primary" v-model="localRerank" />
+              </label>
+
+              <label class="flex items-center justify-between cursor-pointer select-none">
+                <span class="text-sm">Synthesize</span>
+                <input type="checkbox" class="toggle toggle-sm toggle-secondary" v-model="localSynthesize" />
+              </label>
+
+              <p v-if="selectedExternalCount > 0" class="text-xs text-warning/80">Cloud providers will receive your query.</p>
+            </div>
+
+            <!-- Providers -->
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Providers</span>
+              <div class="space-y-1.5">
+                <label
+                  v-for="pid in configuredProviderIds"
+                  :key="pid"
+                  class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors text-sm"
+                  :class="selectedProviders.includes(pid) ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
+                >
+                  <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" :checked="selectedProviders.includes(pid)" @change="toggleProvider(pid)" />
+                  <span class="flex-1">{{ getProviderDisplayNameLocal(pid) }}</span>
+                  <span class="badge badge-xs badge-outline" :class="isLocalProvider(pid) ? 'badge-info' : 'badge-warning'">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
+                </label>
+              </div>
+
+              <!-- Model overrides -->
+              <div v-for="pid in selectedProviders" :key="'model-' + pid">
+                <div v-if="getModelsForProvider(pid).length > 1" class="flex items-center justify-between mt-1 px-1">
+                  <span class="text-xs text-base-content/50">{{ getProviderDisplayNameLocal(pid) }} model</span>
+                  <select v-model="providerModelOverrides[pid]" class="select select-xs select-bordered max-w-[160px]">
+                    <option value="">Default ({{ getDefaultModelLabel(pid) }})</option>
+                    <option v-for="m in getModelsForProvider(pid)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- No-provider nudge -->
+          <div v-if="!hasAnyProvider" class="flex items-center gap-3 rounded-lg border border-info/30 bg-info/5 px-3 py-2.5">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-4 h-4">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <p class="text-sm flex-1">Add an AI provider in Settings to enable reranking and synthesis.</p>
+            <button class="btn btn-xs btn-primary flex-shrink-0" @click="$emit('switch-tab', 'settings')">Settings</button>
+          </div>
         </div>
       </div>
     </div>
 
+    <!-- Search input area -->
+    <div class="flex-shrink-0 pt-3">
+      <div
+        class="relative rounded-2xl border border-base-300 bg-base-200/60 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all"
+      >
+        <!-- Slash command picker (floats above the input) -->
+        <SlashCommandPicker
+          ref="slashPickerRef"
+          :show="slashPickerOpen"
+          :model-value="searchStore.query"
+          @select="onSlashSelect"
+          @close="slashPickerOpen = false"
+        />
+
+        <label for="search-query" class="sr-only">Search your indexed documents</label>
+        <input
+          id="search-query"
+          ref="searchInputRef"
+          v-model="searchStore.query"
+          type="text"
+          class="w-full bg-transparent border-none outline-none text-sm px-4 pt-3 pb-2 placeholder:text-base-content/30"
+          placeholder="Search your indexed documents..."
+          :disabled="loading"
+          @input="onInputChange"
+          @keydown="onKeydown"
+          @blur="onInputBlur"
+        />
+
+        <!-- Bottom toolbar -->
+        <div class="flex items-center justify-between px-3 pb-2">
+          <!-- Left: inline controls -->
+          <div class="flex items-center gap-1.5">
+            <button
+              class="btn btn-ghost btn-xs btn-circle"
+              @click="searchSettingsOpen = !searchSettingsOpen"
+              title="Search settings"
+              aria-label="Open search settings"
+              :aria-expanded="searchSettingsOpen"
+            >
+              <SlidersHorizontal :size="14" />
+            </button>
+            <button
+              class="btn btn-ghost btn-xs btn-circle font-mono"
+              @mousedown.prevent="toggleSlashPicker"
+              title="Slash commands"
+              aria-label="Show slash commands"
+              :aria-expanded="slashPickerOpen"
+            >
+              /
+            </button>
+            <span class="badge badge-xs badge-ghost">{{ searchModeLabel }}</span>
+            <span class="badge badge-xs badge-ghost">Top {{ searchStore.topK }}</span>
+            <template v-if="hasAnyProvider">
+              <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
+              <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary">Synth</span>
+            </template>
+          </div>
+
+          <!-- Right: search/cancel button -->
+          <button
+            v-if="!loading"
+            class="btn btn-circle btn-sm btn-primary transition-all"
+            :class="{ 'btn-disabled opacity-40': searchButtonDisabled }"
+            :disabled="searchButtonDisabled"
+            @click="search"
+            title="Search"
+            aria-label="Run search"
+          >
+            <SearchIcon :size="16" aria-hidden="true" />
+          </button>
+          <button
+            v-else
+            class="btn btn-circle btn-sm btn-error transition-all"
+            @click="cancelSearch"
+            title="Cancel search"
+            aria-label="Cancel search"
+          >
+            <X :size="16" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Empty collection notice -->
+      <p v-if="searchDisabled" class="text-xs text-warning mt-1.5 text-center">
+        No data indexed in this collection. Add sources first.
+      </p>
+      <p v-else class="text-xs text-base-content/30 mt-1.5 text-center">Enter to search</p>
+    </div>
+
+    <!-- Loading indicator -->
+    <div v-if="loading" class="flex-shrink-0 mt-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
+      <div class="flex items-center gap-2">
+        <span class="loading loading-spinner loading-sm text-primary"></span>
+        <span class="text-sm font-semibold">{{ loadingHeadline }}</span>
+        <span class="loading loading-dots loading-xs text-primary"></span>
+      </div>
+      <p class="text-xs text-base-content/70 mt-1">{{ loadingPhaseMessage }}</p>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <span class="badge badge-sm badge-outline">{{ searchModeLabel }}</span>
+        <span class="badge badge-sm badge-outline">Top {{ searchStore.topK }}</span>
+        <span v-if="aiActive" class="badge badge-sm badge-outline badge-primary">
+          {{ selectedProviders.length }} AI provider{{ selectedProviders.length > 1 ? 's' : '' }}
+        </span>
+      </div>
+      <progress class="progress progress-primary w-full mt-2"></progress>
+    </div>
+
     <!-- Cache Prompt Dialog -->
-    <div v-if="showCachePrompt && cachedData" class="alert shadow-lg"
+    <div v-if="showCachePrompt && cachedData" class="flex-shrink-0 mt-3 alert shadow-lg"
       :class="cacheMatchType === 'semantic' ? 'alert-warning' : 'alert-success'">
       <svg v-if="cacheMatchType === 'exact'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-6 h-6">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -216,13 +290,16 @@
     </div>
 
     <!-- Error Alert -->
-    <div v-if="error" class="alert alert-error">
+    <div v-if="error" class="flex-shrink-0 mt-3 alert alert-error">
       <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
       <span>{{ error }}</span>
     </div>
+
+    <!-- Results area (scrollable) -->
+    <div class="flex-1 overflow-y-auto min-h-0 space-y-4 mt-4 pr-1">
 
     <!-- AI Synthesis (Multiple Providers) -->
     <div v-if="searchStore.aiResponses && searchStore.aiResponses.length > 0" class="space-y-4">
@@ -264,6 +341,28 @@
           &middot; {{ searchStore.aiUsage.total_input_tokens + searchStore.aiUsage.total_output_tokens }} tokens
         </div>
       </div>
+    </div>
+
+    <!-- Slash command output (takes the place of results when a / command was run) -->
+    <div
+      v-if="slashOutput"
+      class="mt-4 rounded-xl border border-base-300 bg-base-200 shadow-sm"
+    >
+      <div class="flex items-center justify-between px-4 py-2 border-b border-base-300 bg-base-200/60">
+        <div class="flex items-center gap-2">
+          <code class="font-mono text-xs px-1.5 py-0.5 rounded bg-base-100 border border-base-300">{{ slashOutput.cmd }}</code>
+          <span v-if="slashOutput.error" class="badge badge-xs badge-error">error</span>
+        </div>
+        <button
+          class="btn btn-ghost btn-xs btn-circle"
+          title="Dismiss"
+          aria-label="Dismiss slash command output"
+          @click="dismissSlashOutput"
+        >
+          <X :size="14" />
+        </button>
+      </div>
+      <pre class="p-4 font-mono text-xs leading-snug whitespace-pre-wrap overflow-x-auto">{{ slashOutput.content }}</pre>
     </div>
 
     <!-- Results -->
@@ -414,47 +513,12 @@
       <span>No results found. Try a different query or upload more sources.</span>
     </div>
 
-    <!-- Welcome State (shown when no search has been performed yet) -->
-    <div v-else-if="!searchStore.searched && !loading" class="flex justify-center py-8">
-      <!-- Large 3D Card with all content inside -->
-      <div class="hover-3d hover-3d-logo">
-        <figure
-          class="w-full max-w-xl rounded-3xl bg-gradient-to-br from-primary/10 to-secondary/10 border border-base-300 shadow-xl p-8 flex flex-col items-center justify-center">
-          <!-- Logo (switches based on theme - black for light themes, white for dark themes) -->
-          <img src="/icon_black.svg" alt="Asymptote" class="logo-light h-32 opacity-80 mb-6"
-            style="filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1));">
-          <img src="/icon_white.svg" alt="Asymptote" class="logo-dark h-32 opacity-80 mb-6"
-            style="filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.3));">
-
-          <!-- Title and Description -->
-          <h3 class="text-2xl font-bold text-base-content/80 mb-2">Privacy-First Search</h3>
-          <p class="text-base-content/60 text-center max-w-md mb-6">
-            Run advanced hybrid retrieval across your sources using semantic understanding and keyword precision. Keep sensitive data private with local-first provider options.
-          </p>
-
-          <!-- Feature Badges -->
-          <div class="flex flex-wrap justify-center gap-2 text-xs">
-            <span class="badge badge-primary badge-outline">Semantic Search</span>
-            <span class="badge badge-secondary badge-outline">AI-Powered</span>
-            <span class="badge badge-accent badge-outline">Multi-Format Support</span>
-          </div>
-        </figure>
-        <!-- 8 empty divs needed for the 3D effect -->
-        <div></div>
-        <div></div>
-        <div></div>
-        <div></div>
-        <div></div>
-        <div></div>
-        <div></div>
-        <div></div>
-      </div>
-    </div>
+    </div><!-- end scrollable results area -->
 
     <!-- Search History Modal -->
-    <dialog ref="historyModal" class="modal" :class="{ 'modal-open': showHistoryModal }">
+    <dialog ref="historyModal" class="modal" :class="{ 'modal-open': showHistoryModal }" aria-labelledby="search-history-title">
       <div class="modal-box max-w-3xl">
-        <h3 class="font-bold text-lg mb-4">Search History</h3>
+        <h3 id="search-history-title" class="font-bold text-lg mb-4">Search History</h3>
 
         <div class="space-y-2 max-h-96 overflow-y-auto">
           <div v-for="(entry, index) in historyEntries" :key="index"
@@ -473,10 +537,14 @@
                     </span>
                   </div>
                 </div>
-                <button class="btn btn-ghost btn-xs text-error" @click.stop="deleteHistoryEntry(entry)"
-                  title="Delete from history">
+                <button
+                  class="btn btn-ghost btn-xs text-error"
+                  @click.stop="deleteHistoryEntry(entry)"
+                  title="Delete from history"
+                  :aria-label="`Delete history entry: ${entry.query}`"
+                >
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24"
-                    stroke="currentColor">
+                    stroke="currentColor" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                       d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
@@ -507,8 +575,12 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
+import { Plus, History, SlidersHorizontal, X, Search as SearchIcon } from 'lucide-vue-next'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
+import SlashCommandPicker from './SlashCommandPicker.vue'
+import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
+import { nextTick } from 'vue'
 import {
   getConfiguredProviderIds,
   buildProviderHeaders,
@@ -533,6 +605,13 @@ const emit = defineEmits(['stats-updated', 'switch-tab'])
 // Computed to check if search is available
 const searchDisabled = computed(() => props.chunkCount === 0)
 
+const searchButtonDisabled = computed(() => {
+  if (!searchStore.query.trim()) return true
+  // Slash commands bypass the vector index and don't need indexed content.
+  if (isSlashCommand(searchStore.query)) return false
+  return searchDisabled.value
+})
+
 // Use the search store for persistent state
 const searchStore = useSearchStore()
 const collectionStore = useCollectionStore()
@@ -540,6 +619,57 @@ const collectionStore = useCollectionStore()
 // Local state for loading and error (not persisted)
 const loading = ref(false)
 const error = ref('')
+
+// Slash command picker + inline output (rendered above results)
+const slashPickerOpen = ref(false)
+const slashPickerRef = ref(null)
+const searchInputRef = ref(null)
+const slashOutput = ref(null) // { cmd, content, error }
+
+const toggleSlashPicker = () => {
+  slashPickerOpen.value = !slashPickerOpen.value
+  if (slashPickerOpen.value) {
+    nextTick(() => searchInputRef.value?.focus())
+  }
+}
+
+const onInputChange = () => {
+  slashPickerOpen.value = (searchStore.query || '').trimStart().startsWith('/')
+}
+
+const onInputBlur = () => {
+  setTimeout(() => {
+    slashPickerOpen.value = false
+  }, 150)
+}
+
+const onKeydown = (e) => {
+  if (slashPickerOpen.value && slashPickerRef.value?.handleKeydown(e)) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    search()
+  }
+}
+
+const onSlashSelect = (cmd) => {
+  searchStore.query = cmd
+  slashPickerOpen.value = false
+  search()
+}
+
+const runInlineSlashCommand = async (input) => {
+  const result = await runSlashCommand(input, {
+    collectionId: collectionStore.currentCollectionId,
+    collection: collectionStore.currentCollection,
+  })
+  slashOutput.value = result
+  // Clear any stale search results so the slash output is the primary view.
+  searchStore.clearResults()
+}
+
+const dismissSlashOutput = () => {
+  slashOutput.value = null
+}
 
 // Search mode options
 const searchMode = ref('hybrid')  // 'semantic', 'keyword', or 'hybrid'
@@ -564,7 +694,10 @@ const pendingEmbedding = ref(null)
 // History modal state
 const showHistoryModal = ref(false)
 
-// Collapsible settings state
+// Settings drawer state
+const searchSettingsOpen = ref(false)
+
+// Collapsible settings state (legacy, kept for localStorage compat)
 const SEARCH_SETTINGS_COLLAPSED_KEY = 'asymptote_search_settings_collapsed'
 const searchSettingsCollapsed = ref(true)
 
@@ -873,6 +1006,17 @@ const search = async () => {
   if (!searchStore.query.trim()) return
 
   error.value = ''
+  slashPickerOpen.value = false
+
+  // Intercept slash commands before any search machinery — they read collection
+  // metadata directly and don't go through the vector index.
+  if (isSlashCommand(searchStore.query)) {
+    await runInlineSlashCommand(searchStore.query)
+    return
+  }
+
+  // Clear any prior slash output when running a real search.
+  slashOutput.value = null
 
   // 1. Exact cache hit — instant
   const cached = searchStore.getCachedResult(searchStore.query, searchStore.topK)

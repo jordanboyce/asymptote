@@ -1,17 +1,15 @@
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <h2 class="text-2xl font-bold">Code Repository Indexing</h2>
-      <div class="badge badge-info gap-1">
+    <div class="flex items-start justify-between gap-4">
+      <p class="text-base-content/70 flex-1">
+        Index source code repositories with intelligent chunking that preserves function and class boundaries.
+        Supports Python, JavaScript, TypeScript, C#, Java, Go, Rust, C/C++, and many more.
+      </p>
+      <div class="badge badge-info gap-1 flex-shrink-0">
         <Code :size="14" />
         Symbol-Aware Chunking
       </div>
     </div>
-
-    <p class="text-base-content/70">
-      Index source code repositories with intelligent chunking that preserves function and class boundaries.
-      Supports Python, JavaScript, TypeScript, C#, Java, Go, Rust, C/C++, and many more.
-    </p>
 
     <!-- Repository Selection -->
     <div class="card bg-base-200">
@@ -44,10 +42,10 @@
         <!-- Selected Path -->
         <div v-if="selectedPath" class="mt-4">
           <div class="flex items-center gap-2 p-3 bg-base-100 rounded-lg">
-            <FolderOpen v-if="isFolder" :size="20" class="text-primary" />
-            <FileCode v-else :size="20" class="text-secondary" />
+            <FolderOpen v-if="isFolder" :size="20" class="text-primary" aria-hidden="true" />
+            <FileCode v-else :size="20" class="text-secondary" aria-hidden="true" />
             <span class="flex-1 font-mono text-sm truncate">{{ selectedPath }}</span>
-            <button class="btn btn-ghost btn-xs" @click="clearSelection">
+            <button class="btn btn-ghost btn-xs" @click="clearSelection" aria-label="Clear selected path">
               <X :size="16" />
             </button>
           </div>
@@ -62,9 +60,9 @@
               :key="index"
               class="flex items-center gap-2 p-2 bg-base-100 rounded text-sm"
             >
-              <FileCode :size="14" class="text-secondary flex-shrink-0" />
+              <FileCode :size="14" class="text-secondary flex-shrink-0" aria-hidden="true" />
               <span class="truncate">{{ file.name }}</span>
-              <button class="btn btn-ghost btn-xs ml-auto" @click="removeFile(index)">
+              <button class="btn btn-ghost btn-xs ml-auto" @click="removeFile(index)" :aria-label="`Remove ${file.name} from selection`">
                 <X :size="14" />
               </button>
             </div>
@@ -125,10 +123,8 @@
         </div>
 
         <!-- File Type Filters -->
-        <div class="mt-4">
-          <label class="label">
-            <span class="label-text font-medium">File types to index</span>
-          </label>
+        <fieldset class="mt-4">
+          <legend class="label-text font-medium mb-2">File types to index</legend>
           <div class="flex flex-wrap gap-2">
             <label
               v-for="ext in fileExtensions"
@@ -144,7 +140,7 @@
               <span class="text-sm">{{ ext.label }}</span>
             </label>
           </div>
-        </div>
+        </fieldset>
       </div>
     </div>
 

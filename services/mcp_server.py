@@ -160,13 +160,26 @@ def build_mcp_export_payload(base_url: str, profile: dict[str, Any] | None = Non
         indent=2,
     )
     codex_toml = f'[mcp_servers.{server_id}]\nurl = "{server_url}"\n'
+    copilot_json = json.dumps(
+        {
+            "servers": {
+                server_id: {
+                    "type": "http",
+                    "url": server_url,
+                }
+            }
+        },
+        indent=2,
+    )
     return {
         "server_id": server_id,
         "server_url": server_url,
         "claude_json": claude_json,
         "codex_toml": codex_toml,
+        "copilot_json": copilot_json,
         "claude_filename": f".mcp-{collection_id}.json",
         "codex_filename": f"config-{collection_id}.toml",
+        "copilot_filename": ".vscode/mcp.json",
         "profile": normalized_profile,
     }
 
@@ -197,12 +210,118 @@ def _serialize_result(result: Any, rank: int, max_source_length: int) -> dict[st
 
 
 @_asymptote_mcp.tool()
-def search_collection(query: str) -> dict[str, Any]:
-    """Search the project-specific Asymptote collection configured for this MCP endpoint.
+def get_collection_info() -> dict[str, Any]:
+    """Get detailed information about the document collection connected to this MCP endpoint.
 
-    Use this tool when you need to look up documentation, code references, or any
-    indexed content for the current project. The collection is fixed by the MCP URL
-    profile — no collection selection needed. Just provide your search query.
+    Call this FIRST before searching to understand what's available. Returns the
+    collection name, description, document count, file types, and a full list of
+    indexed documents with page counts. This helps you know what you can search
+    for and craft better queries.
+    """
+    _ensure_enabled()
+
+    request_profile = get_request_mcp_profile()
+    resolved_collection = request_profile.get("collection_id") or settings.mcp_default_collection
+
+    collection = collection_service.get_collection(resolved_collection)
+    if not collection:
+        raise ValueError(f"Collection '{resolved_collection}' not found")
+
+    stats = indexer_manager.get_collection_stats(resolved_collection)
+
+    try:
+        indexer = indexer_manager.get_indexer(resolved_collection)
+        documents = indexer.list_documents()
+    except Exception:
+        documents = []
+
+    file_types: dict[str, int] = {}
+    doc_list = []
+    for doc in documents:
+        filename = doc.get("filename", "unknown")
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
+        file_types[ext] = file_types.get(ext, 0) + 1
+        doc_list.append({
+            "filename": filename,
+            "document_id": doc.get("document_id"),
+            "chunks": doc.get("num_chunks", 0),
+            "pages": doc.get("num_pages", 0),
+            "source_type": doc.get("source_type", "upload"),
+        })
+
+    return {
+        "collection_id": resolved_collection,
+        "collection_name": collection.get("name", resolved_collection),
+        "description": collection.get("description", ""),
+        "total_documents": stats.get("total_documents", 0),
+        "total_chunks": stats.get("total_chunks", 0),
+        "total_pages": stats.get("total_pages", 0),
+        "file_types": file_types,
+        "search_modes": ["semantic", "keyword", "hybrid"],
+        "documents": doc_list,
+    }
+
+
+@_asymptote_mcp.tool()
+def list_documents() -> dict[str, Any]:
+    """List all documents indexed in this collection with their metadata.
+
+    Returns filenames, page counts, chunk counts, and source types for every
+    document. Use this to find specific documents before searching, or to
+    understand the scope of what's been indexed.
+    """
+    _ensure_enabled()
+
+    request_profile = get_request_mcp_profile()
+    resolved_collection = request_profile.get("collection_id") or settings.mcp_default_collection
+
+    collection = collection_service.get_collection(resolved_collection)
+    collection_name = collection.get("name", resolved_collection) if collection else resolved_collection
+
+    try:
+        indexer = indexer_manager.get_indexer(resolved_collection)
+        documents = indexer.list_documents()
+    except Exception:
+        documents = []
+
+    doc_list = []
+    for doc in documents:
+        entry: dict[str, Any] = {
+            "filename": doc.get("filename", "unknown"),
+            "document_id": doc.get("document_id"),
+            "chunks": doc.get("num_chunks", 0),
+            "pages": doc.get("num_pages", 0),
+            "source_type": doc.get("source_type", "upload"),
+        }
+        if doc.get("source_path"):
+            entry["source_path"] = doc["source_path"]
+        doc_list.append(entry)
+
+    return {
+        "collection_id": resolved_collection,
+        "collection_name": collection_name,
+        "total_documents": len(doc_list),
+        "documents": doc_list,
+    }
+
+
+@_asymptote_mcp.tool()
+def search_collection(query: str) -> dict[str, Any]:
+    """Search your indexed documents using semantic, keyword, or hybrid retrieval.
+
+    This searches the document collection connected to this MCP endpoint. It
+    returns ranked results with similarity scores and text excerpts. Use natural
+    language queries for semantic search (e.g. "how does authentication work")
+    or specific terms for keyword matching (e.g. "JWT token expiry").
+
+    The response always includes a `collection_summary` field with document,
+    page, and chunk counts so you can answer meta-questions about the
+    collection without a separate get_collection_info() call.
+
+    Tips:
+    - Be specific: "error handling in the upload service" beats "error handling".
+    - Results include filename, page number, and relevance score.
+    - For full document inventories or file-type breakdowns, call get_collection_info().
     """
     _ensure_enabled()
 
@@ -229,10 +348,24 @@ def search_collection(query: str) -> dict[str, Any]:
         semantic_weight=resolved_weight,
     )
 
+    # Always include collection stats inline so the MCP client can answer
+    # meta-questions like "how many sources are in this collection?" without
+    # having to call get_collection_info() as a separate round-trip.
+    stats = indexer_manager.get_collection_stats(resolved_collection)
+    collection_summary = {
+        "collection_id": resolved_collection,
+        "collection_name": collection_name,
+        "description": collection.get("description", "") if collection else "",
+        "total_documents": stats.get("total_documents", 0),
+        "total_chunks": stats.get("total_chunks", 0),
+        "total_pages": stats.get("total_pages", 0),
+    }
+
     response: dict[str, Any] = {
         "query": normalized_query,
         "collection_id": resolved_collection,
         "collection_name": collection_name,
+        "collection_summary": collection_summary,
         "mode": resolved_mode.value,
         "top_k": resolved_top_k,
         "total_results": len(search_result.get("results", [])),

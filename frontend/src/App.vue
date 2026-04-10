@@ -2,59 +2,85 @@
   <div class="h-screen flex flex-col overflow-hidden bg-base-200" :class="{ 'select-none cursor-col-resize': isResizing }">
 
     <!-- ── Header ── -->
-    <header class="flex items-center gap-3 px-4 h-12 bg-base-100 border-b border-base-300 flex-shrink-0 z-50">
+    <header class="flex items-center gap-2 px-3 h-11 bg-base-100 border-b border-base-300 flex-shrink-0 z-50">
 
-      <!-- Logo + title -->
-      <img src="/icon_black.svg" alt="Asymptote" class="logo-header h-6 w-6 flex-shrink-0">
-      <span class="font-bold text-sm tracking-tight">Asymptote</span>
+      <!-- Logo + title (click to view collections) -->
+      <button
+        class="btn btn-ghost btn-xs gap-1.5 normal-case h-7 min-h-0 px-1.5"
+        :class="{ 'bg-base-200': activeTab === 'collections' }"
+        @click="activeTab = 'collections'"
+        title="View all collections"
+        aria-label="Asymptote — view all collections"
+      >
+        <img src="/icon_black.svg" alt="" class="logo-header h-5 w-5 flex-shrink-0">
+        <span class="font-bold text-sm tracking-tight hidden sm:inline">Asymptote</span>
+      </button>
+
+      <!-- Current collection indicator -->
+      <button
+        class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-7 min-h-0"
+        @click="activeTab = 'collections'"
+        title="View all collections"
+        :aria-label="`Current collection: ${collectionStore.currentCollection?.name || 'Default'}. Click to view all collections.`"
+      >
+        <div
+          class="w-2 h-2 rounded-full flex-shrink-0"
+          :style="{ backgroundColor: collectionStore.currentCollection?.color || '#3b82f6' }"
+        ></div>
+        <span class="max-w-32 truncate text-xs">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
+      </button>
 
       <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
 
-      <!-- Collection selector -->
+      <!-- Sources toggle -->
+      <button
+        class="btn btn-xs btn-ghost gap-1"
+        :class="sourcesSidebarOpen ? 'btn-active' : ''"
+        @click="sourcesSidebarOpen = !sourcesSidebarOpen"
+        title="Toggle sources panel"
+        aria-label="Toggle sources panel"
+        :aria-pressed="sourcesSidebarOpen"
+      >
+        <Library :size="14" />
+        <span class="hidden md:inline text-xs">Sources</span>
+      </button>
+
+      <!-- Tabs -->
+      <button
+        v-for="tab in tabs"
+        :key="tab.id"
+        class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
+        :class="activeTab === tab.id ? 'bg-base-200 font-semibold' : 'font-normal'"
+        @click="activeTab = tab.id"
+        :aria-label="tab.label"
+        :aria-current="activeTab === tab.id ? 'page' : undefined"
+      >
+        <component :is="tab.icon" :size="14" />
+        <span class="hidden sm:inline">{{ tab.label }}</span>
+      </button>
+
+      <!-- Tools dropdown -->
       <div class="dropdown dropdown-bottom">
-        <label tabindex="0" class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-8 min-h-0">
-          <div
-            class="w-2 h-2 rounded-full flex-shrink-0"
-            :style="{ backgroundColor: collectionStore.currentCollection?.color || '#3b82f6' }"
-          ></div>
-          <span class="max-w-36 truncate text-sm">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
-          <ChevronDown :size="13" />
+        <label
+          tabindex="0"
+          class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
+          :class="toolTabs.some(t => t.id === activeTab) ? 'bg-base-200 font-semibold' : 'font-normal'"
+          aria-label="Tools menu"
+          aria-haspopup="menu"
+        >
+          <Wrench :size="14" />
+          <span class="hidden sm:inline">{{ toolTabs.find(t => t.id === activeTab)?.label || 'Tools' }}</span>
+          <ChevronDown :size="11" />
         </label>
-        <ul tabindex="0" class="dropdown-content z-[100] menu p-2 shadow-lg bg-base-100 border border-base-300 rounded-box w-64 text-base-content">
-          <li class="menu-title"><span>Collections</span></li>
-          <li v-for="collection in collectionStore.sortedCollections" :key="collection.id">
+        <ul tabindex="0" class="dropdown-content z-[100] menu p-1 shadow-lg bg-base-100 border border-base-300 rounded-box w-48">
+          <li v-for="tool in toolTabs" :key="tool.id">
             <a
-              @click="selectCollection(collection.id)"
-              :class="{ 'active': collection.id === collectionStore.currentCollectionId }"
-              class="group"
+              @click="activeTab = tool.id"
+              :class="{ 'active': activeTab === tool.id }"
+              class="gap-2 text-sm"
             >
-              <div class="w-2.5 h-2.5 rounded-full flex-shrink-0" :style="{ backgroundColor: collection.color }"></div>
-              <span class="flex-1 truncate">{{ collection.name }}</span>
-              <span v-if="collection.shared" class="badge badge-xs badge-outline badge-info">shared</span>
-              <span class="badge badge-sm badge-ghost">{{ collection.document_count || 0 }}</span>
-              <button
-                v-if="collectionStore.multiUser && collection.permission === 'owner'"
-                @click.stop="openShareModal(collection)"
-                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity p-1"
-                title="Share collection"
-              >
-                <Share2 :size="13" />
-              </button>
-              <button
-                @click.stop="openEditCollectionModal(collection)"
-                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity p-1"
-                title="Edit collection"
-                :disabled="collection.shared && collection.permission === 'read'"
-              >
-                <Pencil :size="13" />
-              </button>
-            </a>
-          </li>
-          <div class="divider my-1"></div>
-          <li>
-            <a @click="openCreateCollectionModal" class="text-primary">
-              <Plus :size="14" />
-              New Collection
+              <component :is="tool.icon" :size="14" />
+              {{ tool.label }}
             </a>
           </li>
         </ul>
@@ -64,16 +90,14 @@
       <div class="flex-1"></div>
 
       <!-- Stats (compact, hidden on small screens) -->
-      <div class="hidden lg:flex items-center gap-3 text-xs text-base-content/50 mr-2">
-        <span>{{ stats.documents }} sources</span>
+      <div class="hidden lg:flex items-center gap-2 text-xs text-base-content/50">
+        <span>{{ stats.documents }} {{ stats.documents === 1 ? 'source' : 'sources' }}</span>
         <span class="w-px h-3 bg-base-300"></span>
-        <span>{{ stats.pages }} pages</span>
-        <span class="w-px h-3 bg-base-300"></span>
-        <span>{{ stats.chunks }} chunks</span>
+        <span>{{ stats.pages }} {{ stats.pages === 1 ? 'page' : 'pages' }}</span>
       </div>
 
       <!-- User identity (multi-user mode) -->
-      <div v-if="userStore.isMultiUser" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50 mr-1">
+      <div v-if="userStore.isMultiUser" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50">
         <Users :size="12" />
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
@@ -83,11 +107,15 @@
         class="btn btn-ghost btn-circle btn-sm relative"
         @click="showJobsDrawer = true"
         title="Background Jobs"
+        :aria-label="backgroundJobsStore.activeJobCount > 0
+          ? `Background jobs — ${backgroundJobsStore.activeJobCount} active`
+          : 'Background jobs'"
       >
         <PanelRightOpen :size="16" :class="{ 'animate-pulse text-warning': backgroundJobsStore.hasActiveJobs }" />
         <span
           v-if="backgroundJobsStore.activeJobCount > 0"
           class="absolute -top-0.5 -right-0.5 badge badge-xs badge-warning"
+          aria-hidden="true"
         >{{ backgroundJobsStore.activeJobCount }}</span>
       </button>
 
@@ -97,6 +125,8 @@
         :class="{ 'bg-base-300': activeTab === 'settings' }"
         @click="activeTab = 'settings'"
         title="Settings"
+        aria-label="Settings"
+        :aria-current="activeTab === 'settings' ? 'page' : undefined"
       >
         <Settings :size="16" />
       </button>
@@ -141,33 +171,6 @@
       <!-- Main panel -->
       <main class="flex-1 flex flex-col overflow-hidden min-w-0">
 
-        <!-- Tab bar -->
-        <div class="flex items-center gap-0.5 px-3 h-10 bg-base-100 border-b border-base-300 flex-shrink-0">
-          <!-- Sources toggle -->
-          <button
-            class="btn btn-xs btn-ghost gap-1 mr-2"
-            :class="sourcesSidebarOpen ? 'btn-active' : ''"
-            @click="sourcesSidebarOpen = !sourcesSidebarOpen"
-            title="Toggle sources panel"
-          >
-            <Library :size="14" />
-            <span class="hidden md:inline text-xs">Sources</span>
-          </button>
-          <div class="w-px h-4 bg-base-300 mx-1 flex-shrink-0"></div>
-
-          <!-- Tabs -->
-          <button
-            v-for="tab in tabs"
-            :key="tab.id"
-            class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
-            :class="activeTab === tab.id ? 'bg-base-200 font-semibold' : 'font-normal'"
-            @click="activeTab = tab.id"
-          >
-            <component :is="tab.icon" :size="14" />
-            <span class="hidden sm:inline">{{ tab.label }}</span>
-          </button>
-        </div>
-
         <!-- Tab content -->
         <div
           class="flex-1 min-h-0"
@@ -180,8 +183,82 @@
 
           <!-- All other tabs: padded scroll container -->
           <div v-else class="px-6 py-6">
+
+            <!-- Collections overview -->
+            <div v-if="activeTab === 'collections'" class="max-w-3xl">
+              <div class="flex items-baseline justify-between mb-2">
+                <span class="text-[11px] uppercase tracking-[0.14em] text-base-content/40">
+                  {{ collectionStore.sortedCollections.length }} {{ collectionStore.sortedCollections.length === 1 ? 'collection' : 'collections' }}
+                </span>
+                <button class="btn btn-ghost btn-xs gap-1 normal-case" @click="openCreateCollectionModal">
+                  <Plus :size="13" />
+                  New collection
+                </button>
+              </div>
+
+              <ul class="border-y border-base-300/70 divide-y divide-base-300/70">
+                <li
+                  v-for="collection in collectionStore.sortedCollections"
+                  :key="collection.id"
+                  class="group flex items-baseline gap-3 py-3 cursor-pointer"
+                  @click="selectCollectionAndNavigate(collection.id)"
+                  :aria-current="collection.id === collectionStore.currentCollectionId ? 'true' : undefined"
+                >
+                  <span
+                    class="w-1.5 h-1.5 rounded-full flex-shrink-0 translate-y-[0.45em]"
+                    :style="{ backgroundColor: collection.color }"
+                    aria-hidden="true"
+                  ></span>
+
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-baseline gap-2">
+                      <h3
+                        class="text-sm truncate"
+                        :class="collection.id === collectionStore.currentCollectionId ? 'font-semibold' : 'font-normal'"
+                      >{{ collection.name }}</h3>
+                      <span
+                        v-if="collection.id === collectionStore.currentCollectionId"
+                        class="text-[10px] uppercase tracking-wider text-base-content/40"
+                      >active</span>
+                      <span
+                        v-if="collection.shared"
+                        class="text-[10px] uppercase tracking-wider text-base-content/40"
+                      >shared</span>
+                    </div>
+                    <p v-if="collection.description" class="text-xs text-base-content/50 truncate mt-0.5">{{ collection.description }}</p>
+                  </div>
+
+                  <span class="text-xs tabular-nums text-base-content/40 flex-shrink-0">
+                    {{ collection.document_count || 0 }}
+                  </span>
+
+                  <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex-shrink-0">
+                    <button
+                      v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                      @click.stop="openShareModal(collection)"
+                      class="btn btn-ghost btn-xs btn-square"
+                      title="Share collection"
+                      :aria-label="`Share collection ${collection.name}`"
+                    >
+                      <Share2 :size="13" />
+                    </button>
+                    <button
+                      @click.stop="openEditCollectionModal(collection)"
+                      class="btn btn-ghost btn-xs btn-square"
+                      title="Edit collection"
+                      :aria-label="`Edit collection ${collection.name}`"
+                      :disabled="collection.shared && collection.permission === 'read'"
+                    >
+                      <Pencil :size="13" />
+                    </button>
+                  </div>
+                </li>
+              </ul>
+            </div>
+
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
-            <OCRPlaygroundTab v-if="activeTab === 'ocr'" />
+            <MCPTab v-if="activeTab === 'mcp'" />
+            <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
             <TokenizerTab v-if="activeTab === 'tokenizer'" />
             <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" />
           </div>
@@ -191,15 +268,16 @@
     </div>
 
     <!-- Create Collection Modal -->
-    <dialog class="modal" :class="{ 'modal-open': showCollectionModal }">
+    <dialog class="modal" :class="{ 'modal-open': showCollectionModal }" aria-labelledby="create-collection-title">
       <div class="modal-box">
-        <h3 class="font-bold text-lg mb-4">Create New Collection</h3>
+        <h3 id="create-collection-title" class="font-bold text-lg mb-4">Create New Collection</h3>
 
         <div class="form-control w-full mb-4">
-          <label class="label">
+          <label class="label" for="new-collection-name">
             <span class="label-text">Collection Name</span>
           </label>
           <input
+            id="new-collection-name"
             v-model="newCollectionName"
             type="text"
             placeholder="e.g., Research Papers"
@@ -209,10 +287,11 @@
         </div>
 
         <div class="form-control w-full mb-4">
-          <label class="label">
+          <label class="label" for="new-collection-description">
             <span class="label-text">Description (optional)</span>
           </label>
           <textarea
+            id="new-collection-description"
             v-model="newCollectionDescription"
             class="textarea textarea-bordered"
             placeholder="What kind of sources will this collection contain?"
@@ -220,19 +299,25 @@
         </div>
 
         <div class="form-control w-full mb-4">
-          <label class="label">
+          <label class="label" for="new-collection-color">
             <span class="label-text">Color</span>
           </label>
           <div class="flex items-center gap-3">
             <input
+              id="new-collection-color"
               v-model="newCollectionColor"
               type="color"
               class="w-12 h-12 rounded cursor-pointer border-2 border-base-300"
+              aria-label="Custom collection color"
             />
-            <div class="flex gap-2">
+            <div class="flex gap-2" role="radiogroup" aria-label="Preset collection colors">
               <button
                 v-for="color in ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']"
                 :key="color"
+                type="button"
+                role="radio"
+                :aria-checked="newCollectionColor === color"
+                :aria-label="`Color ${color}`"
                 class="w-8 h-8 rounded cursor-pointer border-2"
                 :class="newCollectionColor === color ? 'border-base-content' : 'border-transparent'"
                 :style="{ backgroundColor: color }"
@@ -262,31 +347,34 @@
     </dialog>
 
     <!-- Edit Collection Modal -->
-    <dialog class="modal" :class="{ 'modal-open': showEditModal }">
+    <dialog class="modal" :class="{ 'modal-open': showEditModal }" aria-labelledby="edit-collection-title">
       <div class="modal-box">
-        <h3 class="font-bold text-lg mb-4">Edit Collection</h3>
+        <h3 id="edit-collection-title" class="font-bold text-lg mb-4">Edit Collection</h3>
 
         <div class="form-control w-full mb-4">
-          <label class="label">
+          <label class="label" for="edit-collection-name">
             <span class="label-text">Collection Name</span>
           </label>
           <input
+            id="edit-collection-name"
             v-model="editCollectionName"
             type="text"
             placeholder="e.g., Research Papers"
             class="input input-bordered w-full"
             :disabled="editingCollectionId === 'default'"
+            :aria-describedby="editingCollectionId === 'default' ? 'edit-collection-name-help' : undefined"
           />
-          <label v-if="editingCollectionId === 'default'" class="label">
-            <span class="label-text-alt text-warning">Default collection name cannot be changed</span>
-          </label>
+          <p v-if="editingCollectionId === 'default'" id="edit-collection-name-help" class="label-text-alt text-warning mt-1">
+            Default collection name cannot be changed
+          </p>
         </div>
 
         <div class="form-control w-full mb-4">
-          <label class="label">
+          <label class="label" for="edit-collection-description">
             <span class="label-text">Description</span>
           </label>
           <textarea
+            id="edit-collection-description"
             v-model="editCollectionDescription"
             class="textarea textarea-bordered"
             placeholder="What kind of sources does this collection contain?"
@@ -294,19 +382,25 @@
         </div>
 
         <div class="form-control w-full mb-4">
-          <label class="label">
+          <label class="label" for="edit-collection-color">
             <span class="label-text">Color</span>
           </label>
           <div class="flex items-center gap-3">
             <input
+              id="edit-collection-color"
               v-model="editCollectionColor"
               type="color"
               class="w-12 h-12 rounded cursor-pointer border-2 border-base-300"
+              aria-label="Custom collection color"
             />
-            <div class="flex gap-2">
+            <div class="flex gap-2" role="radiogroup" aria-label="Preset collection colors">
               <button
                 v-for="color in ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']"
                 :key="color"
+                type="button"
+                role="radio"
+                :aria-checked="editCollectionColor === color"
+                :aria-label="`Color ${color}`"
                 class="w-8 h-8 rounded cursor-pointer border-2"
                 :class="editCollectionColor === color ? 'border-base-content' : 'border-transparent'"
                 :style="{ backgroundColor: color }"
@@ -348,10 +442,15 @@
     </dialog>
 
     <!-- Delete Collection Confirmation Modal -->
-    <dialog class="modal" :class="{ 'modal-open': showDeleteConfirmModal }">
+    <dialog
+      class="modal"
+      :class="{ 'modal-open': showDeleteConfirmModal }"
+      aria-labelledby="delete-collection-title"
+      aria-describedby="delete-collection-desc"
+    >
       <div class="modal-box">
-        <h3 class="font-bold text-lg text-error mb-4">Delete Collection</h3>
-        <p class="mb-2">Are you sure you want to delete <strong>{{ editCollectionName }}</strong>?</p>
+        <h3 id="delete-collection-title" class="font-bold text-lg text-error mb-4">Delete Collection</h3>
+        <p id="delete-collection-desc" class="mb-2">Are you sure you want to delete <strong>{{ editCollectionName }}</strong>?</p>
 
         <div class="alert alert-warning my-4">
           <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
@@ -409,16 +508,23 @@
       v-if="showJobsDrawer"
       class="fixed inset-0 z-[200]"
       @click.self="showJobsDrawer = false"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="jobs-drawer-title"
     >
       <!-- Backdrop -->
-      <div class="absolute inset-0 bg-black/30" @click="showJobsDrawer = false"></div>
+      <div class="absolute inset-0 bg-black/30" @click="showJobsDrawer = false" aria-hidden="true"></div>
 
       <!-- Drawer Panel -->
       <div class="absolute right-0 top-0 h-full w-96 max-w-[90vw] bg-base-100 shadow-2xl flex flex-col">
         <!-- Header -->
         <div class="flex items-center justify-between p-4 border-b border-base-300">
-          <h3 class="text-lg font-bold">Background Jobs</h3>
-          <button class="btn btn-ghost btn-sm btn-circle" @click="showJobsDrawer = false">
+          <h3 id="jobs-drawer-title" class="text-lg font-bold">Background Jobs</h3>
+          <button
+            class="btn btn-ghost btn-sm btn-circle"
+            @click="showJobsDrawer = false"
+            aria-label="Close background jobs panel"
+          >
             <X :size="20" />
           </button>
         </div>
@@ -470,7 +576,8 @@
                     v-if="(job.type === 'upload' || job.type === 'index') && (job.status === 'pending' || job.status === 'running')"
                     @click="cancelJob(job.id)"
                     class="btn btn-ghost btn-xs text-error"
-                    title="Cancel"
+                    title="Cancel job"
+                    :aria-label="`Cancel ${job.type} job`"
                   >
                     <XCircle :size="16" />
                   </button>
@@ -526,13 +633,17 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug } from 'lucide-vue-next'
 
 const tabs = [
-  { id: 'search', label: 'Search', icon: Search },
   { id: 'chat', label: 'Chat', icon: MessageSquare },
-  { id: 'ocr', label: 'OCR', icon: FileSearch },
-  { id: 'tokenizer', label: 'Tokenizer', icon: Hash },
+  { id: 'search', label: 'Search', icon: Search },
+]
+
+const toolTabs = [
+  { id: 'mcp', label: 'MCP Server', icon: Plug },
+  { id: 'ocr', label: 'OCR Preview', icon: FileSearch },
+  { id: 'tokenizer', label: 'Token Visualizer', icon: Hash },
 ]
 import SearchTab from './components/SearchTab.vue'
 import SourcesSidebar from './components/SourcesSidebar.vue'
@@ -540,6 +651,7 @@ import OCRPlaygroundTab from './components/OCRPlaygroundTab.vue'
 import TokenizerTab from './components/TokenizerTab.vue'
 import ChatTab from './components/ChatTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
+import MCPTab from './components/MCPTab.vue'
 import ShareModal from './components/ShareModal.vue'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
@@ -551,7 +663,7 @@ const searchStore = useSearchStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const userStore = useUserStore()
 
-const activeTab = ref('search')
+const activeTab = ref('chat')
 const currentTheme = ref('light')
 
 // Resizable sidebar
@@ -672,6 +784,11 @@ const selectCollection = (collectionId) => {
   collectionStore.setCurrentCollection(collectionId)
 }
 
+const selectCollectionAndNavigate = (collectionId) => {
+  collectionStore.setCurrentCollection(collectionId)
+  activeTab.value = 'chat'
+}
+
 const openCreateCollectionModal = () => {
   newCollectionName.value = ''
   newCollectionDescription.value = ''
@@ -781,6 +898,15 @@ const deleteCollection = async () => {
 watch(() => collectionStore.currentCollectionId, () => {
   loadStats()
 })
+
+// Watch for background jobs completing to refresh collection counts and stats
+watch(() => backgroundJobsStore.allJobs.map(j => j.status), (newStatuses, oldStatuses) => {
+  // Check if any job just transitioned to completed
+  if (oldStatuses && newStatuses.some((s, i) => s === 'completed' && oldStatuses[i] !== 'completed')) {
+    collectionStore.loadCollections()
+    loadStats()
+  }
+}, { deep: true })
 
 // Clear completed jobs from the drawer
 const clearCompletedJobs = () => {

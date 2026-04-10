@@ -1,238 +1,28 @@
 <template>
   <div class="space-y-6">
-    <h2 class="text-2xl font-bold">OCR</h2>
-
-    <!-- OCR Settings -->
-    <div class="card bg-base-200">
-      <div class="card-body">
-        <h3 class="card-title">OCR Settings</h3>
-        <p class="text-sm text-base-content/70 mb-4">
-          Configure OCR for scanned PDFs. These settings apply to both document indexing and the preview below.
-        </p>
-
-        <div class="form-control mb-4">
-          <label class="label cursor-pointer justify-start gap-4">
-            <input
-              type="checkbox"
-              class="toggle toggle-primary toggle-sm"
-              v-model="ocrEnabled"
-              @change="saveOCRSettings"
-            />
-            <div>
-              <span class="label-text font-medium">Enable OCR for Scanned PDFs</span>
-              <p class="text-xs text-base-content/60">
-                When enabled, scanned PDFs with little or no native text will be processed with OCR during indexing.
-              </p>
-            </div>
-          </label>
-        </div>
-
-        <div v-if="ocrEnabled" class="space-y-6">
-          <!-- Vision AI Provider -->
-          <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-            <div class="mb-4">
-              <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Vision AI Provider</h4>
-              <p class="mt-1 text-xs text-base-content/60">
-                Vision AI sends each PDF page as an image to a language model for text extraction.
-                More accurate than traditional OCR for complex layouts and degraded scans.
-                Set provider to "None" to use Docling (free, local) as fallback when available.
-              </p>
-            </div>
-
-            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              <div class="form-control">
-                <label class="label pb-1">
-                  <span class="label-text font-medium">Provider</span>
-                </label>
-                <select v-model="visionProvider" class="select select-bordered w-full" @change="onProviderChange">
-                  <option value="none">None (Docling fallback)</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="ollama">Ollama (local)</option>
-                </select>
-              </div>
-
-              <!-- OpenAI model -->
-              <div class="form-control" v-if="visionProvider === 'openai'">
-                <label class="label pb-1"><span class="label-text font-medium">Model</span></label>
-                <select v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="gpt-4o">gpt-4o (best quality)</option>
-                  <option value="gpt-4o-mini">gpt-4o-mini (faster, cheaper)</option>
-                </select>
-              </div>
-
-              <!-- Anthropic model -->
-              <div class="form-control" v-else-if="visionProvider === 'anthropic'">
-                <label class="label pb-1"><span class="label-text font-medium">Model</span></label>
-                <select v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="claude-opus-4-6">claude-opus-4-6 (best quality)</option>
-                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5 (balanced)</option>
-                  <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fastest)</option>
-                </select>
-              </div>
-
-              <!-- Ollama model -->
-              <div class="form-control" v-else-if="visionProvider === 'ollama'">
-                <label class="label pb-1">
-                  <span class="label-text font-medium">Model</span>
-                  <button class="label-text-alt btn btn-xs btn-ghost" @click="refreshOllamaVisionModels" :disabled="ollamaVisionLoading">
-                    {{ ollamaVisionLoading ? '...' : 'Refresh' }}
-                  </button>
-                </label>
-                <select v-if="ollamaVisionModels.length" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option v-for="m in ollamaVisionModels" :key="m.name" :value="m.name">{{ m.name }}</option>
-                </select>
-                <div v-else-if="ollamaVisionLoading" class="text-xs text-base-content/60 py-2">Checking models...</div>
-                <div v-else class="alert alert-warning py-2 text-xs">
-                  <span v-if="ollamaVisionTotal > 0">
-                    {{ ollamaVisionTotal }} model(s) installed but none support vision. Try: <code>ollama pull qwen2.5-vl</code>
-                  </span>
-                  <span v-else>Ollama not running or no models installed. <code>ollama pull qwen2.5-vl</code></span>
-                </div>
-              </div>
-
-              <!-- API Key (cloud providers) -->
-              <div class="form-control" v-if="visionProvider !== 'none' && visionProvider !== 'ollama'">
-                <label class="label pb-1">
-                  <span class="label-text font-medium">API Key (stored on server for indexing)</span>
-                  <span v-if="visionKeyFromStorage" class="label-text-alt text-success">loaded from settings</span>
-                </label>
-                <input
-                  v-model="visionApiKey"
-                  type="password"
-                  class="input input-bordered w-full"
-                  :placeholder="visionKeyFromStorage ? '(using saved key)' : 'sk-... or sk-ant-...'"
-                  @change="saveOCRSettings"
-                />
-              </div>
-
-              <!-- Ollama URL -->
-              <div class="form-control" v-if="visionProvider === 'ollama'">
-                <label class="label pb-1"><span class="label-text font-medium">Ollama URL</span></label>
-                <input
-                  v-model="visionOllamaUrl"
-                  class="input input-bordered w-full"
-                  placeholder="http://localhost:11434"
-                  @change="saveOCRSettings"
-                />
-              </div>
-
-              <!-- DPI -->
-              <div class="form-control" v-if="visionProvider !== 'none'">
-                <label class="label pb-1"><span class="label-text font-medium">Render DPI</span></label>
-                <input v-model.number="visionDpi" type="number" min="72" max="400" class="input input-bordered w-full" @change="saveOCRSettings" />
-                <label class="label pt-1">
-                  <span class="label-text-alt">150 is usually sufficient. Higher = better quality, slower.</span>
-                </label>
-              </div>
-            </div>
-
-            <div v-if="visionProvider !== 'none'" class="mt-4 grid gap-3 sm:grid-cols-2">
-              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
-                <label class="label cursor-pointer justify-start gap-4 p-0">
-                  <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="visionEnhanceImage" @change="saveOCRSettings" />
-                  <div>
-                    <span class="label-text font-medium">Enhance Image</span>
-                    <p class="text-xs text-base-content/60">Boost contrast and sharpness. Recommended for degraded scans.</p>
-                  </div>
-                </label>
-              </div>
-
-              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
-                <label class="label cursor-pointer justify-start gap-4 p-0">
-                  <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="visionCleanupPass" @change="saveOCRSettings" />
-                  <div>
-                    <span class="label-text font-medium">LLM Cleanup Pass</span>
-                    <p class="text-xs text-base-content/60">Second LLM call to fix OCR errors and remove artifacts. Uses extra tokens.</p>
-                  </div>
-                </label>
-              </div>
-
-              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
-                <label class="label cursor-pointer justify-start gap-4 p-0">
-                  <input type="checkbox" class="toggle toggle-secondary toggle-sm" v-model="visionFormMode" @change="saveOCRSettings" />
-                  <div>
-                    <span class="label-text font-medium">Form Mode</span>
-                    <p class="text-xs text-base-content/60">
-                      Removes ruling lines from images and uses a form-aware prompt.
-                      Use for scanned government/regulatory forms with boxes and grids.
-                    </p>
-                  </div>
-                </label>
-              </div>
-            </div>
-
-            <!-- Cleanup model -->
-            <div v-if="visionProvider !== 'none' && visionCleanupPass" class="mt-4 rounded-xl border border-base-300 bg-base-100 p-4">
-              <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70 mb-2">Cleanup Model</h4>
-              <p class="text-xs text-base-content/60 mb-3">Text-only model for the cleanup pass. Leave blank to reuse the vision model.</p>
-              <div class="form-control max-w-xs">
-                <select v-if="visionProvider === 'openai'" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="">(same as vision model)</option>
-                  <option value="gpt-4o">gpt-4o</option>
-                  <option value="gpt-4o-mini">gpt-4o-mini</option>
-                </select>
-                <select v-else-if="visionProvider === 'anthropic'" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="">(same as vision model)</option>
-                  <option value="claude-opus-4-6">claude-opus-4-6</option>
-                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5</option>
-                  <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
-                </select>
-                <select v-else-if="visionProvider === 'ollama' && ollamaAllModels.length" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="">(same as vision model)</option>
-                  <option v-for="m in ollamaAllModels" :key="m.name" :value="m.name">{{ m.name }}</option>
-                </select>
-              </div>
-            </div>
-          </section>
-
-          <!-- Guardrails -->
-          <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-            <div class="mb-4">
-              <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Guardrails</h4>
-              <p class="mt-1 text-xs text-base-content/60">Limit OCR cost and processing time on large documents.</p>
-            </div>
-            <div class="grid gap-3 md:grid-cols-2">
-              <div class="form-control">
-                <label class="label pb-1"><span class="label-text font-medium">Max Pages</span></label>
-                <input v-model.number="ocrMaxPages" type="number" min="0" class="input input-bordered w-full" @change="saveOCRSettings" />
-                <label class="label pt-1"><span class="label-text-alt">0 = no limit.</span></label>
-              </div>
-              <div class="form-control">
-                <label class="label pb-1"><span class="label-text font-medium">Max File Size (MB)</span></label>
-                <input v-model.number="ocrMaxFileMb" type="number" min="0" class="input input-bordered w-full" @change="saveOCRSettings" />
-                <label class="label pt-1"><span class="label-text-alt">0 = no limit.</span></label>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <div v-if="ocrSettingsSaved" class="alert alert-success py-2 mt-3">
-          <span>Settings saved. Applies to new uploads.</span>
-        </div>
-      </div>
-    </div>
 
     <!-- OCR Preview -->
     <div class="card bg-base-200">
       <div class="card-body">
         <h3 class="card-title">OCR Preview</h3>
         <p class="text-sm text-base-content/70 mb-2">
-          Test extraction on a local PDF using the settings above. This preview does not store data.
+          Test extraction on a local PDF using the OCR settings configured in Settings. This preview does not store data.
         </p>
 
         <div v-if="!ocrEnabled" class="alert alert-warning py-2 mb-3">
-          <span>OCR is disabled. Enable it above to test Vision AI or Docling extraction.</span>
+          <span>OCR is disabled. Enable it in <button class="link link-primary" @click="$emit('switch-tab', 'settings')">Settings</button> to test Vision AI or Docling extraction.</span>
         </div>
 
         <div class="flex flex-wrap gap-2 items-center">
           <button class="btn btn-sm btn-outline" @click="pickOCRFile" :disabled="ocrPlaygroundRunning">
             Choose PDF...
           </button>
+          <label for="ocr-file-path" class="sr-only">PDF file path</label>
           <input
+            id="ocr-file-path"
             v-model="ocrPlaygroundPath"
             class="input input-bordered input-sm flex-1 min-w-[320px]"
-            placeholder="C:\\path\\to\\scan.pdf"
+            placeholder="C:\path\to\scan.pdf"
           />
           <button
             class="btn btn-sm btn-primary"
@@ -357,29 +147,14 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import axios from 'axios'
 
+defineEmits(['switch-tab'])
+
+// OCR config loaded from backend (read-only here, configured in Settings)
 const ocrEnabled = ref(false)
-const ocrMaxPages = ref(25)
-const ocrMaxFileMb = ref(50)
-const ocrSettingsSaved = ref(false)
-
-const visionProvider = ref('none')
-const visionModel = ref('')
-const visionApiKey = ref('')
-const visionKeyFromStorage = ref(false)
-const visionOllamaUrl = ref('http://localhost:11434')
-const visionDpi = ref(150)
-const visionEnhanceImage = ref(true)
-const visionCleanupPass = ref(false)
-const visionCleanupModel = ref('')
-const visionFormMode = ref(false)
-
-const ollamaVisionModels = ref([])
-const ollamaVisionLoading = ref(false)
-const ollamaVisionTotal = ref(0)
-const ollamaAllModels = ref([])
+const ocrConfig = ref({})
 
 const ocrPlaygroundPath = ref('')
 const forceOcr = ref(false)
@@ -388,120 +163,13 @@ const ocrPlaygroundRunning = ref(false)
 const ocrPlaygroundError = ref('')
 const ocrPlaygroundResult = ref(null)
 
-const DEFAULT_MODELS = {
-  openai: 'gpt-4o',
-  anthropic: 'claude-opus-4-6',
-  ollama: '',
-  none: '',
-}
-
-const STORAGE_KEY_MAP = {
-  openai: 'ai_api_key_openai',
-  anthropic: 'ai_api_key_anthropic',
-}
-
-const loadVisionKeyFromStorage = (provider) => {
-  const storageKey = STORAGE_KEY_MAP[provider]
-  if (!storageKey) { visionKeyFromStorage.value = false; return }
-  const stored = localStorage.getItem(storageKey)
-  if (stored) {
-    visionApiKey.value = stored
-    visionKeyFromStorage.value = true
-  } else {
-    visionApiKey.value = ''
-    visionKeyFromStorage.value = false
-  }
-}
-
-const onProviderChange = () => {
-  visionModel.value = DEFAULT_MODELS[visionProvider.value] || ''
-  visionCleanupModel.value = ''
-  loadVisionKeyFromStorage(visionProvider.value)
-  if (visionProvider.value === 'ollama') {
-    refreshOllamaVisionModels()
-    fetchAllOllamaModels()
-  }
-  saveOCRSettings()
-}
-
-const refreshOllamaVisionModels = async () => {
-  ollamaVisionLoading.value = true
-  try {
-    const response = await axios.get('/api/ollama/vision-models')
-    ollamaVisionModels.value = response.data.models || []
-    ollamaVisionTotal.value = response.data.total_models || 0
-    if (ollamaVisionModels.value.length > 0 && !ollamaVisionModels.value.find(m => m.name === visionModel.value)) {
-      visionModel.value = ollamaVisionModels.value[0].name
-    }
-  } catch {
-    ollamaVisionModels.value = []
-    ollamaVisionTotal.value = 0
-  } finally {
-    ollamaVisionLoading.value = false
-  }
-}
-
-const fetchAllOllamaModels = async () => {
-  try {
-    const response = await axios.get('/api/ollama/status')
-    ollamaAllModels.value = response.data.models || []
-  } catch {
-    ollamaAllModels.value = []
-  }
-}
-
-const loadOCRSettings = async () => {
+const loadOCRConfig = async () => {
   try {
     const response = await axios.get('/api/config')
     ocrEnabled.value = response.data.enable_ocr || false
-    ocrMaxPages.value = response.data.ocr_max_pages ?? 25
-    ocrMaxFileMb.value = response.data.ocr_max_file_mb ?? 50
-    visionProvider.value = response.data.vision_ocr_provider || 'none'
-    visionModel.value = response.data.vision_ocr_model || ''
-    visionApiKey.value = response.data.vision_ocr_api_key || ''
-    visionOllamaUrl.value = response.data.vision_ocr_ollama_url || 'http://localhost:11434'
-    visionDpi.value = response.data.vision_ocr_dpi ?? 150
-    visionEnhanceImage.value = response.data.vision_ocr_enhance_image ?? true
-    visionCleanupPass.value = response.data.vision_ocr_cleanup_pass ?? true
-    visionCleanupModel.value = response.data.vision_ocr_cleanup_model || ''
-    visionFormMode.value = response.data.vision_ocr_form_mode ?? false
-
-    // If no API key stored on server, try localStorage
-    if (!visionApiKey.value) {
-      loadVisionKeyFromStorage(visionProvider.value)
-    } else {
-      visionKeyFromStorage.value = false
-    }
-
-    if (visionProvider.value === 'ollama') {
-      refreshOllamaVisionModels()
-      fetchAllOllamaModels()
-    }
+    ocrConfig.value = response.data
   } catch {
     // Use defaults
-  }
-}
-
-const saveOCRSettings = async () => {
-  try {
-    await axios.post('/api/config', {
-      enable_ocr: ocrEnabled.value,
-      ocr_max_pages: Number(ocrMaxPages.value),
-      ocr_max_file_mb: Number(ocrMaxFileMb.value),
-      vision_ocr_provider: visionProvider.value,
-      vision_ocr_model: visionModel.value,
-      vision_ocr_api_key: visionApiKey.value,
-      vision_ocr_dpi: Number(visionDpi.value),
-      vision_ocr_enhance_image: Boolean(visionEnhanceImage.value),
-      vision_ocr_cleanup_pass: Boolean(visionCleanupPass.value),
-      vision_ocr_cleanup_model: visionCleanupModel.value,
-      vision_ocr_ollama_url: visionOllamaUrl.value,
-      vision_ocr_form_mode: Boolean(visionFormMode.value),
-    })
-    ocrSettingsSaved.value = true
-    setTimeout(() => { ocrSettingsSaved.value = false }, 5000)
-  } catch (error) {
-    ocrPlaygroundError.value = error.response?.data?.detail || 'Failed to save OCR settings'
   }
 }
 
@@ -525,20 +193,24 @@ const runOCRPlayground = async () => {
   ocrPlaygroundResult.value = null
 
   try {
+    // Reload config to pick up any changes made in Settings
+    await loadOCRConfig()
+    const cfg = ocrConfig.value
+
     const response = await axios.post('/api/ocr/playground', {
       file_path: ocrPlaygroundPath.value.trim(),
-      enable_ocr: ocrEnabled.value,
-      ocr_max_pages: Number(ocrMaxPages.value),
-      ocr_max_file_mb: Number(ocrMaxFileMb.value),
-      vision_ocr_provider: visionProvider.value,
-      vision_ocr_model: visionModel.value,
-      vision_ocr_api_key: visionApiKey.value,
-      vision_ocr_dpi: Number(visionDpi.value),
-      vision_ocr_enhance_image: Boolean(visionEnhanceImage.value),
-      vision_ocr_cleanup_pass: Boolean(visionCleanupPass.value),
-      vision_ocr_cleanup_model: visionCleanupModel.value,
-      vision_ocr_ollama_url: visionOllamaUrl.value,
-      vision_ocr_form_mode: Boolean(visionFormMode.value),
+      enable_ocr: cfg.enable_ocr || false,
+      ocr_max_pages: cfg.ocr_max_pages ?? 25,
+      ocr_max_file_mb: cfg.ocr_max_file_mb ?? 50,
+      vision_ocr_provider: cfg.vision_ocr_provider || 'none',
+      vision_ocr_model: cfg.vision_ocr_model || '',
+      vision_ocr_api_key: cfg.vision_ocr_api_key || '',
+      vision_ocr_dpi: cfg.vision_ocr_dpi ?? 150,
+      vision_ocr_enhance_image: cfg.vision_ocr_enhance_image ?? true,
+      vision_ocr_cleanup_pass: cfg.vision_ocr_cleanup_pass ?? true,
+      vision_ocr_cleanup_model: cfg.vision_ocr_cleanup_model || '',
+      vision_ocr_ollama_url: cfg.vision_ocr_ollama_url || 'http://localhost:11434',
+      vision_ocr_form_mode: cfg.vision_ocr_form_mode ?? false,
       force_ocr: forceOcr.value,
       normalize_preview_text: normalizePreviewText.value,
       include_fields: false,
@@ -572,6 +244,6 @@ const injectionScanClass = (scan) => {
 }
 
 onMounted(() => {
-  loadOCRSettings()
+  loadOCRConfig()
 })
 </script>

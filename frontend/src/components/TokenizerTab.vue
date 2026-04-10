@@ -3,25 +3,26 @@
 
     <!-- Token Visualizer -->
     <div>
-      <h2 class="text-2xl font-bold mb-1">Token Visualizer</h2>
       <p class="text-base-content/60 mb-5">
         See exactly how AI models read your text. Each colored block is one token — the fundamental unit AI works with.
       </p>
 
       <!-- Input row -->
       <div class="flex items-center justify-between mb-1.5">
-        <span class="text-sm font-semibold">Enter text to tokenize</span>
+        <label for="tokenizer-input" class="text-sm font-semibold">Enter text to tokenize</label>
         <div class="flex items-center gap-1 flex-wrap justify-end">
           <span class="text-xs text-base-content/40 mr-1">Try:</span>
           <button
             v-for="ex in examples" :key="ex.label"
             class="btn btn-xs btn-ghost"
             @click="inputText = ex.text"
+            :aria-label="`Load example: ${ex.label}`"
           >{{ ex.label }}</button>
-          <button class="btn btn-xs btn-ghost text-error" @click="inputText = ''">Clear</button>
+          <button class="btn btn-xs btn-ghost text-error" @click="inputText = ''" aria-label="Clear tokenizer input">Clear</button>
         </div>
       </div>
       <textarea
+        id="tokenizer-input"
         v-model="inputText"
         class="textarea textarea-bordered w-full h-36 font-mono text-sm resize-none mb-4"
         placeholder="Type or paste any text here…"

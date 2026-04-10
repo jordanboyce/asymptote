@@ -2,18 +2,20 @@
   <div class="flex flex-col h-full min-h-0">
 
       <!-- Header row -->
-      <div class="flex items-center justify-between flex-shrink-0">
-        <div>
-          <h2 class="text-2xl font-bold">Chat</h2>
-          <p class="text-sm text-base-content/60">Converse with your indexed documents</p>
-        </div>
+      <div class="flex items-center justify-end flex-shrink-0">
         <div class="flex items-center gap-2">
           <!-- Session switcher -->
           <div class="dropdown dropdown-end">
-            <label tabindex="0" class="btn btn-sm btn-ghost gap-1" title="Switch chat session">
-              <History :size="14" />
+            <label
+              tabindex="0"
+              class="btn btn-sm btn-ghost gap-1"
+              title="Switch chat session"
+              :aria-label="`Switch chat session. Current: ${activeSessionTitle}`"
+              aria-haspopup="menu"
+            >
+              <History :size="14" aria-hidden="true" />
               <span class="hidden sm:inline truncate max-w-[140px]">{{ activeSessionTitle }}</span>
-              <ChevronDown :size="12" />
+              <ChevronDown :size="12" aria-hidden="true" />
             </label>
             <ul tabindex="0" class="dropdown-content z-[60] menu p-2 shadow-lg bg-base-100 border border-base-300 rounded-box w-72 max-h-96 overflow-y-auto">
               <li class="menu-title">
@@ -32,8 +34,9 @@
                     </div>
                   </button>
                   <button
-                    class="btn btn-xs btn-ghost btn-circle opacity-0 group-hover:opacity-100"
+                    class="btn btn-xs btn-ghost btn-circle opacity-0 group-hover:opacity-100 focus:opacity-100"
                     title="Delete session"
+                    :aria-label="`Delete chat session: ${session.title || 'New chat'}`"
                     @click.stop="deleteSession(session.id)"
                   >
                     <Trash2 :size="12" />
@@ -64,111 +67,116 @@
         </div>
       </div>
 
-      <!-- Options bar (collapsible) -->
-      <div class="flex-shrink-0 card border border-base-300 bg-base-100/80 shadow-sm">
-        <button class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left" @click="settingsCollapsed = !settingsCollapsed">
-          <div>
-            <div class="text-sm font-semibold">Chat Settings</div>
-            <p class="text-xs text-base-content/60">Provider, scope, context options</p>
+      <!-- No providers configured notice (inline, always visible) -->
+      <div v-if="!hasAnyProvider" class="flex items-center gap-3 rounded-lg bg-info/10 border border-info/30 px-3 py-2 flex-shrink-0">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-4 h-4">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+        </svg>
+        <span class="text-sm flex-1">Configure an AI provider in Settings to use Chat.</span>
+        <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Settings</button>
+      </div>
+
+      <!-- Chat Settings Drawer -->
+      <div
+        v-if="settingsDrawerOpen"
+        class="fixed inset-0 z-[200]"
+        @click.self="settingsDrawerOpen = false"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="chat-settings-title"
+      >
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-black/30" @click="settingsDrawerOpen = false" aria-hidden="true"></div>
+
+        <!-- Drawer Panel -->
+        <div class="absolute right-0 top-0 h-full w-80 max-w-[85vw] bg-base-100 shadow-2xl flex flex-col">
+          <!-- Header -->
+          <div class="flex items-center justify-between p-4 border-b border-base-300">
+            <h3 id="chat-settings-title" class="text-sm font-bold">Chat Settings</h3>
+            <button
+              class="btn btn-ghost btn-sm btn-circle"
+              @click="settingsDrawerOpen = false"
+              aria-label="Close chat settings"
+            >
+              <X :size="18" />
+            </button>
           </div>
-          <div class="flex items-center gap-2">
-            <span v-if="selectedProvider" class="badge badge-xs" :class="providerBadgeClass(selectedProvider)">{{ providerDisplayName(selectedProvider) }}</span>
-            <span class="badge badge-xs badge-outline">{{ scope === 'all' ? 'All collections' : 'Current' }}</span>
-            <span v-if="rerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 transition-transform" :class="settingsCollapsed ? '' : 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-            </svg>
-          </div>
-        </button>
-        <div v-show="!settingsCollapsed" class="border-t border-base-300 px-4 py-4 space-y-3">
 
-          <!-- Row 1: Scope + Rerank + Context count -->
-          <div class="flex flex-wrap items-center gap-3">
+          <!-- Content -->
+          <div class="flex-1 overflow-y-auto p-4 space-y-5">
 
-            <!-- Scope toggle -->
-            <div class="flex items-center gap-1 rounded-lg border border-base-300 p-1 bg-base-200/60">
-              <button
-                class="btn btn-xs gap-1 transition-all"
-                :class="scope === 'current' ? 'btn-primary' : 'btn-ghost'"
-                @click="scope = 'current'"
-                title="Search only the current collection"
-              >
-                <Layers :size="12" />
-                Current
-              </button>
-              <button
-                class="btn btn-xs gap-1 transition-all"
-                :class="scope === 'all' ? 'btn-secondary' : 'btn-ghost'"
-                @click="scope = 'all'"
-                title="Search across all collections"
-              >
-                <Database :size="12" />
-                All Collections
-              </button>
-            </div>
-
-            <!-- Rerank toggle -->
-            <label class="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" v-model="rerank" />
-              <span class="text-sm">Rerank context</span>
-              <div class="tooltip tooltip-right" data-tip="Use AI to reorder retrieved chunks by relevance before generating a response. Improves quality but uses extra tokens.">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-base-content/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
+            <!-- Scope -->
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Scope</span>
+              <div class="flex items-center gap-1 rounded-lg border border-base-300 p-1 bg-base-200/60">
+                <button
+                  class="btn btn-xs gap-1 flex-1 transition-all"
+                  :class="scope === 'current' ? 'btn-primary' : 'btn-ghost'"
+                  @click="scope = 'current'"
+                >
+                  <Layers :size="12" />
+                  Current
+                </button>
+                <button
+                  class="btn btn-xs gap-1 flex-1 transition-all"
+                  :class="scope === 'all' ? 'btn-secondary' : 'btn-ghost'"
+                  @click="scope = 'all'"
+                >
+                  <Database :size="12" />
+                  All
+                </button>
               </div>
-            </label>
-
-            <!-- Context chunks -->
-            <div class="flex items-center gap-2 ml-auto">
-              <span class="text-xs text-base-content/50">Context chunks:</span>
-              <input
-                v-model.number="topK"
-                type="number"
-                min="1"
-                max="20"
-                class="input input-bordered input-xs w-16 text-center"
-              />
-              <select v-model="searchMode" class="select select-bordered select-xs">
-                <option value="semantic">Semantic</option>
-                <option value="keyword">Keyword</option>
-                <option value="hybrid">Hybrid</option>
-              </select>
             </div>
-          </div>
 
-          <!-- Row 2: Provider selection -->
-          <div v-if="hasAnyProvider">
-            <div class="flex items-center gap-2 mb-2">
-              <span class="text-xs font-semibold text-base-content/70">AI Provider</span>
-              <span
-                v-if="selectedProvider"
-                class="badge badge-xs"
-                :class="providerBadgeClass(selectedProvider)"
-              >{{ providerDisplayName(selectedProvider) }}</span>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <label
-                v-for="pid in configuredProviders"
-                :key="pid"
-                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer border transition-colors text-sm"
-                :class="selectedProvider === pid ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
-              >
-                <input type="radio" class="radio radio-xs radio-primary" :checked="selectedProvider === pid" @change="selectProvider(pid)" />
-                {{ providerDisplayName(pid) }}
-                <span class="badge badge-xs badge-outline">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
+            <!-- Retrieval -->
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Retrieval</span>
+
+              <label class="flex items-center justify-between cursor-pointer select-none">
+                <span class="text-sm">Rerank context</span>
+                <input type="checkbox" class="toggle toggle-sm toggle-primary" v-model="rerank" />
+              </label>
+
+              <label class="flex items-center justify-between">
+                <span class="text-sm">Context chunks</span>
+                <input
+                  v-model.number="topK"
+                  type="number"
+                  min="1"
+                  max="20"
+                  class="input input-bordered input-xs w-16 text-center"
+                  aria-label="Number of context chunks"
+                />
+              </label>
+
+              <label class="flex items-center justify-between">
+                <span class="text-sm">Search mode</span>
+                <select v-model="searchMode" class="select select-bordered select-xs" aria-label="Search mode">
+                  <option value="semantic">Semantic</option>
+                  <option value="keyword">Keyword</option>
+                  <option value="hybrid">Hybrid</option>
+                </select>
               </label>
             </div>
-          </div>
 
-          <!-- No providers configured notice -->
-          <div v-if="!hasAnyProvider" class="flex items-center gap-3 rounded-lg bg-info/10 border border-info/30 px-3 py-2">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-4 h-4">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-            </svg>
-            <span class="text-sm flex-1">Configure an AI provider in Settings to use Chat.</span>
-            <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Settings</button>
-          </div>
+            <!-- Provider -->
+            <div v-if="hasAnyProvider" class="space-y-2">
+              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">AI Provider</span>
+              <div class="space-y-1.5">
+                <label
+                  v-for="pid in configuredProviders"
+                  :key="pid"
+                  class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors text-sm"
+                  :class="selectedProvider === pid ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
+                >
+                  <input type="radio" class="radio radio-xs radio-primary" :checked="selectedProvider === pid" @change="selectProvider(pid)" />
+                  <span class="flex-1">{{ providerDisplayName(pid) }}</span>
+                  <span class="badge badge-xs badge-outline">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
+                </label>
+              </div>
+            </div>
 
+          </div>
         </div>
       </div>
 
@@ -181,25 +189,20 @@
       </div>
 
       <!-- Error -->
-      <div v-if="error" class="alert alert-error flex-shrink-0 py-2">
-        <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24">
+      <div v-if="error" class="alert alert-error flex-shrink-0 py-2" role="alert">
+        <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
         <span class="text-sm">{{ error }}</span>
-        <button class="btn btn-xs btn-ghost" @click="error = ''">✕</button>
+        <button class="btn btn-xs btn-ghost" @click="error = ''" aria-label="Dismiss error">✕</button>
       </div>
 
       <!-- Message list -->
       <div ref="messagesContainer" class="flex-1 overflow-y-auto space-y-4 min-h-0 pr-1">
 
         <!-- Empty state -->
-        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-base-content/40 gap-3 py-8">
-          <MessageSquare :size="48" class="opacity-30" />
-          <div class="text-center">
-            <p class="font-semibold">Start a conversation</p>
-            <p class="text-sm mt-1">Ask questions about your indexed documents</p>
-          </div>
-          <div v-if="hasAnyProvider && chunkCount > 0" class="flex flex-wrap gap-2 justify-center mt-2 max-w-md">
+        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-base-content/50 gap-3 py-8">
+          <div v-if="hasAnyProvider && chunkCount > 0" class="flex flex-wrap gap-2 justify-center max-w-md">
             <button
               v-for="suggestion in suggestions"
               :key="suggestion"
@@ -228,7 +231,10 @@
                 <Bot :size="14" class="text-base-content/60" />
               </div>
               <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-4 py-3 shadow-sm flex-1">
-                <div class="prose prose-sm max-w-none text-sm whitespace-pre-wrap">{{ msg.content }}</div>
+                <div
+                  class="prose prose-sm max-w-none whitespace-pre-wrap"
+                  :class="msg.slashCommand ? 'font-mono text-xs leading-snug' : 'text-sm'"
+                >{{ msg.content }}</div>
 
                 <!-- Token + provider badge -->
                 <div v-if="msg.aiUsage" class="flex items-center gap-2 mt-2 flex-wrap">
@@ -274,27 +280,75 @@
       </div>
 
       <!-- Input area -->
-      <div class="flex-shrink-0 border-t border-base-300 pt-3">
-        <div class="join w-full">
+      <div class="flex-shrink-0 pt-3">
+        <div
+          class="relative rounded-2xl border border-base-300 bg-base-200/60 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all"
+        >
+          <!-- Slash command picker (floats above the input) -->
+          <SlashCommandPicker
+            ref="slashPickerRef"
+            :show="slashPickerOpen"
+            :model-value="inputMessage"
+            @select="onSlashSelect"
+            @close="slashPickerOpen = false"
+          />
+
+          <!-- Textarea -->
+          <label for="chat-input" class="sr-only">Ask a question about your documents</label>
           <textarea
+            id="chat-input"
+            ref="chatInputRef"
             v-model="inputMessage"
-            class="textarea textarea-bordered join-item flex-1 resize-none text-sm"
+            class="w-full bg-transparent border-none outline-none resize-none text-sm px-4 pt-3 pb-2 placeholder:text-base-content/30"
             rows="2"
-            placeholder="Ask a question about your documents…"
-            :disabled="loading || !hasAnyProvider || chunkCount === 0"
-            @keydown.enter.exact.prevent="sendMessage"
-            @keydown.enter.shift.exact="inputMessage += '\n'"
+            placeholder="Ask a question about your documents..."
+            :disabled="loading"
+            @input="onInputChange"
+            @keydown="onKeydown"
+            @blur="onInputBlur"
           ></textarea>
-          <button
-            class="btn btn-primary join-item px-4 self-stretch"
-            :disabled="!inputMessage.trim() || loading || !hasAnyProvider || chunkCount === 0"
-            @click="sendMessage"
-          >
-            <span v-if="loading" class="loading loading-spinner loading-xs"></span>
-            <Send v-else :size="16" />
-          </button>
+
+          <!-- Bottom toolbar -->
+          <div class="flex items-center justify-between px-3 pb-2">
+            <!-- Left: inline controls -->
+            <div class="flex items-center gap-1.5">
+              <button
+                class="btn btn-ghost btn-xs btn-circle"
+                @click="settingsDrawerOpen = !settingsDrawerOpen"
+                title="Chat settings"
+                aria-label="Open chat settings"
+                :aria-expanded="settingsDrawerOpen"
+              >
+                <SlidersHorizontal :size="14" />
+              </button>
+              <button
+                class="btn btn-ghost btn-xs btn-circle font-mono"
+                @mousedown.prevent="toggleSlashPicker"
+                title="Slash commands"
+                aria-label="Show slash commands"
+                :aria-expanded="slashPickerOpen"
+              >
+                /
+              </button>
+              <span v-if="selectedProvider" class="badge badge-xs" :class="providerBadgeClass(selectedProvider)">{{ providerDisplayName(selectedProvider) }}</span>
+              <span v-if="rerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
+            </div>
+
+            <!-- Right: send button -->
+            <button
+              class="btn btn-circle btn-sm btn-primary transition-all"
+              :class="{ 'btn-disabled opacity-40': sendDisabled }"
+              :disabled="sendDisabled"
+              @click="sendMessage"
+              title="Send message"
+              :aria-label="loading ? 'Sending message' : 'Send message'"
+            >
+              <span v-if="loading" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+              <ArrowUp v-else :size="16" aria-hidden="true" />
+            </button>
+          </div>
         </div>
-        <p class="text-xs text-base-content/40 mt-1">Enter to send · Shift+Enter for new line</p>
+        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /stats, /docs, /help</p>
       </div>
 
   </div>
@@ -303,9 +357,11 @@
 <script setup>
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import axios from 'axios'
-import { Bot, FileText, Send, Trash2, MessageSquare, Layers, Database, Plus, History, ChevronDown } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
+import SlashCommandPicker from './SlashCommandPicker.vue'
+import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
 import {
   getConfiguredProviderIds,
   buildProviderHeaders,
@@ -327,7 +383,7 @@ const loading = ref(false)
 const error = ref('')
 const inputMessage = ref('')
 const messagesEnd = ref(null)
-const settingsCollapsed = ref(localStorage.getItem('chat_settings_collapsed') !== 'false')
+const settingsDrawerOpen = ref(false)
 
 // Chat options (persisted)
 const topK = ref(parseInt(localStorage.getItem('chat_top_k') || '5'))
@@ -339,6 +395,14 @@ const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 const configuredProviders = computed(() => getConfiguredProviderIds())
 const selectedProvider = ref(localStorage.getItem('chat_provider') || '')
 const hasAnyProvider = computed(() => configuredProviders.value.length > 0)
+
+const sendDisabled = computed(() => {
+  if (!inputMessage.value.trim() || loading.value) return true
+  // Slash commands don't need a provider or indexed content —
+  // they read collection metadata directly.
+  if (isSlashCommand(inputMessage.value)) return false
+  return !hasAnyProvider.value || props.chunkCount === 0
+})
 
 const messages = computed(() => chatStore.getMessages(collectionStore.currentCollectionId))
 const sessions = computed(() => chatStore.getSessions(collectionStore.currentCollectionId))
@@ -417,12 +481,88 @@ const useSuggestion = (suggestion) => {
   inputMessage.value = suggestion
 }
 
+// Slash command picker state
+const slashPickerOpen = ref(false)
+const slashPickerRef = ref(null)
+const chatInputRef = ref(null)
+
+const toggleSlashPicker = () => {
+  slashPickerOpen.value = !slashPickerOpen.value
+  if (slashPickerOpen.value) {
+    nextTick(() => chatInputRef.value?.focus())
+  }
+}
+
+const onInputChange = () => {
+  // Open the picker as soon as the input starts with "/" so suggestions
+  // appear while the user is typing; close it again if they erase the slash.
+  slashPickerOpen.value = inputMessage.value.trimStart().startsWith('/')
+}
+
+const onInputBlur = () => {
+  // Delay so click/mousedown on picker items still registers.
+  setTimeout(() => {
+    slashPickerOpen.value = false
+  }, 150)
+}
+
+const onKeydown = (e) => {
+  // Let the picker handle navigation keys first when it's open.
+  if (slashPickerOpen.value && slashPickerRef.value?.handleKeydown(e)) return
+
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendMessage()
+  }
+}
+
+const onSlashSelect = (cmd) => {
+  // Auto-run on pick — the commands take no arguments today.
+  inputMessage.value = cmd
+  slashPickerOpen.value = false
+  sendMessage()
+}
+
+const runInlineSlashCommand = async (input) => {
+  chatStore.addMessage(collectionStore.currentCollectionId, { role: 'user', content: input })
+  await scrollToBottom()
+
+  const result = await runSlashCommand(input, {
+    collectionId: collectionStore.currentCollectionId,
+    collection: collectionStore.currentCollection,
+  })
+
+  chatStore.addAssistantMessage(
+    collectionStore.currentCollectionId,
+    { role: 'assistant', content: result.content, slashCommand: result.cmd },
+    [],
+    null,
+  )
+  await scrollToBottom()
+}
+
 const sendMessage = async () => {
   if (!inputMessage.value.trim() || loading.value) return
 
   const userContent = inputMessage.value.trim()
+
   inputMessage.value = ''
   error.value = ''
+  slashPickerOpen.value = false
+
+  // Intercept slash commands before hitting the LLM — they read collection
+  // metadata directly and don't cost any tokens.
+  if (isSlashCommand(userContent)) {
+    await runInlineSlashCommand(userContent)
+    return
+  }
+  // Unknown slash commands (/foo) fall through to normal chat so the LLM sees them.
+
+  // Refuse to send a normal message if no provider is configured.
+  if (!hasAnyProvider.value) {
+    error.value = 'Configure an AI provider in Settings to chat.'
+    return
+  }
 
   chatStore.addMessage(collectionStore.currentCollectionId, { role: 'user', content: userContent })
   await scrollToBottom()
@@ -474,7 +614,6 @@ watch(topK, (v) => localStorage.setItem('chat_top_k', String(v)))
 watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
 watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
-watch(settingsCollapsed, (v) => localStorage.setItem('chat_settings_collapsed', String(v)))
 
 watch(messages, async () => { await scrollToBottom() }, { deep: true })
 

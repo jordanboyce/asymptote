@@ -2,14 +2,24 @@
   <div class="flex flex-col h-full">
 
     <!-- Header bar -->
-    <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100">
-      <Library :size="15" class="text-base-content/60 flex-shrink-0" />
+    <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Sources">
+      <Library :size="15" class="text-base-content/60 flex-shrink-0" aria-hidden="true" />
       <span class="font-semibold text-sm flex-1">Sources</span>
-      <span v-if="documents.length > 0" class="badge badge-xs badge-neutral">{{ documents.length }}</span>
-      <button class="btn btn-ghost btn-xs btn-circle" @click="loadDocuments" title="Refresh">
+      <span v-if="documents.length > 0" class="badge badge-xs badge-neutral" :aria-label="`${documents.length} source${documents.length === 1 ? '' : 's'}`">{{ documents.length }}</span>
+      <button
+        class="btn btn-ghost btn-xs btn-circle"
+        @click="loadDocuments"
+        title="Refresh sources"
+        aria-label="Refresh sources list"
+      >
         <RefreshCw :size="13" :class="loading ? 'animate-spin' : ''" />
       </button>
-      <button class="btn btn-ghost btn-xs btn-circle" @click="$emit('close')" title="Close sidebar">
+      <button
+        class="btn btn-ghost btn-xs btn-circle"
+        @click="$emit('close')"
+        title="Close sidebar"
+        aria-label="Close sources sidebar"
+      >
         <X :size="13" />
       </button>
     </div>
@@ -38,31 +48,6 @@
             </button>
           </div>
 
-          <!-- Source code toggle -->
-          <label class="flex items-center gap-2 cursor-pointer select-none">
-            <input type="checkbox" class="toggle toggle-xs toggle-primary" v-model="isSourceCode" :disabled="indexing" />
-            <span class="text-xs">Source code mode</span>
-          </label>
-
-          <!-- Source code options (when in source code mode) -->
-          <div v-if="isSourceCode" class="space-y-1.5">
-            <label class="flex items-center gap-1.5 cursor-pointer select-none">
-              <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" v-model="includeDocumentation" :disabled="indexing" />
-              <span class="text-xs">Include docs (.md, .json)</span>
-            </label>
-            <div class="flex flex-wrap gap-1">
-              <label
-                v-for="ext in fileExtensions"
-                :key="ext.value"
-                class="flex items-center gap-1 px-1.5 py-0.5 rounded cursor-pointer text-xs transition-colors"
-                :class="ext.enabled ? 'bg-primary/20 border border-primary/40' : 'bg-base-300 hover:bg-base-200'"
-              >
-                <input type="checkbox" v-model="ext.enabled" class="checkbox checkbox-xs checkbox-primary" :disabled="indexing" />
-                {{ ext.label }}
-              </label>
-            </div>
-          </div>
-
           <!-- Selected paths -->
           <div v-if="selectedPaths.length > 0" class="space-y-1.5">
             <div class="flex items-center justify-between">
@@ -74,26 +59,23 @@
             <div class="max-h-24 overflow-y-auto space-y-0.5">
               <div v-for="(item, idx) in selectedPaths" :key="idx" class="flex items-center gap-1 text-xs">
                 <span class="flex-1 truncate text-base-content/70" :title="item.path">{{ item.name }}</span>
-                <button class="btn btn-ghost btn-xs btn-circle p-0 w-5 h-5 min-h-0" @click="removePath(idx)" :disabled="indexing">
+                <button
+                  class="btn btn-ghost btn-xs btn-circle p-0 w-5 h-5 min-h-0"
+                  @click="removePath(idx)"
+                  :disabled="indexing"
+                  :aria-label="`Remove ${item.name} from selection`"
+                >
                   <X :size="10" />
                 </button>
               </div>
             </div>
 
-            <!-- Options row -->
-            <div class="flex items-center gap-3 text-xs">
-              <label class="flex items-center gap-1 cursor-pointer">
-                <input type="checkbox" class="toggle toggle-xs" v-model="copyToLibrary" :disabled="indexing" />
-                Copy
-              </label>
-              <label class="flex items-center gap-1 cursor-pointer">
-                <input type="checkbox" class="toggle toggle-xs toggle-secondary" v-model="useBackgroundIndexing" :disabled="indexing" />
-                BG
-              </label>
+            <!-- Add button -->
+            <div class="flex items-center text-xs">
               <button class="btn btn-primary btn-xs ml-auto gap-1" @click="indexFiles" :disabled="indexing || selectedPaths.length === 0">
                 <span v-if="indexing" class="loading loading-spinner loading-xs"></span>
                 <FileSearch v-else :size="11" />
-                {{ indexing ? '...' : 'Index' }}
+                {{ indexing ? 'Adding...' : 'Add to Collection' }}
               </button>
             </div>
 
@@ -105,11 +87,15 @@
           </div>
 
           <!-- Success -->
-          <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5">
-            <CheckCircle :size="12" />
+          <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
+            <CheckCircle :size="12" aria-hidden="true" />
             <span v-if="indexResult.background">Started in background</span>
             <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
-            <button class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0" @click="indexSuccess = false">✕</button>
+            <button
+              class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0"
+              @click="indexSuccess = false"
+              aria-label="Dismiss success message"
+            >✕</button>
           </div>
 
           <!-- Error -->
@@ -118,17 +104,67 @@
             <button class="ml-1 underline" @click="indexError = ''">Dismiss</button>
           </div>
 
-          <!-- Recent repos (source code mode only) -->
-          <div v-if="isSourceCode && recentRepos.length > 0" class="space-y-1">
-            <div class="text-xs font-medium text-base-content/50">Recent</div>
-            <div
-              v-for="(repo, idx) in recentRepos"
-              :key="idx"
-              class="flex items-center gap-1.5 p-1.5 rounded hover:bg-base-200 cursor-pointer text-xs"
-              @click="selectRecentRepo(repo)"
+          <!-- Advanced options (collapsible) -->
+          <div class="border-t border-base-300 pt-2 mt-1">
+            <button
+              class="flex items-center gap-1.5 text-xs text-base-content/50 hover:text-base-content/70 transition-colors w-full text-left"
+              @click="advancedOpen = !advancedOpen"
             >
-              <FolderOpen :size="11" class="text-primary flex-shrink-0" />
-              <span class="flex-1 truncate" :title="repo.path">{{ repo.name }}</span>
+              <ChevronDown :size="10" class="transition-transform" :class="advancedOpen ? 'rotate-180' : ''" />
+              Advanced options
+            </button>
+
+            <div v-show="advancedOpen" class="mt-2 space-y-2">
+              <!-- Source code toggle -->
+              <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" class="toggle toggle-xs toggle-primary" v-model="isSourceCode" :disabled="indexing" />
+                <span class="text-xs">Source code mode</span>
+              </label>
+
+              <!-- Source code options (when in source code mode) -->
+              <div v-if="isSourceCode" class="space-y-1.5 pl-1">
+                <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" v-model="includeDocumentation" :disabled="indexing" />
+                  <span class="text-xs">Include docs (.md, .json)</span>
+                </label>
+                <div class="flex flex-wrap gap-1">
+                  <label
+                    v-for="ext in fileExtensions"
+                    :key="ext.value"
+                    class="flex items-center gap-1 px-1.5 py-0.5 rounded cursor-pointer text-xs transition-colors"
+                    :class="ext.enabled ? 'bg-primary/20 border border-primary/40' : 'bg-base-300 hover:bg-base-200'"
+                  >
+                    <input type="checkbox" v-model="ext.enabled" class="checkbox checkbox-xs checkbox-primary" :disabled="indexing" />
+                    {{ ext.label }}
+                  </label>
+                </div>
+              </div>
+
+              <!-- Copy & Background options -->
+              <div class="flex items-center gap-3 text-xs">
+                <label class="flex items-center gap-1 cursor-pointer" title="Copy files to library storage">
+                  <input type="checkbox" class="toggle toggle-xs" v-model="copyToLibrary" :disabled="indexing" />
+                  Copy to library
+                </label>
+                <label class="flex items-center gap-1 cursor-pointer" title="Index files in the background">
+                  <input type="checkbox" class="toggle toggle-xs toggle-secondary" v-model="useBackgroundIndexing" :disabled="indexing" />
+                  Background
+                </label>
+              </div>
+
+              <!-- Recent repos (source code mode only) -->
+              <div v-if="isSourceCode && recentRepos.length > 0" class="space-y-1">
+                <div class="text-xs font-medium text-base-content/50">Recent repos</div>
+                <div
+                  v-for="(repo, idx) in recentRepos"
+                  :key="idx"
+                  class="flex items-center gap-1.5 p-1.5 rounded hover:bg-base-200 cursor-pointer text-xs"
+                  @click="selectRecentRepo(repo)"
+                >
+                  <FolderOpen :size="11" class="text-primary flex-shrink-0" />
+                  <span class="flex-1 truncate" :title="repo.path">{{ repo.name }}</span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -145,16 +181,18 @@
           :indeterminate="selectedDocuments.length > 0 && !isAllSelected"
           @change="toggleSelectAll"
           :disabled="deleting"
-          title="Select all"
+          title="Select all sources"
+          aria-label="Select all sources"
         />
-        <span class="text-xs font-semibold text-base-content/60 flex-1">Your Sources</span>
+        <span class="text-xs font-semibold text-base-content/60 flex-1" id="sources-list-heading">Your Sources</span>
         <button
           v-if="selectedDocuments.length > 0"
           class="btn btn-xs btn-error gap-1"
           @click="confirmBulkDelete"
           :disabled="deleting"
+          :aria-label="`Delete ${selectedDocuments.length} selected source${selectedDocuments.length === 1 ? '' : 's'}`"
         >
-          <Trash2 :size="11" />
+          <Trash2 :size="11" aria-hidden="true" />
           {{ selectedDocuments.length }}
         </button>
       </div>
@@ -165,9 +203,8 @@
       </div>
 
       <!-- Empty state -->
-      <div v-else-if="documents.length === 0" class="flex flex-col items-center justify-center py-10 text-base-content/40 gap-2 px-4 text-center">
-        <FileText :size="32" class="opacity-25" />
-        <p class="text-xs">No sources yet. Use Add Sources above to get started.</p>
+      <div v-else-if="documents.length === 0" class="py-8 px-4 text-center">
+        <p class="text-xs text-base-content/50">No sources yet. Use Add Sources above to get started.</p>
       </div>
 
       <!-- Document list -->
@@ -185,6 +222,7 @@
             :checked="isSelected(doc.document_id)"
             @change="toggleSelect(doc.document_id)"
             :disabled="deleting"
+            :aria-label="`Select ${doc.filename}`"
           />
 
           <!-- File icon -->
@@ -218,15 +256,18 @@
               class="btn btn-ghost btn-xs btn-circle"
               @click="openChunks(doc)"
               :disabled="deleting"
-              title="View chunks"
+              title="View indexed chunks"
+              :aria-label="`View indexed chunks for ${doc.filename}`"
             >
               <FileSearch :size="12" />
             </button>
             <a
               :href="`/documents/${doc.document_id}/pdf?collection_id=${collectionStore.currentCollectionId}`"
               target="_blank"
+              rel="noopener"
               class="btn btn-ghost btn-xs btn-circle"
-              title="View source"
+              title="Open source document"
+              :aria-label="`Open source document ${doc.filename} in a new tab`"
             >
               <Eye :size="12" />
             </a>
@@ -234,7 +275,8 @@
               class="btn btn-ghost btn-xs btn-circle text-error"
               @click="confirmDelete(doc)"
               :disabled="deleting"
-              title="Delete"
+              title="Delete source"
+              :aria-label="`Delete source ${doc.filename}`"
             >
               <Trash2 :size="12" />
             </button>
@@ -248,9 +290,9 @@
     </div>
 
     <!-- Delete confirmation modal (same as DocumentsTab) -->
-    <dialog ref="deleteModal" class="modal">
+    <dialog ref="deleteModal" class="modal" aria-labelledby="sidebar-delete-title">
       <div class="modal-box">
-        <h3 class="font-bold text-lg">Confirm Delete</h3>
+        <h3 id="sidebar-delete-title" class="font-bold text-lg">Confirm Delete</h3>
         <p v-if="documentToDelete" class="py-4">
           Delete <strong>{{ documentToDelete.filename }}</strong>?
           <span v-if="documentToDelete.source_type === 'local_reference'" class="block text-sm text-base-content/70 mt-2">
@@ -270,9 +312,9 @@
     </dialog>
 
     <!-- Chunks viewer modal (same as DocumentsTab) -->
-    <dialog ref="chunksModal" class="modal">
+    <dialog ref="chunksModal" class="modal" aria-labelledby="sidebar-chunks-title">
       <div class="modal-box max-w-6xl">
-        <h3 class="font-bold text-lg">Indexed Chunks</h3>
+        <h3 id="sidebar-chunks-title" class="font-bold text-lg">Indexed Chunks</h3>
         <p v-if="chunkDocument" class="text-sm text-base-content/70 mt-1">{{ chunkDocument.filename }}</p>
         <div v-if="chunksLoading" class="flex justify-center py-10"><span class="loading loading-spinner loading-lg"></span></div>
         <div v-else-if="chunksError" class="alert alert-error mt-4"><XCircle :size="20" /><span>{{ chunksError }}</span></div>
@@ -326,10 +368,10 @@
     </dialog>
 
     <!-- Injection warnings modal -->
-    <dialog ref="injectionModal" class="modal">
+    <dialog ref="injectionModal" class="modal" aria-labelledby="injection-warnings-title">
       <div class="modal-box max-w-2xl">
-        <h3 class="font-bold text-lg flex items-center gap-2">
-          <ShieldAlert :size="18" class="text-warning" />
+        <h3 id="injection-warnings-title" class="font-bold text-lg flex items-center gap-2">
+          <ShieldAlert :size="18" class="text-warning" aria-hidden="true" />
           Prompt Injection Warnings
         </h3>
         <p v-if="injectionDoc" class="text-sm text-base-content/70 mt-1">{{ injectionDoc.filename }}</p>
@@ -373,7 +415,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Code, History, Library, Plus, ChevronDown, ShieldAlert } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 
@@ -384,6 +426,7 @@ const backgroundJobsStore = useBackgroundJobsStore()
 
 // Sidebar-specific state
 const addSectionOpen = ref(true)
+const advancedOpen = ref(false)
 
 // Source code mode
 const isSourceCode = ref(false)
@@ -743,11 +786,6 @@ const toggleSelectAll = () => {
   }
 }
 
-const getDocumentName = (docId) => {
-  const doc = documents.value.find(d => d.document_id === docId)
-  return doc ? doc.filename : 'Unknown'
-}
-
 const loadDocuments = async () => {
   loading.value = true
   error.value = ''
@@ -761,12 +799,6 @@ const loadDocuments = async () => {
   } finally {
     loading.value = false
   }
-}
-
-const formatDate = (dateString) => {
-  if (!dateString) return 'N/A'
-  const date = new Date(dateString)
-  return date.toLocaleString()
 }
 
 const openChunks = async (doc) => {
@@ -969,13 +1001,6 @@ const selectRecentRepo = async (repo) => {
   }
 }
 
-const formatRepoDate = (timestamp) => {
-  const diff = Date.now() - timestamp
-  if (diff < 60000) return 'just now'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
-  return new Date(timestamp).toLocaleDateString()
-}
 
 onMounted(() => {
   loadDocuments()

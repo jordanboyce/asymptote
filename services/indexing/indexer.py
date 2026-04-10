@@ -411,6 +411,7 @@ class DocumentIndexer:
         ai_options: Optional[AIOptions] = None,
         mode: SearchMode = SearchMode.SEMANTIC,
         semantic_weight: float = 0.7,
+        collection_overview: Optional[str] = None,
     ) -> dict:
         """
         Search for documents matching the query, with optional AI enhancements.
@@ -488,7 +489,7 @@ class DocumentIndexer:
             results = results[:top_k]
 
         # Step 4: Optionally synthesize an answer from results
-        if ai_active and ai_options.synthesize and len(results) > 0:
+        if ai_active and ai_options.synthesize and (len(results) > 0 or collection_overview):
             try:
                 synth_input = [
                     {
@@ -498,7 +499,9 @@ class DocumentIndexer:
                     }
                     for r in results
                 ]
-                synth_result = ai_service.synthesize_results(query, synth_input)
+                synth_result = ai_service.synthesize_results(
+                    query, synth_input, collection_overview=collection_overview
+                )
                 synthesis = synth_result["synthesis"]
                 usage = synth_result["usage"]
 

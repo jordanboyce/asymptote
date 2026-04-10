@@ -1,6 +1,5 @@
 <template>
   <div class="space-y-6">
-    <h2 class="text-2xl font-bold">Sources</h2>
 
     <!-- Index Documents Section -->
     <div class="card bg-base-200">
@@ -185,6 +184,7 @@
                       class="btn btn-ghost btn-xs text-error"
                       @click="removePath(index)"
                       :disabled="indexing"
+                      :aria-label="`Remove ${item.name} from selection`"
                     >
                       <X :size="14" />
                     </button>
@@ -261,14 +261,15 @@
                 :checked="isAllSelected"
                 @change="toggleSelectAll"
                 :disabled="deleting"
+                aria-label="Select all sources"
               />
             </th>
-            <th>Filename</th>
-            <th>Pages</th>
-            <th>Chunks</th>
-            <th>Source</th>
-            <th>Indexed</th>
-            <th>Actions</th>
+            <th scope="col">Filename</th>
+            <th scope="col">Pages</th>
+            <th scope="col">Chunks</th>
+            <th scope="col">Source</th>
+            <th scope="col">Indexed</th>
+            <th scope="col">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -280,6 +281,7 @@
                 :checked="isSelected(doc.document_id)"
                 @change="toggleSelect(doc.document_id)"
                 :disabled="deleting"
+                :aria-label="`Select ${doc.filename}`"
               />
             </td>
             <td>
@@ -311,14 +313,17 @@
                   @click="openChunks(doc)"
                   :disabled="deleting"
                   title="View indexed chunks"
+                  :aria-label="`View indexed chunks for ${doc.filename}`"
                 >
                   <FileSearch :size="16" />
                 </button>
                 <a
                   :href="`/documents/${doc.document_id}/pdf?collection_id=${collectionStore.currentCollectionId}`"
                   target="_blank"
+                  rel="noopener"
                   class="btn btn-ghost btn-xs"
-                  title="View source"
+                  title="Open source document"
+                  :aria-label="`Open source document ${doc.filename} in a new tab`"
                 >
                   <Eye :size="16" />
                 </a>
@@ -327,6 +332,7 @@
                   @click="confirmDelete(doc)"
                   :disabled="deleting"
                   title="Delete source"
+                  :aria-label="`Delete source ${doc.filename}`"
                 >
                   <Trash2 :size="16" />
                 </button>
@@ -352,9 +358,9 @@
     </div>
 
     <!-- Delete Confirmation Modal -->
-    <dialog ref="deleteModal" class="modal">
+    <dialog ref="deleteModal" class="modal" aria-labelledby="docs-delete-title">
       <div class="modal-box">
-        <h3 class="font-bold text-lg">Confirm Delete</h3>
+        <h3 id="docs-delete-title" class="font-bold text-lg">Confirm Delete</h3>
         <p v-if="documentToDelete" class="py-4">
           Are you sure you want to delete <strong>{{ documentToDelete.filename }}</strong>?
           <span v-if="documentToDelete.source_type === 'local_reference'" class="block text-sm text-base-content/70 mt-2">
@@ -410,9 +416,9 @@
     </div>
 
     <!-- Chunks Viewer Modal -->
-    <dialog ref="chunksModal" class="modal">
+    <dialog ref="chunksModal" class="modal" aria-labelledby="docs-chunks-title">
       <div class="modal-box max-w-6xl">
-        <h3 class="font-bold text-lg">Indexed Chunks</h3>
+        <h3 id="docs-chunks-title" class="font-bold text-lg">Indexed Chunks</h3>
         <p v-if="chunkDocument" class="text-sm text-base-content/70 mt-1">
           {{ chunkDocument.filename }}
         </p>

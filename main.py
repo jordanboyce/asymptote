@@ -918,6 +918,15 @@ async def search_documents(
             except Exception as e:
                 logger.warning(f"Failed to create AI service: {e}")
 
+        # Build collection overview so AI synthesis can answer meta-questions
+        # like "how many sources are in this collection?"
+        collection_overview = None
+        if ai_service and ai_options and ai_options.synthesize:
+            try:
+                collection_overview = _build_collection_overview([collection_id])
+            except Exception as e:
+                logger.warning(f"Failed to build collection overview for search: {e}")
+
         search_result = indexer.search(
             query=search_request.query,
             top_k=search_request.top_k,
@@ -925,6 +934,7 @@ async def search_documents(
             ai_options=ai_options,
             mode=search_request.mode,
             semantic_weight=search_request.semantic_weight,
+            collection_overview=collection_overview,
         )
 
         results = search_result["results"]
@@ -979,53 +989,7 @@ async def search_documents(
         )
 
 
-def _build_collection_overview(collection_ids: List[str]) -> str:
-    """Build a compact, plain-text summary of one or more collections for chat context.
-
-    Includes name, document count, page total, date range, and filenames so the LLM
-    can answer meta-questions like "how many files are in here?" or "do you have
-    anything from March?" without having to retrieve content chunks.
-    """
-    lines: List[str] = []
-    MAX_FILENAMES = 50
-
-    for col_id in collection_ids:
-        col = collection_service.get_collection(col_id)
-        if not col:
-            continue
-
-        try:
-            indexer = get_indexer(col_id)
-            docs = indexer.list_documents()
-        except Exception as e:
-            logger.warning(f"Overview: failed to list documents for '{col_id}': {e}")
-            docs = []
-
-        doc_count = len(docs)
-        page_total = sum((d.get("total_pages") or d.get("num_pages") or 0) for d in docs)
-        chunk_total = sum((d.get("total_chunks") or d.get("num_chunks") or 0) for d in docs)
-
-        timestamps = [d.get("upload_timestamp") for d in docs if d.get("upload_timestamp")]
-        date_range = ""
-        if timestamps:
-            timestamps.sort()
-            date_range = f"{timestamps[0][:10]} to {timestamps[-1][:10]}"
-
-        lines.append(f"- Collection: {col.get('name', col_id)}")
-        if col.get("description"):
-            lines.append(f"  Description: {col['description']}")
-        lines.append(f"  Documents: {doc_count}, Pages: {page_total}, Chunks: {chunk_total}")
-        if date_range:
-            lines.append(f"  Indexed date range: {date_range}")
-
-        if docs:
-            filenames = [d["filename"] for d in docs[:MAX_FILENAMES]]
-            files_str = ", ".join(filenames)
-            if doc_count > MAX_FILENAMES:
-                files_str += f", ... (+{doc_count - MAX_FILENAMES} more)"
-            lines.append(f"  Filenames: {files_str}")
-
-    return "\n".join(lines) if lines else "(No collection metadata available.)"
+from services.collection_overview import build_collection_overview as _build_collection_overview
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -2238,17 +2202,30 @@ async def ask_question(
             "as appropriate. Cite sources using [Source N] notation."
         )
 
+    # Build collection overview so the model can answer meta-questions
+    # ("how many sources?", "what documents are indexed?") without needing
+    # retrieved chunks to contain that information.
+    try:
+        collection_overview = _build_collection_overview([request.collection_id])
+    except Exception as e:
+        logger.warning(f"Failed to build collection overview for ask: {e}")
+        collection_overview = "(Collection overview unavailable.)"
+
     prompt = (
         "You are a knowledgeable assistant helping answer questions based on "
-        "indexed documentation. Answer the question using ONLY the provided sources.\n\n"
+        "indexed documentation. Answer the question using the COLLECTION OVERVIEW "
+        "and RETRIEVED SOURCES below.\n\n"
         "Rules:\n"
-        "- Only use information from the provided sources\n"
-        "- Cite specific sources for each claim using [Source N]\n"
-        "- If the sources don't contain enough information to fully answer, say so\n"
-        "- Be concise but thorough\n"
+        "- Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
+        "(file counts, available documents, date ranges, what's in the collection).\n"
+        "- Use the RETRIEVED SOURCES for questions about document content, and cite "
+        "specific sources with [Source N].\n"
+        "- If neither the overview nor the sources contain enough information, say so.\n"
+        "- Be concise but thorough.\n"
         f"- {format_instruction}\n\n"
+        f"COLLECTION OVERVIEW:\n{collection_overview}\n\n"
         f"Question: {request.question}\n\n"
-        f"Sources:\n{context}"
+        f"RETRIEVED SOURCES:\n{context}"
     )
 
     # Generate answer
@@ -2447,14 +2424,14 @@ def _enrich_mcp_resource(resource: dict, base_url: str) -> dict:
     collection_id = resource["collection_id"]
     collection = collection_service.get_collection(collection_id)
     collection_name = collection.get("name", collection_id) if collection else collection_id
-    server_id = f"{(settings.mcp_server_id or 'asymptote').strip()}-{collection_id}"
-    server_url = f"{base_url}/mcp/?collection_id={collection_id}"
+    export = build_mcp_export_payload(base_url, {"collection_id": collection_id})
     return {
         **resource,
         "collection_name": collection_name,
-        "server_url": server_url,
-        "claude_json": json.dumps({"mcpServers": {server_id: {"type": "http", "url": server_url}}}, indent=2),
-        "codex_toml": f'[mcp_servers.{server_id}]\nurl = "{server_url}"\n',
+        "server_url": export["server_url"],
+        "claude_json": export["claude_json"],
+        "codex_toml": export["codex_toml"],
+        "copilot_json": export["copilot_json"],
     }
 
 
@@ -2486,6 +2463,9 @@ async def create_mcp_resource(request: Request, body: dict):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="name is required")
     if not collection_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="collection_id is required")
+    existing = [r for r in app_db.get_all_mcp_resources() if r["collection_id"] == collection_id]
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A connection for this collection already exists")
     resource = app_db.create_mcp_resource(str(uuid.uuid4())[:8], name, collection_id, repo_url)
     return _enrich_mcp_resource(resource, str(request.base_url).rstrip('/'))
 
@@ -2497,10 +2477,15 @@ async def create_mcp_resource(request: Request, body: dict):
 )
 async def update_mcp_resource(request: Request, resource_id: str, body: dict):
     from services.app_database import app_db
+    new_collection = body.get("collection_id")
+    if new_collection:
+        existing = [r for r in app_db.get_all_mcp_resources() if r["collection_id"] == new_collection and r["id"] != resource_id]
+        if existing:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A connection for this collection already exists")
     resource = app_db.update_mcp_resource(
         resource_id,
         name=body.get("name"),
-        collection_id=body.get("collection_id"),
+        collection_id=new_collection,
         repo_url=body.get("repo_url"),
     )
     if not resource:

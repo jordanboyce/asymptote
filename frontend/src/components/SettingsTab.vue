@@ -1,6 +1,5 @@
 <template>
   <div class="space-y-6">
-    <h2 class="text-2xl font-bold">Settings</h2>
 
     <!-- System Info -->
     <div class="card bg-base-200">
@@ -77,10 +76,11 @@
               <!-- Ollama config -->
               <template v-if="def.id === 'ollama'">
                 <div class="form-control">
-                  <label class="label p-0 pb-1">
+                  <label class="label p-0 pb-1" for="ollama-base-url">
                     <span class="label-text font-medium">Base URL</span>
                   </label>
                   <input
+                    id="ollama-base-url"
                     v-model="editBuffer.baseUrl"
                     type="url"
                     placeholder="http://localhost:11434"
@@ -97,8 +97,8 @@
                     Ollama running · {{ detectedOllamaModels.length }} model(s) available
                   </div>
                   <div class="form-control">
-                    <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
-                    <select v-model="editBuffer.model" class="select select-bordered select-sm w-full">
+                    <label class="label p-0 pb-1" for="ollama-model"><span class="label-text font-medium">Model</span></label>
+                    <select id="ollama-model" v-model="editBuffer.model" class="select select-bordered select-sm w-full">
                       <option v-for="m in detectedOllamaModels" :key="m.name" :value="m.name">
                         {{ m.name }} ({{ formatBytes(m.size) }})
                       </option>
@@ -132,28 +132,33 @@
               <!-- Cloud provider config -->
               <template v-else>
                 <div class="form-control">
-                  <label class="label p-0 pb-1">
+                  <label class="label p-0 pb-1" :for="`provider-apikey-${def.id}`">
                     <span class="label-text font-medium">API Key</span>
-                    <a v-if="def.keyLink" :href="def.keyLink" target="_blank" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
+                    <a v-if="def.keyLink" :href="def.keyLink" target="_blank" rel="noopener" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
                   </label>
                   <div class="join w-full">
                     <input
+                      :id="`provider-apikey-${def.id}`"
                       v-model="editBuffer.apiKey"
                       :type="showEditKey ? 'text' : 'password'"
                       :placeholder="def.keyPlaceholder || 'API key…'"
                       class="input input-bordered input-sm join-item flex-1"
                       @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''"
                     />
-                    <button class="btn btn-sm join-item" @click="showEditKey = !showEditKey">
+                    <button
+                      class="btn btn-sm join-item"
+                      @click="showEditKey = !showEditKey"
+                      :aria-label="showEditKey ? 'Hide API key' : 'Show API key'"
+                    >
                       {{ showEditKey ? 'Hide' : 'Show' }}
                     </button>
                   </div>
                 </div>
 
                 <div v-if="def.models && def.models.length" class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
+                  <label class="label p-0 pb-1" :for="`provider-model-${def.id}`"><span class="label-text font-medium">Model</span></label>
                   <p class="text-xs text-base-content/50 mb-1">Override the default model. Leave blank to use provider defaults.</p>
-                  <select v-model="editBuffer.model" class="select select-bordered select-sm w-full">
+                  <select :id="`provider-model-${def.id}`" v-model="editBuffer.model" class="select select-bordered select-sm w-full">
                     <option value="">Use provider defaults</option>
                     <option v-for="m in def.models" :key="m.id" :value="m.id">{{ m.label }}</option>
                   </select>
@@ -204,24 +209,24 @@
             <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
               <div class="grid gap-3 sm:grid-cols-2">
                 <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Name</span></label>
-                  <input v-model="editBuffer.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+                  <label class="label p-0 pb-1" :for="`custom-name-${cp.id}`"><span class="label-text font-medium">Name</span></label>
+                  <input :id="`custom-name-${cp.id}`" v-model="editBuffer.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
                 </div>
                 <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
-                  <input v-model="editBuffer.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
+                  <label class="label p-0 pb-1" :for="`custom-model-${cp.id}`"><span class="label-text font-medium">Model</span></label>
+                  <input :id="`custom-model-${cp.id}`" v-model="editBuffer.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
                 </div>
               </div>
               <div class="form-control">
-                <label class="label p-0 pb-1"><span class="label-text font-medium">Base URL</span></label>
-                <input v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+                <label class="label p-0 pb-1" :for="`custom-baseurl-${cp.id}`"><span class="label-text font-medium">Base URL</span></label>
+                <input :id="`custom-baseurl-${cp.id}`" v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
                 <p class="text-xs text-base-content/50 mt-1">Must be an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter).</p>
               </div>
               <div class="form-control">
-                <label class="label p-0 pb-1">
+                <label class="label p-0 pb-1" :for="`custom-apikey-${cp.id}`">
                   <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
                 </label>
-                <input v-model="editBuffer.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
+                <input :id="`custom-apikey-${cp.id}`" v-model="editBuffer.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
               </div>
               <div class="flex gap-2">
                 <button class="btn btn-sm btn-primary" @click="saveCustomProvider(cp.id)" :disabled="!editBuffer.baseUrl?.trim() || !editBuffer.name?.trim()">Save</button>
@@ -235,24 +240,24 @@
             <p class="text-sm font-medium">New Custom Endpoint</p>
             <div class="grid gap-3 sm:grid-cols-2">
               <div class="form-control">
-                <label class="label p-0 pb-1"><span class="label-text font-medium">Name</span></label>
-                <input v-model="newCustom.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+                <label class="label p-0 pb-1" for="new-custom-name"><span class="label-text font-medium">Name</span></label>
+                <input id="new-custom-name" v-model="newCustom.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
               </div>
               <div class="form-control">
-                <label class="label p-0 pb-1"><span class="label-text font-medium">Model</span></label>
-                <input v-model="newCustom.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
+                <label class="label p-0 pb-1" for="new-custom-model"><span class="label-text font-medium">Model</span></label>
+                <input id="new-custom-model" v-model="newCustom.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
               </div>
             </div>
             <div class="form-control">
-              <label class="label p-0 pb-1"><span class="label-text font-medium">Base URL</span></label>
-              <input v-model="newCustom.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+              <label class="label p-0 pb-1" for="new-custom-baseurl"><span class="label-text font-medium">Base URL</span></label>
+              <input id="new-custom-baseurl" v-model="newCustom.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
               <p class="text-xs text-base-content/50 mt-1">OpenAI-compatible endpoint (vLLM, LM Studio, Groq, OpenRouter, etc.).</p>
             </div>
             <div class="form-control">
-              <label class="label p-0 pb-1">
+              <label class="label p-0 pb-1" for="new-custom-apikey">
                 <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
               </label>
-              <input v-model="newCustom.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
+              <input id="new-custom-apikey" v-model="newCustom.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
             </div>
             <div class="flex gap-2">
               <button class="btn btn-sm btn-primary" @click="addCustomProvider" :disabled="!newCustom.baseUrl?.trim() || !newCustom.name?.trim()">Add</button>
@@ -296,177 +301,219 @@
     </div>
 
 
-    <!-- MCP Integration -->
+    <!-- OCR Settings -->
     <div class="card bg-base-200">
-      <div class="card-body space-y-5">
+      <div class="card-body">
+        <h3 class="card-title">OCR Settings</h3>
+        <p class="text-sm text-base-content/70 mb-4">
+          Configure OCR for scanned PDFs. These settings apply to document indexing and the OCR preview playground.
+        </p>
 
-        <!-- Header -->
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <h3 class="card-title">MCP Server</h3>
-            <p class="text-sm text-base-content/70 mt-1">
-              Connect Claude Code or Codex directly to your indexed document collections.
-              The server returns ranked chunks with similarity scores — your AI agent handles reasoning.
-            </p>
-          </div>
-          <div class="flex items-center gap-2 shrink-0 pt-1">
-            <span :class="mcpSettings.enable_mcp ? 'badge badge-success' : 'badge badge-ghost'">
-              {{ mcpSettings.enable_mcp ? 'Enabled' : 'Disabled' }}
-            </span>
-            <input v-model="mcpSettings.enable_mcp" type="checkbox" class="toggle toggle-primary" @change="saveMcpToggle" />
-          </div>
-        </div>
-
-        <div v-if="!mcpSettings.enable_mcp" class="alert">
-          <span class="text-sm">Enable the MCP server above to connect Claude Code or Codex to your documents.</span>
-        </div>
-
-        <template v-else>
-
-          <!-- Project Connections -->
-          <div class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm space-y-4">
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Project Connections</h4>
-                <p class="mt-1 text-xs text-base-content/60">
-                  Map a collection to a project. Drop the exported config into your repo root and your agent will search that collection automatically.
-                </p>
-              </div>
-              <button class="btn btn-sm btn-primary shrink-0" @click="openAddResource">+ Add</button>
-            </div>
-
-            <div v-if="mcpResources.length === 0" class="text-center py-6 text-base-content/40 text-sm">
-              No project connections yet. Click <strong>+ Add</strong> to create one.
-            </div>
-
-            <div v-else class="space-y-2">
-              <div
-                v-for="resource in mcpResources"
-                :key="resource.id"
-                class="rounded-lg border border-base-300 bg-base-200/30 p-3 flex items-start justify-between gap-3"
-              >
-                <div class="min-w-0 space-y-0.5">
-                  <div class="font-medium text-sm">{{ resource.name }}</div>
-                  <div class="text-xs text-base-content/50">
-                    <span>{{ resource.collection_name }}</span>
-                    <span class="font-mono opacity-50 ml-1">({{ resource.collection_id }})</span>
-                    <span v-if="resource.repo_url" class="ml-2 opacity-70">· {{ resource.repo_url }}</span>
-                  </div>
-                  <div class="font-mono text-xs text-base-content/35 truncate">{{ resource.server_url }}</div>
-                </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <div class="dropdown dropdown-end">
-                    <button tabindex="0" class="btn btn-xs btn-ghost">Export ▾</button>
-                    <ul tabindex="0" class="dropdown-content menu menu-sm bg-base-100 rounded-box border border-base-300 shadow-lg z-10 w-48 p-1">
-                      <li><a @click="copyResourceText(resource.claude_json, 'Claude Code config')">Copy Claude Code (.mcp.json)</a></li>
-                      <li><a @click="downloadResourceText(resource.claude_json, `.mcp-${resource.collection_id}.json`)">Download .mcp.json</a></li>
-                      <li class="divider my-0.5"></li>
-                      <li><a @click="copyResourceText(resource.codex_toml, 'Codex config')">Copy Codex (config.toml)</a></li>
-                      <li><a @click="downloadResourceText(resource.codex_toml, `config-${resource.collection_id}.toml`)">Download config.toml</a></li>
-                    </ul>
-                  </div>
-                  <button class="btn btn-xs btn-ghost text-error" @click="deleteResource(resource.id)" title="Remove">✕</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Add Resource Modal -->
-          <dialog ref="addResourceModal" class="modal">
-            <div class="modal-box">
-              <h3 class="font-bold text-lg mb-4">Add Project Connection</h3>
-              <div class="space-y-3">
-                <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Name</span></label>
-                  <input v-model="newResource.name" type="text" placeholder="e.g. Saphire Docs" class="input input-bordered w-full" />
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Collection</span></label>
-                  <select v-model="newResource.collection_id" class="select select-bordered w-full">
-                    <option v-for="c in mcpCollections" :key="c.id" :value="c.id">{{ c.name }}</option>
-                  </select>
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1">
-                    <span class="label-text font-medium">Repo URL <span class="font-normal text-base-content/40">(optional)</span></span>
-                  </label>
-                  <input v-model="newResource.repo_url" type="url" placeholder="https://github.com/you/project" class="input input-bordered w-full" />
-                </div>
-              </div>
-              <div class="modal-action">
-                <button class="btn btn-ghost" @click="addResourceModal?.close()">Cancel</button>
-                <button class="btn btn-primary" @click="createResource" :disabled="mcpSaving || !newResource.name || !newResource.collection_id">
-                  <span v-if="mcpSaving" class="loading loading-spinner loading-xs"></span>
-                  Add
-                </button>
-              </div>
-            </div>
-            <form method="dialog" class="modal-backdrop"><button>close</button></form>
-          </dialog>
-
-          <!-- Advanced / Global server defaults -->
-          <details class="rounded-xl border border-base-300 bg-base-100 shadow-sm">
-            <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-base-content/60 hover:text-base-content select-none list-none flex items-center justify-between">
-              <span>Advanced server defaults</span>
-              <span class="text-xs text-base-content/40">Fallback settings when no profile URL is used</span>
-            </summary>
-            <div class="px-4 pb-4 space-y-4 border-t border-base-300 pt-4">
-              <p class="text-xs text-base-content/50">
-                These are used as fallbacks when the MCP server is called without a profile URL. The exported configs above override these automatically via query params.
+        <div class="form-control mb-4">
+          <label class="label cursor-pointer justify-start gap-4">
+            <input
+              type="checkbox"
+              class="toggle toggle-primary toggle-sm"
+              v-model="ocrEnabled"
+              @change="saveOCRSettings"
+            />
+            <div>
+              <span class="label-text font-medium">Enable OCR for Scanned PDFs</span>
+              <p class="text-xs text-base-content/60">
+                When enabled, scanned PDFs with little or no native text will be processed with OCR during indexing.
               </p>
-              <div class="grid gap-3 md:grid-cols-2">
-                <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Default collection</span></label>
-                  <select v-model="mcpSettings.mcp_default_collection" class="select select-bordered w-full">
-                    <option v-for="c in mcpCollections" :key="c.id" :value="c.id">{{ c.name }}</option>
-                  </select>
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Default search mode</span></label>
-                  <select v-model="mcpSettings.mcp_mode" class="select select-bordered w-full">
-                    <option value="semantic">Semantic</option>
-                    <option value="keyword">Keyword</option>
-                    <option value="hybrid">Hybrid</option>
-                  </select>
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Default top K</span></label>
-                  <input v-model.number="mcpSettings.mcp_top_k" type="number" min="1" max="20" class="input input-bordered w-full" />
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1"><span class="label-text font-medium">Default excerpt length</span></label>
-                  <input v-model.number="mcpSettings.mcp_max_source_length" type="number" min="100" max="2000" step="50" class="input input-bordered w-full" />
-                </div>
-              </div>
-              <div v-if="mcpSettings.mcp_mode === 'hybrid'" class="form-control">
-                <label class="label p-0 pb-1">
-                  <span class="label-text font-medium">Semantic weight</span>
-                  <span class="label-text-alt">{{ mcpSettings.mcp_semantic_weight.toFixed(2) }}</span>
+            </div>
+          </label>
+        </div>
+
+        <div v-if="ocrEnabled" class="space-y-6">
+          <!-- Vision AI Provider -->
+          <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
+            <div class="mb-4">
+              <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Vision AI Provider</h4>
+              <p class="mt-1 text-xs text-base-content/60">
+                Vision AI sends each PDF page as an image to a language model for text extraction.
+                More accurate than traditional OCR for complex layouts and degraded scans.
+                Set provider to "None" to use Docling (free, local) as fallback when available.
+              </p>
+            </div>
+
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div class="form-control">
+                <label class="label pb-1" for="vision-provider">
+                  <span class="label-text font-medium">Provider</span>
                 </label>
-                <input v-model.number="mcpSettings.mcp_semantic_weight" type="range" min="0" max="1" step="0.05" class="range range-primary range-sm" />
+                <select id="vision-provider" v-model="visionProvider" class="select select-bordered w-full" @change="onOcrProviderChange">
+                  <option value="none">None (Docling fallback)</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="ollama">Ollama (local)</option>
+                </select>
               </div>
-              <label class="label cursor-pointer justify-start gap-3 p-0">
-                <input v-model="mcpSettings.mcp_include_sources" type="checkbox" class="checkbox checkbox-sm checkbox-primary" />
-                <span class="label-text">Include excerpts by default</span>
-              </label>
-              <div class="flex justify-end">
-                <button class="btn btn-sm btn-primary" @click="saveMcpSettings" :disabled="mcpSaving || mcpLoading">
-                  <span v-if="mcpSaving" class="loading loading-spinner loading-xs"></span>
-                  Save server defaults
-                </button>
+
+              <!-- OpenAI model -->
+              <div class="form-control" v-if="visionProvider === 'openai'">
+                <label class="label pb-1" for="vision-model-openai"><span class="label-text font-medium">Model</span></label>
+                <select id="vision-model-openai" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
+                  <option value="gpt-4o">gpt-4o (best quality)</option>
+                  <option value="gpt-4o-mini">gpt-4o-mini (faster, cheaper)</option>
+                </select>
+              </div>
+
+              <!-- Anthropic model -->
+              <div class="form-control" v-else-if="visionProvider === 'anthropic'">
+                <label class="label pb-1" for="vision-model-anthropic"><span class="label-text font-medium">Model</span></label>
+                <select id="vision-model-anthropic" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
+                  <option value="claude-opus-4-6">claude-opus-4-6 (best quality)</option>
+                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5 (balanced)</option>
+                  <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fastest)</option>
+                </select>
+              </div>
+
+              <!-- Ollama model -->
+              <div class="form-control" v-else-if="visionProvider === 'ollama'">
+                <label class="label pb-1" for="vision-model-ollama">
+                  <span class="label-text font-medium">Model</span>
+                  <button
+                    class="label-text-alt btn btn-xs btn-ghost"
+                    @click="refreshOcrOllamaVisionModels"
+                    :disabled="ocrOllamaVisionLoading"
+                    aria-label="Refresh Ollama vision models"
+                  >
+                    {{ ocrOllamaVisionLoading ? '...' : 'Refresh' }}
+                  </button>
+                </label>
+                <select id="vision-model-ollama" v-if="ocrOllamaVisionModels.length" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
+                  <option v-for="m in ocrOllamaVisionModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+                </select>
+                <div v-else-if="ocrOllamaVisionLoading" class="text-xs text-base-content/60 py-2">Checking models...</div>
+                <div v-else class="alert alert-warning py-2 text-xs">
+                  <span v-if="ocrOllamaVisionTotal > 0">
+                    {{ ocrOllamaVisionTotal }} model(s) installed but none support vision. Try: <code>ollama pull qwen2.5-vl</code>
+                  </span>
+                  <span v-else>Ollama not running or no models installed. <code>ollama pull qwen2.5-vl</code></span>
+                </div>
+              </div>
+
+              <!-- API Key (cloud providers) -->
+              <div class="form-control" v-if="visionProvider !== 'none' && visionProvider !== 'ollama'">
+                <label class="label pb-1" for="vision-apikey">
+                  <span class="label-text font-medium">API Key (stored on server for indexing)</span>
+                  <span v-if="visionKeyFromStorage" class="label-text-alt text-success">loaded from settings</span>
+                </label>
+                <input
+                  id="vision-apikey"
+                  v-model="visionApiKey"
+                  type="password"
+                  class="input input-bordered w-full"
+                  :placeholder="visionKeyFromStorage ? '(using saved key)' : 'sk-... or sk-ant-...'"
+                  @change="saveOCRSettings"
+                />
+              </div>
+
+              <!-- Ollama URL -->
+              <div class="form-control" v-if="visionProvider === 'ollama'">
+                <label class="label pb-1" for="vision-ollama-url"><span class="label-text font-medium">Ollama URL</span></label>
+                <input
+                  id="vision-ollama-url"
+                  v-model="visionOllamaUrl"
+                  class="input input-bordered w-full"
+                  placeholder="http://localhost:11434"
+                  @change="saveOCRSettings"
+                />
+              </div>
+
+              <!-- DPI -->
+              <div class="form-control" v-if="visionProvider !== 'none'">
+                <label class="label pb-1" for="vision-dpi"><span class="label-text font-medium">Render DPI</span></label>
+                <input id="vision-dpi" v-model.number="visionDpi" type="number" min="72" max="400" class="input input-bordered w-full" @change="saveOCRSettings" aria-describedby="vision-dpi-help" />
+                <p id="vision-dpi-help" class="label-text-alt mt-1">150 is usually sufficient. Higher = better quality, slower.</p>
               </div>
             </div>
-          </details>
 
-        </template>
+            <div v-if="visionProvider !== 'none'" class="mt-4 grid gap-3 sm:grid-cols-2">
+              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
+                <label class="label cursor-pointer justify-start gap-4 p-0">
+                  <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="visionEnhanceImage" @change="saveOCRSettings" />
+                  <div>
+                    <span class="label-text font-medium">Enhance Image</span>
+                    <p class="text-xs text-base-content/60">Boost contrast and sharpness. Recommended for degraded scans.</p>
+                  </div>
+                </label>
+              </div>
 
-        <div v-if="mcpError" class="alert alert-error py-2">
-          <span>{{ mcpError }}</span>
+              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
+                <label class="label cursor-pointer justify-start gap-4 p-0">
+                  <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="visionCleanupPass" @change="saveOCRSettings" />
+                  <div>
+                    <span class="label-text font-medium">LLM Cleanup Pass</span>
+                    <p class="text-xs text-base-content/60">Second LLM call to fix OCR errors and remove artifacts. Uses extra tokens.</p>
+                  </div>
+                </label>
+              </div>
+
+              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
+                <label class="label cursor-pointer justify-start gap-4 p-0">
+                  <input type="checkbox" class="toggle toggle-secondary toggle-sm" v-model="visionFormMode" @change="saveOCRSettings" />
+                  <div>
+                    <span class="label-text font-medium">Form Mode</span>
+                    <p class="text-xs text-base-content/60">
+                      Removes ruling lines from images and uses a form-aware prompt.
+                      Use for scanned government/regulatory forms with boxes and grids.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <!-- Cleanup model -->
+            <div v-if="visionProvider !== 'none' && visionCleanupPass" class="mt-4 rounded-xl border border-base-300 bg-base-100 p-4">
+              <h4 id="cleanup-model-heading" class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70 mb-2">Cleanup Model</h4>
+              <p class="text-xs text-base-content/60 mb-3">Text-only model for the cleanup pass. Leave blank to reuse the vision model.</p>
+              <div class="form-control max-w-xs">
+                <select v-if="visionProvider === 'openai'" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
+                  <option value="">(same as vision model)</option>
+                  <option value="gpt-4o">gpt-4o</option>
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
+                </select>
+                <select v-else-if="visionProvider === 'anthropic'" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
+                  <option value="">(same as vision model)</option>
+                  <option value="claude-opus-4-6">claude-opus-4-6</option>
+                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5</option>
+                  <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+                </select>
+                <select v-else-if="visionProvider === 'ollama' && ocrOllamaAllModels.length" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
+                  <option value="">(same as vision model)</option>
+                  <option v-for="m in ocrOllamaAllModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <!-- Guardrails -->
+          <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
+            <div class="mb-4">
+              <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Guardrails</h4>
+              <p class="mt-1 text-xs text-base-content/60">Limit OCR cost and processing time on large documents.</p>
+            </div>
+            <div class="grid gap-3 md:grid-cols-2">
+              <div class="form-control">
+                <label class="label pb-1" for="ocr-max-pages"><span class="label-text font-medium">Max Pages</span></label>
+                <input id="ocr-max-pages" v-model.number="ocrMaxPages" type="number" min="0" class="input input-bordered w-full" @change="saveOCRSettings" aria-describedby="ocr-max-pages-help" />
+                <p id="ocr-max-pages-help" class="label-text-alt mt-1">0 = no limit.</p>
+              </div>
+              <div class="form-control">
+                <label class="label pb-1" for="ocr-max-filesize"><span class="label-text font-medium">Max File Size (MB)</span></label>
+                <input id="ocr-max-filesize" v-model.number="ocrMaxFileMb" type="number" min="0" class="input input-bordered w-full" @change="saveOCRSettings" aria-describedby="ocr-max-filesize-help" />
+                <p id="ocr-max-filesize-help" class="label-text-alt mt-1">0 = no limit.</p>
+              </div>
+            </div>
+          </section>
         </div>
-        <div v-if="mcpStatus" class="alert alert-success py-2">
-          <span>{{ mcpStatus }}</span>
-        </div>
 
+        <div v-if="ocrSettingsSaved" class="alert alert-success py-2 mt-3">
+          <span>Settings saved. Applies to new uploads.</span>
+        </div>
       </div>
     </div>
 
@@ -476,16 +523,18 @@
         <h3 class="card-title">Appearance</h3>
 
         <div class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-          <label class="label p-0 pb-1">
+          <label class="label p-0 pb-1" for="theme-select">
             <span class="label-text text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Theme</span>
           </label>
-          <p class="mb-3 text-xs text-base-content/60">
+          <p id="theme-select-help" class="mb-3 text-xs text-base-content/60">
             Visual theme for the local UI only.
           </p>
           <select
+            id="theme-select"
             v-model="selectedTheme"
             class="select select-bordered w-full"
             @change="applyTheme"
+            aria-describedby="theme-select-help"
           >
             <option value="light">Light</option>
             <option value="dark">Dark</option>
@@ -530,9 +579,9 @@
     </div>
 
     <!-- Clear All Confirmation Modal -->
-    <dialog ref="clearModal" class="modal">
+    <dialog ref="clearModal" class="modal" aria-labelledby="clear-all-title">
       <div class="modal-box">
-        <h3 class="font-bold text-lg text-error">Clear All Data</h3>
+        <h3 id="clear-all-title" class="font-bold text-lg text-error">Clear All Data</h3>
         <p class="py-4">
           This will <strong>permanently delete</strong> all sources and indexes in <strong>{{ collectionStore.currentCollection?.name || 'Default' }}</strong>.
         </p>
@@ -572,6 +621,144 @@ import {
 const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab'])
 
 const collectionStore = useCollectionStore()
+
+// OCR settings state
+const ocrEnabled = ref(false)
+const ocrMaxPages = ref(25)
+const ocrMaxFileMb = ref(50)
+const ocrSettingsSaved = ref(false)
+
+const visionProvider = ref('none')
+const visionModel = ref('')
+const visionApiKey = ref('')
+const visionKeyFromStorage = ref(false)
+const visionOllamaUrl = ref('http://localhost:11434')
+const visionDpi = ref(150)
+const visionEnhanceImage = ref(true)
+const visionCleanupPass = ref(false)
+const visionCleanupModel = ref('')
+const visionFormMode = ref(false)
+
+const ocrOllamaVisionModels = ref([])
+const ocrOllamaVisionLoading = ref(false)
+const ocrOllamaVisionTotal = ref(0)
+const ocrOllamaAllModels = ref([])
+
+const OCR_DEFAULT_MODELS = {
+  openai: 'gpt-4o',
+  anthropic: 'claude-opus-4-6',
+  ollama: '',
+  none: '',
+}
+
+const OCR_STORAGE_KEY_MAP = {
+  openai: 'ai_api_key_openai',
+  anthropic: 'ai_api_key_anthropic',
+}
+
+const loadVisionKeyFromStorage = (provider) => {
+  const storageKey = OCR_STORAGE_KEY_MAP[provider]
+  if (!storageKey) { visionKeyFromStorage.value = false; return }
+  const stored = localStorage.getItem(storageKey)
+  if (stored) {
+    visionApiKey.value = stored
+    visionKeyFromStorage.value = true
+  } else {
+    visionApiKey.value = ''
+    visionKeyFromStorage.value = false
+  }
+}
+
+const onOcrProviderChange = () => {
+  visionModel.value = OCR_DEFAULT_MODELS[visionProvider.value] || ''
+  visionCleanupModel.value = ''
+  loadVisionKeyFromStorage(visionProvider.value)
+  if (visionProvider.value === 'ollama') {
+    refreshOcrOllamaVisionModels()
+    fetchOcrAllOllamaModels()
+  }
+  saveOCRSettings()
+}
+
+const refreshOcrOllamaVisionModels = async () => {
+  ocrOllamaVisionLoading.value = true
+  try {
+    const response = await axios.get('/api/ollama/vision-models')
+    ocrOllamaVisionModels.value = response.data.models || []
+    ocrOllamaVisionTotal.value = response.data.total_models || 0
+    if (ocrOllamaVisionModels.value.length > 0 && !ocrOllamaVisionModels.value.find(m => m.name === visionModel.value)) {
+      visionModel.value = ocrOllamaVisionModels.value[0].name
+    }
+  } catch {
+    ocrOllamaVisionModels.value = []
+    ocrOllamaVisionTotal.value = 0
+  } finally {
+    ocrOllamaVisionLoading.value = false
+  }
+}
+
+const fetchOcrAllOllamaModels = async () => {
+  try {
+    const response = await axios.get('/api/ollama/status')
+    ocrOllamaAllModels.value = response.data.models || []
+  } catch {
+    ocrOllamaAllModels.value = []
+  }
+}
+
+const loadOCRSettings = async () => {
+  try {
+    const response = await axios.get('/api/config')
+    ocrEnabled.value = response.data.enable_ocr || false
+    ocrMaxPages.value = response.data.ocr_max_pages ?? 25
+    ocrMaxFileMb.value = response.data.ocr_max_file_mb ?? 50
+    visionProvider.value = response.data.vision_ocr_provider || 'none'
+    visionModel.value = response.data.vision_ocr_model || ''
+    visionApiKey.value = response.data.vision_ocr_api_key || ''
+    visionOllamaUrl.value = response.data.vision_ocr_ollama_url || 'http://localhost:11434'
+    visionDpi.value = response.data.vision_ocr_dpi ?? 150
+    visionEnhanceImage.value = response.data.vision_ocr_enhance_image ?? true
+    visionCleanupPass.value = response.data.vision_ocr_cleanup_pass ?? true
+    visionCleanupModel.value = response.data.vision_ocr_cleanup_model || ''
+    visionFormMode.value = response.data.vision_ocr_form_mode ?? false
+
+    if (!visionApiKey.value) {
+      loadVisionKeyFromStorage(visionProvider.value)
+    } else {
+      visionKeyFromStorage.value = false
+    }
+
+    if (visionProvider.value === 'ollama') {
+      refreshOcrOllamaVisionModels()
+      fetchOcrAllOllamaModels()
+    }
+  } catch {
+    // Use defaults
+  }
+}
+
+const saveOCRSettings = async () => {
+  try {
+    await axios.post('/api/config', {
+      enable_ocr: ocrEnabled.value,
+      ocr_max_pages: Number(ocrMaxPages.value),
+      ocr_max_file_mb: Number(ocrMaxFileMb.value),
+      vision_ocr_provider: visionProvider.value,
+      vision_ocr_model: visionModel.value,
+      vision_ocr_api_key: visionApiKey.value,
+      vision_ocr_dpi: Number(visionDpi.value),
+      vision_ocr_enhance_image: Boolean(visionEnhanceImage.value),
+      vision_ocr_cleanup_pass: Boolean(visionCleanupPass.value),
+      vision_ocr_cleanup_model: visionCleanupModel.value,
+      vision_ocr_ollama_url: visionOllamaUrl.value,
+      vision_ocr_form_mode: Boolean(visionFormMode.value),
+    })
+    ocrSettingsSaved.value = true
+    setTimeout(() => { ocrSettingsSaved.value = false }, 5000)
+  } catch (error) {
+    console.error('Failed to save OCR settings:', error.response?.data?.detail || error)
+  }
+}
 
 // System info
 const systemInfo = ref({ db_backend: 'sqlite', multi_user: false, user_id: 'default' })
@@ -780,158 +967,8 @@ const loadAIState = () => {
   }
 }
 
-// MCP state
-const mcpLoading = ref(false)
-const mcpSaving = ref(false)
-const mcpError = ref('')
-const mcpStatus = ref('')
-const mcpCollections = ref([])
-const mcpResources = ref([])
-const addResourceModal = ref(null)
-const newResource = ref({ name: '', collection_id: 'default', repo_url: '' })
-const mcpSettings = ref({
-  enable_mcp: true,
-  mcp_default_collection: 'default',
-  mcp_top_k: 5,
-  mcp_mode: 'semantic',
-  mcp_semantic_weight: 0.7,
-  mcp_include_sources: true,
-  mcp_max_source_length: 500,
-})
 
 
-const loadMcpCollections = async () => {
-  try {
-    const response = await axios.get('/api/collections')
-    mcpCollections.value = response.data.collections || []
-    if (mcpCollections.value.length > 0 && !mcpCollections.value.find(c => c.id === newResource.value.collection_id)) {
-      newResource.value.collection_id = mcpCollections.value[0].id
-    }
-  } catch {
-    mcpCollections.value = [{ id: 'default', name: 'Default' }]
-  }
-}
-
-const loadMcpSettings = async () => {
-  mcpLoading.value = true
-  mcpError.value = ''
-  try {
-    const response = await axios.get('/api/mcp/config')
-    mcpSettings.value = { ...mcpSettings.value, ...response.data }
-  } catch (error) {
-    mcpError.value = error.response?.data?.detail || 'Failed to load MCP settings'
-  } finally {
-    mcpLoading.value = false
-  }
-}
-
-const loadMcpResources = async () => {
-  try {
-    const response = await axios.get('/api/mcp/resources')
-    mcpResources.value = response.data
-  } catch (error) {
-    mcpError.value = error.response?.data?.detail || 'Failed to load project connections'
-  }
-}
-
-const openAddResource = () => {
-  newResource.value = {
-    name: '',
-    collection_id: mcpCollections.value[0]?.id || 'default',
-    repo_url: '',
-  }
-  addResourceModal.value?.showModal()
-}
-
-const createResource = async () => {
-  mcpSaving.value = true
-  mcpError.value = ''
-  try {
-    const response = await axios.post('/api/mcp/resources', {
-      name: newResource.value.name.trim(),
-      collection_id: newResource.value.collection_id,
-      repo_url: newResource.value.repo_url.trim() || null,
-    })
-    mcpResources.value.push(response.data)
-    addResourceModal.value?.close()
-    mcpStatus.value = `Added "${response.data.name}"`
-  } catch (error) {
-    mcpError.value = error.response?.data?.detail || 'Failed to add project connection'
-  } finally {
-    mcpSaving.value = false
-  }
-}
-
-const deleteResource = async (id) => {
-  try {
-    await axios.delete(`/api/mcp/resources/${id}`)
-    mcpResources.value = mcpResources.value.filter(r => r.id !== id)
-  } catch (error) {
-    mcpError.value = error.response?.data?.detail || 'Failed to delete connection'
-  }
-}
-
-const copyResourceText = async (value, label) => {
-  if (!value) return
-  try {
-    await navigator.clipboard.writeText(value)
-    mcpStatus.value = `${label} copied`
-    mcpError.value = ''
-  } catch {
-    mcpError.value = `Failed to copy ${label}`
-  }
-}
-
-const downloadResourceText = (value, filename) => {
-  if (!value) return
-  const blob = new Blob([value], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  link.click()
-  URL.revokeObjectURL(url)
-  mcpStatus.value = `${filename} downloaded`
-}
-
-const saveMcpToggle = async () => {
-  mcpError.value = ''
-  mcpStatus.value = ''
-  try {
-    await axios.post('/api/mcp/config', { enable_mcp: mcpSettings.value.enable_mcp })
-  } catch (error) {
-    mcpError.value = error.response?.data?.detail || 'Failed to update MCP status'
-    mcpSettings.value.enable_mcp = !mcpSettings.value.enable_mcp
-  }
-}
-
-const saveMcpSettings = async () => {
-  mcpSaving.value = true
-  mcpError.value = ''
-  mcpStatus.value = ''
-
-  try {
-    const payload = {
-      ...mcpSettings.value,
-      mcp_top_k: Number(mcpSettings.value.mcp_top_k) || 5,
-      mcp_semantic_weight: Number(mcpSettings.value.mcp_semantic_weight) || 0.7,
-      mcp_max_source_length: Number(mcpSettings.value.mcp_max_source_length) || 500,
-    }
-
-    const response = await axios.post('/api/mcp/config', payload)
-    if (!response.data.success) {
-      mcpError.value = response.data.errors?.join(', ') || 'Failed to save MCP settings'
-      return
-    }
-
-    mcpStatus.value = 'MCP settings saved'
-    await loadMcpSettings()
-  } catch (error) {
-    mcpError.value = error.response?.data?.detail || 'Failed to save MCP settings'
-  } finally {
-    mcpSaving.value = false
-  }
-}
 
 // Theme
 const applyTheme = () => {
@@ -995,9 +1032,7 @@ onMounted(() => {
     selectedTheme.value = prefersDark ? 'dark' : 'light'
   }
 
-  loadMcpCollections()
-  loadMcpSettings()
-  loadMcpResources()
+  loadOCRSettings()
 })
 </script>
 

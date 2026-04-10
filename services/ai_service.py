@@ -670,13 +670,23 @@ class AIService:
 
         return latest_question
 
-    def synthesize_results(self, query: str, results: List[dict]) -> dict:
+    def synthesize_results(
+        self,
+        query: str,
+        results: List[dict],
+        collection_overview: Optional[str] = None,
+    ) -> dict:
         """Generate a coherent answer from search results with citations.
 
         This is the highest-value AI feature: it turns "here are 10 document
         chunks" into "here is the answer to your question, with sources."
+
+        If `collection_overview` is provided, it is injected into the prompt so
+        the model can also answer meta-questions about the collection itself
+        (file counts, available documents, date ranges) that aren't answerable
+        from the retrieved chunks alone.
         """
-        if not results:
+        if not results and not collection_overview:
             return {"synthesis": "", "usage": None}
 
         context_parts = []
@@ -685,20 +695,29 @@ class AIService:
                 f"[Source {i + 1}: {r['filename']}, page {r['page_number']}]\n"
                 f"{r['text_snippet']}"
             )
-        context = "\n\n---\n\n".join(context_parts)
+        context = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant passages found."
+
+        overview_section = (
+            f"COLLECTION OVERVIEW:\n{collection_overview}\n\n"
+            if collection_overview
+            else ""
+        )
 
         prompt = (
-            "You are a research assistant. Based on the search results below, "
+            "You are a research assistant. Based on the information below, "
             "provide a clear, concise answer to the user's query. Cite your sources "
-            "using [Source N] notation.\n\n"
+            "using [Source N] notation when referencing retrieved passages.\n\n"
             "Rules:\n"
-            "- Only use information from the provided sources\n"
-            "- Cite specific sources for each claim using [Source N]\n"
-            "- If the sources don't contain enough info, say so\n"
-            "- Be concise but thorough\n"
-            "- Use plain language\n\n"
+            "- Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
+            "(file counts, available documents, date ranges, what's in the collection).\n"
+            "- Use the RETRIEVED SOURCES for questions about document content, and cite "
+            "specific sources with [Source N].\n"
+            "- If neither the overview nor the sources contain enough info, say so.\n"
+            "- Be concise but thorough.\n"
+            "- Use plain language.\n\n"
+            f"{overview_section}"
             f"Query: {query}\n\n"
-            f"Sources:\n{context}"
+            f"RETRIEVED SOURCES:\n{context}"
         )
 
         start = time.time()

@@ -1,8 +1,8 @@
 <template>
-  <dialog ref="modal" class="modal" :class="{ 'modal-open': visible }">
+  <dialog ref="modal" class="modal" :class="{ 'modal-open': visible }" aria-labelledby="share-modal-title">
     <div class="modal-box max-w-lg">
-      <h3 class="font-bold text-lg flex items-center gap-2">
-        <Share2 :size="18" class="text-primary" />
+      <h3 id="share-modal-title" class="font-bold text-lg flex items-center gap-2">
+        <Share2 :size="18" class="text-primary" aria-hidden="true" />
         Share Collection
       </h3>
       <p class="text-sm text-base-content/70 mt-1">{{ collectionName }}</p>
@@ -11,15 +11,15 @@
       <div class="mt-4 space-y-3">
         <div class="flex gap-2 items-end">
           <div class="form-control flex-1">
-            <label class="label py-1"><span class="label-text text-xs">Permission</span></label>
-            <select v-model="newPermission" class="select select-bordered select-sm w-full">
+            <label class="label py-1" for="share-permission"><span class="label-text text-xs">Permission</span></label>
+            <select id="share-permission" v-model="newPermission" class="select select-bordered select-sm w-full">
               <option value="read">Read only</option>
               <option value="readwrite">Read + Write</option>
             </select>
           </div>
           <div class="form-control w-24">
-            <label class="label py-1"><span class="label-text text-xs">Expires</span></label>
-            <select v-model="newExpiresDays" class="select select-bordered select-sm w-full">
+            <label class="label py-1" for="share-expires"><span class="label-text text-xs">Expires</span></label>
+            <select id="share-expires" v-model="newExpiresDays" class="select select-bordered select-sm w-full">
               <option :value="null">Never</option>
               <option :value="7">7 days</option>
               <option :value="30">30 days</option>
@@ -67,11 +67,21 @@
               </div>
               <div class="font-mono text-base-content/40 mt-0.5 truncate" :title="share.id">{{ share.id }}</div>
             </div>
-            <button class="btn btn-ghost btn-xs" @click="copyShareLink(share.id)" title="Copy link">
-              <Copy :size="12" />
+            <button
+              class="btn btn-ghost btn-xs"
+              @click="copyShareLink(share.id)"
+              title="Copy link"
+              aria-label="Copy share link to clipboard"
+            >
+              <Copy :size="12" aria-hidden="true" />
             </button>
-            <button class="btn btn-ghost btn-xs text-error" @click="revokeShareLink(share.id)" title="Revoke">
-              <Trash2 :size="12" />
+            <button
+              class="btn btn-ghost btn-xs text-error"
+              @click="revokeShareLink(share.id)"
+              title="Revoke share"
+              aria-label="Revoke share link"
+            >
+              <Trash2 :size="12" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -79,9 +89,10 @@
 
       <!-- Accept share section -->
       <div class="mt-4 border-t border-base-300 pt-4">
-        <div class="text-xs font-semibold text-base-content/60 mb-2">Accept a Share Link</div>
+        <label for="accept-share-token" class="text-xs font-semibold text-base-content/60 mb-2 block">Accept a Share Link</label>
         <div class="flex gap-2">
           <input
+            id="accept-share-token"
             v-model="acceptToken"
             type="text"
             placeholder="Paste share token here..."
