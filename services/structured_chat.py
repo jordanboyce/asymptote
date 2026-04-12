@@ -18,6 +18,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
 from services.structured_store import SQLValidationError, StructuredStore
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ _TOOL_CALL_RE = re.compile(
 _MAX_STRUCTURED_ROWS_PER_TOOL = 200
 _MAX_SCHEMA_PROMPT_COLS = 40
 
-SUPPORTED_TOOLS = {"query_structured_table", "compute_portfolio_metric"}
+SUPPORTED_TOOLS = {"query_table", "compute_portfolio_metric"}
 
 
 def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 20) -> str:
@@ -64,7 +65,7 @@ def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 2
         lines.append("")
     if len(tables) > max_tables:
         lines.append(f"... and {len(tables) - max_tables} more tables (call "
-                     f"list_structured_tables in MCP to see all).")
+                     f"list_tables in MCP to see all).")
     return "\n".join(lines)
 
 
@@ -81,12 +82,13 @@ def build_tool_use_instructions() -> str:
         "multiple blocks. After the tool results come back you will be asked "
         "to produce a final answer.\n\n"
         "Available tools:\n"
-        "  1. query_structured_table — run read-only SQL SELECT against the tables.\n"
-        '     <tool_call>{"tool": "query_structured_table", "sql": "SELECT \\"sector\\", SUM(\\"market_value\\") FROM \\"csv_data_abc\\" GROUP BY \\"sector\\" ORDER BY 2 DESC"}</tool_call>\n'
+        "  1. query_table — run read-only SQL SELECT against the tables.\n"
+        '     <tool_call>{"tool": "query_table", "sql": "SELECT \\"sector\\", SUM(\\"market_value\\") FROM \\"csv_data_abc\\" GROUP BY \\"sector\\" ORDER BY 2 DESC"}</tool_call>\n'
         "     Rules: SELECT / WITH only; single statement; quote every identifier "
         "     in double quotes; column names are case-sensitive; use the exact "
         "     sql_name shown in the schema.\n\n"
-        "  2. compute_portfolio_metric — run a canned portfolio metric.\n"
+        "  2. compute_portfolio_metric — run a canned financial portfolio metric.\n"
+        "     Only use this when the table has financial roles (market_value, pnl, etc.).\n"
         '     <tool_call>{"tool": "compute_portfolio_metric", "table": "csv_data_abc", "metric": "top_holdings", "limit": 5}</tool_call>\n'
         "     Available metrics: row_count, total_market_value, total_cost_basis, "
         "total_pnl, top_holdings, bottom_holdings, largest_gains, largest_losses, "
@@ -178,6 +180,9 @@ def execute_tool_calls(
             continue
 
         tool = call.get("tool")
+        # Accept legacy name emitted by older prompts
+        if tool == "query_structured_table":
+            tool = "query_table"
         if tool not in SUPPORTED_TOOLS:
             results.append({
                 "tool": tool,
@@ -187,10 +192,10 @@ def execute_tool_calls(
             continue
 
         try:
-            if tool == "query_structured_table":
+            if tool == "query_table":
                 sql = call.get("sql") or call.get("query")
                 if not sql:
-                    raise ValueError("query_structured_table requires 'sql'")
+                    raise ValueError("query_table requires 'sql'")
                 store = _resolve_store_for_sql(sql, stores, tables)
                 if store is None:
                     raise ValueError("No structured tables available in this collection.")
@@ -200,7 +205,7 @@ def execute_tool_calls(
                 )
                 data = store.execute_query(sql, max_rows=max_rows)
                 results.append({
-                    "tool": tool,
+                    "tool": "query_table",
                     "args": {"sql": sql, "max_rows": max_rows},
                     "result": data,
                 })
@@ -213,7 +218,7 @@ def execute_tool_calls(
                 if store is None:
                     raise ValueError("No structured tables available in this collection.")
                 limit = int(call.get("limit", 10))
-                data = store.compute_metric(identifier, metric, limit=limit)
+                data = compute_financial_metric(store, identifier, metric, limit=limit)
                 results.append({
                     "tool": tool,
                     "args": {"table": identifier, "metric": metric, "limit": limit},
@@ -422,5 +427,3 @@ def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str,
             t_copy["collection_id"] = cid
             all_tables.append(t_copy)
     return all_tables, stores
-
-

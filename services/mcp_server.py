@@ -22,6 +22,7 @@ from services.structured_chat import (
     collect_structured_tables,
     render_table_as_jsonl,
 )
+from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
 from services.structured_store import SQLValidationError, StructuredStore
 
 logger = logging.getLogger(__name__)
@@ -268,9 +269,9 @@ def list_collections() -> dict[str, Any]:
       - document_count  → number of indexed documents
 
     Once you know the target collection_id, pass it explicitly to
-    `get_collection_info`, `search_collection`, `list_structured_tables`,
-    `query_structured_table`, `compute_portfolio_metric`, etc. If you omit
-    `collection_id`, those tools fall back to the server's default
+    `get_collection_info`, `search_collection`, `list_tables`,
+    `query_table`, `aggregate_table`, `compute_portfolio_metric`, etc. If
+    you omit `collection_id`, those tools fall back to the server's default
     collection, which may not be what the user asked about.
     """
     _ensure_enabled()
@@ -394,10 +395,10 @@ def search_collection(
     Chunk retrieval truncates tabular data and the excerpts you get back will
     be a subset of rows — answering numeric questions from them leads to
     hallucinated totals. Instead use:
-      - `list_structured_tables` → `get_structured_table_rows` (small tables)
-      - `list_structured_tables` → `query_structured_table` (large tables or
-         when you want SQL aggregation)
-      - `compute_portfolio_metric` for canned portfolio metrics.
+      - `list_tables` → `get_table_rows` (small tables, read full data)
+      - `list_tables` → `aggregate_table` (group-by / aggregation, no SQL)
+      - `list_tables` → `query_table` (ad-hoc SQL for any domain)
+      - `compute_portfolio_metric` for canned financial portfolio metrics.
 
     When this tool IS the right choice:
     - Narrative / prose / conceptual questions about PDFs, text, code, notes.
@@ -594,8 +595,8 @@ def get_document_context(
       - To search for a concept or topic — use `search_collection` instead.
         This tool assumes you already know the `document_id`.
       - For numeric / aggregation questions about CSV or Excel data — use
-        `get_structured_table_rows` or `query_structured_table`; this tool
-        returns chunk text which is truncated for tabular sources.
+        `get_table_rows` or `query_table`; this tool returns chunk text
+        which is truncated for tabular sources.
     """
     _ensure_enabled()
 
@@ -681,60 +682,82 @@ def _get_structured_store(collection_id: str) -> StructuredStore:
 
 def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     """Trim a full schema payload down to what an LLM needs to write a query."""
-    return {
+    columns = []
+    detected_roles: dict[str, str] = {}
+    for c in schema["columns"]:
+        role = c.get("role")
+        if role:
+            detected_roles[c["sql_name"]] = role
+        raw_stats = c.get("stats") or {}
+        col_stats = (
+            {k: v for k, v in raw_stats.items()
+             if k in ("min", "max", "mean", "sum", "count", "p25", "p50", "p75")}
+            if raw_stats else None
+        )
+        columns.append({
+            "sql_name": c["sql_name"],
+            "original_name": c["name"],
+            "type": c["type"],
+            "role": role,
+            "samples": c.get("samples", [])[:3],
+            "stats": col_stats,
+        })
+
+    result: dict[str, Any] = {
         "filename": schema["filename"],
         "sheet_name": schema.get("sheet_name") or None,
         "table_name": schema["table_name"],
         "row_count": schema["row_count"],
         "column_count": schema["column_count"],
-        "columns": [
-            {
-                "sql_name": c["sql_name"],
-                "original_name": c["name"],
-                "type": c["type"],
-                "role": c.get("role"),
-                "samples": c.get("samples", [])[:3],
-                "stats": {
-                    k: v for k, v in (c.get("stats") or {}).items()
-                    if k in ("min", "max", "mean", "sum", "count")
-                } if c.get("stats") else None,
-            }
-            for c in schema["columns"]
-        ],
+        "columns": columns,
     }
+    if detected_roles:
+        result["financial_roles"] = detected_roles
+    return result
 
 
 @_asymptote_mcp.tool()
-def list_structured_tables(collection_id: str | None = None) -> dict[str, Any]:
+def list_tables(collection_id: str | None = None) -> dict[str, Any]:
     """List every CSV / Excel sheet ingested as a typed SQL table.
 
-    Each entry returns the physical `table_name` to use in SQL, the original
-    filename, row/column counts, and the detected financial column roles
-    (ticker, market_value, sector, pnl, etc.). Call this FIRST whenever a
+    Each entry returns the physical `table_name` to use in SQL queries, the
+    original filename, and row/column counts. Call this FIRST whenever a
     user asks a numeric / aggregation / filter / ranking question about CSV
     or Excel data — `search_collection` truncates tabular data via chunk
-    retrieval and will lead you to hallucinate totals.
+    retrieval and leads to hallucinated totals.
 
     Parameters:
       - collection_id: Optional. If omitted, uses the server's default
-        collection. When the user asks about a specific client / portfolio,
+        collection. When the user asks about a specific client / project,
         first call `list_collections` and then pass the right id here.
 
+    Identifier forms accepted by other table tools:
+      - `table_name`  — the SQL table identifier (e.g. "csv_data_abc123")
+      - `filename`    — original source filename (e.g. "portfolio.csv")
+      - `document_id` — the document's UUID from `get_collection_info`
+
     Recommended workflow after calling this:
-      - Small table, just want the data → `get_structured_table_rows(identifier)`.
-      - Large table or want a SQL aggregation → `query_structured_table(sql)`.
-      - Canned portfolio metric (top_holdings, breakdown_by_sector, etc.) →
-        `compute_portfolio_metric(identifier, metric)`.
+      - Inspect schema + samples first → `get_table_schema(identifier)`.
+      - Small table, just want the data → `get_table_rows(identifier)`.
+      - Ad-hoc SQL aggregation → `query_table(sql)`.
+      - Generic groupBy/aggregate → `aggregate_table(identifier, ...)`.
+      - Canned financial metrics (top_holdings, breakdown_by_sector, etc.) →
+        `compute_portfolio_metric(identifier, metric)` — only useful when
+        `get_table_schema` returns a `financial_roles` field.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
-    tables = store.list_tables()
+    raw_tables = store.list_tables()
+    # Strip financial_roles from the listing — that detail belongs in get_table_schema.
+    tables = [
+        {k: v for k, v in t.items() if k != "financial_roles"}
+        for t in raw_tables
+    ]
     return {
         "collection_id": resolved_collection,
         "total_tables": len(tables),
         "tables": tables,
-        "available_metrics": sorted(StructuredStore.AVAILABLE_METRICS.keys()),
     }
 
 
@@ -749,11 +772,16 @@ def get_table_schema(identifier: str, collection_id: str | None = None) -> dict[
         collection. Pass an explicit id (from `list_collections`) when the
         table lives in a specific client / portfolio collection.
 
-    The response lists every column with its inferred type, detected
-    financial role, sample values, and basic stats (min/max/mean/sum for
-    numeric columns). Use this before writing SQL so you know the exact
-    column names, types, and which columns represent market value, cost
-    basis, tickers, sectors, etc.
+    The response lists every column with its inferred type, sample values,
+    and stats (min/max/mean/sum/p25/p50/p75 for numeric columns). Use this
+    before writing SQL so you know exact column names and types.
+
+    When semantic financial roles are detected (ticker, market_value, sector,
+    pnl, cost_basis, etc.) the response includes a top-level `financial_roles`
+    map of sql_name → role. A non-empty `financial_roles` means
+    `compute_portfolio_metric` will work for this table; if the field is
+    absent the table has no recognized financial structure and you should use
+    `aggregate_table` or `query_table` instead.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
@@ -762,32 +790,31 @@ def get_table_schema(identifier: str, collection_id: str | None = None) -> dict[
     if not schema:
         raise ValueError(
             f"No structured table found for '{identifier}' in collection "
-            f"'{resolved_collection}'. Call list_structured_tables() to see what's available."
+            f"'{resolved_collection}'. Call list_tables() to see what's available."
         )
     return _format_schema_summary(schema)
 
 
 @_asymptote_mcp.tool()
-def get_structured_table_rows(
+def get_table_rows(
     identifier: str,
     limit: int = 200,
     collection_id: str | None = None,
 ) -> dict[str, Any]:
     """Return the full rows of an ingested CSV / Excel table in one call.
 
-    This is the happy-path tool for "show me the data", "what's in this
-    table", and any numeric / aggregation question about a small-to-medium
-    table — you get every column and every row without writing SQL. Skip
-    `list_structured_tables` → `get_table_schema` → `query_structured_table`
-    when you just need to read the rows.
+    This is the happy-path tool for "show me the data" and any
+    numeric / aggregation question about a small-to-medium table — you get
+    every column and every row without writing SQL.
 
     Parameters:
-      - identifier: a table_name, filename (e.g. "portfolio.csv"), or
-        document_id — whichever is most convenient.
+      - identifier: a table_name, filename (e.g. "sales.csv"), or
+        document_id — whichever is most convenient. See `list_tables` for
+        the available forms.
       - limit: max rows to return (default 200, cap 2000).
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
-        table lives in a specific client / portfolio collection.
+        table lives in a specific client / project collection.
 
     Returns:
       - columns: original column headers from the source file (display names)
@@ -796,9 +823,8 @@ def get_structured_table_rows(
       - total_row_count: total rows in the underlying table
       - truncated: true if there are more rows beyond `limit`
 
-    If the table is larger than your limit and you need aggregates, use
-    `query_structured_table` with a SQL aggregation instead of pulling every
-    row.
+    If the table is large and you need aggregates, use `aggregate_table` or
+    write SQL via `query_table` instead of pulling every row.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
@@ -807,7 +833,7 @@ def get_structured_table_rows(
     if not schema:
         raise ValueError(
             f"No structured table found for '{identifier}' in collection "
-            f"'{resolved_collection}'. Call list_structured_tables() to see what's available."
+            f"'{resolved_collection}'. Call list_tables() to see what's available."
         )
     table_name = schema["table_name"]
     capped = max(1, min(int(limit), 2000))
@@ -842,16 +868,16 @@ def get_structured_table_rows(
 
 
 @_asymptote_mcp.tool()
-def query_structured_table(
+def query_table(
     sql: str,
     max_rows: int = 500,
     collection_id: str | None = None,
 ) -> dict[str, Any]:
     """Run a read-only SQL SELECT against the typed CSV / Excel tables.
 
-    This is the escape hatch for ad-hoc analytical questions — "total market
-    value by sector", "positions with more than 5% weight", "sum of PnL for
-    holdings where sector = 'Technology'", etc.
+    Use this for any ad-hoc analytical question that doesn't fit the canned
+    tools — complex multi-table joins, window functions, custom WHERE clauses,
+    etc. Works for ANY domain (sales, medical, financial, ...).
 
     Parameters:
       - sql: a single SELECT / WITH statement. INSERT / UPDATE / DELETE / DDL
@@ -859,17 +885,15 @@ def query_structured_table(
       - max_rows: response cap (default 500, max 2000).
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
-        table lives in a specific client / portfolio collection.
+        table lives in a specific collection.
 
-    Workflow: `list_collections` → `list_structured_tables(collection_id)`
-    → `get_table_schema(table_name, collection_id)` → then issue the SQL
-    with the same collection_id. Column names are case-sensitive — always
-    quote them in double quotes: `SELECT "ticker", SUM("market_value") FROM
-    "csv_data_abc123" GROUP BY "ticker"`.
+    Workflow: `list_tables(collection_id)` → `get_table_schema(identifier)`
+    → issue SQL with the same collection_id. Column names are case-sensitive
+    — always quote them in double-quotes:
+      `SELECT "region", SUM("revenue") FROM "csv_data_abc123" GROUP BY "region"`
 
-    If you just want every row of a small-to-medium table (no aggregation),
-    prefer `get_structured_table_rows(identifier)` — it's a one-shot call
-    with no SQL to write.
+    For simple group-by aggregations prefer `aggregate_table` — no SQL to
+    write. For whole-table reads prefer `get_table_rows(identifier)`.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
@@ -912,16 +936,20 @@ def compute_portfolio_metric(
     limit: int = 10,
     collection_id: str | None = None,
 ) -> dict[str, Any]:
-    """Compute a canned portfolio metric on an ingested table.
+    """Compute a canned financial portfolio metric on an ingested table.
 
-    Safer and more predictable than hand-written SQL for common portfolio
-    questions — use this before `query_structured_table` when the question
-    matches a known metric.
+    FINANCIAL CONTEXT ONLY — only call this tool when `get_table_schema`
+    returned a non-empty `financial_roles` field (market_value, pnl,
+    cost_basis, ticker, sector, etc.). For generic tabular data without
+    financial roles use `aggregate_table` or `query_table` instead.
+
+    Safer and more predictable than hand-written SQL for the 15 common
+    portfolio metrics listed below.
 
     Parameters:
-      - identifier: filename, table_name, or document_id.
+      - identifier: filename, table_name, or document_id (from `list_tables`).
       - metric: one of the supported metrics listed below.
-      - limit: for ranking metrics (top_holdings, etc.).
+      - limit: for ranking metrics (top_holdings, bottom_holdings, etc.).
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
         portfolio lives in a specific client collection.
@@ -943,16 +971,346 @@ def compute_portfolio_metric(
       - weighted_return
       - summary_statistics
 
-    Each metric requires specific column roles (e.g. `top_holdings` needs a
-    column detected as `market_value`); if the required role isn't found
-    you'll get an error listing which roles were detected — at that point
-    fall back to `query_structured_table` with hand-written SQL.
+    Each metric requires specific column roles; if the required role isn't
+    found you'll get an error listing which roles were detected — fall back
+    to `query_table` with hand-written SQL in that case.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
-    result = store.compute_metric(identifier, metric, limit=limit)
+    result = compute_financial_metric(store, identifier, metric, limit=limit)
     return {"collection_id": resolved_collection, **result}
+
+
+_AGG_FN_SQL = {
+    "sum": "SUM",
+    "mean": "AVG",
+    "count": "COUNT",
+    "min": "MIN",
+    "max": "MAX",
+}
+
+
+@_asymptote_mcp.tool()
+def aggregate_table(
+    identifier: str,
+    aggregate_col: str,
+    agg_fn: Literal["sum", "mean", "count", "min", "max"],
+    group_by: str | None = None,
+    sort_by: Literal["value_asc", "value_desc", "group_asc", "group_desc"] | None = None,
+    limit: int | None = None,
+    collection_id: str | None = None,
+) -> dict[str, Any]:
+    """Group-by / aggregate a table column — no SQL required.
+
+    A convenience wrapper around `query_table` for the most common analytical
+    pattern: group by one column, aggregate another. Works for ANY domain
+    (sales, medical, financial, logistics, ...) — no financial role detection
+    required.
+
+    Parameters:
+      - identifier: table_name, filename (e.g. "sales.csv"), or document_id.
+        See `list_tables` for the available forms.
+      - aggregate_col: column to aggregate (use the sql_name from
+        `get_table_schema`).
+      - agg_fn: aggregation function — sum | mean | count | min | max.
+      - group_by: optional column to group by. If omitted the aggregation
+        runs across the whole table (single-row result).
+      - sort_by: optional sort order — "value_asc", "value_desc" (sort by the
+        aggregate result), "group_asc", "group_desc" (sort by the group key).
+        Ignored when group_by is omitted.
+      - limit: optional row cap on the result (useful for "top N" queries).
+      - collection_id: Optional. If omitted, uses the server's default
+        collection. Pass an explicit id from `list_collections` when needed.
+
+    Examples:
+      - Total revenue by region:
+          aggregate_table("sales.csv", "revenue", "sum", group_by="region", sort_by="value_desc")
+      - Average age by department:
+          aggregate_table("employees.csv", "age", "mean", group_by="department")
+      - Overall max temperature:
+          aggregate_table("sensors.csv", "temperature", "max")
+      - Top 10 products by quantity sold:
+          aggregate_table("orders.csv", "quantity", "sum", group_by="product", sort_by="value_desc", limit=10)
+    """
+    _ensure_enabled()
+    if agg_fn not in _AGG_FN_SQL:
+        raise ValueError(f"agg_fn must be one of: {sorted(_AGG_FN_SQL)}")
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    store = _get_structured_store(resolved_collection)
+    schema = store.get_schema(identifier)
+    if not schema:
+        raise ValueError(
+            f"No structured table found for '{identifier}' in collection "
+            f"'{resolved_collection}'. Call list_tables() to see what's available."
+        )
+    table_name = schema["table_name"]
+    sql_fn = _AGG_FN_SQL[agg_fn]
+    agg_expr = f'{sql_fn}("{aggregate_col}")'
+
+    if group_by:
+        select = f'SELECT "{group_by}", {agg_expr} AS result FROM "{table_name}" GROUP BY "{group_by}"'
+        if sort_by == "value_desc":
+            select += " ORDER BY result DESC"
+        elif sort_by == "value_asc":
+            select += " ORDER BY result ASC"
+        elif sort_by == "group_desc":
+            select += f' ORDER BY "{group_by}" DESC'
+        elif sort_by == "group_asc":
+            select += f' ORDER BY "{group_by}" ASC'
+    else:
+        select = f'SELECT {agg_expr} AS result FROM "{table_name}"'
+
+    if limit is not None:
+        capped = max(1, min(int(limit), 2000))
+        select += f" LIMIT {capped}"
+
+    try:
+        result = store.execute_query(select, max_rows=2000)
+    except SQLValidationError as e:
+        raise ValueError(str(e))
+
+    return {
+        "collection_id": resolved_collection,
+        "identifier": identifier,
+        "table_name": table_name,
+        "agg_fn": agg_fn,
+        "aggregate_col": aggregate_col,
+        "group_by": group_by,
+        "sql": select,
+        **result,
+    }
+
+
+@_asymptote_mcp.tool()
+def get_document_metadata(
+    document_id: str,
+    collection_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the full metadata record for an indexed document.
+
+    Exposes fields that are buried in the indexing pipeline and not returned
+    by `search_collection` or `get_collection_info`: source format, extraction
+    method, embedding model, chunk parameters, and schema version.
+
+    Parameters:
+      - document_id: The id from `get_collection_info` or a search result.
+      - collection_id: Optional. If omitted, uses the server's default
+        collection.
+
+    Returns:
+      - document_id, filename
+      - source_format: e.g. "pdf", "csv", "xlsx", "docx"
+      - source_type: "upload", "local_path", "repo", etc.
+      - source_path: original file path (if indexed from local disk)
+      - extraction_method: OCR strategy used (e.g. "pdfminer", "vision", "csv")
+      - embedding_model: model used to embed this document's chunks
+      - chunk_size / chunk_overlap: chunking parameters
+      - schema_version: metadata schema version for compatibility checks
+      - num_pages / num_chunks: document sizing
+      - upload_timestamp: when it was indexed
+    """
+    _ensure_enabled()
+    resolved_collection = _resolve_collection_id(collection_id)
+    indexer = indexer_manager.get_indexer(resolved_collection)
+    metadata_store = indexer.vector_store.metadata_store
+    doc_info = metadata_store.get_document_info(document_id)
+    if not doc_info:
+        raise ValueError(
+            f"Document '{document_id}' not found in collection "
+            f"'{resolved_collection}'. Call get_collection_info() to see "
+            f"available document_ids."
+        )
+    return {
+        "collection_id": resolved_collection,
+        "document_id": doc_info.get("document_id"),
+        "filename": doc_info.get("filename"),
+        "source_format": doc_info.get("source_format"),
+        "source_type": doc_info.get("source_type"),
+        "source_path": doc_info.get("source_path"),
+        "extraction_method": doc_info.get("extraction_method"),
+        "embedding_model": doc_info.get("embedding_model"),
+        "chunk_size": doc_info.get("chunk_size"),
+        "chunk_overlap": doc_info.get("chunk_overlap"),
+        "schema_version": doc_info.get("schema_version"),
+        "num_pages": doc_info.get("num_pages"),
+        "num_chunks": doc_info.get("num_chunks"),
+        "upload_timestamp": doc_info.get("upload_timestamp"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP Resources — passive context the host LLM can load without tool calls
+# ---------------------------------------------------------------------------
+
+
+@_asymptote_mcp.resource("collection://{id}")
+def resource_collection(id: str) -> dict[str, Any]:
+    """Collection metadata and document inventory.
+
+    URI: collection://{collection_id}
+
+    Returns the same payload as get_collection_info(detail="with_documents")
+    so the host LLM can load a complete collection overview — name,
+    description, document list with chunk/page counts — without issuing a
+    tool call. Useful for priming context at session start.
+    """
+    _ensure_enabled()
+    resolved = _resolve_collection_id(id)
+    collection = collection_service.get_collection(resolved)
+    stats = indexer_manager.get_collection_stats(resolved)
+    try:
+        indexer = indexer_manager.get_indexer(resolved)
+        documents = indexer.list_documents()
+    except Exception:
+        documents = []
+
+    doc_list = []
+    for doc in documents:
+        entry: dict[str, Any] = {
+            "filename": doc.get("filename", "unknown"),
+            "document_id": doc.get("document_id"),
+            "chunks": doc.get("num_chunks", 0),
+            "pages": doc.get("num_pages", 0),
+            "source_type": doc.get("source_type", "upload"),
+        }
+        if doc.get("source_path"):
+            entry["source_path"] = doc["source_path"]
+        doc_list.append(entry)
+
+    return {
+        "collection_id": resolved,
+        "collection_name": collection.get("name", resolved) if collection else resolved,
+        "description": collection.get("description", "") if collection else "",
+        "total_documents": stats.get("total_documents", 0),
+        "total_chunks": stats.get("total_chunks", 0),
+        "total_pages": stats.get("total_pages", 0),
+        "documents": doc_list,
+    }
+
+
+@_asymptote_mcp.resource("collection://{id}/schema")
+def resource_collection_schema(id: str) -> dict[str, Any]:
+    """All table schemas in a collection.
+
+    URI: collection://{collection_id}/schema
+
+    Returns the full typed schema for every CSV / Excel sheet in the
+    collection, including column types, sample values, stats (with
+    p25/p50/p75), and financial roles where detected. Load this once to
+    understand all structured data in a collection without calling
+    get_table_schema() for each table individually.
+    """
+    _ensure_enabled()
+    resolved = _resolve_collection_id(id)
+    store = _get_structured_store(resolved)
+    raw_tables = store.list_tables()
+    schemas = []
+    for t in raw_tables:
+        full = store.get_schema(t["table_name"])
+        if full:
+            schemas.append(_format_schema_summary(full))
+    return {
+        "collection_id": resolved,
+        "total_tables": len(schemas),
+        "schemas": schemas,
+    }
+
+
+@_asymptote_mcp.resource("document://{id}")
+def resource_document(id: str) -> dict[str, Any]:
+    """Full document metadata record.
+
+    URI: document://{document_id}
+
+    Returns the complete metadata for a single document — source format,
+    extraction method, embedding model, chunk parameters, schema version,
+    page/chunk counts, and upload timestamp. This is the same data exposed
+    by get_document_metadata() but accessible as a passive resource.
+
+    Note: document_id must be resolvable against the server's default
+    collection. For documents in other collections, use
+    get_document_metadata(document_id, collection_id) instead.
+    """
+    _ensure_enabled()
+    resolved = _resolve_collection_id(None)
+    indexer = indexer_manager.get_indexer(resolved)
+    metadata_store = indexer.vector_store.metadata_store
+    doc_info = metadata_store.get_document_info(id)
+    if not doc_info:
+        raise ValueError(
+            f"Document '{id}' not found in collection '{resolved}'. "
+            f"Call get_collection_info() to see available document_ids."
+        )
+    return {
+        "collection_id": resolved,
+        "document_id": doc_info.get("document_id"),
+        "filename": doc_info.get("filename"),
+        "source_format": doc_info.get("source_format"),
+        "source_type": doc_info.get("source_type"),
+        "source_path": doc_info.get("source_path"),
+        "extraction_method": doc_info.get("extraction_method"),
+        "embedding_model": doc_info.get("embedding_model"),
+        "chunk_size": doc_info.get("chunk_size"),
+        "chunk_overlap": doc_info.get("chunk_overlap"),
+        "schema_version": doc_info.get("schema_version"),
+        "num_pages": doc_info.get("num_pages"),
+        "num_chunks": doc_info.get("num_chunks"),
+        "upload_timestamp": doc_info.get("upload_timestamp"),
+    }
+
+
+@_asymptote_mcp.resource("table://{id}")
+def resource_table(id: str) -> dict[str, Any]:
+    """Table schema and sample rows in one fetch.
+
+    URI: table://{identifier}   where identifier is a table_name, filename,
+    or document_id.
+
+    Combines get_table_schema() + the first 10 rows in a single resource
+    load, giving the host LLM enough context to write queries or answer
+    basic questions without any tool calls. For the full row set use the
+    get_table_rows() tool.
+
+    Note: resolves against the server's default collection.
+    """
+    _ensure_enabled()
+    resolved = _resolve_collection_id(None)
+    store = _get_structured_store(resolved)
+    schema = store.get_schema(id)
+    if not schema:
+        raise ValueError(
+            f"No structured table found for '{id}' in collection '{resolved}'. "
+            f"Call list_tables() to see what's available."
+        )
+    summary = _format_schema_summary(schema)
+
+    table_name = schema["table_name"]
+    sql = f'SELECT * FROM "{table_name}" ORDER BY __row_number LIMIT 10'
+    try:
+        result = store.execute_query(sql, max_rows=10)
+    except Exception:
+        result = {}
+
+    sql_to_orig = {
+        c["sql_name"]: c["name"]
+        for c in schema.get("columns", [])
+        if c.get("sql_name") and c.get("name")
+    }
+    raw_columns: list[str] = result.get("columns") or []
+    raw_rows: list[list[Any]] = result.get("rows") or []
+    keep_idx = [i for i, c in enumerate(raw_columns) if c != "__row_number"]
+    display_columns = [sql_to_orig.get(raw_columns[i], raw_columns[i]) for i in keep_idx]
+    display_rows = [[row[i] for i in keep_idx] for row in raw_rows]
+
+    return {
+        "collection_id": resolved,
+        "schema": summary,
+        "sample_columns": display_columns,
+        "sample_rows": display_rows,
+        "sample_row_count": len(display_rows),
+    }
 
 
 class ToggleableMCPApp:
