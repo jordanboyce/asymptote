@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import services.financial  # registers currency/percent types and financial role detector
 from config import settings
 from services.document_extractor import DocumentExtractor, is_code_file
 from services.code_extractor import SUPPORTED_CODE_EXTENSIONS

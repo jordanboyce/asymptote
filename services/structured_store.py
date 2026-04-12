@@ -7,6 +7,20 @@ by running real SQL instead of scanning row-text chunks.
 The table registry lives in the same SQLite database used by MetadataStore
 (the collection's metadata.db) so deletion and migration stay coherent with
 the rest of the indexing stack.
+
+Extension points
+----------------
+External modules (e.g. ``services.financial``) can register additional type
+detectors and column-role detectors at import time:
+
+  * ``register_type_extension(TypeExtension(...))``  — adds a custom type that
+    is checked during column inference with the same 80% threshold used for
+    built-in types.
+  * ``register_role_detector(fn)``  — adds a function ``(col_name, col_type)
+    → Optional[str]`` that maps column names to semantic roles.
+
+Both registries are module-level lists; registration is idempotent in the
+sense that Python only executes each ``import`` once per interpreter session.
 """
 
 from __future__ import annotations
@@ -15,21 +29,68 @@ import json
 import logging
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
-# --- Type inference -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Plugin registry
+# ---------------------------------------------------------------------------
 
-_CURRENCY_RE = re.compile(
-    r'^\s*[$€£¥₹]\s*-?[\d,]*\.?\d+\s*$'
-    r'|^\s*\(?\s*[$€£¥₹]\s*[\d,]*\.?\d+\s*\)?\s*$'
-    r'|^\s*-?[\d,]*\.?\d+\s*(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|HKD|SGD)\s*$',
-    re.IGNORECASE,
-)
-_PERCENT_RE = re.compile(r'^\s*-?[\d,]*\.?\d+\s*%\s*$')
+@dataclass
+class TypeExtension:
+    """A custom column type registered by an external plugin.
+
+    Attributes
+    ----------
+    name:
+        The type string stored in schema JSON, e.g. ``'currency'``.
+    sqlite_type:
+        The SQLite affinity to use (``'REAL'``, ``'TEXT'``, etc.).
+    detector:
+        Called with a single stripped string value; returns ``True`` when
+        that value matches the type.  ``infer_column_type`` promotes a column
+        to this type when ≥80% of non-null sample values match.
+    coerce:
+        Called with a single raw value; returns the coerced storage value
+        (or ``None`` if the value cannot be parsed).
+    """
+    name: str
+    sqlite_type: str
+    detector: Callable[[str], bool]
+    coerce: Callable[[Any], Optional[Any]]
+
+
+_type_extensions: List[TypeExtension] = []
+_role_detectors: List[Callable[[str, str], Optional[str]]] = []
+
+
+def register_type_extension(ext: TypeExtension) -> None:
+    """Register a custom type detector/coercer (called by plugins at import time)."""
+    _type_extensions.append(ext)
+
+
+def register_role_detector(fn: Callable[[str, str], Optional[str]]) -> None:
+    """Register a column role detector (called by plugins at import time)."""
+    _role_detectors.append(fn)
+
+
+def detect_column_role(col_name: str, col_type: str) -> Optional[str]:
+    """Dispatch to all registered role detectors; return the first match."""
+    for fn in _role_detectors:
+        role = fn(col_name, col_type)
+        if role:
+            return role
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Generic type inference helpers
+# ---------------------------------------------------------------------------
+
 _DATE_RE = re.compile(
     r'^\d{4}-\d{1,2}-\d{1,2}(\s+\d{1,2}:\d{2}(:\d{2})?)?$'
     r'|^\d{1,2}/\d{1,2}/\d{2,4}$'
@@ -37,51 +98,58 @@ _DATE_RE = re.compile(
     r'|^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}$'
 )
 
-# Financial column name → semantic role
-_ROLE_PATTERNS = [
-    ('ticker',        r'^(ticker|symbol|sym|security_?(id|code|symbol))$'),
-    ('cusip',         r'^(cusip)$'),
-    ('isin',          r'^(isin)$'),
-    ('name',          r'^(name|security_?name|description|desc|holding|instrument|issuer)$'),
-    ('quantity',      r'^(qty|quantity|shares|units|contracts|position|balance_units)$'),
-    ('price',         r'^(price|px|last|close|mark|nav|unit_?price)$'),
-    ('cost_basis',    r'^(cost|cost_?basis|book|book_?value|purchase_?price|avg_?cost|acquisition_?cost)$'),
-    ('market_value',  r'^(market_?value|mv|value|notional|exposure|balance|position_?value|market_?val)$'),
-    ('pnl',           r'^(pnl|p_?l|gain|gain_?loss|unrealized|realized|profit|total_?return_?dollar)$'),
-    ('weight',        r'^(weight|wt|alloc|allocation|pct|percent_?of_?portfolio|port_?weight)$'),
-    ('asset_class',   r'^(asset_?class|class|type|instrument_?type|category|security_?type)$'),
-    ('sector',        r'^(sector|industry|gics|sub_?sector|industry_?group)$'),
-    ('region',        r'^(region|country|geo|geography|domicile)$'),
-    ('currency',      r'^(ccy|currency|fx|curr)$'),
-    ('date',          r'^(date|as_?of|trade_?date|settle_?date|report_?date|period|valuation_?date)$'),
-    ('return',        r'^(return|ret|yield|perf|performance|ytd|mtd|qtd|total_?return|rtn)$'),
-    ('account',       r'^(account|acct|portfolio|fund|strategy|sleeve)$'),
-    ('maturity',      r'^(maturity|maturity_?date|expiry|expiration)$'),
-    ('coupon',        r'^(coupon|coupon_?rate|rate)$'),
-    ('rating',        r'^(rating|credit_?rating|moody|s_?p_?rating)$'),
-]
-
 _IDENT_SAFE_RE = re.compile(r'[^A-Za-z0-9_]')
 
+# Strings that indicate a missing/unavailable value in brokerage/bank exports.
+# Treated as NULL during both type inference and value coercion.
+_NULL_MARKERS = frozenset({
+    '', '--', '-', 'n/a', 'na', 'nan', 'null', 'none', 'nil', '—', '–',
+    'n.a.', 'n.a', '#n/a', '#na', '#null', '#value!', '#ref!', '#div/0!',
+    'provide', 'missing', 'unknown', 'tbd', 'tba', 'undefined',
+})
 
-def _parse_number(val: Any) -> Optional[float]:
-    if val is None:
-        return None
-    s = str(val).strip()
+# K/M/B multiplier suffix regex (e.g. "1.5K" → 1500, "2.3M" → 2_300_000)
+_KMB_RE = re.compile(r'^(-?[\d,]*\.?\d+)\s*([kmb])$', re.IGNORECASE)
+
+
+def _parse_generic_number(s: str) -> Optional[float]:
+    """Parse a numeric string including common financial formats.
+
+    Handles:
+    - Thousands commas: ``"1,234.56"`` → ``1234.56``
+    - Accounting-negative parens: ``"(1,234)"`` → ``-1234``
+    - K/M/B suffix: ``"1.5K"`` → ``1500``, ``"2.3M"`` → ``2_300_000``
+    - Currency symbols and ISO codes are NOT stripped here — those are
+      handled by the financial type extension's coerce function.
+    """
     if not s:
         return None
-    # Strip currency symbols, commas, whitespace, trailing %
-    s = re.sub(r'[$€£¥₹,\s]', '', s)
-    # Currency code suffix (e.g. "100 USD")
-    s = re.sub(r'(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|HKD|SGD)$', '', s, flags=re.IGNORECASE)
-    is_percent = s.endswith('%')
-    if is_percent:
-        s = s[:-1]
-    # Accounting negative: (1,234) -> -1234
+    s_lower = s.lower()
+    if s_lower in _NULL_MARKERS:
+        return None
+
+    negative = False
     if s.startswith('(') and s.endswith(')'):
-        s = '-' + s[1:-1]
+        negative = True
+        s = s[1:-1]
+
+    cleaned = s.replace(',', '').strip()
+
+    # K/M/B multiplier
+    kmb = _KMB_RE.match(cleaned)
+    if kmb:
+        base_str, suffix = kmb.group(1).replace(',', ''), kmb.group(2).upper()
+        try:
+            base = float(base_str)
+        except ValueError:
+            return None
+        multiplier = {'K': 1_000, 'M': 1_000_000, 'B': 1_000_000_000}[suffix]
+        result = base * multiplier
+        return -result if negative else result
+
     try:
-        return float(s)
+        result = float(cleaned)
+        return -result if negative else result
     except ValueError:
         return None
 
@@ -138,75 +206,86 @@ def _numeric_stats(values: List[float]) -> Dict[str, Any]:
 
 
 def infer_column_type(values: List[Any]) -> Dict[str, Any]:
-    """Inspect a column's values and return its inferred type + metadata."""
-    non_null = [v for v in values if v is not None and str(v).strip() != '']
+    """Inspect a column's values and return its inferred type + metadata.
+
+    Uses an 80% threshold: if ≥80% of non-null values satisfy a type's
+    criteria, the whole column is promoted to that type.  Non-conforming
+    minority values become NULL at storage time.  This correctly handles
+    brokerage columns that mix numeric cells with sentinel strings like
+    ``'--'``, ``'N/A'``, or ``'Provide'``.
+
+    Priority order:
+      1. Boolean  (100% match, ≤3 distinct values)
+      2. Date     (≥80%)
+      3. Registered type extensions  (≥80% — e.g. currency, percent)
+      4. Integer  (≥80%, all parsed values are whole numbers)
+      5. Real     (≥80%)
+      6. Text     (fallback)
+    """
+    # Common null markers count as missing, not as type-breaking values
+    non_null = [
+        v for v in values
+        if v is not None and str(v).strip().lower() not in _NULL_MARKERS
+    ]
     null_count = len(values) - len(non_null)
 
     if not non_null:
         return {'type': 'text', 'null_count': null_count, 'distinct_count': 0, 'stats': None}
 
     sample = non_null[:2000]
-    all_int = True
-    all_real = True
-    all_currency = True
-    all_percent = True
-    all_date = True
-    all_bool = True
-    numeric_vals: List[float] = []
+    sample_strs = [str(v).strip() for v in sample]
+    n = len(sample)
+    threshold = 0.80
+    distinct = len(set(sample_strs))
 
-    for v in sample:
-        s = str(v).strip()
-        if not _CURRENCY_RE.match(s):
-            all_currency = False
-        if not _PERCENT_RE.match(s):
-            all_percent = False
-        if not _is_date_like(s):
-            all_date = False
-        if not _is_bool(v):
-            all_bool = False
-        num = _parse_number(s)
-        if num is None:
-            all_int = False
-            all_real = False
-        else:
-            numeric_vals.append(num)
-            if num != int(num):
-                all_int = False
-
-    distinct = len({str(v) for v in sample})
-
-    if all_bool and distinct <= 3:
+    # 1. Boolean (100% match, ≤3 distinct)
+    if all(_is_bool(v) for v in sample) and distinct <= 3:
         return {'type': 'boolean', 'null_count': null_count, 'distinct_count': distinct, 'stats': None}
-    if all_date:
+
+    # 2. Date (≥80%)
+    date_count = sum(1 for s in sample_strs if _is_date_like(s))
+    if date_count / n >= threshold:
         return {
             'type': 'date',
             'null_count': null_count,
             'distinct_count': distinct,
-            'stats': {'min': min(str(v) for v in sample), 'max': max(str(v) for v in sample)},
+            'stats': {'min': min(sample_strs), 'max': max(sample_strs)},
         }
-    if all_currency and numeric_vals:
-        return {'type': 'currency', 'null_count': null_count, 'distinct_count': distinct,
-                'stats': _numeric_stats(numeric_vals)}
-    if all_percent and numeric_vals:
-        return {'type': 'percent', 'null_count': null_count, 'distinct_count': distinct,
-                'stats': _numeric_stats(numeric_vals)}
-    if all_int and numeric_vals:
-        return {'type': 'integer', 'null_count': null_count, 'distinct_count': distinct,
-                'stats': _numeric_stats(numeric_vals)}
-    if all_real and numeric_vals:
+
+    # 3. Registered type extensions (≥80%)
+    for ext in _type_extensions:
+        match_count = sum(1 for s in sample_strs if ext.detector(s))
+        if match_count / n >= threshold:
+            coerced = [ext.coerce(v) for v in sample]
+            numeric_vals = [c for c in coerced if c is not None]
+            if numeric_vals:
+                return {
+                    'type': ext.name,
+                    'null_count': null_count,
+                    'distinct_count': distinct,
+                    'stats': _numeric_stats(numeric_vals),
+                }
+
+    # 4 & 5. Generic numeric (≥80%)
+    numeric_vals: List[float] = []
+    int_count = 0
+    for s in sample_strs:
+        num = _parse_generic_number(s)
+        if num is not None:
+            numeric_vals.append(num)
+            if num == int(num):
+                int_count += 1
+
+    numeric_frac = len(numeric_vals) / n
+    if numeric_frac >= threshold:
+        if int_count == len(numeric_vals):
+            return {'type': 'integer', 'null_count': null_count, 'distinct_count': distinct,
+                    'stats': _numeric_stats(numeric_vals)}
         return {'type': 'real', 'null_count': null_count, 'distinct_count': distinct,
                 'stats': _numeric_stats(numeric_vals)}
 
+    # 6. Text fallback
     return {'type': 'text', 'null_count': null_count, 'distinct_count': distinct, 'stats': None}
-
-
-def detect_financial_role(col_name: str, col_type: str) -> Optional[str]:
-    """Detect the semantic financial role of a column based on its name."""
-    normalized = re.sub(r'[^a-z0-9]+', '_', col_name.lower()).strip('_')
-    for role, pattern in _ROLE_PATTERNS:
-        if re.match(pattern, normalized):
-            return role
-    return None
 
 
 def sanitize_identifier(name: str, fallback: str = 'col') -> str:
@@ -219,7 +298,9 @@ def sanitize_identifier(name: str, fallback: str = 'col') -> str:
     return cleaned[:60]
 
 
-# --- SQL validation ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SQL validation
+# ---------------------------------------------------------------------------
 
 _FORBIDDEN_KEYWORDS = {
     'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'ATTACH',
@@ -233,10 +314,10 @@ class SQLValidationError(ValueError):
 
 
 def validate_select(sql: str) -> str:
-    """Validate that `sql` is a single read-only SELECT / WITH statement.
+    """Validate that *sql* is a single read-only SELECT / WITH statement.
 
-    Returns the cleaned SQL (no trailing semicolon). Raises SQLValidationError
-    on any violation: multi-statement, DDL/DML keyword, or non-SELECT prefix.
+    Returns the cleaned SQL (no trailing semicolon). Raises
+    :class:`SQLValidationError` on any violation.
     """
     if not sql or not sql.strip():
         raise SQLValidationError('SQL query is empty')
@@ -261,40 +342,52 @@ def validate_select(sql: str) -> str:
     return cleaned
 
 
-# --- Value coercion ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Value coercion
+# ---------------------------------------------------------------------------
 
-_TYPE_TO_SQLITE = {
+# Maps inferred type names to SQLite column affinities.
+# Plugin types are added dynamically from _type_extensions at create_table time.
+_TYPE_TO_SQLITE: Dict[str, str] = {
     'integer': 'INTEGER',
-    'real': 'REAL',
-    'currency': 'REAL',
-    'percent': 'REAL',
+    'real':    'REAL',
     'boolean': 'INTEGER',
-    'date': 'TEXT',
-    'text': 'TEXT',
+    'date':    'TEXT',
+    'text':    'TEXT',
 }
 
 
 def _coerce_value(val: Any, inferred_type: str) -> Any:
+    """Coerce a raw value to its storage form for the given inferred type."""
     if val is None:
         return None
     if isinstance(val, float) and val != val:  # NaN
         return None
     s = str(val).strip()
-    if s == '' or s.lower() in {'nan', 'null', 'none', 'n/a'}:
+    if not s or s.lower() in _NULL_MARKERS:
         return None
-    if inferred_type in {'integer', 'real', 'currency', 'percent'}:
-        num = _parse_number(s)
+
+    if inferred_type in {'integer', 'real'}:
+        num = _parse_generic_number(s)
         if num is None:
             return None
-        if inferred_type == 'integer':
-            return int(num)
-        return num
+        return int(num) if inferred_type == 'integer' else num
+
     if inferred_type == 'boolean':
         return _to_bool(val)
+
+    # Delegate to the registered extension coercer for plugin types
+    for ext in _type_extensions:
+        if ext.name == inferred_type:
+            return ext.coerce(val)
+
+    # date and text: store as string
     return s
 
 
-# --- Store -------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Store
+# ---------------------------------------------------------------------------
 
 _DEFAULT_MAX_QUERY_ROWS = 1000
 
@@ -303,8 +396,14 @@ class StructuredStore:
     """Manages per-document typed SQL tables and their schema registry.
 
     Tables are stored inside the collection's metadata SQLite database using
-    `csv_data_{document_id}[_sheet]` names. The `csv_schemas` registry table
-    maps documents to their physical tables and caches inferred schema/roles.
+    ``csv_data_{document_id}[_sheet]`` names. The ``csv_schemas`` registry
+    table maps documents to their physical tables and caches inferred
+    schema/roles.
+
+    This class is intentionally domain-agnostic. Financial-specific behaviour
+    (currency/percent types, column role detection, portfolio metrics) is
+    provided by the ``services.financial`` plugin which registers itself with
+    :func:`register_type_extension` and :func:`register_role_detector`.
     """
 
     META_TABLE_PREFIX = 'csv_data_'
@@ -352,10 +451,28 @@ class StructuredStore:
         columns: List[str],
         rows: List[Dict[str, Any]],
         sheet_name: str = '',
+        role_overrides: Optional[Dict[str, str]] = None,
+        type_overrides: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        """Create a typed table + schema entry for an ingested tabular file."""
+        """Create a typed table + schema entry for an ingested tabular file.
+
+        Parameters
+        ----------
+        role_overrides:
+            Optional mapping of original column name → semantic role string.
+            Overrides the heuristic role detector result.  Supplied by the
+            vendor profile system (P0.4).
+        type_overrides:
+            Optional mapping of original column name → type string
+            (``'real'``, ``'currency'``, ``'percent'``, ``'date'``, etc.).
+            Overrides the heuristic ``infer_column_type`` result.  Supplied
+            by the vendor profile system (P0.4).
+        """
         if not columns:
             raise ValueError('Cannot create structured table with no columns')
+
+        role_overrides = role_overrides or {}
+        type_overrides = type_overrides or {}
 
         col_values: Dict[str, List[Any]] = {col: [row.get(col) for row in rows] for col in columns}
 
@@ -363,6 +480,9 @@ class StructuredStore:
         used_idents = set()
         for col in columns:
             info = infer_column_type(col_values[col])
+            # P0.4: apply profile type override if present
+            if col in type_overrides:
+                info = dict(info, type=type_overrides[col])
             base_ident = sanitize_identifier(col, fallback='col')
             ident = base_ident
             counter = 1
@@ -371,7 +491,8 @@ class StructuredStore:
                 ident = f'{base_ident}_{counter}'
             used_idents.add(ident.lower())
 
-            role = detect_financial_role(col, info['type'])
+            # P0.4: profile role override takes precedence over heuristic
+            role = role_overrides.get(col) or detect_column_role(col, info['type'])
             sample_values = [
                 str(v)[:100]
                 for v in col_values[col][:5]
@@ -390,11 +511,16 @@ class StructuredStore:
 
         table_name = self._table_name(document_id, sheet_name)
 
+        # Build SQLite affinity map from core types + registered extensions
+        type_to_sqlite = dict(_TYPE_TO_SQLITE)
+        for ext in _type_extensions:
+            type_to_sqlite[ext.name] = ext.sqlite_type
+
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
             col_defs = ['__row_number INTEGER PRIMARY KEY']
             for info in col_infos:
-                sqlite_type = _TYPE_TO_SQLITE.get(info['type'], 'TEXT')
+                sqlite_type = type_to_sqlite.get(info['type'], 'TEXT')
                 col_defs.append(f'"{info["sql_name"]}" {sqlite_type}')
             conn.execute(f'CREATE TABLE "{table_name}" ({", ".join(col_defs)})')
 
@@ -451,7 +577,73 @@ class StructuredStore:
             f"Created structured table {table_name}: {len(rows)} rows × {len(col_infos)} cols "
             f"(roles: {sorted(set(financial_roles.values())) or 'none'})"
         )
+
+        # P0.3: auto-create a by-symbol rollup view when a symbol/ticker role is detected.
+        # Brokerage files typically have one row per tax lot; the view aggregates to positions.
+        symbol_col_info = next(
+            (c for c in col_infos if c.get('role') in ('ticker', 'cusip', 'isin')),
+            None,
+        )
+        if symbol_col_info:
+            self._create_symbol_rollup_view(table_name, col_infos, symbol_col_info['sql_name'])
+
         return schema_payload
+
+    def _create_symbol_rollup_view(
+        self,
+        table_name: str,
+        col_infos: List[Dict[str, Any]],
+        symbol_col: str,
+    ) -> None:
+        """Create a ``<table>__by_symbol`` VIEW aggregating lot-level rows per symbol.
+
+        SUMs market_value, cost_basis, pnl, and quantity across lots; COUNTs
+        lot rows; and computes a weighted-average unit cost when both market_value
+        and quantity are present.  Non-numeric / non-role columns are omitted to
+        avoid ambiguous GROUP BY semantics.
+        """
+        SUMMABLE_ROLES = {'market_value', 'cost_basis', 'pnl', 'quantity'}
+        FIRST_ROLES = {'name', 'asset_class', 'sector', 'region', 'currency', 'account', 'rating'}
+
+        select_parts: List[str] = [f'"{symbol_col}" AS "{symbol_col}"']
+        mv_col: Optional[str] = None
+        qty_col: Optional[str] = None
+
+        for c in col_infos:
+            col = c['sql_name']
+            role = c.get('role')
+            if col == symbol_col:
+                continue
+            if role in SUMMABLE_ROLES:
+                select_parts.append(f'SUM("{col}") AS "{col}"')
+                if role == 'market_value':
+                    mv_col = col
+                if role == 'quantity':
+                    qty_col = col
+            elif role in FIRST_ROLES:
+                select_parts.append(f'MAX("{col}") AS "{col}"')
+
+        select_parts.append('COUNT(*) AS lot_count')
+
+        if mv_col and qty_col:
+            select_parts.append(
+                f'CASE WHEN SUM("{qty_col}") != 0 '
+                f'THEN SUM("{mv_col}") / SUM("{qty_col}") '
+                f'ELSE NULL END AS unit_cost'
+            )
+
+        view_name = f'{table_name}__by_symbol'
+        sql = (
+            f'CREATE VIEW IF NOT EXISTS "{view_name}" AS\n'
+            f'SELECT {", ".join(select_parts)}\n'
+            f'FROM "{table_name}"\n'
+            f'GROUP BY "{symbol_col}"'
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+            conn.execute(sql)
+            conn.commit()
+        logger.info(f"Created rollup view {view_name} (grouping by '{symbol_col}')")
 
     def delete_document(self, document_id: str) -> int:
         """Drop all structured tables + schema rows belonging to a document."""
@@ -462,6 +654,7 @@ class StructuredStore:
                 (document_id,),
             )
             for (table_name,) in cursor.fetchall():
+                conn.execute(f'DROP VIEW IF EXISTS "{table_name}__by_symbol"')
                 conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
                 dropped += 1
             conn.execute(
@@ -477,6 +670,7 @@ class StructuredStore:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(f'SELECT table_name FROM {self.SCHEMA_REGISTRY}')
             for (table_name,) in cursor.fetchall():
+                conn.execute(f'DROP VIEW IF EXISTS "{table_name}__by_symbol"')
                 conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
             conn.execute(f'DELETE FROM {self.SCHEMA_REGISTRY}')
             conn.commit()
@@ -570,224 +764,4 @@ class StructuredStore:
             'rows': rows,
             'row_count': len(rows),
             'truncated': truncated,
-        }
-
-    # --- Canned metrics ------------------------------------------------------
-
-    AVAILABLE_METRICS: Dict[str, str] = {
-        'row_count':              'Number of rows in the table',
-        'total_market_value':     'Sum of the market_value column across all rows',
-        'total_cost_basis':       'Sum of the cost_basis column across all rows',
-        'total_pnl':              'Sum of the pnl column across all rows',
-        'top_holdings':           'Top N holdings by market_value (param: limit)',
-        'bottom_holdings':        'Bottom N holdings by market_value (param: limit)',
-        'largest_gains':          'Top N rows by pnl (param: limit)',
-        'largest_losses':         'Bottom N rows by pnl (param: limit)',
-        'concentration':          'Share of total market_value held by top N positions (param: limit)',
-        'breakdown_by_sector':    'Total market_value grouped by sector',
-        'breakdown_by_asset_class':'Total market_value grouped by asset_class',
-        'breakdown_by_region':    'Total market_value grouped by region',
-        'breakdown_by_currency':  'Total market_value grouped by currency',
-        'weighted_return':        'Market-value-weighted average return',
-        'summary_statistics':     'Min/max/mean/sum/count for every numeric column',
-    }
-
-    def compute_metric(
-        self,
-        identifier: str,
-        metric: str,
-        limit: int = 10,
-    ) -> Dict[str, Any]:
-        schema = self.get_schema(identifier)
-        if not schema:
-            raise ValueError(f"No structured table found for '{identifier}'")
-
-        role_to_col: Dict[str, str] = {}
-        for c in schema['columns']:
-            if c.get('role') and c['role'] not in role_to_col:
-                role_to_col[c['role']] = c['sql_name']
-
-        table = schema['table_name']
-
-        def require(role: str) -> str:
-            col = role_to_col.get(role)
-            if not col:
-                raise ValueError(
-                    f"Metric '{metric}' requires a column with role '{role}' but none "
-                    f"was detected in {schema['filename']}. Detected roles: "
-                    f"{sorted(role_to_col.keys()) or 'none'}"
-                )
-            return col
-
-        uri = f'file:{self.db_path}?mode=ro'
-        with sqlite3.connect(uri, uri=True) as conn:
-            conn.row_factory = sqlite3.Row
-
-            def scalar(sql: str, params=()) -> Any:
-                cur = conn.execute(sql, params)
-                row = cur.fetchone()
-                return row[0] if row else None
-
-            def fetch_all(sql: str, params=()):
-                cur = conn.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                return cols, [list(r) for r in cur.fetchall()]
-
-            m = metric.lower()
-            limit = max(1, min(int(limit), 1000))
-
-            if m == 'row_count':
-                return {'metric': metric, 'filename': schema['filename'],
-                        'value': scalar(f'SELECT COUNT(*) FROM "{table}"')}
-
-            if m == 'total_market_value':
-                col = require('market_value')
-                return {'metric': metric, 'filename': schema['filename'], 'column': col,
-                        'value': scalar(f'SELECT SUM("{col}") FROM "{table}"')}
-
-            if m == 'total_cost_basis':
-                col = require('cost_basis')
-                return {'metric': metric, 'filename': schema['filename'], 'column': col,
-                        'value': scalar(f'SELECT SUM("{col}") FROM "{table}"')}
-
-            if m == 'total_pnl':
-                col = require('pnl')
-                return {'metric': metric, 'filename': schema['filename'], 'column': col,
-                        'value': scalar(f'SELECT SUM("{col}") FROM "{table}"')}
-
-            if m in ('top_holdings', 'bottom_holdings'):
-                mv = require('market_value')
-                name_col = role_to_col.get('name') or role_to_col.get('ticker')
-                order = 'DESC' if m == 'top_holdings' else 'ASC'
-                select_cols = [f'"{mv}"']
-                if name_col:
-                    select_cols.insert(0, f'"{name_col}"')
-                sql = (
-                    f'SELECT {", ".join(select_cols)} FROM "{table}" '
-                    f'WHERE "{mv}" IS NOT NULL ORDER BY "{mv}" {order} LIMIT ?'
-                )
-                cols, rows = fetch_all(sql, (limit,))
-                return {'metric': metric, 'filename': schema['filename'],
-                        'columns': cols, 'rows': rows}
-
-            if m in ('largest_gains', 'largest_losses'):
-                pnl = require('pnl')
-                name_col = role_to_col.get('name') or role_to_col.get('ticker')
-                order = 'DESC' if m == 'largest_gains' else 'ASC'
-                select_cols = [f'"{pnl}"']
-                if name_col:
-                    select_cols.insert(0, f'"{name_col}"')
-                sql = (
-                    f'SELECT {", ".join(select_cols)} FROM "{table}" '
-                    f'WHERE "{pnl}" IS NOT NULL ORDER BY "{pnl}" {order} LIMIT ?'
-                )
-                cols, rows = fetch_all(sql, (limit,))
-                return {'metric': metric, 'filename': schema['filename'],
-                        'columns': cols, 'rows': rows}
-
-            if m == 'concentration':
-                mv = require('market_value')
-                total = scalar(f'SELECT SUM("{mv}") FROM "{table}"')
-                top = scalar(
-                    f'SELECT SUM(v) FROM (SELECT "{mv}" AS v FROM "{table}" '
-                    f'WHERE "{mv}" IS NOT NULL ORDER BY "{mv}" DESC LIMIT ?)',
-                    (limit,),
-                )
-                pct = (top / total * 100.0) if total and top is not None else None
-                return {
-                    'metric': metric,
-                    'filename': schema['filename'],
-                    'limit': limit,
-                    'top_n_value': top,
-                    'total_value': total,
-                    'concentration_pct': pct,
-                }
-
-            if m in ('breakdown_by_sector', 'breakdown_by_asset_class',
-                     'breakdown_by_region', 'breakdown_by_currency'):
-                group_role = m.replace('breakdown_by_', '')
-                return self._breakdown(conn, schema, group_role, 'market_value')
-
-            if m == 'weighted_return':
-                ret = require('return')
-                mv = require('market_value')
-                total_mv = scalar(
-                    f'SELECT SUM("{mv}") FROM "{table}" WHERE "{ret}" IS NOT NULL AND "{mv}" IS NOT NULL'
-                )
-                weighted = scalar(
-                    f'SELECT SUM("{ret}" * "{mv}") FROM "{table}" '
-                    f'WHERE "{ret}" IS NOT NULL AND "{mv}" IS NOT NULL'
-                )
-                value = (weighted / total_mv) if total_mv else None
-                return {
-                    'metric': metric,
-                    'filename': schema['filename'],
-                    'return_column': ret,
-                    'weight_column': mv,
-                    'weighted_return': value,
-                }
-
-            if m == 'summary_statistics':
-                stats = []
-                for c in schema['columns']:
-                    if c['type'] in ('integer', 'real', 'currency', 'percent'):
-                        col = c['sql_name']
-                        row = conn.execute(
-                            f'SELECT MIN("{col}"), MAX("{col}"), AVG("{col}"), '
-                            f'SUM("{col}"), COUNT("{col}") FROM "{table}"'
-                        ).fetchone()
-                        stats.append({
-                            'column': col,
-                            'role': c.get('role'),
-                            'type': c['type'],
-                            'min': row[0],
-                            'max': row[1],
-                            'avg': row[2],
-                            'sum': row[3],
-                            'count': row[4],
-                        })
-                return {'metric': metric, 'filename': schema['filename'], 'columns': stats}
-
-            raise ValueError(
-                f"Unknown metric '{metric}'. Available: {sorted(self.AVAILABLE_METRICS.keys())}"
-            )
-
-    def _breakdown(
-        self,
-        conn: sqlite3.Connection,
-        schema: Dict[str, Any],
-        group_role: str,
-        value_role: str,
-    ) -> Dict[str, Any]:
-        table = schema['table_name']
-        role_to_col = {c['role']: c['sql_name'] for c in schema['columns'] if c.get('role')}
-        if group_role not in role_to_col:
-            raise ValueError(
-                f"No column with role '{group_role}' detected in {schema['filename']}"
-            )
-        if value_role not in role_to_col:
-            raise ValueError(
-                f"No column with role '{value_role}' detected in {schema['filename']}"
-            )
-
-        g = role_to_col[group_role]
-        v = role_to_col[value_role]
-        sql = (
-            f'SELECT "{g}" AS group_key, SUM("{v}") AS total, COUNT(*) AS count '
-            f'FROM "{table}" WHERE "{g}" IS NOT NULL GROUP BY "{g}" ORDER BY total DESC'
-        )
-        cur = conn.execute(sql)
-        groups = [{'group': r[0], 'total': r[1], 'count': r[2]} for r in cur.fetchall()]
-        total_sum = sum((g['total'] or 0) for g in groups)
-        for g_row in groups:
-            g_row['pct'] = (
-                (g_row['total'] / total_sum * 100.0) if total_sum and g_row['total'] else None
-            )
-        return {
-            'metric': f'breakdown_by_{group_role}',
-            'filename': schema['filename'],
-            'group_column': g,
-            'value_column': v,
-            'groups': groups,
-            'total': total_sum,
         }
