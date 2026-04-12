@@ -9,6 +9,7 @@ import faiss
 from models.schemas import ChunkMetadata, SearchResult
 from services.metadata_store import MetadataStore
 from services.bm25_service import BM25Index
+from services.structured_store import StructuredStore
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ class VectorStore:
 
         # SQLite metadata store
         self.metadata_store = MetadataStore(self.metadata_db_path)
+
+        # Structured table store (lives in the same sqlite db as metadata)
+        # Used to answer numeric/aggregation questions over CSV/XLSX sources.
+        self.structured_store = StructuredStore(self.metadata_db_path)
 
         # BM25 keyword search index
         self.bm25_index = BM25Index(self.bm25_db_path)
@@ -340,6 +345,12 @@ class VectorStore:
         # Delete from metadata (SQLite)
         self.metadata_store.delete_document(document_id)
 
+        # Drop any structured tables (CSV/XLSX) created for this document
+        try:
+            self.structured_store.delete_document(document_id)
+        except Exception as e:
+            logger.warning(f"Failed to drop structured tables for {document_id}: {e}")
+
         # Rebuild FAISS index with remaining embeddings
         if self.embeddings is not None:
             new_embeddings = []
@@ -401,6 +412,12 @@ class VectorStore:
 
         # Clear all metadata from database
         self.metadata_store.clear_all()
+
+        # Clear structured tables
+        try:
+            self.structured_store.clear_all()
+        except Exception as e:
+            logger.warning(f"Failed to clear structured tables: {e}")
 
         # Clear BM25 index
         self.bm25_index.clear()

@@ -7,8 +7,9 @@ logger = logging.getLogger(__name__)
 
 # Supported file types for the file picker dialog
 SUPPORTED_FILETYPES = [
-    ("All supported files", "*.pdf *.txt *.docx *.csv *.md *.json *.jsonl *.py *.js *.ts *.jsx *.tsx *.cs *.java *.go *.rs *.c *.h *.cpp *.hpp *.php *.rb *.swift *.kt *.scala *.pas *.dpr *.asm"),
-    ("Documents", "*.pdf *.txt *.docx *.csv *.md *.json *.jsonl"),
+    ("All supported files", "*.pdf *.txt *.docx *.csv *.xlsx *.xls *.md *.json *.jsonl *.py *.js *.ts *.jsx *.tsx *.cs *.java *.go *.rs *.c *.h *.cpp *.hpp *.php *.rb *.swift *.kt *.scala *.pas *.dpr *.asm"),
+    ("Documents", "*.pdf *.txt *.docx *.csv *.xlsx *.xls *.md *.json *.jsonl"),
+    ("Spreadsheets", "*.csv *.xlsx *.xls"),
     ("Python", "*.py *.pyw *.pyi"),
     ("JavaScript/TypeScript", "*.js *.jsx *.mjs *.ts *.tsx *.mts"),
     ("C#/Java", "*.cs *.java"),

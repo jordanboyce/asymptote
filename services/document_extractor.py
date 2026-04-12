@@ -18,6 +18,9 @@ from services.code_extractor import (
 # OCR engine abstraction
 from services.ocr_engine import create_ocr_engine
 
+# Audio transcription (meeting recordings)
+from services.audio_transcriber import AUDIO_EXTENSIONS, is_audio_file
+
 # Prompt injection detection
 from services.prompt_injection_detector import PromptInjectionDetector, InjectionScanResult
 
@@ -67,7 +70,9 @@ class ExtractionResult:
 class DocumentExtractor:
     """Extracts text from various document formats (PDF, TXT, DOCX, CSV, MD, JSON, JSONL) and code files."""
 
-    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS
+    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS | AUDIO_EXTENSIONS
+    TABULAR_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
+    AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
 
     def __init__(self, enable_ocr: bool = False,
                  ocr_max_pages: int = 25, ocr_max_file_mb: int = 50,
@@ -250,6 +255,11 @@ class DocumentExtractor:
 
         logger.info(f"Extracting text from {file_ext} file: {file_path.name}")
 
+        # Audio files route through Whisper for transcription and then flow
+        # through the normal indexing pipeline as a single-"page" document.
+        if file_ext in AUDIO_EXTENSIONS:
+            return self._extract_audio(file_path)
+
         # Code files are skipped for injection scanning (high false-positive rate)
         skip_injection_scan = is_code_file(str(file_path))
 
@@ -261,6 +271,8 @@ class DocumentExtractor:
             result = ExtractionResult(self._extract_docx(file_path), method="text")
         elif file_ext == '.csv':
             result = ExtractionResult(self._extract_csv(file_path), method="text")
+        elif file_ext in ('.xlsx', '.xls'):
+            result = ExtractionResult(self._extract_xlsx(file_path), method="text")
         elif file_ext == '.md':
             result = ExtractionResult(self._extract_markdown(file_path), method="text")
         elif file_ext == '.json':
@@ -636,6 +648,136 @@ class DocumentExtractor:
         logger.info(f"Extracted {len(rows)} rows from CSV {csv_path.name}")
         return rows
 
+    def _extract_xlsx(self, xlsx_path: Path) -> Dict[int, str]:
+        """
+        Extract text from an Excel workbook (fallback/semantic path).
+
+        Each sheet becomes its own "page". Output uses the same `col: val | ...`
+        shape as CSV extraction so downstream chunking and search treat it
+        identically.
+        """
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "pandas is required for XLSX support. Install with: pip install pandas openpyxl"
+            ) from exc
+
+        try:
+            excel = pd.ExcelFile(xlsx_path)
+        except Exception as e:
+            logger.error(f"Failed to open XLSX {xlsx_path.name}: {e}")
+            raise Exception(f"Failed to open Excel file: {e}")
+
+        page_texts: Dict[int, str] = {}
+        for page_num, sheet_name in enumerate(excel.sheet_names, start=1):
+            try:
+                df = excel.parse(sheet_name)
+            except Exception as e:
+                logger.warning(f"Failed to parse sheet '{sheet_name}' in {xlsx_path.name}: {e}")
+                continue
+            if df.empty:
+                continue
+            lines = [f"[Sheet: {sheet_name}]"]
+            header = " | ".join(str(col) for col in df.columns)
+            lines.append(header)
+            lines.append("-" * min(len(header), 80))
+            for _, row in df.iterrows():
+                lines.append(" | ".join("" if pd.isna(v) else str(v) for v in row.values))
+            page_texts[page_num] = "\n".join(lines)
+
+        if not page_texts:
+            logger.warning(f"No data extracted from {xlsx_path.name}")
+            return {1: ""}
+        logger.info(f"Extracted {len(page_texts)} sheet(s) from XLSX {xlsx_path.name}")
+        return page_texts
+
+    def extract_tabular_sheets(self, file_path: Path) -> List[Dict[str, Any]]:
+        """
+        Extract tabular data from a CSV or Excel file as a list of sheets.
+
+        Returns a list of dicts, each containing:
+            - sheet_name: str ('' for CSV single sheet; sheet title for XLSX)
+            - columns: list of original column names
+            - rows: list of dicts keyed by original column names
+            - row_texts: list of "col: val | ..." text representations (for embedding)
+
+        This method normalizes CSV and XLSX to the same output shape so the
+        indexing pipeline can treat them uniformly. Values are returned as
+        Python scalars (not pandas NaN) with blanks coerced to empty strings.
+        """
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "pandas is required for tabular ingestion. "
+                "Install with: pip install pandas openpyxl"
+            ) from exc
+
+        ext = file_path.suffix.lower()
+
+        if ext == '.csv':
+            try:
+                df = pd.read_csv(file_path)
+            except Exception as e:
+                raise Exception(f"Failed to read CSV file: {e}")
+            return [self._dataframe_to_sheet(df, sheet_name='')]
+
+        if ext in ('.xlsx', '.xls'):
+            try:
+                excel = pd.ExcelFile(file_path)
+            except Exception as e:
+                raise Exception(f"Failed to open Excel file: {e}")
+
+            sheets: List[Dict[str, Any]] = []
+            for sheet_name in excel.sheet_names:
+                try:
+                    df = excel.parse(sheet_name)
+                except Exception as e:
+                    logger.warning(f"Skipping unreadable sheet '{sheet_name}' in {file_path.name}: {e}")
+                    continue
+                if df.empty:
+                    continue
+                sheets.append(self._dataframe_to_sheet(df, sheet_name=str(sheet_name)))
+            return sheets
+
+        raise ValueError(f"extract_tabular_sheets: unsupported extension {ext}")
+
+    def _dataframe_to_sheet(self, df, sheet_name: str) -> Dict[str, Any]:
+        """Convert a pandas DataFrame into our sheet dict shape."""
+        import pandas as pd
+
+        columns = [str(col) for col in df.columns]
+        rows: List[Dict[str, Any]] = []
+        row_texts: List[str] = []
+
+        for _, row in df.iterrows():
+            row_dict: Dict[str, Any] = {}
+            text_parts: List[str] = []
+            for col in columns:
+                val = row[col]
+                if pd.isna(val):
+                    display = ""
+                    row_dict[col] = None
+                else:
+                    # Preserve native types (int/float/bool) for structured store inference
+                    if isinstance(val, (int, float, bool)):
+                        row_dict[col] = val
+                    else:
+                        row_dict[col] = str(val)
+                    display = str(val)
+                text_parts.append(f"{col}: {display}")
+            rows.append(row_dict)
+            prefix = f"[Sheet: {sheet_name}] " if sheet_name else ""
+            row_texts.append(prefix + " | ".join(text_parts))
+
+        return {
+            'sheet_name': sheet_name,
+            'columns': columns,
+            'rows': rows,
+            'row_texts': row_texts,
+        }
+
     def _extract_markdown(self, md_path: Path) -> Dict[int, str]:
         """
         Extract text from Markdown file, chunking by headers.
@@ -782,6 +924,48 @@ class DocumentExtractor:
             page_texts[page_num] = "\n\n".join(lines[start_idx:end_idx])
 
         return page_texts
+
+    def _extract_audio(self, audio_path: Path) -> ExtractionResult:
+        """Transcribe an audio recording with Whisper and return it as text.
+
+        Each ~4-minute chunk of the transcript becomes its own "page" so
+        retrieval can surface the relevant portion of a long meeting instead
+        of returning the entire recording as a single blob.
+        """
+        from config import settings
+        from services.audio_transcriber import get_transcriber, format_transcript_with_timestamps
+
+        transcriber = get_transcriber(
+            model_size=settings.whisper_model,
+            device=settings.whisper_device,
+            compute_type=settings.whisper_compute_type,
+        )
+
+        language = settings.whisper_language or None
+        result = transcriber.transcribe(audio_path, language=language)
+
+        if not result.segments:
+            logger.warning(f"No speech detected in {audio_path.name}")
+            return ExtractionResult({1: ""}, method="whisper")
+
+        # Group segments into ~4-minute pages so long meetings chunk nicely.
+        page_seconds = 240
+        pages: Dict[int, List[str]] = {}
+        for seg in result.segments:
+            page_num = int(seg["start"] // page_seconds) + 1
+            mm = int(seg["start"] // 60)
+            ss = int(seg["start"] % 60)
+            line = f"[{mm:02d}:{ss:02d}] {seg['text']}"
+            pages.setdefault(page_num, []).append(line)
+
+        page_texts = {p: "\n".join(lines) for p, lines in sorted(pages.items())}
+
+        logger.info(
+            f"Transcribed {audio_path.name} into {len(page_texts)} page(s), "
+            f"language={result.language}, duration={result.duration:.1f}s"
+        )
+
+        return ExtractionResult(page_texts, method="whisper")
 
     def get_page_count(self, file_path: Path) -> int:
         """

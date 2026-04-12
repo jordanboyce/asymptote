@@ -675,6 +675,7 @@ class AIService:
         query: str,
         results: List[dict],
         collection_overview: Optional[str] = None,
+        structured_context: Optional[str] = None,
     ) -> dict:
         """Generate a coherent answer from search results with citations.
 
@@ -685,8 +686,13 @@ class AIService:
         the model can also answer meta-questions about the collection itself
         (file counts, available documents, date ranges) that aren't answerable
         from the retrieved chunks alone.
+
+        If `structured_context` is provided, it contains full JSONL dumps of
+        small CSV/XLSX tables in scope — the model must treat that as the
+        authoritative source for any numeric/aggregation question about those
+        files, since top-K chunk retrieval would silently truncate the data.
         """
-        if not results and not collection_overview:
+        if not results and not collection_overview and not structured_context:
             return {"synthesis": "", "usage": None}
 
         context_parts = []
@@ -702,6 +708,11 @@ class AIService:
             if collection_overview
             else ""
         )
+        structured_section = (
+            f"{structured_context}\n\n"
+            if structured_context
+            else ""
+        )
 
         prompt = (
             "You are a research assistant. Based on the information below, "
@@ -710,12 +721,19 @@ class AIService:
             "Rules:\n"
             "- Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
             "(file counts, available documents, date ranges, what's in the collection).\n"
-            "- Use the RETRIEVED SOURCES for questions about document content, and cite "
+            "- If STRUCTURED TABLES are provided, those JSONL dumps are the complete and "
+            "authoritative contents of the listed CSV/XLSX files. For any numeric, "
+            "aggregation, sum, count, average, filter, date-range, or ranking question "
+            "about those files, answer EXCLUSIVELY from the JSONL rows — every row is "
+            "present, do not estimate from chunks and do not assume data is missing. "
+            "Show your arithmetic when summing so the user can verify.\n"
+            "- Use the RETRIEVED SOURCES for questions about prose/document content, and cite "
             "specific sources with [Source N].\n"
-            "- If neither the overview nor the sources contain enough info, say so.\n"
+            "- If none of the sections contain enough info, say so.\n"
             "- Be concise but thorough.\n"
             "- Use plain language.\n\n"
             f"{overview_section}"
+            f"{structured_section}"
             f"Query: {query}\n\n"
             f"RETRIEVED SOURCES:\n{context}"
         )

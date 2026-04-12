@@ -118,12 +118,13 @@ export const useChatStore = defineStore('chat', () => {
     saveToStorage()
   }
 
-  const addAssistantMessage = (collectionId, message, sources, aiUsage) => {
+  const addAssistantMessage = (collectionId, message, sources, aiUsage, structuredResults) => {
     const session = getActiveSession(collectionId)
     session.messages.push({
       ...message,
       sources: sources || [],
       aiUsage: aiUsage || null,
+      structuredResults: structuredResults || null,
       timestamp: Date.now(),
     })
     session.updatedAt = Date.now()

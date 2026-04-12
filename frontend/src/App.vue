@@ -1,5 +1,5 @@
 <template>
-  <div class="h-screen flex flex-col overflow-hidden bg-base-200" :class="{ 'select-none cursor-col-resize': isResizing }">
+  <div class="h-screen flex flex-col overflow-hidden bg-base-200" :class="{ 'select-none cursor-col-resize': isResizing || isResizingAnalysis }">
 
     <!-- ── Header ── -->
     <header class="flex items-center gap-2 px-3 h-11 bg-base-100 border-b border-base-300 flex-shrink-0 z-50">
@@ -32,8 +32,9 @@
 
       <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
 
-      <!-- Sources toggle -->
+      <!-- Sources toggle (hidden on collections overview) -->
       <button
+        v-if="!isCollectionsView"
         class="btn btn-xs btn-ghost gap-1"
         :class="sourcesSidebarOpen ? 'btn-active' : ''"
         @click="sourcesSidebarOpen = !sourcesSidebarOpen"
@@ -45,22 +46,24 @@
         <span class="hidden md:inline text-xs">Sources</span>
       </button>
 
-      <!-- Tabs -->
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
-        :class="activeTab === tab.id ? 'bg-base-200 font-semibold' : 'font-normal'"
-        @click="activeTab = tab.id"
-        :aria-label="tab.label"
-        :aria-current="activeTab === tab.id ? 'page' : undefined"
-      >
-        <component :is="tab.icon" :size="14" />
-        <span class="hidden sm:inline">{{ tab.label }}</span>
-      </button>
+      <!-- Tabs (hidden on collections overview) -->
+      <template v-if="!isCollectionsView">
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
+          :class="activeTab === tab.id ? 'bg-base-200 font-semibold' : 'font-normal'"
+          @click="activeTab = tab.id"
+          :aria-label="tab.label"
+          :aria-current="activeTab === tab.id ? 'page' : undefined"
+        >
+          <component :is="tab.icon" :size="14" />
+          <span class="hidden sm:inline">{{ tab.label }}</span>
+        </button>
+      </template>
 
-      <!-- Tools dropdown -->
-      <div class="dropdown dropdown-bottom">
+      <!-- Tools dropdown (hidden on collections overview) -->
+      <div v-if="!isCollectionsView" class="dropdown dropdown-bottom">
         <label
           tabindex="0"
           class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
@@ -89,34 +92,23 @@
       <!-- Spacer -->
       <div class="flex-1"></div>
 
-      <!-- Stats (compact, hidden on small screens) -->
-      <div class="hidden lg:flex items-center gap-2 text-xs text-base-content/50">
-        <span>{{ stats.documents }} {{ stats.documents === 1 ? 'source' : 'sources' }}</span>
-        <span class="w-px h-3 bg-base-300"></span>
-        <span>{{ stats.pages }} {{ stats.pages === 1 ? 'page' : 'pages' }}</span>
-      </div>
-
       <!-- User identity (multi-user mode) -->
       <div v-if="userStore.isMultiUser" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50">
         <Users :size="12" />
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
 
-      <!-- Jobs button -->
+      <!-- Analysis sidebar toggle (hidden on collections overview) -->
       <button
-        class="btn btn-ghost btn-circle btn-sm relative"
-        @click="showJobsDrawer = true"
-        title="Background Jobs"
-        :aria-label="backgroundJobsStore.activeJobCount > 0
-          ? `Background jobs — ${backgroundJobsStore.activeJobCount} active`
-          : 'Background jobs'"
+        v-if="!isCollectionsView"
+        class="btn btn-ghost btn-circle btn-sm"
+        :class="{ 'bg-base-300': analysisSidebarOpen }"
+        @click="analysisSidebarOpen = !analysisSidebarOpen"
+        title="Toggle analysis panel"
+        aria-label="Toggle analysis panel"
+        :aria-pressed="analysisSidebarOpen"
       >
-        <PanelRightOpen :size="16" :class="{ 'animate-pulse text-warning': backgroundJobsStore.hasActiveJobs }" />
-        <span
-          v-if="backgroundJobsStore.activeJobCount > 0"
-          class="absolute -top-0.5 -right-0.5 badge badge-xs badge-warning"
-          aria-hidden="true"
-        >{{ backgroundJobsStore.activeJobCount }}</span>
+        <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
       </button>
 
       <!-- Settings button -->
@@ -135,8 +127,9 @@
     <!-- ── Body ── -->
     <div class="flex flex-1 overflow-hidden min-h-0">
 
-      <!-- Left sidebar: sources (resizable) -->
+      <!-- Left sidebar: sources (resizable, hidden on collections overview) -->
       <aside
+        v-show="!isCollectionsView"
         class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative"
         :class="isResizing ? '' : 'transition-all duration-200 ease-in-out'"
         :style="{ width: sourcesSidebarOpen ? sidebarWidth + 'px' : '0px' }"
@@ -185,75 +178,250 @@
           <div v-else class="px-6 py-6">
 
             <!-- Collections overview -->
-            <div v-if="activeTab === 'collections'" class="max-w-3xl">
-              <div class="flex items-baseline justify-between mb-2">
-                <span class="text-[11px] uppercase tracking-[0.14em] text-base-content/40">
-                  {{ collectionStore.sortedCollections.length }} {{ collectionStore.sortedCollections.length === 1 ? 'collection' : 'collections' }}
-                </span>
-                <button class="btn btn-ghost btn-xs gap-1 normal-case" @click="openCreateCollectionModal">
-                  <Plus :size="13" />
-                  New collection
-                </button>
+            <div v-if="activeTab === 'collections'" class="pt-4">
+              <header class="flex items-end justify-between gap-6 flex-wrap pb-5 mb-4 border-b border-base-300/60">
+                <div class="min-w-0">
+                  <h1 class="text-[22px] leading-none font-semibold tracking-tight">Collections</h1>
+                  <p class="mt-2 text-xs text-base-content/50">
+                    <span class="tabular-nums font-medium text-base-content/70">{{ collectionStore.sortedCollections.length }}</span>
+                    {{ collectionStore.sortedCollections.length === 1 ? 'collection' : 'collections' }}
+                    <span class="mx-1.5 text-base-content/25">·</span>
+                    <span class="text-base-content/45">workspace for your sources</span>
+                  </p>
+                </div>
+
+                <div class="flex items-center gap-2 flex-wrap">
+                  <!-- Search -->
+                  <div class="relative">
+                    <Search :size="13" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-base-content/40 pointer-events-none" />
+                    <input
+                      v-model="collectionsSearch"
+                      type="text"
+                      placeholder="Search collections"
+                      class="input input-sm input-bordered pl-7 pr-7 w-56 focus:w-64 transition-[width]"
+                      aria-label="Search collections"
+                    />
+                    <button
+                      v-if="collectionsSearch"
+                      @click="collectionsSearch = ''"
+                      class="absolute right-2 top-1/2 -translate-y-1/2 text-base-content/40 hover:text-base-content transition-colors"
+                      aria-label="Clear search"
+                    >
+                      <X :size="13" />
+                    </button>
+                  </div>
+
+                  <!-- View toggle -->
+                  <div class="join" role="group" aria-label="View mode">
+                    <button
+                      class="btn btn-sm join-item"
+                      :class="collectionsView === 'list' ? 'btn-active' : 'btn-ghost'"
+                      @click="collectionsView = 'list'"
+                      title="List view"
+                      aria-label="List view"
+                      :aria-pressed="collectionsView === 'list'"
+                    >
+                      <List :size="14" />
+                    </button>
+                    <button
+                      class="btn btn-sm join-item"
+                      :class="collectionsView === 'cards' ? 'btn-active' : 'btn-ghost'"
+                      @click="collectionsView = 'cards'"
+                      title="Card view"
+                      aria-label="Card view"
+                      :aria-pressed="collectionsView === 'cards'"
+                    >
+                      <LayoutGrid :size="14" />
+                    </button>
+                  </div>
+
+                  <!-- Sort -->
+                  <div class="dropdown dropdown-end">
+                    <label
+                      tabindex="0"
+                      class="btn btn-sm btn-ghost gap-1.5 normal-case font-normal"
+                      aria-label="Sort collections"
+                    >
+                      {{ collectionsSortLabel }}
+                      <ChevronDown :size="12" />
+                    </label>
+                    <ul tabindex="0" class="dropdown-content z-[50] menu p-1 shadow-lg bg-base-100 border border-base-300 rounded-box w-44">
+                      <li v-for="opt in collectionsSortOptions" :key="opt.id">
+                        <a
+                          @click="collectionsSort = opt.id"
+                          :class="{ 'font-semibold bg-base-200': collectionsSort === opt.id }"
+                          class="text-sm"
+                        >{{ opt.label }}</a>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div class="w-px h-5 bg-base-300/70 mx-0.5"></div>
+
+                  <!-- CTA -->
+                  <button
+                    class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
+                    @click="openCreateCollectionModal"
+                  >
+                    <Plus :size="14" />
+                    New collection
+                  </button>
+                </div>
+              </header>
+
+              <!-- Empty search result -->
+              <div
+                v-if="filteredCollections.length === 0 && collectionsSearch"
+                class="text-center py-16 text-sm text-base-content/45"
+              >
+                No collections match
+                <span class="text-base-content/70">"{{ collectionsSearch }}"</span>
               </div>
 
-              <ul class="border-y border-base-300/70 divide-y divide-base-300/70">
+              <!-- List view -->
+              <ul
+                v-else-if="collectionsView === 'list'"
+                class="divide-y divide-base-300/50"
+              >
                 <li
-                  v-for="collection in collectionStore.sortedCollections"
+                  v-for="collection in filteredCollections"
                   :key="collection.id"
-                  class="group flex items-baseline gap-3 py-3 cursor-pointer"
+                  class="group flex items-start gap-5 py-5 cursor-pointer transition-colors"
                   @click="selectCollectionAndNavigate(collection.id)"
                   :aria-current="collection.id === collectionStore.currentCollectionId ? 'true' : undefined"
                 >
                   <span
-                    class="w-1.5 h-1.5 rounded-full flex-shrink-0 translate-y-[0.45em]"
+                    class="mt-[0.55rem] w-2 h-2 rounded-full flex-shrink-0 ring-4 ring-transparent transition-all"
+                    :class="{ 'ring-base-200': collection.id === collectionStore.currentCollectionId }"
                     :style="{ backgroundColor: collection.color }"
                     aria-hidden="true"
                   ></span>
 
                   <div class="flex-1 min-w-0">
-                    <div class="flex items-baseline gap-2">
+                    <div class="flex items-baseline flex-wrap gap-x-3 gap-y-1">
                       <h3
-                        class="text-sm truncate"
-                        :class="collection.id === collectionStore.currentCollectionId ? 'font-semibold' : 'font-normal'"
+                        class="text-[15px] truncate group-hover:text-primary transition-colors"
+                        :class="collection.id === collectionStore.currentCollectionId ? 'font-semibold' : 'font-medium'"
                       >{{ collection.name }}</h3>
                       <span
                         v-if="collection.id === collectionStore.currentCollectionId"
-                        class="text-[10px] uppercase tracking-wider text-base-content/40"
-                      >active</span>
+                        class="text-[10px] uppercase tracking-[0.14em] font-semibold text-base-content/55"
+                      >Active</span>
                       <span
                         v-if="collection.shared"
-                        class="text-[10px] uppercase tracking-wider text-base-content/40"
-                      >shared</span>
+                        class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                      >Shared</span>
                     </div>
-                    <p v-if="collection.description" class="text-xs text-base-content/50 truncate mt-0.5">{{ collection.description }}</p>
+                    <p v-if="collection.description" class="mt-1.5 text-[13px] leading-relaxed text-base-content/55 truncate">{{ collection.description }}</p>
                   </div>
 
-                  <span class="text-xs tabular-nums text-base-content/40 flex-shrink-0">
-                    {{ collection.document_count || 0 }}
-                  </span>
+                  <div class="flex items-center gap-4 flex-shrink-0 mt-[0.125rem]">
+                    <span class="tabular-nums flex items-baseline gap-1">
+                      <span class="text-[15px] font-medium text-base-content/75">{{ collection.document_count || 0 }}</span>
+                      <span class="text-[10px] uppercase tracking-wider text-base-content/35">{{ (collection.document_count || 0) === 1 ? 'doc' : 'docs' }}</span>
+                    </span>
 
-                  <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex-shrink-0">
-                    <button
-                      v-if="collectionStore.multiUser && collection.permission === 'owner'"
-                      @click.stop="openShareModal(collection)"
-                      class="btn btn-ghost btn-xs btn-square"
-                      title="Share collection"
-                      :aria-label="`Share collection ${collection.name}`"
-                    >
-                      <Share2 :size="13" />
-                    </button>
-                    <button
-                      @click.stop="openEditCollectionModal(collection)"
-                      class="btn btn-ghost btn-xs btn-square"
-                      title="Edit collection"
-                      :aria-label="`Edit collection ${collection.name}`"
-                      :disabled="collection.shared && collection.permission === 'read'"
-                    >
-                      <Pencil :size="13" />
-                    </button>
+                    <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                      <button
+                        v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                        @click.stop="openShareModal(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Share collection"
+                        :aria-label="`Share collection ${collection.name}`"
+                      >
+                        <Share2 :size="13" />
+                      </button>
+                      <button
+                        @click.stop="openEditCollectionModal(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Edit collection"
+                        :aria-label="`Edit collection ${collection.name}`"
+                        :disabled="collection.shared && collection.permission === 'read'"
+                      >
+                        <Pencil :size="13" />
+                      </button>
+                    </div>
                   </div>
                 </li>
               </ul>
+
+              <!-- Card view -->
+              <div
+                v-else
+                class="grid gap-3"
+                style="grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));"
+              >
+                <div
+                  v-for="collection in filteredCollections"
+                  :key="collection.id"
+                  class="group relative flex flex-col gap-3 p-5 rounded-lg border border-base-300/60 bg-base-100 hover:border-base-content/25 hover:bg-base-100 transition-colors cursor-pointer min-h-[148px]"
+                  :class="{ 'ring-1 ring-base-content/20': collection.id === collectionStore.currentCollectionId }"
+                  @click="selectCollectionAndNavigate(collection.id)"
+                  :aria-current="collection.id === collectionStore.currentCollectionId ? 'true' : undefined"
+                  role="button"
+                  tabindex="0"
+                  @keydown.enter="selectCollectionAndNavigate(collection.id)"
+                  @keydown.space.prevent="selectCollectionAndNavigate(collection.id)"
+                >
+                  <div class="flex items-start gap-2.5">
+                    <span
+                      class="mt-[0.45rem] w-2 h-2 rounded-full flex-shrink-0 ring-4 ring-transparent transition-all"
+                      :class="{ 'ring-base-200': collection.id === collectionStore.currentCollectionId }"
+                      :style="{ backgroundColor: collection.color }"
+                      aria-hidden="true"
+                    ></span>
+                    <div class="min-w-0 flex-1">
+                      <h3
+                        class="text-[15px] truncate group-hover:text-primary transition-colors"
+                        :class="collection.id === collectionStore.currentCollectionId ? 'font-semibold' : 'font-medium'"
+                      >{{ collection.name }}</h3>
+                      <div class="flex gap-2 mt-0.5 min-h-[12px]">
+                        <span
+                          v-if="collection.id === collectionStore.currentCollectionId"
+                          class="text-[10px] uppercase tracking-[0.14em] font-semibold text-base-content/55"
+                        >Active</span>
+                        <span
+                          v-if="collection.shared"
+                          class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                        >Shared</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p
+                    v-if="collection.description"
+                    class="text-[13px] leading-relaxed text-base-content/55 line-clamp-3 flex-1"
+                  >{{ collection.description }}</p>
+                  <div v-else class="flex-1"></div>
+
+                  <div class="flex items-center justify-between pt-1 border-t border-base-300/40 -mx-1 px-1">
+                    <span class="tabular-nums flex items-baseline gap-1">
+                      <span class="text-[15px] font-medium text-base-content/75">{{ collection.document_count || 0 }}</span>
+                      <span class="text-[10px] uppercase tracking-wider text-base-content/35">{{ (collection.document_count || 0) === 1 ? 'doc' : 'docs' }}</span>
+                    </span>
+                    <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                      <button
+                        v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                        @click.stop="openShareModal(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Share collection"
+                        :aria-label="`Share collection ${collection.name}`"
+                      >
+                        <Share2 :size="13" />
+                      </button>
+                      <button
+                        @click.stop="openEditCollectionModal(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Edit collection"
+                        :aria-label="`Edit collection ${collection.name}`"
+                        :disabled="collection.shared && collection.permission === 'read'"
+                      >
+                        <Pencil :size="13" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
@@ -265,7 +433,91 @@
         </div>
 
       </main>
+
+      <!-- Right sidebar: analysis (resizable, hidden on collections overview) -->
+      <aside
+        v-show="!isCollectionsView"
+        class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative border-l border-base-300"
+        :class="isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out'"
+        :style="{ width: analysisSidebarOpen ? analysisWidth + 'px' : '0px' }"
+      >
+        <!-- Drag handle (on the LEFT edge of the right sidebar) -->
+        <div
+          v-if="analysisSidebarOpen"
+          class="absolute left-0 top-0 h-full w-1 cursor-col-resize group z-10 hover:bg-primary/40 transition-colors"
+          :class="isResizingAnalysis ? 'bg-primary/60' : ''"
+          @mousedown.prevent="startResizeAnalysis"
+        >
+          <div class="absolute inset-y-0 left-0 flex items-center justify-center w-1">
+            <div class="flex flex-col gap-1 opacity-0 group-hover:opacity-60 transition-opacity">
+              <div class="w-1 h-1 rounded-full bg-base-content"></div>
+              <div class="w-1 h-1 rounded-full bg-base-content"></div>
+              <div class="w-1 h-1 rounded-full bg-base-content"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="h-full flex flex-col" :style="{ width: analysisWidth + 'px' }">
+          <AnalysisSidebar
+            @close="analysisSidebarOpen = false"
+            @send-to-chat="handleSendToChat"
+          />
+        </div>
+      </aside>
     </div>
+
+    <!-- ── Footer status bar (background jobs) ── -->
+    <footer
+      class="flex items-center gap-3 px-3 h-6 bg-base-100 border-t border-base-300 text-[11px] text-base-content/55 flex-shrink-0"
+      role="contentinfo"
+      aria-label="Background jobs status"
+    >
+      <button
+        class="flex items-center gap-1.5 hover:text-base-content transition-colors"
+        @click="showJobsDrawer = true"
+        :title="backgroundJobsStore.activeJobCount > 0 ? `${backgroundJobsStore.activeJobCount} active job${backgroundJobsStore.activeJobCount === 1 ? '' : 's'} — click to open` : 'Background jobs — click to open'"
+        :aria-label="backgroundJobsStore.activeJobCount > 0
+          ? `Background jobs — ${backgroundJobsStore.activeJobCount} active`
+          : 'Background jobs'"
+      >
+        <Loader2
+          v-if="backgroundJobsStore.hasActiveJobs"
+          :size="11"
+          class="animate-spin text-warning"
+          aria-hidden="true"
+        />
+        <Bell v-else :size="11" aria-hidden="true" />
+        <span v-if="backgroundJobsStore.activeJobCount > 0" class="font-medium text-warning">
+          {{ backgroundJobsStore.activeJobCount }} job{{ backgroundJobsStore.activeJobCount === 1 ? '' : 's' }} running
+        </span>
+        <span v-else>Idle</span>
+      </button>
+
+      <!-- Inline progress for the most recent active job, if any -->
+      <template v-if="footerActiveJob">
+        <span class="w-px h-3 bg-base-300" aria-hidden="true"></span>
+        <span class="truncate max-w-[40ch] text-base-content/45">
+          {{ footerActiveJob.currentFile || footerActiveJob.phase || footerActiveJob.type }}
+        </span>
+        <progress
+          class="progress progress-warning w-24 h-1.5"
+          :value="footerActiveJob.progress || 0"
+          max="100"
+          aria-hidden="true"
+        ></progress>
+      </template>
+
+      <div class="flex-1"></div>
+
+      <!-- Stats moved here from the header for breathing room -->
+      <span class="hidden md:inline tabular-nums">
+        {{ stats.documents }} {{ stats.documents === 1 ? 'source' : 'sources' }}
+      </span>
+      <span class="hidden md:inline w-px h-3 bg-base-300" aria-hidden="true"></span>
+      <span class="hidden md:inline tabular-nums">
+        {{ stats.pages }} {{ stats.pages === 1 ? 'page' : 'pages' }}
+      </span>
+    </footer>
 
     <!-- Create Collection Modal -->
     <dialog class="modal" :class="{ 'modal-open': showCollectionModal }" aria-labelledby="create-collection-title">
@@ -631,9 +883,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List } from 'lucide-vue-next'
 
 const tabs = [
   { id: 'chat', label: 'Chat', icon: MessageSquare },
@@ -647,6 +899,7 @@ const toolTabs = [
 ]
 import SearchTab from './components/SearchTab.vue'
 import SourcesSidebar from './components/SourcesSidebar.vue'
+import AnalysisSidebar from './components/AnalysisSidebar.vue'
 import OCRPlaygroundTab from './components/OCRPlaygroundTab.vue'
 import TokenizerTab from './components/TokenizerTab.vue'
 import ChatTab from './components/ChatTab.vue'
@@ -704,6 +957,54 @@ const sourcesSidebarOpen = ref(localStorage.getItem('sources_sidebar_open') !== 
 
 watch(sourcesSidebarOpen, v => localStorage.setItem('sources_sidebar_open', String(v)))
 
+// Analysis sidebar state (persisted, resizable)
+const ANALYSIS_MIN = 240
+const ANALYSIS_MAX = 600
+const analysisWidth = ref(parseInt(localStorage.getItem('analysis_width') || '320'))
+const analysisSidebarOpen = ref(localStorage.getItem('analysis_sidebar_open') !== 'false')
+const isResizingAnalysis = ref(false)
+
+watch(analysisSidebarOpen, v => localStorage.setItem('analysis_sidebar_open', String(v)))
+
+const startResizeAnalysis = (e) => {
+  isResizingAnalysis.value = true
+  const startX = e.clientX
+  const startWidth = analysisWidth.value
+
+  const onMove = (e) => {
+    // Right sidebar grows when dragging LEFT, so invert
+    const delta = startX - e.clientX
+    analysisWidth.value = Math.min(ANALYSIS_MAX, Math.max(ANALYSIS_MIN, startWidth + delta))
+  }
+
+  const onUp = () => {
+    isResizingAnalysis.value = false
+    localStorage.setItem('analysis_width', String(analysisWidth.value))
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+// True when the user is on the all-collections overview — sidebars hide here.
+const isCollectionsView = computed(() => activeTab.value === 'collections')
+
+// Most recent active job, surfaced inline in the footer.
+const footerActiveJob = computed(() =>
+  backgroundJobsStore.allJobs.find(j => j.status === 'running' || j.status === 'pending')
+)
+
+// Forward an Analysis-sidebar action into the chat input.
+const handleSendToChat = (prompt) => {
+  activeTab.value = 'chat'
+  // Wait one tick so ChatTab is mounted before we deliver the prompt.
+  setTimeout(() => {
+    window.dispatchEvent(new CustomEvent('asymptote:prefill-chat', { detail: { prompt } }))
+  }, 50)
+}
+
 // Create collection modal state
 const showCollectionModal = ref(false)
 const newCollectionName = ref('')
@@ -731,6 +1032,61 @@ const shareCollectionName = ref('')
 
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
+
+// Collections overview: view, search, sort
+const collectionsView = ref(localStorage.getItem('collections_view') || 'list')
+const collectionsSort = ref(localStorage.getItem('collections_sort') || 'recent')
+const collectionsSearch = ref('')
+
+const collectionsSortOptions = [
+  { id: 'recent', label: 'Most recent' },
+  { id: 'name', label: 'Name' },
+  { id: 'docs', label: 'Most documents' },
+]
+
+const collectionsSortLabel = computed(
+  () => collectionsSortOptions.find(o => o.id === collectionsSort.value)?.label || ''
+)
+
+watch(collectionsView, v => localStorage.setItem('collections_view', v))
+watch(collectionsSort, v => localStorage.setItem('collections_sort', v))
+
+// Reset search each time the user enters the collections tab
+watch(activeTab, tab => {
+  if (tab === 'collections') collectionsSearch.value = ''
+})
+
+const filteredCollections = computed(() => {
+  const q = collectionsSearch.value.trim().toLowerCase()
+  let list = [...collectionStore.sortedCollections]
+
+  if (q) {
+    list = list.filter(c =>
+      c.name.toLowerCase().includes(q) ||
+      (c.description && c.description.toLowerCase().includes(q))
+    )
+  }
+
+  if (collectionsSort.value === 'name') {
+    list.sort((a, b) => a.name.localeCompare(b.name))
+  } else if (collectionsSort.value === 'docs') {
+    list.sort((a, b) => (b.document_count || 0) - (a.document_count || 0))
+  } else if (collectionsSort.value === 'recent') {
+    list.sort((a, b) => {
+      const ta = a.updated_at || a.created_at || ''
+      const tb = b.updated_at || b.created_at || ''
+      return tb.localeCompare(ta)
+    })
+  }
+
+  // Pin the default collection first when not actively searching
+  if (!q) {
+    const i = list.findIndex(c => c.id === 'default')
+    if (i > 0) list.unshift(list.splice(i, 1)[0])
+  }
+
+  return list
+})
 
 const updateThemeFromStorage = () => {
   const savedTheme = localStorage.getItem('theme')

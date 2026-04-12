@@ -36,16 +36,48 @@
         </button>
 
         <div v-show="addSectionOpen" class="px-3 pb-3 space-y-2">
-          <!-- File/folder buttons -->
+          <!-- File/folder/record buttons -->
           <div class="flex gap-1.5">
-            <button @click="openFilePicker" class="btn btn-primary btn-xs flex-1 gap-1" :disabled="indexing">
+            <button @click="openFilePicker" class="btn btn-primary btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
               <FileText :size="12" />
               Files
             </button>
-            <button @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing">
+            <button @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
               <FolderOpen :size="12" />
               Folder
             </button>
+            <button
+              @click="toggleRecording"
+              class="btn btn-xs flex-1 gap-1"
+              :class="isRecording ? 'btn-error' : 'btn-outline btn-secondary'"
+              :disabled="indexing || transcribing"
+              :title="isRecording ? 'Stop recording' : 'Record a meeting'"
+            >
+              <Square v-if="isRecording" :size="10" class="fill-current" />
+              <Mic v-else :size="12" />
+              {{ isRecording ? 'Stop' : 'Record' }}
+            </button>
+          </div>
+
+          <!-- Recording / transcription panel -->
+          <div
+            v-if="isRecording || transcribing || recordError"
+            class="rounded border text-xs px-2 py-1.5"
+            :class="recordError ? 'border-error/40 bg-error/10' : (isRecording ? 'border-error/40 bg-error/5' : 'border-base-300 bg-base-200')"
+          >
+            <div v-if="isRecording" class="flex items-center gap-2">
+              <span class="inline-block w-2 h-2 rounded-full bg-error animate-pulse" aria-hidden="true"></span>
+              <span class="flex-1 font-medium">Recording — {{ formattedElapsed }}</span>
+              <button class="btn btn-ghost btn-xs" @click="cancelRecording" :aria-label="'Cancel recording'">Cancel</button>
+            </div>
+            <div v-else-if="transcribing" class="flex items-center gap-2">
+              <span class="loading loading-spinner loading-xs"></span>
+              <span class="flex-1">{{ transcribeStatus || 'Transcribing recording…' }}</span>
+            </div>
+            <div v-else-if="recordError" class="flex items-start gap-2">
+              <span class="flex-1 text-error">{{ recordError }}</span>
+              <button class="btn btn-ghost btn-xs" @click="recordError = ''">Dismiss</button>
+            </div>
           </div>
 
           <!-- Selected paths -->
@@ -238,6 +270,14 @@
               <span class="badge badge-xs" :class="doc.source_type === 'local_reference' ? 'badge-ghost' : 'badge-primary'">
                 {{ doc.source_type === 'local_reference' ? 'local' : 'lib' }}
               </span>
+              <span
+                v-if="isTabularFile(doc.filename)"
+                class="badge badge-xs badge-success gap-0.5"
+                title="Queryable as a typed SQL table — numeric questions run real SQL against this file"
+              >
+                <Table2 :size="9" />
+                table
+              </span>
               <button
                 v-if="doc.injection_warnings && Object.keys(doc.injection_warnings).length > 0"
                 class="badge badge-xs badge-warning gap-0.5 cursor-pointer hover:badge-error transition-colors"
@@ -415,7 +455,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 
@@ -483,6 +523,167 @@ const chunkResponse = ref({
   returned_chunks: 0,
   chunks: []
 })
+
+// Meeting recording state
+const isRecording = ref(false)
+const transcribing = ref(false)
+const transcribeStatus = ref('')
+const recordError = ref('')
+const elapsedSeconds = ref(0)
+let mediaRecorder = null
+let recordedChunks = []
+let mediaStream = null
+let elapsedTimer = null
+let cancelled = false
+
+const formattedElapsed = computed(() => {
+  const mm = String(Math.floor(elapsedSeconds.value / 60)).padStart(2, '0')
+  const ss = String(elapsedSeconds.value % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+})
+
+function pickRecordingMime() {
+  // Prefer opus/webm (small, widely supported). Fall back to browser default.
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ]
+  if (typeof MediaRecorder === 'undefined') return ''
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime
+  }
+  return ''
+}
+
+function stopMediaTracks() {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach(t => t.stop())
+    mediaStream = null
+  }
+  if (elapsedTimer) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+}
+
+async function startRecording() {
+  if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
+    recordError.value = 'Recording is not supported in this browser.'
+    return
+  }
+  if (!collectionStore.canEditCurrent) {
+    recordError.value = 'You do not have permission to add sources to this collection.'
+    return
+  }
+  recordError.value = ''
+  cancelled = false
+  recordedChunks = []
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch (err) {
+    console.error('getUserMedia failed:', err)
+    recordError.value = err?.message?.includes('Permission')
+      ? 'Microphone permission denied.'
+      : 'Could not access microphone.'
+    return
+  }
+
+  const mime = pickRecordingMime()
+  try {
+    mediaRecorder = mime
+      ? new MediaRecorder(mediaStream, { mimeType: mime })
+      : new MediaRecorder(mediaStream)
+  } catch (err) {
+    console.error('MediaRecorder init failed:', err)
+    recordError.value = 'Failed to start recorder.'
+    stopMediaTracks()
+    return
+  }
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data)
+  }
+  mediaRecorder.onstop = async () => {
+    stopMediaTracks()
+    if (cancelled) {
+      recordedChunks = []
+      isRecording.value = false
+      return
+    }
+    const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' })
+    recordedChunks = []
+    isRecording.value = false
+    await uploadRecording(blob)
+  }
+
+  elapsedSeconds.value = 0
+  elapsedTimer = setInterval(() => { elapsedSeconds.value += 1 }, 1000)
+  mediaRecorder.start()
+  isRecording.value = true
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  }
+}
+
+function cancelRecording() {
+  cancelled = true
+  stopRecording()
+}
+
+function toggleRecording() {
+  if (isRecording.value) stopRecording()
+  else startRecording()
+}
+
+function extensionForMime(mime) {
+  if (!mime) return 'webm'
+  if (mime.includes('webm')) return 'webm'
+  if (mime.includes('ogg')) return 'ogg'
+  if (mime.includes('mp4')) return 'm4a'
+  if (mime.includes('wav')) return 'wav'
+  return 'webm'
+}
+
+async function uploadRecording(blob) {
+  transcribing.value = true
+  transcribeStatus.value = 'Uploading recording…'
+  try {
+    const ext = extensionForMime(blob.type)
+    const now = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+    const filename = `meeting-${stamp}.${ext}`
+    const file = new File([blob], filename, { type: blob.type })
+
+    const form = new FormData()
+    form.append('files', file)
+
+    transcribeStatus.value = 'Transcribing with Whisper (may take a minute)…'
+    const response = await axios.post('/documents/upload', form, {
+      params: { collection_id: collectionStore.currentCollectionId },
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+
+    indexSuccess.value = true
+    indexResult.value = {
+      count: response.data.documents_processed || 1,
+      chunks: response.data.total_chunks || 0,
+    }
+    await loadDocuments()
+    emit('document-deleted')
+  } catch (err) {
+    console.error('Recording upload failed:', err)
+    recordError.value = err.response?.data?.detail || err.message || 'Failed to transcribe recording'
+  } finally {
+    transcribing.value = false
+    transcribeStatus.value = ''
+  }
+}
 
 // Injection warnings modal state
 const injectionModal = ref(null)
@@ -593,7 +794,7 @@ const openFolderPicker = async () => {
         const scanResponse = await axios.post('/api/scan-folder', {
           path: folderPath,
           recursive: true,
-          file_extensions: ['.pdf', '.txt', '.docx', '.csv']
+          file_extensions: ['.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl']
         })
 
         if (scanResponse.data.files && scanResponse.data.files.length > 0) {
@@ -607,7 +808,7 @@ const openFolderPicker = async () => {
             }
           }
         } else {
-          indexError.value = 'No supported files found (.pdf, .txt, .docx, .csv)'
+          indexError.value = 'No supported files found (.pdf, .txt, .docx, .csv, .xlsx, .xls, .md, .json)'
         }
       }
     }
@@ -842,21 +1043,25 @@ const closeChunksModal = () => {
 
 // Code file extensions for icon display
 const CODE_EXTENSIONS = ['.pas', '.dpr', '.dpk', '.pp', '.inc', '.dfm', '.mod', '.def', '.mi', '.asm', '.s']
+const TABULAR_EXTENSIONS = ['.csv', '.xlsx', '.xls']
 
-const isCodeFile = (filename) => {
-  const ext = '.' + filename.split('.').pop().toLowerCase()
-  return CODE_EXTENSIONS.includes(ext)
-}
+const getExt = (filename) => '.' + (filename || '').split('.').pop().toLowerCase()
+
+const isCodeFile = (filename) => CODE_EXTENSIONS.includes(getExt(filename))
+const isTabularFile = (filename) => TABULAR_EXTENSIONS.includes(getExt(filename))
 
 const getFileIcon = (filename) => {
+  if (isTabularFile(filename)) return Table2
   return isCodeFile(filename) ? FileCode : FileText
 }
 
 const getFileIconClass = (filename) => {
+  if (isTabularFile(filename)) return 'bg-success/20'
   return isCodeFile(filename) ? 'bg-primary/20' : 'bg-error/20'
 }
 
 const getFileIconTextClass = (filename) => {
+  if (isTabularFile(filename)) return 'text-success'
   return isCodeFile(filename) ? 'text-primary' : 'text-error'
 }
 
@@ -949,9 +1154,11 @@ watch(() => backgroundJobsStore.uploadJobs, (jobs) => {
 
 // Warn user before leaving page during indexing
 const beforeUnloadHandler = (e) => {
-  if (indexing.value) {
+  if (indexing.value || isRecording.value || transcribing.value) {
     e.preventDefault()
-    e.returnValue = 'Indexing in progress. Are you sure you want to leave?'
+    e.returnValue = isRecording.value
+      ? 'Recording in progress. Are you sure you want to leave?'
+      : 'Indexing in progress. Are you sure you want to leave?'
     return e.returnValue
   }
 }
@@ -1010,5 +1217,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
+  if (isRecording.value) {
+    cancelled = true
+    try { mediaRecorder?.stop() } catch (_) { /* ignore */ }
+  }
+  stopMediaTracks()
 })
 </script>

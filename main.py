@@ -32,6 +32,16 @@ from services.reindex_service import reindex_service
 from services.collection_service import collection_service
 from services.sharing_service import sharing_service
 from services.indexer_manager import indexer_manager
+from services.structured_chat import (
+    build_structured_context,
+    build_tool_use_instructions,
+    collect_structured_tables,
+    describe_tables_for_prompt,
+    execute_tool_calls,
+    format_results_for_prompt,
+    parse_tool_calls,
+    strip_tool_calls,
+)
 from middleware.user_context import get_current_user_id
 from services.mcp_server import (
     MCP_CONFIG_FIELDS,
@@ -269,13 +279,13 @@ async def upload_documents(
     document_dir = indexer_manager.get_documents_path(collection_id)
 
     # Validate all files have supported extensions
-    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS
+    SUPPORTED_EXTENSIONS = DocumentExtractor.SUPPORTED_EXTENSIONS
     for file in files:
         file_ext = Path(file.filename).suffix.lower()
         if file_ext not in SUPPORTED_EXTENSIONS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File {file.filename} has unsupported type. Supported: PDF, TXT, DOCX, CSV, MD, JSON, JSONL, and code files (Pascal, Delphi, Modula-2, Assembly)",
+                detail=f"File {file.filename} has unsupported type. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, and code files (Pascal, Delphi, Modula-2, Assembly)",
             )
 
     indexed_docs = []
@@ -395,13 +405,13 @@ async def upload_documents_async(
         )
 
     # Validate all files have supported extensions
-    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS
+    SUPPORTED_EXTENSIONS = DocumentExtractor.SUPPORTED_EXTENSIONS
     for file in files:
         file_ext = Path(file.filename).suffix.lower()
         if file_ext not in SUPPORTED_EXTENSIONS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File {file.filename} has unsupported type. Supported: PDF, TXT, DOCX, CSV, MD, JSON, JSONL, and code files",
+                detail=f"File {file.filename} has unsupported type. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, and code files",
             )
 
     # Create temp directory for staging files
@@ -921,11 +931,27 @@ async def search_documents(
         # Build collection overview so AI synthesis can answer meta-questions
         # like "how many sources are in this collection?"
         collection_overview = None
+        structured_context_str = None
+        skip_filenames: set = set()
         if ai_service and ai_options and ai_options.synthesize:
             try:
                 collection_overview = _build_collection_overview([collection_id])
             except Exception as e:
                 logger.warning(f"Failed to build collection overview for search: {e}")
+
+            # Inline small CSV/XLSX tables in full so synthesis never has to
+            # rely on top-K chunk recall for numeric questions. Large tables
+            # stay out of synthesis (users should use the Chat tab which runs
+            # the SQL tool loop for those).
+            try:
+                s_tables, s_stores = collect_structured_tables([collection_id])
+                if s_tables:
+                    ctx = build_structured_context(s_tables, s_stores)
+                    if ctx["inline_block"]:
+                        structured_context_str = ctx["inline_block"]
+                        skip_filenames = ctx["inlined_filenames"]
+            except Exception as e:
+                logger.warning(f"Failed to build structured context for search: {e}")
 
         search_result = indexer.search(
             query=search_request.query,
@@ -935,6 +961,8 @@ async def search_documents(
             mode=search_request.mode,
             semantic_weight=search_request.semantic_weight,
             collection_overview=collection_overview,
+            structured_context=structured_context_str,
+            skip_filenames=skip_filenames or None,
         )
 
         results = search_result["results"]
@@ -1138,9 +1166,34 @@ async def chat_with_documents(
             except Exception as e:
                 logger.warning(f"Chat context reranking failed, using original order: {e}")
 
+        # --- Collect structured CSV/XLSX tables early so we can both inline
+        # the small ones as JSONL AND know which files to drop from chunks. ---
+        if chat_request.scope == "all":
+            overview_ids = [c["id"] for c in collection_service.get_all_collections()]
+        else:
+            overview_ids = [collection_id]
+        structured_tables, structured_stores = collect_structured_tables(overview_ids)
+        structured_ctx = build_structured_context(structured_tables, structured_stores) \
+            if structured_tables else {
+                "inline_block": "",
+                "tool_tables": [],
+                "inlined_filenames": set(),
+                "inlined_document_ids": set(),
+            }
+        inlined_filenames = structured_ctx["inlined_filenames"]
+        tool_tables = structured_ctx["tool_tables"]
+        inline_block = structured_ctx["inline_block"]
+
         # --- Format context and history ---
+        # Drop chunks from files that are already fully inlined as JSONL: the
+        # JSONL is authoritative, keeping duplicated (and possibly truncated)
+        # chunk snippets would just confuse the model.
+        filtered_results = [
+            (r, cid) for (r, cid) in zip(context_results, result_collection_ids)
+            if r.filename not in inlined_filenames
+        ]
         context_parts = []
-        for i, result in enumerate(context_results):
+        for i, (result, _cid) in enumerate(filtered_results):
             context_parts.append(
                 f"[Source {i + 1}: {result.filename}, page {result.page_number}]\n{result.text_snippet}"
             )
@@ -1153,10 +1206,6 @@ async def chat_with_documents(
         history_text = "\n\n".join(history_parts) if history_parts else "(Start of conversation)"
 
         # --- Build collection overview (handles meta-questions like "how many files") ---
-        if chat_request.scope == "all":
-            overview_ids = [c["id"] for c in collection_service.get_all_collections()]
-        else:
-            overview_ids = [collection_id]
         try:
             collection_overview = _build_collection_overview(overview_ids)
         except Exception as e:
@@ -1164,34 +1213,139 @@ async def chat_with_documents(
             collection_overview = "(Collection overview unavailable.)"
 
         scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
-        prompt = (
-            f"You are a helpful assistant with access to a private document knowledge base ({scope_note}). "
-            "Answer the user's question using the COLLECTION OVERVIEW and RETRIEVED CONTEXT below. "
+
+        # Only describe LARGE tables to the tool loop — small tables are
+        # already fully inlined as JSONL in `inline_block`, so the model
+        # should answer directly from that data instead of round-tripping
+        # through SQL.
+        tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
+        tools_block = build_tool_use_instructions() if tool_tables else ""
+
+        base_system_parts = [
+            f"You are a helpful assistant with access to a private document knowledge base ({scope_note}).",
+            "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED TABLES "
+            "(when provided), and RETRIEVED CONTEXT below.",
             "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
-            "(file counts, available documents, date ranges, what's in here). "
-            "Use the RETRIEVED CONTEXT for questions about the contents of specific documents, "
-            "and cite sources using [Source N] notation when referencing specific content. "
-            "If neither the overview nor the retrieved context contains enough information, "
-            "say so clearly and provide what help you can from your general knowledge.\n\n"
-            f"COLLECTION OVERVIEW:\n{collection_overview}\n\n"
-            f"RETRIEVED CONTEXT:\n{context_text}\n\n"
-            f"CONVERSATION HISTORY:\n{history_text}\n\n"
-            f"User: {latest_query}\nAssistant:"
+            "(file counts, available documents, date ranges).",
+        ]
+        if inline_block:
+            base_system_parts.append(
+                "When STRUCTURED TABLES are included below, they are the FULL contents "
+                "of CSV/XLSX files as JSONL — every row is present. For any numeric, "
+                "sum, count, average, filter, date-range, or ranking question about "
+                "those files, answer DIRECTLY from the JSONL rows and show your arithmetic. "
+                "Do NOT guess from chunk snippets and do NOT assume data is missing."
+            )
+        if tool_tables:
+            base_system_parts.append(
+                "For questions about the LARGE tables listed under TOOL USE PROTOCOL, "
+                "call the structured-query tools — do not estimate from row text."
+            )
+        base_system_parts.append(
+            "Use RETRIEVED CONTEXT for prose/document questions, citing [Source N] as needed."
         )
+        base_system = " ".join(base_system_parts)
 
-        # --- Call AI ---
-        result = provider.complete(
-            prompt=prompt,
-            max_tokens=2048,
-            model=ai_service.quality_model,
-        )
+        def compose_prompt(extra_suffix: str = "") -> str:
+            parts = [
+                base_system,
+                "",
+                f"COLLECTION OVERVIEW:\n{collection_overview}",
+            ]
+            if inline_block:
+                parts.extend(["", inline_block])
+            parts.extend(["", f"RETRIEVED CONTEXT:\n{context_text}"])
+            if tables_block:
+                parts.extend(["", f"LARGE TABLES (use SQL tool calls):\n{tables_block}"])
+            if tools_block:
+                parts.extend(["", tools_block])
+            parts.extend([
+                "",
+                f"CONVERSATION HISTORY:\n{history_text}",
+                "",
+                f"User: {latest_query}",
+            ])
+            if extra_suffix:
+                parts.append(extra_suffix)
+            parts.append("Assistant:")
+            return "\n\n".join(parts)
 
-        response_text = result["text"].strip()
-        usage = result.get("usage", {})
+        # --- Tool-use loop (only when LARGE structured tables exist) ---
+        # Small tables are answered directly from inlined JSONL without any
+        # tool round-trip. Large tables still use the SQL tool loop.
+        executed_results: list[dict] = []
+        total_input_tokens = 0
+        total_output_tokens = 0
+        model_used = ai_service.quality_model
+        response_text = ""
+        suffix = ""
+        max_iterations = 3 if tool_tables else 1
+
+        for iteration in range(max_iterations):
+            prompt = compose_prompt(suffix)
+            result = provider.complete(
+                prompt=prompt,
+                max_tokens=2048,
+                model=ai_service.quality_model,
+            )
+            raw_text = result["text"]
+            usage_iter = result.get("usage", {}) or {}
+            total_input_tokens += usage_iter.get("input_tokens", 0)
+            total_output_tokens += usage_iter.get("output_tokens", 0)
+            model_used = usage_iter.get("model", model_used)
+
+            if not tool_tables:
+                response_text = raw_text.strip()
+                break
+
+            calls = parse_tool_calls(raw_text)
+            if not calls:
+                response_text = raw_text.strip()
+                break
+
+            iter_results = execute_tool_calls(calls, structured_stores, tool_tables)
+            executed_results.extend(iter_results)
+
+            # Next iteration: append the model's own tool_call turn + results so
+            # the model sees what it just did and can produce a final answer.
+            suffix = (
+                (suffix + "\n\n" if suffix else "")
+                + f"Assistant (previous turn):\n{raw_text.strip()}\n\n"
+                + format_results_for_prompt(iter_results)
+                + "\n\nNow produce the final answer for the user. Cite numeric results verbatim. "
+                + "Do NOT emit any more <tool_call> blocks — just the final answer."
+            )
+            # On the last iteration we'll take whatever comes back as the answer.
+            if iteration == max_iterations - 1:
+                # Force a final pass without tool-call permission
+                prompt = compose_prompt(suffix)
+                final_result = provider.complete(
+                    prompt=prompt,
+                    max_tokens=2048,
+                    model=ai_service.quality_model,
+                )
+                response_text = strip_tool_calls(final_result["text"]).strip()
+                final_usage = final_result.get("usage", {}) or {}
+                total_input_tokens += final_usage.get("input_tokens", 0)
+                total_output_tokens += final_usage.get("output_tokens", 0)
+                model_used = final_usage.get("model", model_used)
+                break
+        else:
+            response_text = strip_tool_calls(response_text).strip()
+
+        # Strip any stray tool_call blocks from the final text for display.
+        response_text = strip_tool_calls(response_text)
+        usage = {
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "model": model_used,
+        }
 
         features_used = ["chat"]
         if chat_request.rerank and rerank_usage:
             features_used.append("reranking")
+        if executed_results:
+            features_used.append("structured_tools")
 
         reranking_detail = None
         extra_input = 0
@@ -1218,6 +1372,8 @@ async def chat_with_documents(
         )
 
         # --- Build source list with URLs ---
+        # Only show sources whose chunks actually made it into the prompt —
+        # i.e. skip files that were inlined as authoritative JSONL.
         base_url = str(request.base_url).rstrip("/")
         sources = [
             ChatSource(
@@ -1229,13 +1385,14 @@ async def chat_with_documents(
                 pdf_url=f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}",
                 page_url=f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}",
             )
-            for r, col_id in zip(context_results, result_collection_ids)
+            for r, col_id in filtered_results
         ]
 
         return ChatResponse(
             message=ChatMessage(role="assistant", content=response_text),
             sources=sources,
             ai_usage=ai_usage,
+            structured_results=executed_results or None,
         )
 
     except HTTPException:
@@ -1365,7 +1522,7 @@ async def scan_folder(request: ScanFolderRequest):
     ]
 
     # Determine which extensions to look for
-    all_supported = {'.pdf', '.txt', '.docx', '.csv', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS
+    all_supported = DocumentExtractor.SUPPORTED_EXTENSIONS
     extensions_filter = set(request.file_extensions) if request.file_extensions else all_supported
 
     files_found = []
@@ -1715,7 +1872,7 @@ async def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:
     """
     from services.code_extractor import SUPPORTED_CODE_EXTENSIONS
 
-    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS
+    SUPPORTED_EXTENSIONS = DocumentExtractor.SUPPORTED_EXTENSIONS
 
     path = Path(request.file_path)
 
@@ -1738,7 +1895,7 @@ async def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:
     if file_ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file type: {file_ext}. Supported: PDF, TXT, DOCX, CSV, MD, JSON, JSONL, and code files",
+            detail=f"Unsupported file type: {file_ext}. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, and code files",
         )
 
     # Get indexer for the collection
@@ -1835,7 +1992,7 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
     """
     from services.code_extractor import SUPPORTED_CODE_EXTENSIONS
 
-    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS
+    SUPPORTED_EXTENSIONS = DocumentExtractor.SUPPORTED_EXTENSIONS
 
     # Validate all paths exist and are supported
     valid_paths = []
@@ -3455,10 +3612,23 @@ app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=True,
-    )
+    uvicorn_kwargs: dict = {
+        "host": settings.host,
+        "port": settings.port,
+        "reload": True,
+    }
+
+    cert_path = Path(settings.ssl_certfile).expanduser() if settings.ssl_certfile else None
+    key_path = Path(settings.ssl_keyfile).expanduser() if settings.ssl_keyfile else None
+    if cert_path and key_path and cert_path.is_file() and key_path.is_file():
+        uvicorn_kwargs["ssl_certfile"] = str(cert_path)
+        uvicorn_kwargs["ssl_keyfile"] = str(key_path)
+        logger.info(f"HTTPS enabled — serving on https://{settings.host}:{settings.port}")
+    elif settings.ssl_certfile or settings.ssl_keyfile:
+        logger.warning(
+            "ssl_certfile / ssl_keyfile configured but one or both files are missing — "
+            "falling back to plain HTTP. Run certs/generate-cert.sh to create a dev pair."
+        )
+
+    uvicorn.run("main:app", **uvicorn_kwargs)
 

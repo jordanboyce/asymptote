@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # HTTPS / TLS. If both files exist, uvicorn serves HTTPS on `port`.
+    # Leave empty to run plain HTTP (default). Paths are relative to the
+    # project root unless absolute. Use `certs/generate-cert.sh` to create
+    # a dev self-signed pair.
+    ssl_certfile: str = ""
+    ssl_keyfile: str = ""
+
     # MCP configuration
     enable_mcp: bool = True
     mcp_server_id: str = "asymptote"
@@ -66,6 +73,17 @@ class Settings(BaseSettings):
     # v3.0: CSV indexing configuration
     csv_row_level_indexing: bool = True  # Index CSV rows individually
     csv_rows_per_chunk: int = 5  # Number of rows per chunk when not row-level
+
+    # Audio transcription (meeting recordings via local Whisper)
+    # Model size: tiny | base | small | medium | large-v3
+    #   tiny   ~39MB   fastest, lowest accuracy
+    #   base   ~142MB  good default for CPU
+    #   small  ~466MB  better accuracy, ~2x slower than base
+    #   medium ~1.5GB  much better, GPU recommended
+    whisper_model: str = "base"
+    whisper_device: str = "cpu"          # "cpu" or "cuda"
+    whisper_compute_type: str = "int8"   # "int8" (fast, CPU) | "float16" (GPU) | "float32"
+    whisper_language: str = ""           # "" = auto-detect, else ISO code like "en"
 
     # v3.0: Schema version (for data persistence)
     schema_version: str = "3.0"

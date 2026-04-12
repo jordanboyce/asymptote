@@ -99,9 +99,15 @@ class DocumentIndexer:
         # Determine source format from file extension
         source_format = document_path.suffix.lower().lstrip(".")
 
-        # Handle CSV with row-level indexing (v3.0 feature)
-        if source_format == "csv" and settings.csv_row_level_indexing:
-            return self._index_csv_rows(document_path, filename, document_id)
+        # Handle CSV/XLSX with row-level + structured indexing.
+        # Both formats are normalized to the same "sheet of rows" shape and get
+        # both a semantic row index (for free-text search) and a typed SQL
+        # table (for aggregation / numeric queries).
+        if source_format in ("csv", "xlsx", "xls") and settings.csv_row_level_indexing:
+            return self._index_tabular_document(
+                document_path, filename, document_id, source_format=source_format,
+                progress_callback=progress_callback,
+            )
 
         # Handle code files with symbol-aware chunking
         if self.document_extractor.is_code_file(document_path):
@@ -220,80 +226,154 @@ class DocumentIndexer:
         )
         return metadata
 
-    def _index_csv_rows(self, document_path: Path, filename: str,
-                        document_id: str) -> DocumentMetadata:
+    def _index_tabular_document(
+        self,
+        document_path: Path,
+        filename: str,
+        document_id: str,
+        source_format: str = "csv",
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> DocumentMetadata:
         """
-        Index a CSV file with row-level chunking (v3.0 feature).
+        Index a CSV or Excel workbook.
 
-        Args:
-            document_path: Path to CSV file
-            filename: Original filename
-            document_id: Generated document ID
+        Builds two indexes in one pass:
+          1. Row-level semantic chunks (embedded for free-text search).
+          2. A typed SQL table in the structured store (for aggregation,
+             filtering, and canned portfolio metrics).
 
-        Returns:
-            DocumentMetadata object
+        Every sheet in a multi-sheet workbook gets its own structured table.
         """
-        logger.info(f"Indexing CSV with row-level chunking: {filename}")
+        from models.schemas import ChunkMetadata
 
-        # Extract CSV rows with column metadata
-        csv_rows = self.document_extractor.extract_csv_rows(document_path)
+        def report(phase: str, progress: int, detail: str = None,
+                   chunks_done: int = 0, chunks_total: int = 0):
+            if progress_callback:
+                try:
+                    progress_callback(phase, progress, detail, chunks_done, chunks_total)
+                except Exception as e:
+                    logger.warning(f"Progress callback error: {e}")
 
-        if not csv_rows:
-            logger.warning(f"No rows extracted from {filename}")
+        logger.info(f"Indexing tabular document ({source_format}): {filename}")
+        report("extracting", 0, f"Reading {filename}")
+
+        sheets = self.document_extractor.extract_tabular_sheets(document_path)
+        if not sheets:
             raise ValueError(f"Could not extract any rows from {filename}")
 
-        num_rows = len(csv_rows)
+        total_rows = sum(len(s['rows']) for s in sheets)
+        report("extracting", 100,
+               f"Extracted {total_rows} rows across {len(sheets)} sheet(s)")
 
-        # Create chunks from CSV rows
-        chunks = self.text_chunker.chunk_csv_rows(
-            csv_rows=csv_rows,
-            document_id=document_id,
-            filename=filename,
-            rows_per_chunk=settings.csv_rows_per_chunk if not settings.csv_row_level_indexing else 1,
-        )
+        # Build row-level chunks and populate the structured store in one pass
+        chunks: List = []
+        chunk_index = 0
+        for sheet_num, sheet in enumerate(sheets, start=1):
+            sheet_name = sheet['sheet_name']
+            columns = sheet['columns']
+            rows = sheet['rows']
+            row_texts = sheet['row_texts']
+
+            # Structured table (typed SQL)
+            try:
+                self.vector_store.structured_store.create_table(
+                    document_id=document_id,
+                    filename=filename,
+                    columns=columns,
+                    rows=rows,
+                    sheet_name=sheet_name,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Structured table creation failed for {filename} "
+                    f"(sheet='{sheet_name}'): {e}"
+                )
+
+            # Semantic row chunks — still needed so chat can cite rows verbatim
+            for row_idx, (row_dict, row_text) in enumerate(zip(rows, row_texts), start=1):
+                chunk_id = f"{document_id}_s{sheet_num}_r{row_idx}"
+                # Use sheet number as "page_number" for multi-sheet workbooks;
+                # single-sheet CSVs keep page_number = row number (legacy behavior).
+                page_number = sheet_num if len(sheets) > 1 else row_idx
+                chunks.append(ChunkMetadata(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename=filename,
+                    page_number=page_number,
+                    chunk_index=chunk_index,
+                    text=row_text,
+                    source_format=source_format,
+                    extraction_method="text",
+                    csv_row_number=row_idx,
+                    csv_columns=columns,
+                    csv_values={k: ("" if v is None else str(v)) for k, v in row_dict.items()},
+                ))
+                chunk_index += 1
 
         num_chunks = len(chunks)
+        report("chunking", 100, f"Prepared {num_chunks} row chunks", 0, num_chunks)
 
-        # Generate embeddings
-        logger.debug(f"Generating embeddings for {num_chunks} CSV row chunks")
+        if num_chunks == 0:
+            raise ValueError(f"Could not create any chunks from {filename}")
+
+        report("embedding", 0, f"Embedding {num_chunks} rows", 0, num_chunks)
         chunk_texts = [chunk.text for chunk in chunks]
-        embeddings = self.embedding_service.embed_texts(chunk_texts)
+        batch_size = 32
+        if num_chunks > batch_size and progress_callback:
+            embeddings = []
+            for i in range(0, num_chunks, batch_size):
+                batch = chunk_texts[i:i + batch_size]
+                batch_embeddings = self.embedding_service.embed_texts(batch)
+                embeddings.extend(batch_embeddings)
+                progress = min(100, int((i + len(batch)) / num_chunks * 100))
+                report("embedding", progress,
+                       f"Embedded {min(i + len(batch), num_chunks)}/{num_chunks} rows",
+                       min(i + len(batch), num_chunks), num_chunks)
+        else:
+            embeddings = self.embedding_service.embed_texts(chunk_texts)
+            report("embedding", 100, f"Embedded {num_chunks} rows", num_chunks, num_chunks)
 
-        # Add to vector store
-        logger.debug(f"Adding {num_chunks} CSV chunks to vector store")
+        report("saving", 0, f"Saving {num_chunks} rows to index")
         self.vector_store.add_chunks(chunks, embeddings)
 
-        # Add document record to metadata store
         indexed_at = datetime.utcnow().isoformat()
         self.vector_store.metadata_store.add_document(
             document_id=document_id,
             filename=filename,
-            num_pages=num_rows,  # For CSV, "pages" = rows
+            num_pages=total_rows,
             num_chunks=num_chunks,
             upload_timestamp=indexed_at,
-            source_format="csv",
+            source_format=source_format,
             extraction_method="text",
             embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
+        report("saving", 100, f"Saved {num_chunks} rows")
 
-        # Create metadata
         metadata = DocumentMetadata(
             document_id=document_id,
             filename=filename,
-            total_pages=num_rows,  # For CSV, "pages" = rows
+            total_pages=total_rows,
             total_chunks=num_chunks,
             indexed_at=indexed_at,
-            source_format="csv",
+            source_format=source_format,
             extraction_method="text",
             embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
 
-        logger.info(f"Successfully indexed CSV {filename}: {num_rows} rows, {num_chunks} chunks")
+        logger.info(
+            f"Successfully indexed {source_format.upper()} {filename}: "
+            f"{total_rows} rows across {len(sheets)} sheet(s), {num_chunks} chunks"
+        )
         return metadata
+
+    # Back-compat alias: older call sites still reference the CSV-only name.
+    def _index_csv_rows(self, document_path: Path, filename: str,
+                        document_id: str) -> DocumentMetadata:
+        return self._index_tabular_document(document_path, filename, document_id, source_format="csv")
 
     def _index_code_file(
         self,
@@ -412,6 +492,8 @@ class DocumentIndexer:
         mode: SearchMode = SearchMode.SEMANTIC,
         semantic_weight: float = 0.7,
         collection_overview: Optional[str] = None,
+        structured_context: Optional[str] = None,
+        skip_filenames: Optional[set] = None,
     ) -> dict:
         """
         Search for documents matching the query, with optional AI enhancements.
@@ -455,6 +537,13 @@ class DocumentIndexer:
             query_embedding = self.embedding_service.embed_query(query)
             results = self.vector_store.search(query_embedding, top_k=fetch_k)
 
+        # Drop results from files that are already fully inlined as structured
+        # JSONL in the synthesis prompt — keeping their chunks would waste
+        # tokens and risk the model trusting truncated snippets over the full
+        # authoritative data.
+        if skip_filenames:
+            results = [r for r in results if r.filename not in skip_filenames]
+
         # Step 3: Optionally rerank results
         if ai_active and ai_options.rerank and len(results) > 0:
             try:
@@ -489,7 +578,9 @@ class DocumentIndexer:
             results = results[:top_k]
 
         # Step 4: Optionally synthesize an answer from results
-        if ai_active and ai_options.synthesize and (len(results) > 0 or collection_overview):
+        if ai_active and ai_options.synthesize and (
+            len(results) > 0 or collection_overview or structured_context
+        ):
             try:
                 synth_input = [
                     {
@@ -500,7 +591,10 @@ class DocumentIndexer:
                     for r in results
                 ]
                 synth_result = ai_service.synthesize_results(
-                    query, synth_input, collection_overview=collection_overview
+                    query,
+                    synth_input,
+                    collection_overview=collection_overview,
+                    structured_context=structured_context,
                 )
                 synthesis = synth_result["synthesis"]
                 usage = synth_result["usage"]

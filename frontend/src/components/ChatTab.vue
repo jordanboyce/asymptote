@@ -236,6 +236,110 @@
                   :class="msg.slashCommand ? 'font-mono text-xs leading-snug' : 'text-sm'"
                 >{{ msg.content }}</div>
 
+                <!-- Structured query / metric results -->
+                <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
+                  <div
+                    v-for="(sr, srIdx) in msg.structuredResults"
+                    :key="srIdx"
+                    class="rounded-lg border border-base-300 bg-base-100 overflow-hidden"
+                  >
+                    <div class="flex items-center gap-2 px-3 py-1.5 bg-base-200 border-b border-base-300">
+                      <Table2 :size="12" class="text-success" />
+                      <span class="text-xs font-semibold">
+                        {{ sr.tool === 'compute_portfolio_metric' ? (sr.args?.metric || 'metric') : 'sql query' }}
+                      </span>
+                      <span v-if="sr.args?.table" class="text-xs text-base-content/50 font-mono truncate">{{ sr.args.table }}</span>
+                      <button
+                        class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0 text-base-content/40"
+                        @click="toggleStructuredDetail(srIdx, index)"
+                        :title="isStructuredOpen(srIdx, index) ? 'Hide details' : 'Show details'"
+                      >
+                        <ChevronDown
+                          :size="12"
+                          class="transition-transform"
+                          :class="isStructuredOpen(srIdx, index) ? 'rotate-180' : ''"
+                        />
+                      </button>
+                    </div>
+
+                    <!-- Error -->
+                    <div v-if="sr.error" class="px-3 py-2 text-xs text-error">{{ sr.error }}</div>
+
+                    <!-- Tabular result (query / top_holdings / etc.) -->
+                    <div
+                      v-else-if="sr.result && sr.result.columns && sr.result.rows"
+                      class="overflow-x-auto max-h-80"
+                    >
+                      <table class="table table-xs">
+                        <thead>
+                          <tr>
+                            <th v-for="col in sr.result.columns" :key="col" class="text-xs">{{ col }}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(row, rIdx) in sr.result.rows" :key="rIdx">
+                            <td
+                              v-for="(cell, cIdx) in row"
+                              :key="cIdx"
+                              class="text-xs font-mono"
+                              :class="{ 'text-right': isNumeric(cell) }"
+                            >{{ formatCell(cell) }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <div v-if="sr.result.truncated" class="px-3 py-1 text-xs text-base-content/40 border-t border-base-300">
+                        Showing first {{ sr.result.row_count }} rows (truncated)
+                      </div>
+                    </div>
+
+                    <!-- Breakdown result -->
+                    <div v-else-if="sr.result && sr.result.groups" class="overflow-x-auto max-h-80">
+                      <table class="table table-xs">
+                        <thead>
+                          <tr>
+                            <th class="text-xs">{{ sr.result.group_column || 'group' }}</th>
+                            <th class="text-xs text-right">total</th>
+                            <th class="text-xs text-right">count</th>
+                            <th class="text-xs text-right">%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(g, gIdx) in sr.result.groups" :key="gIdx">
+                            <td class="text-xs">{{ g.group }}</td>
+                            <td class="text-xs font-mono text-right">{{ formatCell(g.total) }}</td>
+                            <td class="text-xs font-mono text-right">{{ g.count }}</td>
+                            <td class="text-xs font-mono text-right">{{ g.pct != null ? g.pct.toFixed(2) + '%' : '' }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <!-- Scalar metric result -->
+                    <div v-else-if="sr.result && 'value' in sr.result" class="px-3 py-2 text-sm">
+                      <span class="font-mono font-bold">{{ formatCell(sr.result.value) }}</span>
+                      <span v-if="sr.result.column" class="ml-2 text-xs text-base-content/50">from "{{ sr.result.column }}"</span>
+                    </div>
+
+                    <!-- Concentration / weighted_return / other -->
+                    <div v-else-if="sr.result" class="px-3 py-2 text-xs font-mono">
+                      <div v-for="(val, key) in sr.result" :key="key" class="flex gap-2">
+                        <span class="text-base-content/50">{{ key }}:</span>
+                        <span>{{ formatCell(val) }}</span>
+                      </div>
+                    </div>
+
+                    <!-- Details toggle (SQL, raw args) -->
+                    <div v-if="isStructuredOpen(srIdx, index)" class="px-3 py-2 border-t border-base-300 bg-base-200/50">
+                      <div v-if="sr.args?.sql" class="text-xs font-mono break-all text-base-content/60">
+                        <span class="font-semibold">SQL:</span> {{ sr.args.sql }}
+                      </div>
+                      <div v-else-if="sr.args" class="text-xs font-mono text-base-content/60">
+                        {{ JSON.stringify(sr.args) }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Token + provider badge -->
                 <div v-if="msg.aiUsage" class="flex items-center gap-2 mt-2 flex-wrap">
                   <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
@@ -245,6 +349,9 @@
                     {{ msg.aiUsage.total_input_tokens + msg.aiUsage.total_output_tokens }} tokens
                   </span>
                   <span v-if="msg.aiUsage.features_used?.includes('reranking')" class="badge badge-xs badge-outline">reranked</span>
+                  <span v-if="msg.aiUsage.features_used?.includes('structured_tools')" class="badge badge-xs badge-success gap-0.5">
+                    <Table2 :size="9" /> sql
+                  </span>
                   <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
                 </div>
               </div>
@@ -355,9 +462,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import axios from 'axios'
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2 } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -447,7 +554,37 @@ const suggestions = [
   'Summarize the key topics in these documents',
   'What are the main findings?',
   'List the most important conclusions',
+  'Total market value by sector',
+  'Top 10 holdings by market value',
+  'Portfolio concentration — top 5 positions',
 ]
+
+// Expanded-details state for structured result cards: Set of "msgIdx:srIdx"
+const openStructuredDetails = ref(new Set())
+const structuredKey = (srIdx, msgIdx) => `${msgIdx}:${srIdx}`
+const toggleStructuredDetail = (srIdx, msgIdx) => {
+  const key = structuredKey(srIdx, msgIdx)
+  const next = new Set(openStructuredDetails.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  openStructuredDetails.value = next
+}
+const isStructuredOpen = (srIdx, msgIdx) =>
+  openStructuredDetails.value.has(structuredKey(srIdx, msgIdx))
+
+const isNumeric = (v) => typeof v === 'number' || (typeof v === 'string' && v !== '' && !isNaN(Number(v)))
+
+const formatCell = (v) => {
+  if (v == null) return ''
+  if (typeof v === 'number') {
+    if (!isFinite(v)) return String(v)
+    // Large numbers: group with commas and trim to 2 decimals for floats
+    if (Number.isInteger(v)) return v.toLocaleString()
+    return v.toLocaleString(undefined, { maximumFractionDigits: 4 })
+  }
+  const s = String(v)
+  return s.length > 200 ? s.slice(0, 200) + '…' : s
+}
 
 const providerDisplayName = getProviderDisplayName
 
@@ -593,6 +730,7 @@ const sendMessage = async () => {
       { ...response.data.message, provider: selectedProvider.value, scope: scope.value },
       response.data.sources,
       response.data.ai_usage,
+      response.data.structured_results,
     )
 
     await scrollToBottom()
@@ -617,8 +755,23 @@ watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
 
 watch(messages, async () => { await scrollToBottom() }, { deep: true })
 
+const handlePrefill = (e) => {
+  const prompt = e?.detail?.prompt
+  if (!prompt) return
+  inputMessage.value = prompt
+  nextTick(() => {
+    const ta = document.querySelector('textarea[placeholder*="message" i], textarea')
+    if (ta) ta.focus()
+  })
+}
+
 onMounted(() => {
   ensureValidProvider()
   scrollToBottom()
+  window.addEventListener('asymptote:prefill-chat', handlePrefill)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('asymptote:prefill-chat', handlePrefill)
 })
 </script>

@@ -318,6 +318,10 @@ class ChatResponse(BaseModel):
     message: ChatMessage = Field(..., description="Assistant's response message")
     sources: List[ChatSource] = Field(default_factory=list, description="Document chunks used as context")
     ai_usage: Optional[AIUsage] = Field(None, description="AI token usage")
+    structured_results: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Structured query / metric tool-call results executed during this turn"
+    )
 
 
 # Repository/Folder upload schemas
