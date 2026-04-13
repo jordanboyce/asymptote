@@ -37,6 +37,151 @@ Conclusion: ingestion fidelity and enrichment feeds are the only thing that matt
 
 Quality bar: **any tabular export from any tool should land as a clean, typed, role-mapped table without manual cleanup.** Nothing else ships until this is solid.
 
+> **Gating note:** P0.0 (PII Redaction) must be implemented and verified before any feature that touches LLM tool responses, chat context, or search results. P0.1–P0.8 can proceed in parallel for local ingest logic, but no LLM-facing output path ships without P0.0 in place. P0.5 (LLM-assisted column inference) is explicitly blocked on P0.0 because it sends column names and sample values to an external model.
+
+### P0.0 — PII Redaction Layer (Presidio)
+
+**Priority:** Highest — this is a prerequisite for shipping anything to production. No identifiable data can leave Asymptote when content is sent to external LLM providers (Claude, ChatGPT, Google, or any other). This is especially critical for financial data, which routinely contains account numbers, Social Security numbers, names, and other highly sensitive identifiers.
+
+**Why this is P0.0 and not later:**
+- Every MCP tool response, every search result, and every chunk of context that reaches the calling LLM is a potential PII leak.
+- Financial advisors upload real client data — real account numbers, real names, real balances. Any of that reaching an external model is a compliance violation and a trust violation.
+- Presidio is open-source (MIT license), runs 100% locally, and requires no cloud service for detection. There is no legitimate reason to defer this.
+
+**What counts as PII — be exhaustive, not approximate:**
+
+Asymptote must redact (at minimum) all of the following before any content leaves to an LLM:
+
+| Category | Examples |
+|---|---|
+| Personal identifiers | Full name, first name, last name, initials used as identifiers |
+| Government IDs | SSN, EIN, ITIN, driver's license number, passport number, national ID |
+| Financial account identifiers | Account number, routing number, IBAN, credit card number, debit card number, brokerage account ID |
+| Contact information | Phone number, email address, mailing address, ZIP+4, PO Box |
+| Digital identifiers | IP address, MAC address, username, user ID, device ID, cookie/session token |
+| Biometric data | Any text reference to biometric identifiers (fingerprint ID, face ID hash) |
+| Medical / health identifiers | Medical record number, health plan beneficiary number, diagnosis code when paired with a name |
+| Dates linked to individuals | Date of birth, date of death, admission/discharge dates |
+| Social media | Handles, profile URLs, screen names |
+| Financial-specific PII | CUSIP when appearing in context with account owner info, brokerage-specific client IDs, relationship manager IDs, rep codes tied to individuals |
+| Free-text PII | Any of the above embedded in notes, memos, or document chunks |
+
+When in doubt, redact. False positives (redacting something that wasn't PII) are far less harmful than false negatives (leaking something that was).
+
+**Architecture — new module: `services/privacy/`**
+
+```
+services/privacy/
+  __init__.py
+  redaction_engine.py     # Core Presidio wrapper — analyze + anonymize
+  redaction_middleware.py # Wraps all MCP tool output before it exits Asymptote
+  redaction_config.py     # Per-collection profiles, allow-lists, custom recognizers
+  redaction_log.py        # Audit log writer and reader
+  custom_recognizers/
+    financial_account.py  # Custom PatternRecognizer for brokerage-specific IDs
+    cusip_in_context.py   # CUSIP + account owner = PII; CUSIP alone = not PII
+```
+
+**Core implementation — `redaction_engine.py`:**
+
+- Wrap `presidio_analyzer.AnalyzerEngine` and `presidio_anonymizer.AnonymizerEngine`.
+- Configure the analyzer with all standard Presidio recognizers (covers PERSON, EMAIL_ADDRESS, PHONE_NUMBER, CREDIT_CARD, IBAN_CODE, IP_ADDRESS, US_SSN, US_DRIVER_LICENSE, US_PASSPORT, US_BANK_NUMBER, DATE_TIME, LOCATION, NRP, and more).
+- Add custom `PatternRecognizer` instances for financial-specific identifiers not in the default set (see `custom_recognizers/`).
+- `redact_text(text: str, collection_id: str | None = None) -> RedactionResult` — analyzes and anonymizes a string, returns both the redacted string and the full list of `RecognizerResult` instances (entity type, start, end, score, replacement token).
+- `redact_structured(rows: list[dict], collection_id: str | None = None) -> RedactionResult` — walks every string-valued field in every row, applies `redact_text` cell by cell, returns the redacted rows alongside a per-cell audit trail.
+
+**Redaction is at the OUTPUT boundary, not at ingest:**
+
+- The original unredacted data lives in the local store on the user's machine. It is never transmitted anywhere.
+- Redaction happens in `redaction_middleware.py`, which wraps the return value of every MCP tool response and every chunk of context assembled for the calling LLM.
+- The call site is immediately before data exits `mcp_server.py` — not inside `structured_store.py` or `document_extractor.py`. This preserves the ability to run exact-match SQL and full-text search against the real data locally, while guaranteeing nothing identifiable escapes outward.
+- Hook point: `redaction_middleware.py` integrates with the existing plugin/hook pattern in `structured_store.py`. Any tool response that passes through the MCP layer is automatically intercepted.
+
+**Configurable redaction styles (per-collection, per-entity-type):**
+
+| Style | Example output | When to use |
+|---|---|---|
+| `[REDACTED]` | `[REDACTED]` | Default — maximum anonymity, opaque |
+| `[ENTITY_TYPE]` | `[ACCOUNT_NUMBER]`, `[PERSON]` | Default for most financial use cases — tells the agent *what* was removed without revealing the value |
+| `consistent_pseudonym` | `John Smith` → always `Alex Morgan` within a session | When the agent needs to reason about relationships ("the same person") without seeing real names |
+| `partial_mask` | `****1234` for account numbers | Useful for human review UIs where the last 4 digits confirm context |
+| `synthetic_placeholder` | Replaced with a random-but-valid-format value | For testing pipelines end-to-end with realistic-looking fake data |
+
+The active style is configured in the collection's redaction profile (`redaction_config.py`). Financial collections default to `[ENTITY_TYPE]`; general-document collections default to `[REDACTED]`.
+
+**Auditability — every redaction is logged:**
+
+Each redaction event writes a structured log entry to a local SQLite table (`redaction_log`):
+
+```
+redaction_log
+  id            INTEGER PRIMARY KEY
+  timestamp     DATETIME
+  session_id    TEXT       -- groups all redactions in one agent session
+  collection_id TEXT       -- which collection the data came from
+  tool_name     TEXT       -- which MCP tool produced the output
+  document_id   TEXT       -- source document, if traceable
+  entity_type   TEXT       -- e.g. ACCOUNT_NUMBER, PERSON, US_SSN
+  original_text TEXT       -- the actual PII that was found (stored locally only)
+  replacement   TEXT       -- what it was replaced with
+  start_char    INTEGER    -- character offset in the source text
+  end_char      INTEGER    -- character offset in the source text
+  score         REAL       -- Presidio confidence score
+```
+
+`original_text` is stored in the local audit log so users can review exactly what was redacted. It never leaves the machine.
+
+**Redaction preview mode:**
+
+Before sending any tool response to the LLM, Asymptote can surface a preview of what will be redacted. This is exposed as:
+
+1. A "review before sending" flag in the collection settings — when enabled, the MCP tool response is held and the redaction summary is surfaced in the frontend (collection settings panel) before the response is released to the calling agent.
+2. An MCP tool/resource `get_recent_redactions(session_id, limit=50)` that returns the redaction log for the current session in human-readable form — entity types found, replacements applied, which tool and document they came from. The calling agent (or the user reviewing the agent session) can inspect this at any time.
+
+**MCP exposure:**
+
+- `get_recent_redactions(session_id: str | None = None, collection_id: str | None = None, limit: int = 50) -> list[RedactionSummary]` — MCP tool returning what was redacted in this session. Agents can call this to self-verify: "confirm what PII was removed before I proceed."
+- `get_redaction_config(collection_id: str) -> RedactionProfile` — returns the active redaction profile for a collection (style, allow-list, active recognizers).
+- Optionally, expose `redaction://session/{session_id}` as an MCP resource for host UIs that want to render a live redaction feed.
+
+**Per-collection redaction profiles (`redaction_config.py`):**
+
+Each collection can define:
+- `redaction_style` — which replacement style (see above)
+- `entity_types_enabled` — which Presidio entity types to enforce (default: all; can restrict for non-financial collections)
+- `allow_list` — strings that match PII patterns but are known safe (e.g., `"Fidelity"` matches a person-name pattern; firm names, fund names, and ticker symbols that look like abbreviations go here)
+- `custom_recognizers` — additional `PatternRecognizer` instances for this collection's domain (e.g., a specific CRM's internal ID format)
+- `minimum_score_threshold` — Presidio confidence floor before a match is treated as PII (default: 0.5; financial collections should use 0.4 to be conservative)
+- `strict_mode` — when `true`, any Presidio match above the threshold is redacted even at low confidence; when `false`, only high-confidence matches are redacted. Default `true` for financial collections.
+
+**Custom recognizers for financial-specific PII:**
+
+Presidio's default recognizer set covers common US/EU PII well, but financial workflows have identifiers not in the default set:
+
+- `FinancialAccountRecognizer` — regex + context clues for brokerage account numbers (typically 8–12 digits, often preceded by "Account #", "Acct", or a custodian name)
+- `RoutingNumberRecognizer` — 9-digit ABA routing numbers; distinct from SSNs (same digit count) by context and checksum
+- `CUSIPInContextRecognizer` — CUSIP alone (9-char alphanumeric) is a security identifier, not PII; CUSIP appearing within N tokens of an account holder name or account number is treated as PII-adjacent and redacted in that context
+- `BrokerageClientIdRecognizer` — configurable per-vendor regex (e.g., Pershing's rep code + client number format); added via collection profile's `custom_recognizers`
+
+**Presidio runs locally — no cloud dependency:**
+
+- `presidio-analyzer` and `presidio-anonymizer` install as Python packages (`pip install presidio-analyzer presidio-anonymizer`).
+- The default NLP model is `en_core_web_lg` from spaCy — downloaded once on first run, cached locally.
+- No network call is made during analysis or anonymization. PII detection is fully air-gapped from the redaction engine's perspective.
+- Add `presidio-analyzer`, `presidio-anonymizer`, and `spacy` (with `en_core_web_lg`) to `requirements.txt` / `pyproject.toml`.
+
+**Integration checklist:**
+- [ ] `services/privacy/` module scaffolded with the structure above
+- [ ] `redaction_engine.py` wrapping Presidio with all standard + custom recognizers
+- [ ] `redaction_middleware.py` intercepting all MCP tool responses before they exit `mcp_server.py`
+- [ ] `redaction_log` SQLite table created and populated on every redaction event
+- [ ] `get_recent_redactions` MCP tool implemented and tested
+- [ ] Per-collection redaction profiles with allow-list and style configuration
+- [ ] Custom financial recognizers (account numbers, routing numbers, CUSIP-in-context)
+- [ ] Redaction preview mode wired into the frontend collection settings panel
+- [ ] `en_core_web_lg` added to setup/install instructions
+- [ ] Regression test: a fixture containing known PII (fake but realistic) runs through the full MCP path and none of the PII appears in the tool response
+
 ### P0.1 — Smart header detection
 
 **Problem:** Brokerage/bank/CRM exports almost always have N preamble rows before the actual header. Current importer assumes row 1 is the header.
@@ -73,15 +218,53 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 **Implementation:**
 - New `services/ingest_profiles/` directory containing per-vendor YAML/JSON profiles. Each profile declares: file signature (filename glob, presence of telltale strings, distinctive column set), preamble row count, header row offset, column → semantic role map, type overrides, doc-level metadata extractors.
 - At ingest time, run profile detection first. If a profile matches, apply it deterministically. Otherwise fall back to P0.1/P0.2/role-from-name heuristics.
-- Ship initial profiles for Schwab (Holdings, Unrealized G/L, Realized G/L, Transactions), Fidelity (Positions, History), and Vanguard (Holdings, Activity). These three cover ~70%+ of advisor file flow.
+- Ship initial profiles for **Pershing first** (see below), then Schwab (Holdings, Unrealized G/L, Realized G/L, Transactions), Fidelity (Positions, History), and Vanguard (Holdings, Activity).
 - Profiles are plain data files — easy for users (or future you) to add new vendors without code changes.
 
+#### Pershing / NetX360 profiles (first priority — first advisor customer)
+
+Two distinct export formats analyzed from real advisor files:
+
+**Pershing Unrealized Gain/Loss (flat CSV)**
+- Exported as `Unrealized+Gain+Loss_<account>.xlsx - ExportExcel.csv`
+- 9 preamble rows: title, blanks, single-cell "Key: Value" metadata (`Quote Type`, `Cash Included`, `View type`, `All values in USD`, `As Of` timestamp)
+- Header at row 9: 20 columns — `Security Description`, `Security Identifier`, `Quantity`, `Projected Annual Income`, `Current Yield`, `Gain/Loss`, `Gain/Loss %`, `Trade Date`, `Unit Cost`, `Last Price`, `Market Value`, `Tax`, `Current Total Cost`, `Security Type`, `% of Portfolio`, `Symbol`, `Original Quantity`, `Original Total Cost`, `Original Adjusted Cost`, `Interest`
+- P0.1 header detection already handles this correctly. Profile adds: column → semantic role map, type overrides, sentinel detection.
+- **Numeric quirks (P0.2):** comma-thousands (`"1,591.20"`), parenthetical negatives (`"(408.80)"`), `"-"` for unavailable, `"Provide"` for missing cost basis
+- **Lot-level rows:** same symbol appears N times (one per tax lot); rolled-up rows use `"Multiple"` as trade date
+- **Footer:** `TOTAL` row followed by blank rows and multi-paragraph `Disclaimers` section — must be stripped before ingest
+- File signature: first row contains `"Unrealized Gain Loss"`, or filename matches `Unrealized*Gain*Loss*`
+
+**NetX360 "Holdings by Investor" (hierarchical CSV — needs pre-processor)**
+- Exported as `HBIL<id>.csv` from NetX360 platform
+- **Not flat tabular data.** Hierarchical multi-account report that repeats per account:
+  1. `Account Name,,,Account Number,,Account Type` row
+  2. Optional insurance/annuity metadata block: product name, carrier, status, policy values (Cost Basis, Death Benefit, Surrender Value, FWA, etc.), policy dates (issue, maturity, surrender expiration), party info (SSN, DOB, address), beneficiaries
+  3. `ASSET,,,,,,,,TICKER,,ASSET TYPE,,MGT. NAME,,QUANTITY,,PRICE ($),VALUE ($)` header row
+  4. Asset data rows (position-level, no tax lots)
+  5. `Account Total:,,,,,,,,,,,,,,,,,,"$X"` row
+- Final `total` row at bottom
+- Account types observed: Transfer On Death (Individual), IRA, General, Trusts, Trust, Retirement Account IRA
+- Insurance products: variable annuities (Lincoln, Forethought), equity indexed annuities (Pacific Life)
+- P0.1's flat header detection **cannot handle this** — multiple `ASSET` header rows interspersed with account metadata
+- **Profile must implement a pre-processing step** that:
+  1. Detects the NetX360 signature: row 0 contains `"Report Type"`, row 1 contains `"Holdings by Investor"`
+  2. Iterates account sections by scanning for `Account Name` rows
+  3. Extracts account metadata (name, number, type) and optionally insurance/policy info
+  4. Collects asset rows from each section
+  5. Flattens into a single table with added columns: `Account Name`, `Account Number`, `Account Type`
+  6. Strips `Account Total` and final `total` rows
+- File signature: filename matches `HBIL*`, or first two rows contain `"Report Type"` and `"Holdings by Investor"`
+- Test fixture: `tests/fixtures/ingest/netx360_holdings_by_investor.csv`
+
 ### P0.5 — LLM-assisted column role inference (long tail)
+
+> **Blocked on P0.0.** This feature sends column names and sample cell values to an external LLM. Sample values may contain PII (account numbers embedded in column headers, names in the first data row, etc.). P0.0's redaction layer must be applied to the sample values before they leave Asymptote. Do not ship P0.5 until P0.0 is verified end-to-end.
 
 **Problem:** For a never-seen-before export from an unknown tool, neither profiles nor name heuristics fire and `financial_roles` stays empty.
 
 **Implementation:**
-- After profile detection and name heuristics, if ≥50% of columns are still unmapped, optionally run a small-LLM pass that takes (column names + 3 sample values per column + the existing role taxonomy) and proposes role assignments with confidence scores.
+- After profile detection and name heuristics, if ≥50% of columns are still unmapped, optionally run a small-LLM pass that takes (column names + 3 sample values per column — redacted through P0.0 before transmission + the existing role taxonomy) and proposes role assignments with confidence scores.
 - Gated behind a setting (`enable_llm_schema_inference: bool`) — costs money, opt-in per-collection or per-upload.
 - The output is a *suggestion*, surfaced to the user in the upload UI: "Asymptote thinks `Holdings_USD` is `market_value`, `Sec` is `symbol`. Accept / edit / reject." Once accepted, the mapping is saved and reused for future files matching the same signature.
 - Effectively a profile-bootstrapping mechanism — every long-tail file an LLM resolves becomes a candidate profile for next time.
@@ -100,7 +283,8 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 **Problem:** Without test fixtures of real broker/bank exports, every fix to the ingestion path risks breaking another vendor's format.
 
 **Implementation:**
-- Create `tests/fixtures/ingest/` with at least one anonymized export per supported vendor (Schwab, Fidelity, Vanguard initially). Real-shaped data, fake names/account numbers.
+- Create `tests/fixtures/ingest/` with at least one anonymized export per supported vendor. Real-shaped data, fake names/account numbers.
+- **Already started:** `tests/fixtures/ingest/pershing_unrealized_gl.csv` (Pershing flat G/L). Next: NetX360 Holdings by Investor, Schwab Unrealized G/L, Fidelity Positions, Vanguard Holdings.
 - For each fixture, snapshot the expected: detected header row, column count, role map, type map, and a few canonical aggregates from `compute_portfolio_metric`.
 - CI runs the full ingestion path against every fixture and asserts the snapshot. Any drift requires explicit acceptance.
 - This is the only thing keeping the "never silently wrong" bar honest over time.
@@ -118,7 +302,9 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 
 The collection-guide / `find_in_documents` / `rows_jsonl` / `identifier` disambiguation / `suggested_next_tools` items are still valid and pair naturally with the new ingestion work, but they move to **v4.3 (MCP surface polish)** below. None of them matter if the underlying data is wrong.
 
-**Already shipped this session:** `REPLACE` removed from `_FORBIDDEN_KEYWORDS` ([services/structured_store.py:224](services/structured_store.py#L224)) so agents can use SQLite string functions to clean numeric strings as a workaround until P0.2 lands.
+**Already shipped:**
+- `REPLACE` removed from `_FORBIDDEN_KEYWORDS` ([services/structured_store.py:224](services/structured_store.py#L224)) so agents can use SQLite string functions to clean numeric strings as a workaround until P0.2 lands.
+- **P0.1 (Smart header detection):** Implemented in [services/document_extractor.py](services/document_extractor.py). Header-sniffing pass using `csv` stdlib scans up to 30 raw rows, finds the first row that looks like text labels followed by a data-like row. Wired into all 5 tabular read sites (`_extract_csv`, `extract_csv_rows`, `extract_tabular_sheets` CSV + XLSX branches, `_extract_xlsx`). Preamble metadata extracted as key/value pairs (supports both `Key,Value` two-cell and `Key: Value` single-cell styles) and surfaced as `document_metadata` on the sheet dict. Verified against Pershing Unrealized G/L (header at row 9) and clean CSVs (no regression). First test fixture saved at `tests/fixtures/ingest/pershing_unrealized_gl.csv`.
 
 ---
 

@@ -30,8 +30,11 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +113,7 @@ _NULL_MARKERS = frozenset({
 
 # K/M/B multiplier suffix regex (e.g. "1.5K" → 1500, "2.3M" → 2_300_000)
 _KMB_RE = re.compile(r'^(-?[\d,]*\.?\d+)\s*([kmb])$', re.IGNORECASE)
+_RAW_PRESERVING_TYPES = frozenset({'integer', 'real', 'currency', 'percent', 'date'})
 
 
 def _parse_generic_number(s: str) -> Optional[float]:
@@ -176,9 +180,41 @@ def _to_bool(val: Any) -> Optional[int]:
 
 
 def _is_date_like(val: Any) -> bool:
+    return _parse_date_like(val) is not None
+
+
+def _parse_date_like(val: Any) -> Optional[str]:
+    """Parse a date-like value and normalize it to an ISO string."""
     if val is None:
-        return False
-    return bool(_DATE_RE.match(str(val).strip()))
+        return None
+    if isinstance(val, float) and val != val:
+        return None
+    if isinstance(val, datetime):
+        parsed = val
+        raw = val.isoformat()
+    elif isinstance(val, date):
+        return val.isoformat()
+    else:
+        raw = str(val).strip()
+        if not raw or raw.lower() in _NULL_MARKERS:
+            return None
+        has_date_signals = (
+            bool(_DATE_RE.match(raw))
+            or bool(re.search(r'\d{1,4}[/-]\d{1,2}[/-]\d{1,4}', raw))
+            or bool(re.search(r'[A-Za-z]{3,}', raw))
+        )
+        if not has_date_signals:
+            return None
+        parsed = pd.to_datetime(raw, errors='coerce')
+        if pd.isna(parsed):
+            return None
+        if hasattr(parsed, "to_pydatetime"):
+            parsed = parsed.to_pydatetime()
+
+    has_time = bool(re.search(r'\d:\d|am\b|pm\b', raw, flags=re.IGNORECASE))
+    if parsed.hour == 0 and parsed.minute == 0 and parsed.second == 0 and parsed.microsecond == 0 and not has_time:
+        return parsed.date().isoformat()
+    return parsed.replace(microsecond=0).isoformat()
 
 
 def _numeric_stats(values: List[float]) -> Dict[str, Any]:
@@ -245,11 +281,12 @@ def infer_column_type(values: List[Any]) -> Dict[str, Any]:
     # 2. Date (≥80%)
     date_count = sum(1 for s in sample_strs if _is_date_like(s))
     if date_count / n >= threshold:
+        parsed_dates = [d for d in (_parse_date_like(s) for s in sample_strs) if d is not None]
         return {
             'type': 'date',
             'null_count': null_count,
             'distinct_count': distinct,
-            'stats': {'min': min(sample_strs), 'max': max(sample_strs)},
+            'stats': {'min': min(parsed_dates), 'max': max(parsed_dates)} if parsed_dates else None,
         }
 
     # 3. Registered type extensions (≥80%)
@@ -376,6 +413,9 @@ def _coerce_value(val: Any, inferred_type: str) -> Any:
     if inferred_type == 'boolean':
         return _to_bool(val)
 
+    if inferred_type == 'date':
+        return _parse_date_like(val)
+
     # Delegate to the registered extension coercer for plugin types
     for ext in _type_extensions:
         if ext.name == inferred_type:
@@ -383,6 +423,23 @@ def _coerce_value(val: Any, inferred_type: str) -> Any:
 
     # date and text: store as string
     return s
+
+
+def _raw_storage_value(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    if isinstance(val, float) and val != val:
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in _NULL_MARKERS:
+        return None
+    return s
+
+
+def _should_preserve_raw(values: List[Any], inferred_type: str) -> bool:
+    if inferred_type not in _RAW_PRESERVING_TYPES:
+        return False
+    return any(_raw_storage_value(v) is not None for v in values)
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +548,16 @@ class StructuredStore:
                 ident = f'{base_ident}_{counter}'
             used_idents.add(ident.lower())
 
+            raw_sql_name: Optional[str] = None
+            if _should_preserve_raw(col_values[col], info['type']):
+                raw_ident = f'{ident}__raw'
+                raw_counter = 1
+                while raw_ident.lower() in used_idents:
+                    raw_counter += 1
+                    raw_ident = f'{ident}__raw_{raw_counter}'
+                used_idents.add(raw_ident.lower())
+                raw_sql_name = raw_ident
+
             # P0.4: profile role override takes precedence over heuristic
             role = role_overrides.get(col) or detect_column_role(col, info['type'])
             sample_values = [
@@ -503,6 +570,7 @@ class StructuredStore:
                 'sql_name': ident,
                 'type': info['type'],
                 'role': role,
+                'raw_sql_name': raw_sql_name,
                 'null_count': info['null_count'],
                 'distinct_count': info['distinct_count'],
                 'stats': info['stats'],
@@ -522,17 +590,27 @@ class StructuredStore:
             for info in col_infos:
                 sqlite_type = type_to_sqlite.get(info['type'], 'TEXT')
                 col_defs.append(f'"{info["sql_name"]}" {sqlite_type}')
+                if info.get('raw_sql_name'):
+                    col_defs.append(f'"{info["raw_sql_name"]}" TEXT')
             conn.execute(f'CREATE TABLE "{table_name}" ({", ".join(col_defs)})')
 
-            placeholders = ', '.join(['?'] * (len(col_infos) + 1))
-            insert_cols_sql = '"' + '", "'.join(['__row_number'] + [c['sql_name'] for c in col_infos]) + '"'
+            insert_columns = ['__row_number']
+            for c in col_infos:
+                insert_columns.append(c['sql_name'])
+                if c.get('raw_sql_name'):
+                    insert_columns.append(c['raw_sql_name'])
+            placeholders = ', '.join(['?'] * len(insert_columns))
+            insert_cols_sql = '"' + '", "'.join(insert_columns) + '"'
             insert_sql = f'INSERT INTO "{table_name}" ({insert_cols_sql}) VALUES ({placeholders})'
 
             batch: List[List[Any]] = []
             for idx, row in enumerate(rows, start=1):
                 values: List[Any] = [idx]
                 for info in col_infos:
-                    values.append(_coerce_value(row.get(info['name']), info['type']))
+                    raw_value = row.get(info['name'])
+                    values.append(_coerce_value(raw_value, info['type']))
+                    if info.get('raw_sql_name'):
+                        values.append(_raw_storage_value(raw_value))
                 batch.append(values)
                 if len(batch) >= 500:
                     conn.executemany(insert_sql, batch)
@@ -598,15 +676,15 @@ class StructuredStore:
         """Create a ``<table>__by_symbol`` VIEW aggregating lot-level rows per symbol.
 
         SUMs market_value, cost_basis, pnl, and quantity across lots; COUNTs
-        lot rows; and computes a weighted-average unit cost when both market_value
-        and quantity are present.  Non-numeric / non-role columns are omitted to
+        lot rows; and computes a weighted-average unit cost when both cost_basis
+        and quantity are present. Non-numeric / non-role columns are omitted to
         avoid ambiguous GROUP BY semantics.
         """
         SUMMABLE_ROLES = {'market_value', 'cost_basis', 'pnl', 'quantity'}
         FIRST_ROLES = {'name', 'asset_class', 'sector', 'region', 'currency', 'account', 'rating'}
 
         select_parts: List[str] = [f'"{symbol_col}" AS "{symbol_col}"']
-        mv_col: Optional[str] = None
+        cost_basis_col: Optional[str] = None
         qty_col: Optional[str] = None
 
         for c in col_infos:
@@ -616,8 +694,8 @@ class StructuredStore:
                 continue
             if role in SUMMABLE_ROLES:
                 select_parts.append(f'SUM("{col}") AS "{col}"')
-                if role == 'market_value':
-                    mv_col = col
+                if role == 'cost_basis':
+                    cost_basis_col = col
                 if role == 'quantity':
                     qty_col = col
             elif role in FIRST_ROLES:
@@ -625,10 +703,10 @@ class StructuredStore:
 
         select_parts.append('COUNT(*) AS lot_count')
 
-        if mv_col and qty_col:
+        if cost_basis_col and qty_col:
             select_parts.append(
                 f'CASE WHEN SUM("{qty_col}") != 0 '
-                f'THEN SUM("{mv_col}") / SUM("{qty_col}") '
+                f'THEN SUM("{cost_basis_col}") / SUM("{qty_col}") '
                 f'ELSE NULL END AS unit_cost'
             )
 

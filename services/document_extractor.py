@@ -26,6 +26,169 @@ from services.prompt_injection_detector import PromptInjectionDetector, Injectio
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Tabular header sniffing (v4.1 P0.1)
+#
+# Brokerage / bank / CRM exports almost always carry N preamble rows
+# (`As Of`, `Currency`, blank lines, …) before the real column headers.
+# These helpers detect the first row that looks like text labels followed by
+# a data-like row, so the rest of the ingestion pipeline can bind to clean
+# column names instead of `Unnamed: 0..N`.
+# ---------------------------------------------------------------------------
+
+_DATE_LIKE_RE = re.compile(
+    r"^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}(\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?)?$"
+)
+
+
+def _is_numeric_like(value: str) -> bool:
+    if value is None:
+        return False
+    s = str(value).strip()
+    if not s:
+        return False
+    cleaned = s.replace(",", "").replace("$", "").replace("%", "").replace(" ", "")
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        cleaned = "-" + cleaned[1:-1]
+    if cleaned and cleaned[-1] in ("K", "M", "B", "k", "m", "b"):
+        cleaned = cleaned[:-1]
+    try:
+        float(cleaned)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_date_like(value: str) -> bool:
+    if value is None:
+        return False
+    s = str(value).strip()
+    if not s:
+        return False
+    return bool(_DATE_LIKE_RE.match(s))
+
+
+def _row_cells(row: List[Any]) -> Tuple[List[str], List[str]]:
+    """Return (all_cells_as_str, non_empty_cells)."""
+    cells: List[str] = []
+    for c in row:
+        if c is None:
+            cells.append("")
+            continue
+        s = str(c).strip()
+        # pandas turns blanks into 'nan' when dtype=str — filter that out
+        if s.lower() == "nan":
+            s = ""
+        cells.append(s)
+    non_empty = [c for c in cells if c]
+    return cells, non_empty
+
+
+def _looks_like_header_row(row: List[Any]) -> bool:
+    cells, non_empty = _row_cells(row)
+    if len(non_empty) < 3:
+        return False
+    if len(non_empty) / max(len(cells), 1) < 0.5:
+        return False
+    text_cells = sum(
+        1 for c in non_empty
+        if not _is_numeric_like(c) and not _is_date_like(c) and len(c) < 80
+    )
+    return text_cells / len(non_empty) >= 0.8
+
+
+def _looks_like_data_row(row: List[Any]) -> bool:
+    _, non_empty = _row_cells(row)
+    if len(non_empty) < 3:
+        return False
+    typed = sum(1 for c in non_empty if _is_numeric_like(c) or _is_date_like(c))
+    return typed / len(non_empty) >= 0.4
+
+
+def _detect_header_row(raw_rows: List[List[Any]], max_scan: int = 30) -> int:
+    """Return the 0-indexed row that looks like the real header, or 0 if unclear."""
+    if len(raw_rows) < 2:
+        return 0
+    limit = min(max_scan, len(raw_rows) - 1)
+    for i in range(limit):
+        if _looks_like_header_row(raw_rows[i]) and _looks_like_data_row(raw_rows[i + 1]):
+            return i
+    return 0
+
+
+def _extract_preamble_metadata(preamble_rows: List[List[Any]]) -> Dict[str, Any]:
+    """
+    Pull key/value pairs from the rows above the detected header.
+
+    Handles two common preamble styles:
+      - Two-cell rows: ``As Of,01/15/2026`` (Schwab-style)
+      - Single-cell "Key: Value": ``As Of: Apr 11, 2026 4:13 PM EDT`` (Pershing-style)
+    """
+    metadata: Dict[str, Any] = {}
+    raw_lines: List[str] = []
+    for row in preamble_rows:
+        _, non_empty = _row_cells(row)
+        if not non_empty:
+            continue
+        raw_lines.append(" | ".join(non_empty))
+        if len(non_empty) == 2:
+            key = non_empty[0].rstrip(":").strip()
+            if key and len(key) < 80:
+                metadata[key] = non_empty[1]
+        elif len(non_empty) == 1 and ": " in non_empty[0]:
+            key, _, value = non_empty[0].partition(": ")
+            key = key.strip()
+            value = value.strip()
+            if key and len(key) < 80:
+                metadata[key] = value
+    if raw_lines:
+        metadata["_raw_preamble"] = raw_lines
+    return metadata
+
+
+def _sniff_csv_header(csv_path: Path) -> Tuple[int, Dict[str, Any]]:
+    """
+    Read up to 30 raw rows via the csv stdlib (which tolerates ragged rows
+    that would break pandas' C tokenizer), find the header row, and extract
+    preamble metadata.
+    """
+    import csv
+    raw_rows: List[List[str]] = []
+    try:
+        with open(csv_path, "r", encoding="utf-8", errors="replace", newline="") as f:
+            sample = f.read(8192)
+            f.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+            except csv.Error:
+                dialect = csv.excel
+            reader = csv.reader(f, dialect)
+            for i, row in enumerate(reader):
+                if i >= 30:
+                    break
+                raw_rows.append(row)
+    except Exception:
+        return 0, {}
+    if not raw_rows:
+        return 0, {}
+    header_idx = _detect_header_row(raw_rows)
+    if header_idx == 0:
+        return 0, {}
+    return header_idx, _extract_preamble_metadata(raw_rows[:header_idx])
+
+
+def _sniff_dataframe_header(raw_df) -> Tuple[int, Dict[str, Any]]:
+    """Header detection for an already-loaded raw (header=None) DataFrame — used for XLSX sheets."""
+    if raw_df is None or raw_df.empty:
+        return 0, {}
+    raw_rows = raw_df.head(30).fillna("").astype(str).values.tolist()
+    header_idx = _detect_header_row(raw_rows)
+    if header_idx == 0:
+        return 0, {}
+    return header_idx, _extract_preamble_metadata(raw_rows[:header_idx])
+
+
 # Docling availability flag (free OCR fallback)
 DOCLING_AVAILABLE = False
 
@@ -545,12 +708,19 @@ class DocumentExtractor:
                 "Install it with: pip install pandas"
             )
 
-        # Read CSV
+        # Read CSV — sniff header row to skip brokerage-style preamble lines
+        header_idx, doc_metadata = _sniff_csv_header(csv_path)
         try:
-            df = pd.read_csv(csv_path)
+            df = pd.read_csv(csv_path, skiprows=header_idx)
         except Exception as e:
             logger.error(f"Failed to read CSV {csv_path.name}: {e}")
             raise Exception(f"Failed to read CSV file: {e}")
+
+        if header_idx > 0:
+            logger.info(
+                f"CSV {csv_path.name}: detected header at row {header_idx} "
+                f"(skipped {header_idx} preamble row(s))"
+            )
 
         if df.empty:
             logger.warning(f"Empty CSV file: {csv_path.name}")
@@ -608,9 +778,10 @@ class DocumentExtractor:
                 "Install it with: pip install pandas"
             )
 
-        # Read CSV
+        # Read CSV — sniff header row to skip brokerage-style preamble lines
+        header_idx, _ = _sniff_csv_header(csv_path)
         try:
-            df = pd.read_csv(csv_path)
+            df = pd.read_csv(csv_path, skiprows=header_idx)
         except Exception as e:
             logger.error(f"Failed to read CSV {csv_path.name}: {e}")
             raise Exception(f"Failed to read CSV file: {e}")
@@ -672,12 +843,23 @@ class DocumentExtractor:
         page_texts: Dict[int, str] = {}
         for page_num, sheet_name in enumerate(excel.sheet_names, start=1):
             try:
-                df = excel.parse(sheet_name)
+                raw = excel.parse(sheet_name, header=None)
+            except Exception as e:
+                logger.warning(f"Failed to parse sheet '{sheet_name}' in {xlsx_path.name}: {e}")
+                continue
+            header_idx, _ = _sniff_dataframe_header(raw)
+            try:
+                df = excel.parse(sheet_name, header=header_idx)
             except Exception as e:
                 logger.warning(f"Failed to parse sheet '{sheet_name}' in {xlsx_path.name}: {e}")
                 continue
             if df.empty:
                 continue
+            if header_idx > 0:
+                logger.info(
+                    f"XLSX {xlsx_path.name} sheet '{sheet_name}': "
+                    f"detected header at row {header_idx}"
+                )
             lines = [f"[Sheet: {sheet_name}]"]
             header = " | ".join(str(col) for col in df.columns)
             lines.append(header)
@@ -717,11 +899,19 @@ class DocumentExtractor:
         ext = file_path.suffix.lower()
 
         if ext == '.csv':
+            header_idx, doc_metadata = _sniff_csv_header(file_path)
             try:
-                df = pd.read_csv(file_path)
+                df = pd.read_csv(file_path, skiprows=header_idx)
             except Exception as e:
                 raise Exception(f"Failed to read CSV file: {e}")
-            return [self._dataframe_to_sheet(df, sheet_name='')]
+            if header_idx > 0:
+                logger.info(
+                    f"CSV {file_path.name}: detected header at row {header_idx}, "
+                    f"preamble fields: {[k for k in doc_metadata if not k.startswith('_')]}"
+                )
+            return [self._dataframe_to_sheet(
+                df, sheet_name='', document_metadata=doc_metadata
+            )]
 
         if ext in ('.xlsx', '.xls'):
             try:
@@ -732,18 +922,33 @@ class DocumentExtractor:
             sheets: List[Dict[str, Any]] = []
             for sheet_name in excel.sheet_names:
                 try:
-                    df = excel.parse(sheet_name)
+                    raw = excel.parse(sheet_name, header=None)
+                except Exception as e:
+                    logger.warning(f"Skipping unreadable sheet '{sheet_name}' in {file_path.name}: {e}")
+                    continue
+                header_idx, doc_metadata = _sniff_dataframe_header(raw)
+                try:
+                    df = excel.parse(sheet_name, header=header_idx)
                 except Exception as e:
                     logger.warning(f"Skipping unreadable sheet '{sheet_name}' in {file_path.name}: {e}")
                     continue
                 if df.empty:
                     continue
-                sheets.append(self._dataframe_to_sheet(df, sheet_name=str(sheet_name)))
+                if header_idx > 0:
+                    logger.info(
+                        f"XLSX {file_path.name} sheet '{sheet_name}': detected header at row "
+                        f"{header_idx}, preamble fields: "
+                        f"{[k for k in doc_metadata if not k.startswith('_')]}"
+                    )
+                sheets.append(self._dataframe_to_sheet(
+                    df, sheet_name=str(sheet_name), document_metadata=doc_metadata
+                ))
             return sheets
 
         raise ValueError(f"extract_tabular_sheets: unsupported extension {ext}")
 
-    def _dataframe_to_sheet(self, df, sheet_name: str) -> Dict[str, Any]:
+    def _dataframe_to_sheet(self, df, sheet_name: str,
+                            document_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Convert a pandas DataFrame into our sheet dict shape."""
         import pandas as pd
 
@@ -776,6 +981,7 @@ class DocumentExtractor:
             'columns': columns,
             'rows': rows,
             'row_texts': row_texts,
+            'document_metadata': document_metadata or {},
         }
 
     def _extract_markdown(self, md_path: Path) -> Dict[int, str]:

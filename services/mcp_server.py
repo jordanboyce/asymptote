@@ -699,6 +699,7 @@ def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
             "original_name": c["name"],
             "type": c["type"],
             "role": role,
+            "raw_sql_name": c.get("raw_sql_name"),
             "samples": c.get("samples", [])[:3],
             "stats": col_stats,
         })
@@ -837,7 +838,8 @@ def get_table_rows(
         )
     table_name = schema["table_name"]
     capped = max(1, min(int(limit), 2000))
-    sql = f'SELECT * FROM "{table_name}" ORDER BY __row_number'
+    select_cols = ['"__row_number"'] + [f'"{c["sql_name"]}"' for c in schema.get("columns", [])]
+    sql = f'SELECT {", ".join(select_cols)} FROM "{table_name}" ORDER BY __row_number'
     try:
         result = store.execute_query(sql, max_rows=capped)
     except SQLValidationError as e:
@@ -934,6 +936,7 @@ def compute_portfolio_metric(
     identifier: str,
     metric: PortfolioMetric,
     limit: int = 10,
+    group_by_symbol: bool = True,
     collection_id: str | None = None,
 ) -> dict[str, Any]:
     """Compute a canned financial portfolio metric on an ingested table.
@@ -950,6 +953,9 @@ def compute_portfolio_metric(
       - identifier: filename, table_name, or document_id (from `list_tables`).
       - metric: one of the supported metrics listed below.
       - limit: for ranking metrics (top_holdings, bottom_holdings, etc.).
+      - group_by_symbol: when true (default), use the auto-generated
+        `__by_symbol` rollup view when available so tax lots are aggregated
+        into positions before computing the metric.
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
         portfolio lives in a specific client collection.
@@ -978,7 +984,13 @@ def compute_portfolio_metric(
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
-    result = compute_financial_metric(store, identifier, metric, limit=limit)
+    result = compute_financial_metric(
+        store,
+        identifier,
+        metric,
+        limit=limit,
+        group_by_symbol=group_by_symbol,
+    )
     return {"collection_id": resolved_collection, **result}
 
 
