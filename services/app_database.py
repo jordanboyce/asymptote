@@ -243,6 +243,13 @@ class SQLiteBackend(DatabaseBackend):
             except sqlite3.OperationalError:
                 pass
 
+            # Add MCP display name/description (PII-safe aliases)
+            for col in ["mcp_display_name TEXT", "mcp_display_description TEXT"]:
+                try:
+                    conn.execute(f"ALTER TABLE collections ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
+
             # Add phase columns to upload_jobs if missing
             for col, default in [
                 ("phase", "TEXT"),
@@ -376,6 +383,8 @@ class SQLiteBackend(DatabaseBackend):
         chunk_overlap: int = 50,
         embedding_model: str = None,
         owner_id: str = "default",
+        mcp_display_name: str | None = None,
+        mcp_display_description: str | None = None,
     ) -> str:
         if embedding_model is None:
             embedding_model = settings.embedding_model
@@ -385,10 +394,10 @@ class SQLiteBackend(DatabaseBackend):
             conn.execute(
                 """
                 INSERT INTO collections
-                (id, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, mcp_display_name, mcp_display_description, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (collection_id, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, timestamp, timestamp)
+                (collection_id, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, mcp_display_name, mcp_display_description, timestamp, timestamp)
             )
             conn.commit()
             logger.info(f"Created collection: {name} ({collection_id}) owner={owner_id}")
@@ -430,12 +439,16 @@ class SQLiteBackend(DatabaseBackend):
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         embedding_model: Optional[str] = None,
+        mcp_display_name: Optional[str] = None,
+        mcp_display_description: Optional[str] = None,
     ):
         updates = []
         params = []
         for field, value in [("name", name), ("description", description), ("color", color),
                              ("chunk_size", chunk_size), ("chunk_overlap", chunk_overlap),
-                             ("embedding_model", embedding_model)]:
+                             ("embedding_model", embedding_model),
+                             ("mcp_display_name", mcp_display_name),
+                             ("mcp_display_description", mcp_display_description)]:
             if value is not None:
                 updates.append(f"{field} = ?")
                 params.append(value)

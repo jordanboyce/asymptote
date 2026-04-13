@@ -428,7 +428,7 @@
             <MCPTab v-if="activeTab === 'mcp'" />
             <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
             <TokenizerTab v-if="activeTab === 'tokenizer'" />
-            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" />
+            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
           </div>
         </div>
 
@@ -887,10 +887,14 @@ import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
 import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List } from 'lucide-vue-next'
 
-const tabs = [
-  { id: 'chat', label: 'Chat', icon: MessageSquare },
-  { id: 'search', label: 'Search', icon: Search },
-]
+const chatTabEnabled = ref(true)
+
+const tabs = computed(() => {
+  const t = []
+  if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
+  t.push({ id: 'search', label: 'Search', icon: Search })
+  return t
+})
 
 const toolTabs = [
   { id: 'mcp', label: 'MCP Server', icon: Plug },
@@ -998,6 +1002,7 @@ const footerActiveJob = computed(() =>
 
 // Forward an Analysis-sidebar action into the chat input.
 const handleSendToChat = (prompt) => {
+  if (!chatTabEnabled.value) return
   activeTab.value = 'chat'
   // Wait one tick so ChatTab is mounted before we deliver the prompt.
   setTimeout(() => {
@@ -1132,6 +1137,13 @@ const handleDataCleared = async () => {
   ])
 }
 
+const onChatTabToggled = (enabled) => {
+  chatTabEnabled.value = enabled
+  if (!enabled && activeTab.value === 'chat') {
+    activeTab.value = 'search'
+  }
+}
+
 const switchTab = (tabName) => {
   activeTab.value = tabName
 }
@@ -1142,7 +1154,7 @@ const selectCollection = (collectionId) => {
 
 const selectCollectionAndNavigate = (collectionId) => {
   collectionStore.setCurrentCollection(collectionId)
-  activeTab.value = 'chat'
+  activeTab.value = chatTabEnabled.value ? 'chat' : 'search'
 }
 
 const openCreateCollectionModal = () => {
@@ -1287,6 +1299,15 @@ const cancelJob = async (jobId) => {
 }
 
 onMounted(async () => {
+  // Load UI feature flags from server config
+  try {
+    const cfgResp = await axios.get('/api/config')
+    chatTabEnabled.value = cfgResp.data.enable_chat_tab ?? true
+    if (!chatTabEnabled.value && activeTab.value === 'chat') {
+      activeTab.value = 'search'
+    }
+  } catch { /* defaults to true */ }
+
   // Load user info
   await userStore.loadCurrentUser()
 

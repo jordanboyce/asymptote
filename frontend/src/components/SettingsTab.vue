@@ -36,6 +36,25 @@
       </div>
     </div>
 
+    <!-- UI Feature Flags -->
+    <div class="card bg-base-200">
+      <div class="card-body space-y-3">
+        <div>
+          <h3 class="card-title text-base">UI Features</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">Toggle optional interface panels.</p>
+        </div>
+        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+          <label class="label cursor-pointer justify-start gap-4 p-0">
+            <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="chatTabEnabled" @change="saveChatTabSetting" />
+            <div>
+              <span class="label-text font-medium">Chat Tab</span>
+              <p class="text-xs text-base-content/60">Built-in chat interface. Disable if you use Claude Desktop or another MCP client instead.</p>
+            </div>
+          </label>
+        </div>
+      </div>
+    </div>
+
     <!-- AI Integration -->
     <div class="card bg-base-200">
       <div class="card-body space-y-4">
@@ -555,6 +574,88 @@
       </div>
     </div>
 
+    <!-- Privacy / PII Redaction -->
+    <div class="card bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title">Privacy</h3>
+        <p class="text-sm text-base-content/70 mb-4">
+          PII redaction automatically strips personally identifiable information (names, SSNs, account numbers, emails, etc.)
+          from all MCP tool responses before they reach an external LLM. Powered by Microsoft Presidio, runs 100% locally.
+        </p>
+
+        <div class="form-control mb-4">
+          <label class="label cursor-pointer justify-start gap-4">
+            <input
+              type="checkbox"
+              class="toggle toggle-primary toggle-sm"
+              v-model="piiRedactionEnabled"
+              @change="savePrivacySettings"
+            />
+            <div>
+              <span class="label-text font-medium">Enable PII Redaction</span>
+              <p class="text-xs text-base-content/60">
+                When enabled, all data leaving Asymptote through MCP is scanned and redacted for PII. Original data remains intact in local storage.
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <div v-if="piiRedactionEnabled" class="space-y-4">
+          <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
+            <div class="mb-4">
+              <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Redaction Style</h4>
+              <p class="mt-1 text-xs text-base-content/60">
+                Controls how redacted entities appear in LLM-facing output.
+              </p>
+            </div>
+
+            <div class="grid gap-4 md:grid-cols-2">
+              <div class="form-control">
+                <label class="label pb-1">
+                  <span class="label-text font-medium">Replacement Style</span>
+                </label>
+                <select v-model="piiRedactionStyle" class="select select-bordered w-full" @change="savePrivacySettings">
+                  <option value="entity_type">[ENTITY_TYPE] &mdash; e.g. [PERSON], [ACCOUNT_NUMBER]</option>
+                  <option value="redacted">[REDACTED] &mdash; opaque, maximum anonymity</option>
+                  <option value="consistent_pseudonym">Consistent Pseudonym &mdash; fake but stable names</option>
+                  <option value="partial_mask">Partial Mask &mdash; e.g. ****1234</option>
+                  <option value="synthetic_placeholder">Synthetic Placeholder &mdash; realistic fake values</option>
+                </select>
+              </div>
+
+              <div class="form-control">
+                <label class="label pb-1">
+                  <span class="label-text font-medium">Confidence Threshold</span>
+                </label>
+                <input
+                  type="number"
+                  class="input input-bordered w-full"
+                  v-model.number="piiScoreThreshold"
+                  min="0.1"
+                  max="1.0"
+                  step="0.05"
+                  @change="savePrivacySettings"
+                />
+                <label class="label pt-1">
+                  <span class="label-text-alt text-base-content/50">Lower = more aggressive (0.4 recommended for financial data). Range: 0.1 &ndash; 1.0</span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <div class="text-xs text-base-content/50 flex items-center gap-1.5">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            Detects: names, SSN, email, phone, credit cards, account numbers, routing numbers, addresses, dates of birth, and more.
+            All detection runs locally via Presidio &mdash; no data is sent to any external service for PII scanning.
+          </div>
+        </div>
+
+        <div v-if="privacySettingsSaved" class="alert alert-success mt-3">
+          <span>Privacy settings saved.</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Danger Zone -->
     <div class="card bg-error/10 border border-error">
       <div class="card-body">
@@ -618,9 +719,12 @@ import {
   migrateLegacySettings,
 } from '../utils/aiProviders.js'
 
-const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab'])
+const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
 
 const collectionStore = useCollectionStore()
+
+// UI feature flags
+const chatTabEnabled = ref(true)
 
 // OCR settings state
 const ocrEnabled = ref(false)
@@ -706,9 +810,20 @@ const fetchOcrAllOllamaModels = async () => {
   }
 }
 
+const saveChatTabSetting = async () => {
+  try {
+    await axios.post('/api/config', { enable_chat_tab: chatTabEnabled.value })
+    emit('chat-tab-toggled', chatTabEnabled.value)
+  } catch {
+    // revert on failure
+    chatTabEnabled.value = !chatTabEnabled.value
+  }
+}
+
 const loadOCRSettings = async () => {
   try {
     const response = await axios.get('/api/config')
+    chatTabEnabled.value = response.data.enable_chat_tab ?? true
     ocrEnabled.value = response.data.enable_ocr || false
     ocrMaxPages.value = response.data.ocr_max_pages ?? 25
     ocrMaxFileMb.value = response.data.ocr_max_file_mb ?? 50
@@ -757,6 +872,37 @@ const saveOCRSettings = async () => {
     setTimeout(() => { ocrSettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save OCR settings:', error.response?.data?.detail || error)
+  }
+}
+
+// Privacy / PII redaction settings state
+const piiRedactionEnabled = ref(true)
+const piiRedactionStyle = ref('entity_type')
+const piiScoreThreshold = ref(0.4)
+const privacySettingsSaved = ref(false)
+
+const loadPrivacySettings = async () => {
+  try {
+    const response = await axios.get('/api/config')
+    piiRedactionEnabled.value = response.data.enable_pii_redaction ?? true
+    piiRedactionStyle.value = response.data.pii_redaction_style || 'entity_type'
+    piiScoreThreshold.value = response.data.pii_score_threshold ?? 0.4
+  } catch {
+    // Use defaults
+  }
+}
+
+const savePrivacySettings = async () => {
+  try {
+    await axios.post('/api/config', {
+      enable_pii_redaction: Boolean(piiRedactionEnabled.value),
+      pii_redaction_style: piiRedactionStyle.value,
+      pii_score_threshold: Number(piiScoreThreshold.value),
+    })
+    privacySettingsSaved.value = true
+    setTimeout(() => { privacySettingsSaved.value = false }, 5000)
+  } catch (error) {
+    console.error('Failed to save privacy settings:', error.response?.data?.detail || error)
   }
 }
 
@@ -1033,6 +1179,7 @@ onMounted(() => {
   }
 
   loadOCRSettings()
+  loadPrivacySettings()
 })
 </script>
 

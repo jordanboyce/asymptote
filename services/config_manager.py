@@ -64,6 +64,12 @@ class ConfigManager:
             "mcp_max_source_length": settings.mcp_max_source_length,
             "mcp_ai_provider": settings.mcp_ai_provider,
             "mcp_ollama_model": settings.mcp_ollama_model,
+            # Privacy / PII redaction settings
+            "enable_pii_redaction": settings.enable_pii_redaction,
+            "pii_redaction_style": settings.pii_redaction_style,
+            "pii_score_threshold": settings.pii_score_threshold,
+            # UI feature flags
+            "enable_chat_tab": settings.enable_chat_tab,
         }
 
         # Override with database values if present
@@ -111,6 +117,8 @@ class ConfigManager:
         mcp_fields = {"enable_mcp", "mcp_server_id", "mcp_default_collection", "mcp_top_k",
                       "mcp_mode", "mcp_semantic_weight", "mcp_include_sources",
                       "mcp_max_source_length", "mcp_ai_provider", "mcp_ollama_model"}
+        privacy_fields = {"enable_pii_redaction", "pii_redaction_style", "pii_score_threshold"}
+        ui_fields = {"enable_chat_tab"}
 
         # Validate updates
         valid_fields = {
@@ -125,6 +133,8 @@ class ConfigManager:
             "mcp_top_k", "mcp_mode", "mcp_semantic_weight",
             "mcp_include_sources", "mcp_max_source_length",
             "mcp_ai_provider", "mcp_ollama_model",
+            "enable_pii_redaction", "pii_redaction_style", "pii_score_threshold",
+            "enable_chat_tab",
         }
 
         for key in updates.keys():

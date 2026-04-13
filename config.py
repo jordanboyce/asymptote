@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     vision_ocr_ollama_url: str = "http://localhost:11434"
     vision_ocr_form_mode: bool = False      # Form-aware prompt + ruled-line image preprocessing
 
+    # PII redaction (Presidio-based, runs locally)
+    enable_pii_redaction: bool = True  # Redact PII from all MCP tool output
+    pii_redaction_style: str = "entity_type"  # redacted | entity_type | consistent_pseudonym | partial_mask | synthetic_placeholder
+    pii_score_threshold: float = 0.4  # Presidio confidence floor (lower = more aggressive)
+
+    # UI feature flags
+    enable_chat_tab: bool = True  # Show/hide the Chat tab in the frontend
+
     # v3.0: CSV indexing configuration
     csv_row_level_indexing: bool = True  # Index CSV rows individually
     csv_rows_per_chunk: int = 5  # Number of rows per chunk when not row-level

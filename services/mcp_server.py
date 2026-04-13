@@ -24,6 +24,7 @@ from services.structured_chat import (
 )
 from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
 from services.structured_store import SQLValidationError, StructuredStore
+from services.privacy.redaction_middleware import redact_mcp_response
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,15 @@ _asymptote_mcp = FastMCP(
 def _ensure_enabled() -> None:
     if not settings.enable_mcp:
         raise RuntimeError("Asymptote MCP is disabled in Settings.")
+
+
+def _redact(response: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    """Apply PII redaction to an MCP tool response before it exits."""
+    return redact_mcp_response(
+        response,
+        tool_name=tool_name,
+        collection_id=response.get("collection_id"),
+    )
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -199,6 +209,20 @@ def build_mcp_export_payload(base_url: str, profile: dict[str, Any] | None = Non
     }
 
 
+def _mcp_safe_name(collection: dict[str, Any] | None, fallback: str = "") -> str:
+    """Return the PII-safe display name for MCP output."""
+    if not collection:
+        return fallback
+    return collection.get("mcp_display_name") or collection.get("name", fallback)
+
+
+def _mcp_safe_description(collection: dict[str, Any] | None, fallback: str = "") -> str:
+    """Return the PII-safe description for MCP output."""
+    if not collection:
+        return fallback
+    return collection.get("mcp_display_description") or collection.get("description", fallback)
+
+
 def _resolve_collection_id(explicit: str | None = None) -> str:
     """Resolve which collection an MCP tool call should target.
 
@@ -286,17 +310,17 @@ def list_collections() -> dict[str, Any]:
             continue
         entries.append({
             "collection_id": cid,
-            "name": c.get("name", cid),
-            "description": c.get("description", "") or "",
+            "name": c.get("mcp_display_name") or c.get("name", cid),
+            "description": c.get("mcp_display_description") or c.get("description", "") or "",
             "document_count": c.get("document_count", 0),
             "is_default": cid == default_id,
         })
 
-    return {
+    return _redact({
         "total_collections": len(entries),
         "default_collection_id": default_id,
         "collections": entries,
-    }
+    }, "list_collections")
 
 
 @_asymptote_mcp.tool()
@@ -352,8 +376,8 @@ def get_collection_info(
 
     payload: dict[str, Any] = {
         "collection_id": resolved_collection,
-        "collection_name": collection.get("name", resolved_collection),
-        "description": collection.get("description", ""),
+        "collection_name": _mcp_safe_name(collection, resolved_collection),
+        "description": _mcp_safe_description(collection, ""),
         "total_documents": stats.get("total_documents", 0),
         "total_chunks": stats.get("total_chunks", 0),
         "total_pages": stats.get("total_pages", 0),
@@ -362,7 +386,7 @@ def get_collection_info(
     }
     if detail == "with_documents":
         payload["documents"] = doc_list
-    return payload
+    return _redact(payload, "get_collection_info")
 
 
 @_asymptote_mcp.tool()
@@ -438,7 +462,7 @@ def search_collection(
     resolved_inline_row_threshold = max(0, min(int(request_profile.get("inline_row_threshold") or _DEFAULT_INLINE_ROW_THRESHOLD), 2000))
 
     collection = collection_service.get_collection(resolved_collection)
-    collection_name = collection.get("name", resolved_collection) if collection else resolved_collection
+    collection_name = _mcp_safe_name(collection, resolved_collection)
 
     # Inline small CSV/XLSX tables before searching so we can (a) hand the
     # host LLM the full authoritative rows for numeric questions and (b)
@@ -541,7 +565,7 @@ def search_collection(
             for rank, result in enumerate(search_result.get("results", []), start=1)
         ]
 
-    return response
+    return _redact(response, "search_collection")
 
 
 _DOC_CONTEXT_MAX_CHARS_DEFAULT = 12000
@@ -661,7 +685,7 @@ def get_document_context(
 
     joined = "\n".join(c["text"] for c in emitted)
 
-    return {
+    return _redact({
         "collection_id": resolved_collection,
         "document_id": document_id,
         "filename": doc_info.get("filename"),
@@ -672,7 +696,7 @@ def get_document_context(
         "text": joined,
         "total_chars": len(joined),
         "truncated": truncated,
-    }
+    }, "get_document_context")
 
 
 def _get_structured_store(collection_id: str) -> StructuredStore:
@@ -755,11 +779,11 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
         {k: v for k, v in t.items() if k != "financial_roles"}
         for t in raw_tables
     ]
-    return {
+    return _redact({
         "collection_id": resolved_collection,
         "total_tables": len(tables),
         "tables": tables,
-    }
+    }, "list_tables")
 
 
 @_asymptote_mcp.tool()
@@ -793,7 +817,7 @@ def get_table_schema(identifier: str, collection_id: str | None = None) -> dict[
             f"No structured table found for '{identifier}' in collection "
             f"'{resolved_collection}'. Call list_tables() to see what's available."
         )
-    return _format_schema_summary(schema)
+    return _redact(_format_schema_summary(schema), "get_table_schema")
 
 
 @_asymptote_mcp.tool()
@@ -856,7 +880,7 @@ def get_table_rows(
     display_columns = [sql_to_orig.get(raw_columns[i], raw_columns[i]) for i in keep_idx]
     display_rows = [[row[i] for i in keep_idx] for row in raw_rows]
 
-    return {
+    return _redact({
         "collection_id": resolved_collection,
         "table_name": table_name,
         "filename": schema.get("filename"),
@@ -866,7 +890,7 @@ def get_table_rows(
         "rows": display_rows,
         "row_count": len(display_rows),
         "truncated": result.get("truncated", False),
-    }
+    }, "get_table_rows")
 
 
 @_asymptote_mcp.tool()
@@ -905,11 +929,11 @@ def query_table(
         result = store.execute_query(sql, max_rows=capped_rows)
     except SQLValidationError as e:
         raise ValueError(str(e))
-    return {
+    return _redact({
         "collection_id": resolved_collection,
         "sql": sql,
         **result,
-    }
+    }, "query_table")
 
 
 PortfolioMetric = Literal[
@@ -991,7 +1015,7 @@ def compute_portfolio_metric(
         limit=limit,
         group_by_symbol=group_by_symbol,
     )
-    return {"collection_id": resolved_collection, **result}
+    return _redact({"collection_id": resolved_collection, **result}, "compute_portfolio_metric")
 
 
 _AGG_FN_SQL = {
@@ -1083,7 +1107,7 @@ def aggregate_table(
     except SQLValidationError as e:
         raise ValueError(str(e))
 
-    return {
+    return _redact({
         "collection_id": resolved_collection,
         "identifier": identifier,
         "table_name": table_name,
@@ -1092,7 +1116,7 @@ def aggregate_table(
         "group_by": group_by,
         "sql": select,
         **result,
-    }
+    }, "aggregate_table")
 
 
 @_asymptote_mcp.tool()
@@ -1134,7 +1158,7 @@ def get_document_metadata(
             f"'{resolved_collection}'. Call get_collection_info() to see "
             f"available document_ids."
         )
-    return {
+    return _redact({
         "collection_id": resolved_collection,
         "document_id": doc_info.get("document_id"),
         "filename": doc_info.get("filename"),
@@ -1149,7 +1173,102 @@ def get_document_metadata(
         "num_pages": doc_info.get("num_pages"),
         "num_chunks": doc_info.get("num_chunks"),
         "upload_timestamp": doc_info.get("upload_timestamp"),
+    }, "get_document_metadata")
+
+
+# ---------------------------------------------------------------------------
+# PII Redaction — audit and configuration tools
+# ---------------------------------------------------------------------------
+
+
+@_asymptote_mcp.tool()
+def get_recent_redactions(
+    session_id: str | None = None,
+    collection_id: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Return recent PII redaction events from the audit log.
+
+    Use this to self-verify what PII was removed before proceeding, or to
+    answer user questions about what was redacted.
+
+    Parameters:
+      - session_id: Filter to a specific session. If omitted, returns
+        redactions across all sessions.
+      - collection_id: Filter to a specific collection. If omitted,
+        returns redactions across all collections.
+      - limit: Max entries to return (default 50, cap 500).
+
+    Returns a list of redaction events with entity_type, replacement text,
+    which tool produced the output, and the Presidio confidence score.
+    The original PII text is NOT included in the response (it stays in
+    the local audit log only).
+    """
+    _ensure_enabled()
+
+    from services.privacy.redaction_log import redaction_log
+
+    capped = max(1, min(int(limit), 500))
+    events = redaction_log.get_recent(
+        session_id=session_id,
+        collection_id=collection_id,
+        limit=capped,
+    )
+
+    # Strip original_text from the response — it must not leave the machine
+    safe_events = [
+        {
+            "id": e.get("id"),
+            "timestamp": e.get("timestamp"),
+            "session_id": e.get("session_id"),
+            "collection_id": e.get("collection_id"),
+            "tool_name": e.get("tool_name"),
+            "document_id": e.get("document_id"),
+            "entity_type": e.get("entity_type"),
+            "replacement": e.get("replacement"),
+            "score": e.get("score"),
+        }
+        for e in events
+    ]
+
+    # Also include a summary if session_id was provided
+    summary = None
+    if session_id:
+        summary = redaction_log.get_session_summary(session_id)
+
+    result: dict[str, Any] = {
+        "total_returned": len(safe_events),
+        "redactions": safe_events,
     }
+    if summary:
+        result["session_summary"] = summary
+
+    return result
+
+
+@_asymptote_mcp.tool()
+def get_redaction_config(
+    collection_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the active PII redaction profile for a collection.
+
+    Shows which entity types are being redacted, the redaction style
+    (e.g. [ENTITY_TYPE], [REDACTED], partial_mask), the confidence
+    threshold, and any allow-listed strings.
+
+    Parameters:
+      - collection_id: Optional. If omitted, returns the global default
+        profile.
+    """
+    _ensure_enabled()
+
+    from services.privacy.redaction_config import get_redaction_profile, _profile_to_dict
+
+    profile = get_redaction_profile(collection_id)
+    payload = _profile_to_dict(profile)
+    payload["collection_id"] = collection_id
+    payload["enabled"] = getattr(settings, "enable_pii_redaction", False)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -1191,15 +1310,15 @@ def resource_collection(id: str) -> dict[str, Any]:
             entry["source_path"] = doc["source_path"]
         doc_list.append(entry)
 
-    return {
+    return _redact({
         "collection_id": resolved,
-        "collection_name": collection.get("name", resolved) if collection else resolved,
-        "description": collection.get("description", "") if collection else "",
+        "collection_name": _mcp_safe_name(collection, resolved),
+        "description": _mcp_safe_description(collection, ""),
         "total_documents": stats.get("total_documents", 0),
         "total_chunks": stats.get("total_chunks", 0),
         "total_pages": stats.get("total_pages", 0),
         "documents": doc_list,
-    }
+    }, "resource_collection")
 
 
 @_asymptote_mcp.resource("collection://{id}/schema")
@@ -1223,11 +1342,11 @@ def resource_collection_schema(id: str) -> dict[str, Any]:
         full = store.get_schema(t["table_name"])
         if full:
             schemas.append(_format_schema_summary(full))
-    return {
+    return _redact({
         "collection_id": resolved,
         "total_tables": len(schemas),
         "schemas": schemas,
-    }
+    }, "resource_collection_schema")
 
 
 @_asymptote_mcp.resource("document://{id}")
@@ -1255,7 +1374,7 @@ def resource_document(id: str) -> dict[str, Any]:
             f"Document '{id}' not found in collection '{resolved}'. "
             f"Call get_collection_info() to see available document_ids."
         )
-    return {
+    return _redact({
         "collection_id": resolved,
         "document_id": doc_info.get("document_id"),
         "filename": doc_info.get("filename"),
@@ -1270,7 +1389,7 @@ def resource_document(id: str) -> dict[str, Any]:
         "num_pages": doc_info.get("num_pages"),
         "num_chunks": doc_info.get("num_chunks"),
         "upload_timestamp": doc_info.get("upload_timestamp"),
-    }
+    }, "resource_document")
 
 
 @_asymptote_mcp.resource("table://{id}")
@@ -1316,13 +1435,13 @@ def resource_table(id: str) -> dict[str, Any]:
     display_columns = [sql_to_orig.get(raw_columns[i], raw_columns[i]) for i in keep_idx]
     display_rows = [[row[i] for i in keep_idx] for row in raw_rows]
 
-    return {
+    return _redact({
         "collection_id": resolved,
         "schema": summary,
         "sample_columns": display_columns,
         "sample_rows": display_rows,
         "sample_row_count": len(display_rows),
-    }
+    }, "resource_table")
 
 
 class ToggleableMCPApp:
