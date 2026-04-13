@@ -282,6 +282,8 @@ class DocumentIndexer:
                     columns=columns,
                     rows=rows,
                     sheet_name=sheet_name,
+                    role_overrides=sheet.get('role_overrides') or {},
+                    type_overrides=sheet.get('type_overrides') or {},
                 )
             except Exception as e:
                 logger.warning(

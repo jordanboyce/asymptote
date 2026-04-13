@@ -1,0 +1,7 @@
+Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value,Today's Gain/Loss Dollar,Today's Gain/Loss Percent,Total Gain/Loss Dollar,Total Gain/Loss Percent,Cost Basis Total,Average Cost Basis,Type,% of Account
+X12345678,Joint Investment Account,AAPL,Apple Inc,150,$191.24,+$1.53,"$28,686.00","$229.50",0.81%,"$6,186.00",27.49%,"$22,500.00","$150.00",Stocks,11.68%
+X12345678,Joint Investment Account,MSFT,Microsoft Corp,75,$415.50,+$2.80,"$31,162.50","$210.00",0.68%,"$6,412.50",25.91%,"$24,750.00","$330.00",Stocks,12.70%
+X12345678,Joint Investment Account,AMZN,Amazon.com Inc,100,$178.75,-$0.95,"$17,875.00","($95.00)",-0.53%,"$2,875.00",19.17%,"$15,000.00","$150.00",Stocks,7.28%
+X12345678,Joint Investment Account,NVDA,NVIDIA Corp,200,$880.35,+$15.25,"$176,070.00","$3,050.00",1.76%,"$81,070.00",85.34%,"$95,000.00","$475.00",Stocks,71.74%
+X12345678,Joint Investment Account,FXAIX,Fidelity 500 Index Fund,500.123,$175.42,+$0.88,"$87,754.62","$440.11",0.50%,"$15,254.62",21.07%,"$72,500.00","$145.00",Mutual Funds,35.75%
+X12345678,Joint Investment Account,Pending Activity,--,--,--,--,"$0.00",--,--,--,--,--,--,--,0.00%

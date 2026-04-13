@@ -1,0 +1,135 @@
+# Schwab brokerage export profiles
+# Covers: Positions / Holdings, Unrealized G/L, Realized G/L, Transactions
+
+- vendor: schwab
+  display_name: "Schwab — Unrealized Gain/Loss"
+  file_signatures:
+    filename_patterns:
+      - "*Unrealized*"
+      - "*unrealized*"
+    required_strings:
+      - "Unrealized Gain"
+    column_hints:
+      - "Symbol"
+      - "Description"
+      - "Qty"
+      - "Price"
+      - "Mkt Val"
+      - "Cost Basis"
+      - "Gain/Loss $"
+  column_roles:
+    Symbol: ticker
+    Description: name
+    Qty: quantity
+    Price: price
+    "Mkt Val": market_value
+    "Cost Basis": cost_basis
+    "Gain/Loss $": pnl
+    "Gain/Loss %": return
+    "Day's Gain/Loss $": pnl
+    "% of Account": weight
+    "Security Type": asset_class
+  type_overrides:
+    Qty: real
+    Price: real
+    "Mkt Val": currency
+    "Cost Basis": currency
+    "Gain/Loss $": currency
+    "Day's Gain/Loss $": currency
+    "% of Account": percent
+
+- vendor: schwab
+  display_name: "Schwab — Positions/Holdings"
+  file_signatures:
+    filename_patterns:
+      - "*Positions*"
+      - "*positions*"
+      - "*Holdings*"
+      - "*holdings*"
+    required_strings:
+      - "Schwab"
+    column_hints:
+      - "Symbol"
+      - "Description"
+      - "Quantity"
+      - "Price"
+      - "Market Value"
+  column_roles:
+    Symbol: ticker
+    Description: name
+    Quantity: quantity
+    Price: price
+    "Market Value": market_value
+    "Cost Basis": cost_basis
+    "Gain/Loss $": pnl
+    "Gain/Loss %": return
+    "% of Account": weight
+    "Security Type": asset_class
+    Account: account
+  type_overrides:
+    Quantity: real
+    Price: real
+    "Market Value": currency
+    "Cost Basis": currency
+    "Gain/Loss $": currency
+    "% of Account": percent
+
+- vendor: schwab
+  display_name: "Schwab — Realized Gain/Loss"
+  file_signatures:
+    filename_patterns:
+      - "*Realized*"
+      - "*realized*"
+    required_strings:
+      - "Realized Gain"
+    column_hints:
+      - "Symbol"
+      - "Open Date"
+      - "Close Date"
+      - "Sales Price"
+      - "Cost Basis"
+      - "Gain/Loss"
+  column_roles:
+    Symbol: ticker
+    Description: name
+    Quantity: quantity
+    "Open Date": date
+    "Close Date": date
+    "Sales Price": price
+    "Cost Basis": cost_basis
+    "Gain/Loss": pnl
+    "Term": asset_class
+  type_overrides:
+    Quantity: real
+    "Sales Price": currency
+    "Cost Basis": currency
+    "Gain/Loss": currency
+
+- vendor: schwab
+  display_name: "Schwab — Transactions"
+  file_signatures:
+    filename_patterns:
+      - "*Transactions*"
+      - "*transactions*"
+    column_hints:
+      - "Date"
+      - "Action"
+      - "Symbol"
+      - "Description"
+      - "Quantity"
+      - "Price"
+      - "Fees & Comm"
+      - "Amount"
+  column_roles:
+    Date: date
+    Symbol: ticker
+    Description: name
+    Quantity: quantity
+    Price: price
+    Amount: market_value
+    "Fees & Comm": cost_basis
+  type_overrides:
+    Quantity: real
+    Price: real
+    Amount: currency
+    "Fees & Comm": currency

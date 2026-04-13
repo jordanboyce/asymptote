@@ -909,9 +909,9 @@ class DocumentExtractor:
                     f"CSV {file_path.name}: detected header at row {header_idx}, "
                     f"preamble fields: {[k for k in doc_metadata if not k.startswith('_')]}"
                 )
-            return [self._dataframe_to_sheet(
-                df, sheet_name='', document_metadata=doc_metadata
-            )]
+            sheet = self._dataframe_to_sheet(df, sheet_name='', document_metadata=doc_metadata)
+            self._apply_ingest_profile(sheet, file_path)
+            return [sheet]
 
         if ext in ('.xlsx', '.xls'):
             try:
@@ -940,12 +940,37 @@ class DocumentExtractor:
                         f"{header_idx}, preamble fields: "
                         f"{[k for k in doc_metadata if not k.startswith('_')]}"
                     )
-                sheets.append(self._dataframe_to_sheet(
+                sheet = self._dataframe_to_sheet(
                     df, sheet_name=str(sheet_name), document_metadata=doc_metadata
-                ))
+                )
+                self._apply_ingest_profile(sheet, file_path)
+                sheets.append(sheet)
             return sheets
 
         raise ValueError(f"extract_tabular_sheets: unsupported extension {ext}")
+
+    def _apply_ingest_profile(self, sheet: Dict[str, Any], file_path: Path) -> None:
+        """Run vendor profile detection (P0.4) and embed overrides into sheet dict in-place."""
+        sheet['role_overrides'] = {}
+        sheet['type_overrides'] = {}
+        sheet['vendor_profile'] = None
+        try:
+            from services.ingest_profiles import detect_profile, apply_profile
+            profile = detect_profile(
+                filename=file_path.name,
+                columns=sheet['columns'],
+                file_path=file_path,
+            )
+            if profile:
+                _, rows_filtered, role_map, type_map = apply_profile(
+                    profile, sheet['columns'], sheet['rows']
+                )
+                sheet['rows'] = rows_filtered
+                sheet['role_overrides'] = role_map
+                sheet['type_overrides'] = type_map
+                sheet['vendor_profile'] = profile.get('display_name', profile.get('vendor'))
+        except Exception as e:
+            logger.warning(f"Vendor profile detection failed for {file_path.name}: {e}")
 
     def _dataframe_to_sheet(self, df, sheet_name: str,
                             document_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

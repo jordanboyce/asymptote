@@ -1,0 +1,77 @@
+# Fidelity brokerage export profiles
+# Covers: Positions, Account History / Transactions
+
+- vendor: fidelity
+  display_name: "Fidelity — Positions"
+  file_signatures:
+    filename_patterns:
+      - "*Portfolio_Positions*"
+      - "*Positions*"
+      - "*positions*"
+    required_strings:
+      - "Fidelity"
+    column_hints:
+      - "Symbol"
+      - "Description"
+      - "Quantity"
+      - "Last Price"
+      - "Current Value"
+      - "Cost Basis Total"
+  column_roles:
+    Symbol: ticker
+    Description: name
+    Quantity: quantity
+    "Last Price": price
+    "Last Price Change": pnl
+    "Current Value": market_value
+    "Today's Gain/Loss Dollar": pnl
+    "Today's Gain/Loss Percent": return
+    "Total Gain/Loss Dollar": pnl
+    "Total Gain/Loss Percent": return
+    "Cost Basis Total": cost_basis
+    "Average Cost Basis": price
+    "Type": asset_class
+    "Account Name": account
+    "Account Number": account
+    "% of Account": weight
+  type_overrides:
+    Quantity: real
+    "Last Price": real
+    "Current Value": currency
+    "Today's Gain/Loss Dollar": currency
+    "Total Gain/Loss Dollar": currency
+    "Cost Basis Total": currency
+    "Average Cost Basis": currency
+    "% of Account": percent
+
+- vendor: fidelity
+  display_name: "Fidelity — Account History"
+  file_signatures:
+    filename_patterns:
+      - "*History*"
+      - "*history*"
+      - "*Transactions*"
+      - "*transactions*"
+    required_strings:
+      - "Fidelity"
+    column_hints:
+      - "Date"
+      - "Transaction Type"
+      - "Investment Name"
+      - "Symbol"
+      - "Shares"
+      - "Share Price"
+      - "Amount ($)"
+  column_roles:
+    Date: date
+    Symbol: ticker
+    "Investment Name": name
+    Shares: quantity
+    "Share Price": price
+    "Amount ($)": market_value
+    "Settlement Date": date
+    "Account": account
+  type_overrides:
+    Shares: real
+    "Share Price": real
+    "Amount ($)": currency

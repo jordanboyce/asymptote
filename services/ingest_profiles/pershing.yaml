@@ -1,0 +1,86 @@
+# Pershing / NetX360 export profiles
+# Covers: flat Unrealized G/L (compatible with P0.1 header detection)
+#         and hierarchical Holdings by Investor (sub-account header rows)
+
+- vendor: pershing
+  display_name: "Pershing — Unrealized G/L (flat)"
+  file_signatures:
+    filename_patterns:
+      - "*Unrealized*"
+      - "*unrealized*"
+      - "*GL*"
+      - "*gl*"
+    required_strings:
+      - "Pershing"
+    column_hints:
+      - "Security ID"
+      - "Security Description"
+      - "Quantity"
+      - "Market Price"
+      - "Market Value"
+      - "Cost Basis"
+      - "Unrealized G/L"
+  column_roles:
+    "Security ID": ticker
+    "CUSIP": cusip
+    "Security Description": name
+    Quantity: quantity
+    "Market Price": price
+    "Market Value": market_value
+    "Cost Basis": cost_basis
+    "Unrealized G/L": pnl
+    "% Unrealized G/L": return
+    "Asset Class": asset_class
+    "Account Number": account
+    "Account Name": account
+    Currency: currency
+  type_overrides:
+    Quantity: real
+    "Market Price": real
+    "Market Value": currency
+    "Cost Basis": currency
+    "Unrealized G/L": currency
+    "% Unrealized G/L": percent
+
+- vendor: pershing
+  display_name: "Pershing — Holdings by Investor (hierarchical)"
+  file_signatures:
+    filename_patterns:
+      - "*Holdings*"
+      - "*holdings*"
+      - "*NetX*"
+      - "*netx*"
+    required_strings:
+      - "Pershing"
+    column_hints:
+      - "Security ID"
+      - "Description"
+      - "Qty"
+      - "Mkt Price"
+      - "Mkt Value"
+      - "Cost"
+      - "Unrlzd G/L"
+  column_roles:
+    "Security ID": ticker
+    "CUSIP": cusip
+    Description: name
+    Qty: quantity
+    "Mkt Price": price
+    "Mkt Value": market_value
+    Cost: cost_basis
+    "Unrlzd G/L": pnl
+    "% Unrlzd G/L": return
+    "Asset Class": asset_class
+    "Account #": account
+    Ccy: currency
+  type_overrides:
+    Qty: real
+    "Mkt Price": real
+    "Mkt Value": currency
+    Cost: currency
+    "Unrlzd G/L": currency
+    "% Unrlzd G/L": percent
+  # Hierarchical layout: account-level subtotal rows intersperse the data.
+  # The header detector (P0.1) handles row detection; the profile marks rows
+  # with no Security ID as grouping/subtotal rows to be dropped.
+  drop_rows_where_col_empty: "Security ID"

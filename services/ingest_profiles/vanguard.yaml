@@ -1,0 +1,76 @@
+# Vanguard brokerage export profiles
+# Covers: Holdings, Activity / Transactions
+
+- vendor: vanguard
+  display_name: "Vanguard — Holdings"
+  file_signatures:
+    filename_patterns:
+      - "*ofxdownload*"
+      - "*Holdings*"
+      - "*holdings*"
+      - "*Portfolio*"
+    required_strings:
+      - "Vanguard"
+    column_hints:
+      - "Investment Name"
+      - "Symbol"
+      - "Shares"
+      - "Share Price"
+      - "Total Value"
+  column_roles:
+    Symbol: ticker
+    "Investment Name": name
+    Shares: quantity
+    "Share Price": price
+    "Total Value": market_value
+    "% of Total Portfolio": weight
+    "Yield (%)": return
+    "Return YTD (%)": return
+    "Average Cost Basis": cost_basis
+    "Unrealized Gain/Loss": pnl
+    "Asset Class": asset_class
+    Account: account
+  type_overrides:
+    Shares: real
+    "Share Price": real
+    "Total Value": currency
+    "Average Cost Basis": currency
+    "Unrealized Gain/Loss": currency
+    "% of Total Portfolio": percent
+    "Yield (%)": percent
+    "Return YTD (%)": percent
+
+- vendor: vanguard
+  display_name: "Vanguard — Activity / Transactions"
+  file_signatures:
+    filename_patterns:
+      - "*Activity*"
+      - "*activity*"
+      - "*Transactions*"
+    required_strings:
+      - "Vanguard"
+    column_hints:
+      - "Trade Date"
+      - "Transaction Type"
+      - "Investment Name"
+      - "Symbol"
+      - "Shares"
+      - "Share Price"
+      - "Principal Amount"
+  column_roles:
+    "Trade Date": date
+    "Settlement Date": date
+    Symbol: ticker
+    "Investment Name": name
+    Shares: quantity
+    "Share Price": price
+    "Principal Amount": market_value
+    "Commission Fees": cost_basis
+    "Net Amount": pnl
+    Account: account
+  type_overrides:
+    Shares: real
+    "Share Price": real
+    "Principal Amount": currency
+    "Commission Fees": currency
+    "Net Amount": currency
