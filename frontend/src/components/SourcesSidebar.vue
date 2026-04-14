@@ -1152,6 +1152,14 @@ watch(() => backgroundJobsStore.uploadJobs, (jobs) => {
   }
 }, { deep: true })
 
+// Watch for completed reindex jobs to reload documents
+watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {
+  if (newStatus === 'completed' && oldStatus && oldStatus !== 'completed') {
+    loadDocuments()
+    emit('document-deleted')
+  }
+})
+
 // Warn user before leaving page during indexing
 const beforeUnloadHandler = (e) => {
   if (indexing.value || isRecording.value || transcribing.value) {

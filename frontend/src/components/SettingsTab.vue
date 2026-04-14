@@ -44,7 +44,7 @@
           <p class="text-sm text-base-content/70 mt-0.5">Toggle optional interface panels.</p>
         </div>
         <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-          <label class="label cursor-pointer justify-start gap-4 p-0">
+          <label class="flex cursor-pointer items-start gap-4">
             <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="chatTabEnabled" @change="saveChatTabSetting" />
             <div>
               <span class="label-text font-medium">Chat Tab</span>
@@ -59,9 +59,9 @@
     <div class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
-          <h3 class="card-title">AI Providers</h3>
+          <h3 class="card-title text-base">AI Providers</h3>
           <p class="text-sm text-base-content/70 mt-0.5">
-            Configure providers here. Select which ones to use and choose a model per-search in the Search tab. API keys are stored in your browser only, never on the server.
+            Configure providers and select models per-search in the Search tab. API keys are stored in your browser only, never on the server.
           </p>
         </div>
 
@@ -297,7 +297,7 @@
           </div>
           <div class="space-y-2">
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-3">
-              <label class="label cursor-pointer justify-start gap-4 p-0">
+              <label class="flex cursor-pointer items-start gap-4">
                 <input type="checkbox" class="toggle toggle-primary toggle-sm" :checked="aiSettings.rerank" @change="toggleAIFeature('rerank')" />
                 <div>
                   <span class="label-text font-medium">Result Reranking</span>
@@ -306,7 +306,7 @@
               </label>
             </div>
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-3">
-              <label class="label cursor-pointer justify-start gap-4 p-0">
+              <label class="flex cursor-pointer items-start gap-4">
                 <input type="checkbox" class="toggle toggle-primary toggle-sm" :checked="aiSettings.synthesize" @change="toggleAIFeature('synthesize')" />
                 <div>
                   <span class="label-text font-medium">Answer Synthesis</span>
@@ -322,24 +322,26 @@
 
     <!-- OCR Settings -->
     <div class="card bg-base-200">
-      <div class="card-body">
-        <h3 class="card-title">OCR Settings</h3>
-        <p class="text-sm text-base-content/70 mb-4">
-          Configure OCR for scanned PDFs. These settings apply to document indexing and the OCR preview playground.
-        </p>
+      <div class="card-body space-y-4">
+        <div>
+          <h3 class="card-title text-base">OCR Settings</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">
+            Configure OCR for scanned PDFs. Applies to document indexing and the OCR preview playground.
+          </p>
+        </div>
 
-        <div class="form-control mb-4">
-          <label class="label cursor-pointer justify-start gap-4">
+        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+          <label class="flex cursor-pointer items-start gap-4">
             <input
               type="checkbox"
-              class="toggle toggle-primary toggle-sm"
+              class="toggle toggle-primary toggle-sm flex-shrink-0"
               v-model="ocrEnabled"
               @change="saveOCRSettings"
             />
-            <div>
+            <div class="min-w-0">
               <span class="label-text font-medium">Enable OCR for Scanned PDFs</span>
               <p class="text-xs text-base-content/60">
-                When enabled, scanned PDFs with little or no native text will be processed with OCR during indexing.
+                Scanned PDFs with little or no native text will be processed with OCR during indexing.
               </p>
             </div>
           </label>
@@ -357,7 +359,7 @@
               </p>
             </div>
 
-            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div class="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
               <div class="form-control">
                 <label class="label pb-1" for="vision-provider">
                   <span class="label-text font-medium">Provider</span>
@@ -446,40 +448,37 @@
               <div class="form-control" v-if="visionProvider !== 'none'">
                 <label class="label pb-1" for="vision-dpi"><span class="label-text font-medium">Render DPI</span></label>
                 <input id="vision-dpi" v-model.number="visionDpi" type="number" min="72" max="400" class="input input-bordered w-full" @change="saveOCRSettings" aria-describedby="vision-dpi-help" />
-                <p id="vision-dpi-help" class="label-text-alt mt-1">150 is usually sufficient. Higher = better quality, slower.</p>
+                <p id="vision-dpi-help" class="text-xs text-base-content/50 mt-1">150 is usually sufficient. Higher = better quality, slower.</p>
               </div>
             </div>
 
-            <div v-if="visionProvider !== 'none'" class="mt-4 grid gap-3 sm:grid-cols-2">
-              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
-                <label class="label cursor-pointer justify-start gap-4 p-0">
-                  <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="visionEnhanceImage" @change="saveOCRSettings" />
-                  <div>
+            <div v-if="visionProvider !== 'none'" class="mt-4 grid gap-3 grid-cols-1 sm:grid-cols-3">
+              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3 min-w-0">
+                <label class="flex cursor-pointer items-start gap-3">
+                  <input type="checkbox" class="toggle toggle-primary toggle-sm flex-shrink-0" v-model="visionEnhanceImage" @change="saveOCRSettings" />
+                  <div class="min-w-0">
                     <span class="label-text font-medium">Enhance Image</span>
-                    <p class="text-xs text-base-content/60">Boost contrast and sharpness. Recommended for degraded scans.</p>
+                    <p class="text-xs text-base-content/60">Boost contrast and sharpness for degraded scans.</p>
                   </div>
                 </label>
               </div>
 
-              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
-                <label class="label cursor-pointer justify-start gap-4 p-0">
-                  <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="visionCleanupPass" @change="saveOCRSettings" />
-                  <div>
+              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3 min-w-0">
+                <label class="flex cursor-pointer items-start gap-3">
+                  <input type="checkbox" class="toggle toggle-primary toggle-sm flex-shrink-0" v-model="visionCleanupPass" @change="saveOCRSettings" />
+                  <div class="min-w-0">
                     <span class="label-text font-medium">LLM Cleanup Pass</span>
-                    <p class="text-xs text-base-content/60">Second LLM call to fix OCR errors and remove artifacts. Uses extra tokens.</p>
+                    <p class="text-xs text-base-content/60">Second LLM call to fix OCR errors. Uses extra tokens.</p>
                   </div>
                 </label>
               </div>
 
-              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3">
-                <label class="label cursor-pointer justify-start gap-4 p-0">
-                  <input type="checkbox" class="toggle toggle-secondary toggle-sm" v-model="visionFormMode" @change="saveOCRSettings" />
-                  <div>
+              <div class="rounded-xl border border-base-300 bg-base-200/50 p-3 min-w-0">
+                <label class="flex cursor-pointer items-start gap-3">
+                  <input type="checkbox" class="toggle toggle-secondary toggle-sm flex-shrink-0" v-model="visionFormMode" @change="saveOCRSettings" />
+                  <div class="min-w-0">
                     <span class="label-text font-medium">Form Mode</span>
-                    <p class="text-xs text-base-content/60">
-                      Removes ruling lines from images and uses a form-aware prompt.
-                      Use for scanned government/regulatory forms with boxes and grids.
-                    </p>
+                    <p class="text-xs text-base-content/60">Form-aware prompt for scanned government/regulatory forms.</p>
                   </div>
                 </label>
               </div>
@@ -519,12 +518,12 @@
               <div class="form-control">
                 <label class="label pb-1" for="ocr-max-pages"><span class="label-text font-medium">Max Pages</span></label>
                 <input id="ocr-max-pages" v-model.number="ocrMaxPages" type="number" min="0" class="input input-bordered w-full" @change="saveOCRSettings" aria-describedby="ocr-max-pages-help" />
-                <p id="ocr-max-pages-help" class="label-text-alt mt-1">0 = no limit.</p>
+                <p id="ocr-max-pages-help" class="text-xs text-base-content/50 mt-1">0 = no limit.</p>
               </div>
               <div class="form-control">
                 <label class="label pb-1" for="ocr-max-filesize"><span class="label-text font-medium">Max File Size (MB)</span></label>
                 <input id="ocr-max-filesize" v-model.number="ocrMaxFileMb" type="number" min="0" class="input input-bordered w-full" @change="saveOCRSettings" aria-describedby="ocr-max-filesize-help" />
-                <p id="ocr-max-filesize-help" class="label-text-alt mt-1">0 = no limit.</p>
+                <p id="ocr-max-filesize-help" class="text-xs text-base-content/50 mt-1">0 = no limit.</p>
               </div>
             </div>
           </section>
@@ -538,22 +537,21 @@
 
     <!-- Appearance -->
     <div class="card bg-base-200">
-      <div class="card-body">
-        <h3 class="card-title">Appearance</h3>
+      <div class="card-body space-y-4">
+        <div>
+          <h3 class="card-title text-base">Appearance</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">Visual theme for the local UI.</p>
+        </div>
 
         <div class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-          <label class="label p-0 pb-1" for="theme-select">
+          <label class="label p-0 pb-2" for="theme-select">
             <span class="label-text text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Theme</span>
           </label>
-          <p id="theme-select-help" class="mb-3 text-xs text-base-content/60">
-            Visual theme for the local UI only.
-          </p>
           <select
             id="theme-select"
             v-model="selectedTheme"
             class="select select-bordered w-full"
             @change="applyTheme"
-            aria-describedby="theme-select-help"
           >
             <option value="light">Light</option>
             <option value="dark">Dark</option>
@@ -564,7 +562,8 @@
         </div>
 
         <!-- Theme Preview -->
-        <div class="mt-4 p-4 rounded-xl border border-base-300 bg-base-100 shadow-sm">
+        <div class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
+          <div class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/70 mb-3">Preview</div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-primary btn-sm">Primary</button>
             <button class="btn btn-secondary btn-sm">Secondary</button>
@@ -576,25 +575,26 @@
 
     <!-- Privacy / PII Redaction -->
     <div class="card bg-base-200">
-      <div class="card-body">
-        <h3 class="card-title">Privacy</h3>
-        <p class="text-sm text-base-content/70 mb-4">
-          PII redaction automatically strips personally identifiable information (names, SSNs, account numbers, emails, etc.)
-          from all MCP tool responses before they reach an external LLM. Powered by Microsoft Presidio, runs 100% locally.
-        </p>
+      <div class="card-body space-y-4">
+        <div>
+          <h3 class="card-title text-base">Privacy</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">
+            PII redaction strips personally identifiable information from MCP tool responses before they reach an external LLM. Powered by Microsoft Presidio, runs 100% locally.
+          </p>
+        </div>
 
-        <div class="form-control mb-4">
-          <label class="label cursor-pointer justify-start gap-4">
+        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+          <label class="flex cursor-pointer items-start gap-4">
             <input
               type="checkbox"
-              class="toggle toggle-primary toggle-sm"
+              class="toggle toggle-primary toggle-sm flex-shrink-0"
               v-model="piiRedactionEnabled"
               @change="savePrivacySettings"
             />
-            <div>
+            <div class="min-w-0">
               <span class="label-text font-medium">Enable PII Redaction</span>
               <p class="text-xs text-base-content/60">
-                When enabled, all data leaving Asymptote through MCP is scanned and redacted for PII. Original data remains intact in local storage.
+                All data leaving Asymptote through MCP is scanned and redacted. Original data remains intact in local storage.
               </p>
             </div>
           </label>
@@ -636,9 +636,7 @@
                   step="0.05"
                   @change="savePrivacySettings"
                 />
-                <label class="label pt-1">
-                  <span class="label-text-alt text-base-content/50">Lower = more aggressive (0.4 recommended for financial data). Range: 0.1 &ndash; 1.0</span>
-                </label>
+                <p class="text-xs text-base-content/50 mt-1">Lower = more aggressive (0.4 recommended for financial data). Range: 0.1 &ndash; 1.0</p>
               </div>
             </div>
           </section>
@@ -656,11 +654,148 @@
       </div>
     </div>
 
+    <!-- LLM Schema Inference -->
+    <div class="card bg-base-200">
+      <div class="card-body space-y-4">
+        <div>
+          <h3 class="card-title text-base">LLM Column Role Inference</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">
+            When columns can't be mapped by vendor profiles or heuristics, send column names and redacted samples to an LLM for role assignment. Requires an AI provider above.
+          </p>
+        </div>
+
+        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+          <label class="flex cursor-pointer items-start gap-4">
+            <input
+              type="checkbox"
+              class="toggle toggle-primary toggle-sm flex-shrink-0"
+              v-model="llmSchemaInferenceEnabled"
+              @change="saveInferenceSettings"
+            />
+            <div class="min-w-0">
+              <span class="label-text font-medium">Enable LLM Schema Inference</span>
+              <p class="text-xs text-base-content/60">
+                Sample values are redacted via Presidio before being sent to the LLM provider.
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <div v-if="llmSchemaInferenceEnabled" class="space-y-4">
+          <div class="form-control">
+            <label class="label">
+              <span class="label-text">Unmapped Column Threshold</span>
+              <span class="label-text-alt">{{ Math.round(llmSchemaInferenceThreshold * 100) }}%</span>
+            </label>
+            <input
+              type="range"
+              min="0.1"
+              max="1.0"
+              step="0.1"
+              class="range range-primary range-sm"
+              v-model.number="llmSchemaInferenceThreshold"
+              @change="saveInferenceSettings"
+            />
+            <p class="text-xs text-base-content/50 mt-1">
+              LLM inference triggers when this percentage or more of columns have no role after heuristic detection.
+            </p>
+          </div>
+        </div>
+
+        <div v-if="inferenceSettingsSaved" class="alert alert-success mt-3">
+          <span>Inference settings saved.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Re-index Collection -->
+    <div class="card bg-base-200">
+      <div class="card-body space-y-3">
+        <div>
+          <h3 class="card-title text-base">Re-index Collection</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">
+            Re-process all documents using current settings. Useful after changing indexing, OCR, or vendor profile configuration.
+          </p>
+        </div>
+
+        <!-- Chunk settings -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="form-control">
+            <label class="label py-1">
+              <span class="label-text text-sm font-medium">Chunk size</span>
+              <span class="label-text-alt text-xs text-base-content/50">characters</span>
+            </label>
+            <input
+              type="number"
+              min="100"
+              max="4000"
+              step="50"
+              class="input input-sm input-bordered"
+              v-model.number="chunkSize"
+              @change="saveChunkSettings"
+            />
+            <p class="text-xs text-base-content/50 mt-1">
+              Smaller = more precise matches. Larger = more context per chunk.
+            </p>
+          </div>
+          <div class="form-control">
+            <label class="label py-1">
+              <span class="label-text text-sm font-medium">Chunk overlap</span>
+              <span class="label-text-alt text-xs text-base-content/50">characters</span>
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="1000"
+              step="25"
+              class="input input-sm input-bordered"
+              v-model.number="chunkOverlap"
+              @change="saveChunkSettings"
+            />
+            <p class="text-xs text-base-content/50 mt-1">
+              Overlap between adjacent chunks to preserve context across boundaries.
+            </p>
+          </div>
+        </div>
+        <p class="text-xs text-base-content/60">
+          Changes take effect on the next re-index.
+        </p>
+
+        <div v-if="chunkSettingsSaved" class="alert alert-success py-2 text-sm">
+          <span>Chunk settings saved. Re-index to apply.</span>
+        </div>
+        <div v-if="chunkSettingsError" class="alert alert-error py-2 text-sm">
+          <span>{{ chunkSettingsError }}</span>
+        </div>
+
+        <div v-if="reindexSuccess" class="alert alert-success">
+          <span>Re-indexing started. Progress is shown in the status bar.</span>
+        </div>
+
+        <div v-if="reindexCompleted" class="alert alert-success">
+          <span>Re-index complete. Sources have been refreshed.</span>
+        </div>
+
+        <div v-if="reindexError" class="alert alert-error">
+          <span>{{ reindexError }}</span>
+        </div>
+
+        <div class="card-actions justify-end">
+          <button class="btn btn-warning" @click="startReindex" :disabled="reindexing || reindexInProgress">
+            <span v-if="reindexing || reindexInProgress" class="loading loading-spinner"></span>
+            {{ reindexing ? 'Starting...' : (reindexInProgress ? 'Re-indexing...' : 'Re-index All Documents') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Danger Zone -->
     <div class="card bg-error/10 border border-error">
-      <div class="card-body">
-        <h3 class="card-title text-error">Danger Zone</h3>
-        <p class="text-sm">Permanently delete all sources and indexes in the current collection.</p>
+      <div class="card-body space-y-3">
+        <div>
+          <h3 class="card-title text-base text-error">Danger Zone</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">Permanently delete all sources and indexes in the current collection.</p>
+        </div>
 
         <div v-if="clearSuccess" class="alert alert-success">
           <span>All data has been cleared successfully!</span>
@@ -708,6 +843,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { useCollectionStore } from '../stores/collectionStore'
+import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import {
   PROVIDER_DEFS,
   getProvidersConfig,
@@ -722,6 +858,7 @@ import {
 const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
 
 const collectionStore = useCollectionStore()
+const backgroundJobsStore = useBackgroundJobsStore()
 
 // UI feature flags
 const chatTabEnabled = ref(true)
@@ -903,6 +1040,125 @@ const savePrivacySettings = async () => {
     setTimeout(() => { privacySettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save privacy settings:', error.response?.data?.detail || error)
+  }
+}
+
+// LLM schema inference settings state
+const llmSchemaInferenceEnabled = ref(false)
+const llmSchemaInferenceThreshold = ref(0.5)
+const inferenceSettingsSaved = ref(false)
+
+const loadInferenceSettings = async () => {
+  try {
+    const response = await axios.get('/api/config')
+    llmSchemaInferenceEnabled.value = response.data.enable_llm_schema_inference ?? false
+    llmSchemaInferenceThreshold.value = response.data.llm_schema_inference_threshold ?? 0.5
+  } catch {
+    // Use defaults
+  }
+}
+
+const saveInferenceSettings = async () => {
+  try {
+    await axios.post('/api/config', {
+      enable_llm_schema_inference: Boolean(llmSchemaInferenceEnabled.value),
+      llm_schema_inference_threshold: Number(llmSchemaInferenceThreshold.value),
+    })
+    inferenceSettingsSaved.value = true
+    setTimeout(() => { inferenceSettingsSaved.value = false }, 5000)
+  } catch (error) {
+    console.error('Failed to save inference settings:', error.response?.data?.detail || error)
+  }
+}
+
+// Re-index collection
+const reindexing = ref(false)
+const reindexSuccess = ref(false)
+const reindexCompleted = ref(false)
+const reindexError = ref('')
+
+const reindexInProgress = computed(() => {
+  const job = backgroundJobsStore.reindexJob
+  return job && (job.status === 'pending' || job.status === 'running')
+})
+
+// Chunk settings (per-collection)
+const chunkSize = ref(600)
+const chunkOverlap = ref(100)
+const chunkSettingsSaved = ref(false)
+const chunkSettingsError = ref('')
+
+const loadChunkSettings = () => {
+  const c = collectionStore.currentCollection
+  if (c) {
+    chunkSize.value = c.chunk_size ?? 600
+    chunkOverlap.value = c.chunk_overlap ?? 100
+  }
+}
+
+const saveChunkSettings = async () => {
+  const collectionId = collectionStore.currentCollection?.id
+  if (!collectionId) return
+  const size = Number(chunkSize.value)
+  const overlap = Number(chunkOverlap.value)
+  if (!Number.isFinite(size) || size < 100 || size > 4000) {
+    chunkSettingsError.value = 'Chunk size must be between 100 and 4000.'
+    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    return
+  }
+  if (!Number.isFinite(overlap) || overlap < 0 || overlap >= size) {
+    chunkSettingsError.value = 'Overlap must be 0 or greater and less than chunk size.'
+    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    return
+  }
+  try {
+    await collectionStore.updateCollection(collectionId, {
+      chunk_size: size,
+      chunk_overlap: overlap,
+    })
+    chunkSettingsSaved.value = true
+    setTimeout(() => { chunkSettingsSaved.value = false }, 4000)
+  } catch (err) {
+    chunkSettingsError.value = err.response?.data?.detail || 'Failed to save chunk settings.'
+    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+  }
+}
+
+watch(() => collectionStore.currentCollectionId, loadChunkSettings, { immediate: true })
+watch(() => collectionStore.currentCollection, loadChunkSettings)
+
+// Surface reindex completion inline (sidebar refreshes independently)
+watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {
+  if (newStatus === 'completed' && oldStatus && oldStatus !== 'completed') {
+    reindexCompleted.value = true
+    setTimeout(() => { reindexCompleted.value = false }, 8000)
+  }
+})
+
+const startReindex = async () => {
+  const collectionId = collectionStore.currentCollection?.id || 'default'
+  reindexing.value = true
+  reindexError.value = ''
+  reindexSuccess.value = false
+  try {
+    const response = await axios.post(`/api/collections/${collectionId}/reindex`)
+    backgroundJobsStore.setReindexJob({
+      id: response.data.job_id,
+      collection_id: collectionId,
+      status: 'pending',
+      total_documents: 0,
+      processed_documents: 0,
+      current_file: null,
+      started_at: new Date().toISOString(),
+    })
+    backgroundJobsStore.startPolling()
+    reindexSuccess.value = true
+    setTimeout(() => { reindexSuccess.value = false }, 8000)
+  } catch (error) {
+    reindexError.value = error.response?.data?.detail || 'Failed to start re-indexing'
+    setTimeout(() => { reindexError.value = '' }, 8000)
+  } finally {
+    reindexing.value = false
   }
 }
 
@@ -1180,6 +1436,7 @@ onMounted(() => {
 
   loadOCRSettings()
   loadPrivacySettings()
+  loadInferenceSettings()
 })
 </script>
 

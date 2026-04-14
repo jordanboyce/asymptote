@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     pii_redaction_style: str = "entity_type"  # redacted | entity_type | consistent_pseudonym | partial_mask | synthetic_placeholder
     pii_score_threshold: float = 0.4  # Presidio confidence floor (lower = more aggressive)
 
+    # LLM-assisted column role inference (P0.5)
+    # When enabled, columns that can't be mapped by vendor profiles or regex
+    # heuristics are sent (with sample values redacted via Presidio) to an LLM
+    # for role assignment.  Requires mcp_ai_provider != "none" and a valid key.
+    enable_llm_schema_inference: bool = False
+    llm_schema_inference_threshold: float = 0.5  # Trigger when ≥ this fraction of columns are unmapped
+
     # UI feature flags
     enable_chat_tab: bool = True  # Show/hide the Chat tab in the frontend
 

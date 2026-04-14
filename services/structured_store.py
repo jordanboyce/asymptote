@@ -577,6 +577,31 @@ class StructuredStore:
                 'samples': sample_values,
             })
 
+        # -- P0.5: LLM-assisted role inference for unmapped columns ----------
+        from config import settings as _cfg
+        if _cfg.enable_llm_schema_inference:
+            mapped = sum(1 for c in col_infos if c['role'])
+            total = len(col_infos)
+            unmapped_frac = 1.0 - (mapped / total) if total else 0.0
+            if unmapped_frac >= _cfg.llm_schema_inference_threshold:
+                unmapped_cols = [c for c in col_infos if not c['role']]
+                logger.info(
+                    "LLM schema inference triggered: %d/%d columns unmapped (%.0f%%)",
+                    len(unmapped_cols), total, unmapped_frac * 100,
+                )
+                try:
+                    from services.llm_role_inference import infer_roles_with_llm
+                    llm_roles = infer_roles_with_llm(
+                        unmapped_columns=unmapped_cols,
+                        collection_id=None,  # collection_id not available here
+                    )
+                    for c in col_infos:
+                        if not c['role'] and c['name'] in llm_roles:
+                            c['role'] = llm_roles[c['name']]
+                except Exception as exc:
+                    logger.warning("LLM schema inference failed, continuing without: %s", exc)
+        # -----------------------------------------------------------------
+
         table_name = self._table_name(document_id, sheet_name)
 
         # Build SQLite affinity map from core types + registered extensions

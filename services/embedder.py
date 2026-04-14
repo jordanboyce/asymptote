@@ -24,19 +24,30 @@ class EmbeddingService:
         # Try to load the model, with helpful error messages for SSL issues.
         # trust_remote_code=True is needed for models like nomic-ai/nomic-embed-text-v1.5
         # and newer instruction-aware embedding models.
+        #
+        # Prefer the local cache first: SentenceTransformer otherwise issues a HEAD
+        # request to huggingface.co on every startup to check for updates, which
+        # adds 10+ seconds of retry noise on flaky or offline networks.
         try:
-            self.model = SentenceTransformer(model_name, trust_remote_code=True)
-        except Exception as e:
-            error_msg = str(e).lower()
-            if 'ssl' in error_msg or 'certificate' in error_msg:
-                logger.error(
-                    f"SSL certificate error when downloading model '{model_name}'. "
-                    f"This often happens with packaged executables. "
-                    f"Try: 1) Run from source instead of exe, or "
-                    f"2) Pre-download the model by running: "
-                    f"python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('{model_name}')\""
-                )
-            raise
+            self.model = SentenceTransformer(
+                model_name, trust_remote_code=True, local_files_only=True
+            )
+            logger.info(f"Loaded '{model_name}' from local cache (offline).")
+        except Exception:
+            logger.info(f"Model '{model_name}' not in cache; downloading from HuggingFace…")
+            try:
+                self.model = SentenceTransformer(model_name, trust_remote_code=True)
+            except Exception as e:
+                error_msg = str(e).lower()
+                if 'ssl' in error_msg or 'certificate' in error_msg:
+                    logger.error(
+                        f"SSL certificate error when downloading model '{model_name}'. "
+                        f"This often happens with packaged executables. "
+                        f"Try: 1) Run from source instead of exe, or "
+                        f"2) Pre-download the model by running: "
+                        f"python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('{model_name}')\""
+                    )
+                raise
 
         self.embedding_dim = self.model.get_sentence_embedding_dimension()
         self._query_prompt_name: Optional[str] = None

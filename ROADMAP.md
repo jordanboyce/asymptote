@@ -6,16 +6,19 @@ Forward-looking work for Asymptote. Items that have already shipped are not list
 
 ## Strategic frame
 
-Asymptote's product surface is the **MCP server** ([services/mcp_server.py](services/mcp_server.py)), not the web chat. The Vue frontend stays as an admin/config UI; the primary way users query their data is by pointing Claude Desktop / Cursor / ChatGPT / OpenClaw at the MCP endpoint. Every roadmap item is evaluated against "does this make Asymptote a better tool for a calling agent?"
+Asymptote's product surface is the **MCP server** ([services/mcp_server.py](services/mcp_server.py)), not the web chat. The Vue frontend stays as an admin/config UI; the primary way users query their data is by pointing Claude Desktop / Cursor / ChatGPT at the MCP endpoint. Every roadmap item is evaluated against "does this make Asymptote a better tool for a calling agent?"
 
-**Asymptote's job is to be the trustworthy data layer for an LLM agent.** The intelligence layer lives upstream in the host LLM. Asymptote owns:
+**Asymptote is not a chat app.** It does not compete with Claude, ChatGPT, or any other chat interface on reasoning, synthesis, reranking, or natural-language polish — those tools are far better at that work than anything we would build. The built-in chat tab exists for admin testing and for users without another MCP client, not as a product surface.
 
-1. **Ingest arbitrary tabular data** from arbitrary tools (brokerages, banks, CRMs, planning software, internal systems) and make every file faithfully agent-queryable, regardless of vendor or column naming convention.
-2. **Map vendor-specific schemas to canonical semantic roles** so the same agent question works against any source.
-3. **Expose analytical and enrichment primitives** as MCP tools that compose against that semantic layer.
-4. **Never be silently wrong.** A financial-adjacent tool that returns confidently incorrect numbers is worse than no tool. Aggregations, type coercions, and unit conversions must surface uncertainty rather than collapse it.
+**What Asymptote is:** the trustworthy, privacy-preserving data layer that makes a user's own documents usable by whatever LLM they already trust. The intelligence layer lives upstream in the host LLM. Asymptote owns:
 
-Financial advisors are the first wedge, but the architecture is general — any tabular export from any tool should land cleanly.
+1. **Ingest arbitrary tabular and document data** from arbitrary tools (brokerages, banks, CRMs, planning software, internal systems) and make every file faithfully agent-queryable, regardless of vendor or column naming convention.
+2. **Return PII-free and CUI-free context.** Every MCP tool response is redacted before it leaves the process (see P0.0). No personal identifier, no account number, no Controlled Unclassified Information element reaches an external LLM. This is the feature — without it, regulated users (financial advisors, federal contractors, healthcare, legal) cannot use any external LLM against their data at all.
+3. **Pass raw data through by default; only abstract when we must.** Column headers, row values, document text are returned as-is (modulo redaction) so the calling LLM does its own semantic translation. Role mapping and other semantic layers exist only where *Asymptote itself* has to act deterministically — aggregations, metric computation, routing — not as a translation step for the LLM.
+4. **Expose analytical and enrichment primitives** as MCP tools that compose against that data (price history, corporate events, security classification, deterministic aggregations).
+5. **Never be silently wrong.** A data-layer tool that returns confidently incorrect numbers is worse than no tool. Aggregations, type coercions, and unit conversions must surface uncertainty rather than collapse it. When role detection fails, degrade to raw-data tools and let the LLM handle semantics — never guess and pretend.
+
+Financial advisors are the first wedge, but the architecture is general — any tabular export from any tool should land cleanly, and any regulated user who needs PII/CUI scrubbing before sending context to an external model is a target user.
 
 ---
 
@@ -257,17 +260,29 @@ Two distinct export formats analyzed from real advisor files:
 - File signature: filename matches `HBIL*`, or first two rows contain `"Report Type"` and `"Holdings by Investor"`
 - Test fixture: `tests/fixtures/ingest/netx360_holdings_by_investor.csv`
 
-### P0.5 — LLM-assisted column role inference (long tail)
+### P0.5 — LLM-assisted column role inference (narrow, for deterministic aggregation only)
 
-> **Blocked on P0.0.** This feature sends column names and sample cell values to an external LLM. Sample values may contain PII (account numbers embedded in column headers, names in the first data row, etc.). P0.0's redaction layer must be applied to the sample values before they leave Asymptote. Do not ship P0.5 until P0.0 is verified end-to-end.
+> **Blocked on P0.0.** This feature sends column names and sample cell values to an external LLM. Sample values may contain PII/CUI (account numbers embedded in column headers, names in the first data row, etc.). P0.0's redaction layer must be applied to the sample values before they leave Asymptote. Do not ship P0.5 until P0.0 is verified end-to-end.
 
-**Problem:** For a never-seen-before export from an unknown tool, neither profiles nor name heuristics fire and `financial_roles` stays empty.
+> **Scope reframed:** Original plan called for an upload UI where the user accepts/edits/rejects LLM-proposed role mappings. That's been **cut** — see reasoning below.
 
-**Implementation:**
-- After profile detection and name heuristics, if ≥50% of columns are still unmapped, optionally run a small-LLM pass that takes (column names + 3 sample values per column — redacted through P0.0 before transmission + the existing role taxonomy) and proposes role assignments with confidence scores.
-- Gated behind a setting (`enable_llm_schema_inference: bool`) — costs money, opt-in per-collection or per-upload.
-- The output is a *suggestion*, surfaced to the user in the upload UI: "Asymptote thinks `Holdings_USD` is `market_value`, `Sec` is `symbol`. Accept / edit / reject." Once accepted, the mapping is saved and reused for future files matching the same signature.
-- Effectively a profile-bootstrapping mechanism — every long-tail file an LLM resolves becomes a candidate profile for next time.
+**What this is for and what it isn't:**
+
+The calling LLM (Claude, ChatGPT) will translate cryptic column headers on its own when it sees the data. `Hldg_USD` → "market value in USD" is trivial for a frontier model; we don't need to pre-solve that for it. Role inference earns its keep in exactly one narrow place: when an MCP tool in Asymptote has to act on column semantics deterministically without an LLM in the loop — specifically `compute_portfolio_metric` and any future aggregation primitives that take a metric name (`top_holdings`, `breakdown_by_sector`, etc.) rather than raw SQL.
+
+For every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `search_collection`), raw column headers go through untouched and the calling LLM handles semantics. That surface is already role-agnostic — [mcp_server.py:803-809](services/mcp_server.py#L803-L809) already instructs the LLM to fall back to `aggregate_table`/`query_table` when `financial_roles` is absent.
+
+**Implementation (revised):**
+- Keep the existing ingest-time LLM inference pass at [services/llm_role_inference.py](services/llm_role_inference.py), gated behind `enable_llm_schema_inference` (already done). Runs only when ≥threshold of columns are still unmapped after vendor profiles and heuristics.
+- Presidio-redact all sample values before transmission (already done) — wire `collection_id` through from [services/structured_store.py:596](services/structured_store.py#L596) so per-collection Presidio profiles apply.
+- **No accept/edit/reject UI.** Users don't review role mappings. If the LLM guesses wrong, the only blast radius is `compute_portfolio_metric` returning wrong numbers for that table — which is unacceptable, so instead:
+- **Confidence-gated application with fail-closed semantics.** When confidence is below threshold or inference fails, leave `role` null for that column. `compute_portfolio_metric` already checks for required roles and returns a structured error when absent — the calling LLM falls back to `query_table` and computes the metric itself from raw data. This is the "degrade to raw-data tools, never guess and pretend" rule from the strategic frame.
+- **Surface inferred-vs-detected provenance in `get_table_schema`.** Each role should carry a source: `"profile"`, `"heuristic"`, `"llm"`, or null. The calling LLM can then choose to trust or discount LLM-inferred roles when deciding whether to call `compute_portfolio_metric`.
+- Profile bootstrapping (LLM resolutions becoming candidate profiles for future files) is deferred — only revisit if long-tail unknown vendors become a real usage pattern.
+
+**Audit task before declaring P0.5 done:**
+- Confirm every MCP tool other than `compute_portfolio_metric` returns correct data when `financial_roles` is empty. `query_table`, `get_table_rows`, `aggregate_table`, `search_collection`, `get_document_context` should all be role-agnostic. Any place that silently depends on a role is a bug.
+- Add a test that ingests a file with completely unknown headers and verifies (a) `query_table` returns correct rows with raw headers, (b) `compute_portfolio_metric` returns a structured "no role detected, use query_table" error rather than an empty result or a wrong number.
 
 ### P0.6 — Numeric sanity guards on aggregates
 
