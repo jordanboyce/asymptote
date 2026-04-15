@@ -463,6 +463,89 @@ class TestEndToEndRedaction:
         assert "john.smith@example.com" in all_text
 
 
+# ---------------------------------------------------------------------------
+# Tests: Redaction MCP Tools
+# ---------------------------------------------------------------------------
+
+
+class TestRedactionMCPTools:
+    """Test the redaction_preview and set_redaction_policy MCP tools."""
+
+    def setup_method(self):
+        from services.privacy.redaction_config import clear_profile_cache
+        clear_profile_cache()
+
+    def test_redaction_preview_detects_pii(self, monkeypatch):
+        from config import settings
+        monkeypatch.setattr(settings, "enable_mcp", True)
+        from services.mcp_server import redaction_preview
+        result = redaction_preview(
+            "John Smith's SSN is 219-09-9999 and email is john@acme.com"
+        )
+        assert result["had_pii"] is True
+        assert result["entity_count"] > 0
+
+    def test_redaction_preview_no_pii(self, monkeypatch):
+        from config import settings
+        monkeypatch.setattr(settings, "enable_mcp", True)
+        from services.mcp_server import redaction_preview
+        result = redaction_preview("The market is volatile today")
+        assert result["had_pii"] is False
+        assert result["entity_count"] == 0
+        assert result["entities"] == []
+
+    def test_redaction_preview_returns_no_original_text(self, monkeypatch):
+        from config import settings
+        monkeypatch.setattr(settings, "enable_mcp", True)
+        from services.mcp_server import redaction_preview
+        result = redaction_preview(
+            "Client John Smith, SSN: 219-09-9999, email: john@acme.com"
+        )
+        for entity in result["entities"]:
+            assert "original_text" not in entity
+
+    def test_redaction_preview_does_not_log(self, monkeypatch):
+        from config import settings
+        monkeypatch.setattr(settings, "enable_mcp", True)
+        from services.privacy.redaction_log import redaction_log
+        from services.mcp_server import redaction_preview
+
+        before = len(redaction_log.get_recent(limit=500))
+        redaction_preview("Call John Smith at (555) 123-4567.")
+        after = len(redaction_log.get_recent(limit=500))
+        assert after == before
+
+    def test_set_redaction_policy_updates_profile(self, monkeypatch):
+        from config import settings
+        monkeypatch.setattr(settings, "enable_mcp", True)
+        from services.mcp_server import set_redaction_policy, get_redaction_config
+
+        set_redaction_policy(collection_id="test_col", allow_list=["MyCompany"])
+        config = get_redaction_config(collection_id="test_col")
+        assert "MyCompany" in config["allow_list"]
+
+    def test_set_redaction_policy_partial_update(self, monkeypatch):
+        from config import settings
+        monkeypatch.setattr(settings, "enable_mcp", True)
+        from services.mcp_server import set_redaction_policy, get_redaction_config
+
+        # First: set allow_list
+        set_redaction_policy(
+            collection_id="test_partial",
+            allow_list=["Vanguard"],
+        )
+        # Second: change only strict_mode
+        set_redaction_policy(
+            collection_id="test_partial",
+            strict_mode=False,
+        )
+        config = get_redaction_config(collection_id="test_partial")
+        # allow_list from the first call should still be there
+        assert "Vanguard" in config["allow_list"]
+        # strict_mode from the second call should be applied
+        assert config["strict_mode"] is False
+
+
 def _extract_all_strings(obj, collected=None):
     """Recursively extract all string values from a nested dict/list."""
     if collected is None:

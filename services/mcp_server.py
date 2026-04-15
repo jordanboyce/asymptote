@@ -1495,6 +1495,103 @@ def get_redaction_config(
     return payload
 
 
+@_asymptote_mcp.tool()
+def redaction_preview(
+    text: str,
+    collection_id: str | None = None,
+) -> dict[str, Any]:
+    """Dry-run PII detection on a string without persisting anything.
+
+    Returns what entities would be redacted and their replacements,
+    without writing to the audit log or modifying the input. Useful
+    for agents to self-verify before sending context upstream to
+    an LLM provider.
+
+    Parameters:
+      - text: The string to analyze.
+      - collection_id: Collection whose redaction profile to apply.
+        Omit to use the global default profile.
+
+    Returns: { redacted_text, entity_count, had_pii, entities: [
+      { entity_type, start, end, score, replacement } ] }
+    """
+    _ensure_enabled()
+
+    from services.privacy.redaction_engine import redaction_engine
+
+    result = redaction_engine.redact_text(text, collection_id)
+    return {
+        "redacted_text": result.redacted_text,
+        "entity_count": len(result.details),
+        "had_pii": result.had_pii,
+        "entities": [
+            {
+                "entity_type": d.entity_type,
+                "start": d.start,
+                "end": d.end,
+                "score": d.score,
+                "replacement": d.replacement,
+            }
+            for d in result.details
+        ],
+    }
+
+
+@_asymptote_mcp.tool()
+def set_redaction_policy(
+    collection_id: str | None = None,
+    redaction_style: str | None = None,
+    allow_list: list[str] | None = None,
+    minimum_score_threshold: float | None = None,
+    entity_types_enabled: list[str] | None = None,
+    strict_mode: bool | None = None,
+) -> dict[str, Any]:
+    """Update the PII redaction policy for a collection.
+
+    Parameters:
+      - collection_id: Collection to update. Omit for global default.
+      - redaction_style: "entity_type" | "redacted" |
+        "consistent_pseudonym" | "partial_mask" | "synthetic_placeholder"
+      - allow_list: Strings that should never be redacted
+        (fund names, tickers, firm names).
+      - minimum_score_threshold: Presidio confidence floor (0.0-1.0).
+        Lower = more aggressive.
+      - entity_types_enabled: List of entity types to enforce.
+        Omit to enable all defaults.
+      - strict_mode: When true, redact at minimum_score_threshold;
+        when false, only high-confidence matches.
+
+    Returns the updated profile dict plus `collection_id` and `enabled`.
+    """
+    _ensure_enabled()
+
+    from services.privacy.redaction_config import (
+        save_redaction_profile,
+        _profile_to_dict,
+        clear_profile_cache,
+    )
+
+    updates: dict[str, Any] = {}
+    if redaction_style is not None:
+        updates["redaction_style"] = redaction_style
+    if allow_list is not None:
+        updates["allow_list"] = allow_list
+    if minimum_score_threshold is not None:
+        updates["minimum_score_threshold"] = minimum_score_threshold
+    if entity_types_enabled is not None:
+        updates["entity_types_enabled"] = entity_types_enabled
+    if strict_mode is not None:
+        updates["strict_mode"] = strict_mode
+
+    profile = save_redaction_profile(collection_id, updates)
+    clear_profile_cache()
+
+    payload = _profile_to_dict(profile)
+    payload["collection_id"] = collection_id
+    payload["enabled"] = getattr(settings, "enable_pii_redaction", False)
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # MCP Resources — passive context the host LLM can load without tool calls
 # ---------------------------------------------------------------------------
