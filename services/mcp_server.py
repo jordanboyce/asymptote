@@ -1247,6 +1247,230 @@ def get_recent_redactions(
 
 
 @_asymptote_mcp.tool()
+def get_price_history(
+    symbol: str,
+    start: str | None = None,
+    end: str | None = None,
+    interval: str = "1d",
+) -> dict[str, Any]:
+    """Return historical OHLCV price data for a security.
+
+    Use this for any question that requires time-series price data beyond
+    the snapshot in a portfolio file: trend / momentum / drawdown
+    analysis, "what's in a downtrend?", "how has X performed this year?",
+    "show me the chart", peak-to-trough moves, return over period.
+
+    Parameters:
+      - symbol: Ticker symbol (e.g. "AAPL", "MSFT", "^GSPC"). Required.
+      - start: ISO date (YYYY-MM-DD) or omit for a sensible default
+        lookback based on interval (7 days for intraday, 1 year for
+        daily, longer for weekly/monthly).
+      - end: ISO date (YYYY-MM-DD) or omit for today.
+      - interval: Bar size. One of: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h,
+        1d, 5d, 1wk, 1mo, 3mo. Default "1d". Note: yfinance limits
+        intraday intervals to recent windows (e.g. 1m is last 7 days).
+
+    Returns: { symbol, interval, start, end, currency, points,
+    point_count, source, cached, cached_at }. Each point has
+    { date, open, high, low, close, volume }.
+
+    On lookup failure returns { error, message, symbol } with error
+    codes: missing_symbol, invalid_interval, symbol_not_found_or_no_data,
+    yfinance_fetch_failed. Agents should fall back to reporting the
+    error to the user rather than inventing values.
+
+    Results are cached locally on disk; repeat calls within the TTL
+    (30 min intraday, 12 h daily, 24 h weekly+) return instantly.
+    """
+    _ensure_enabled()
+
+    from services.market_data.price_history import get_price_history as _fetch
+
+    response = _fetch(symbol=symbol, start=start, end=end, interval=interval)
+    return _redact(response, tool_name="get_price_history")
+
+
+@_asymptote_mcp.tool()
+def get_security_classification(symbol: str) -> dict[str, Any]:
+    """Return sector, industry, market cap bucket, asset class for a security.
+
+    Use this for questions about portfolio composition that the source
+    file doesn't directly answer: sector concentration, growth vs value,
+    asset-class breakdown, market-cap exposure, geographic exposure,
+    ETF category. Also use it to classify holdings when the uploaded
+    file has no sector/industry columns.
+
+    Parameters:
+      - symbol: Ticker (e.g. "AAPL", "SPY", "VTI"). Required.
+
+    Returns: symbol, name, asset_class (equity/etf/mutual_fund/…),
+    sector, industry, country, currency, exchange, market_cap,
+    market_cap_bucket (mega/large/mid/small/micro/nano),
+    dividend_yield, beta, isin, category (ETFs),
+    fund_family (ETFs), source, cached, cached_at.
+
+    On lookup failure returns { error, message, symbol } with codes:
+    missing_symbol, symbol_not_found, yfinance_fetch_failed. Classifications
+    are cached locally for 7 days — sector assignments change rarely.
+    """
+    _ensure_enabled()
+
+    from services.market_data.classification import get_security_classification as _fetch
+
+    response = _fetch(symbol=symbol)
+    return _redact(response, tool_name="get_security_classification")
+
+
+@_asymptote_mcp.tool()
+def get_company_profile(symbol: str) -> dict[str, Any]:
+    """Return company-level metadata for a ticker: current officers, CEO,
+    business summary, sector, industry, website, headcount, market cap.
+
+    Use this for "who is the CEO of X?", "what does X do?", "where are
+    they based?", "how many employees?" — anything that needs the current
+    state of the company rather than price data or a prose document.
+
+    Parameters:
+      - symbol: Ticker (e.g. "AAPL", "GLW"). Required.
+
+    Returns: symbol, name, quote_type, sector, industry, country, website,
+    ir_website, employees, business_summary, ceo ({name, title, age,
+    year_born, total_pay}), officers (full leadership list), market_cap,
+    source, cached, cached_at.
+
+    Profiles cache for 24 h — leadership / sector assignments change
+    slowly. For fresh CEO-transition announcements combine with
+    get_company_news.
+    """
+    _ensure_enabled()
+
+    from services.market_data.company import get_company_profile as _fetch
+
+    response = _fetch(symbol=symbol)
+    return _redact(response, tool_name="get_company_profile")
+
+
+@_asymptote_mcp.tool()
+def get_company_news(symbol: str, limit: int = 10) -> dict[str, Any]:
+    """Return recent news headlines for a ticker from yfinance.
+
+    Use this for "any recent news on X?", "did X announce anything?",
+    "recent CEO changes at X?", "earnings news", M&A coverage, guidance
+    updates — surfaces press releases and news articles indexed by Yahoo
+    Finance.
+
+    Parameters:
+      - symbol: Ticker. Required.
+      - limit: Max headlines to return (1-30, default 10).
+
+    Returns: symbol, count, news (list of {title, summary, publisher,
+    published_at, url, content_type}), source, cached, cached_at.
+
+    Cached for 30 minutes so fresh headlines surface without hammering
+    the upstream feed.
+    """
+    _ensure_enabled()
+
+    from services.market_data.company import get_company_news as _fetch
+
+    response = _fetch(symbol=symbol, limit=limit)
+    return _redact(response, tool_name="get_company_news")
+
+
+@_asymptote_mcp.tool()
+def get_corporate_events(
+    symbol: str,
+    since: str | None = None,
+    types: list[str] | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Return recent corporate events for a security: SEC filings, dividends,
+    splits, merger filings, and upcoming earnings.
+
+    Use this for "any recent 8-Ks?", "CEO change?", "M&A exposure?",
+    "dividend cut?", "upcoming earnings date?" — anything that requires
+    scanning the filing / event timeline rather than prose news.
+
+    Parameters:
+      - symbol: Ticker. Required. US-listed issuers only for SEC filings;
+        non-US symbols still return dividend/split/earnings data from
+        yfinance.
+      - since: ISO date (YYYY-MM-DD). Defaults to 1 year ago.
+      - types: Subset of ["filing", "8-K", "10-K", "10-Q", "dividend",
+        "split", "merger", "earnings"]. Default covers everything. Use
+        "filing" for the default filing set, or name specific forms to
+        narrow.
+      - limit: Max filings to return (default 50).
+
+    Returns: symbol, since, types, filings (form, filed, report_date,
+    accession, description, url), dividends ({date, amount}), splits
+    ({date, ratio}), earnings ({date, type}), counts, source, cached,
+    cached_at. May include `warnings` when SEC lookup fails (e.g. non-US
+    ticker) — dividends/splits/earnings still return.
+
+    Cached for 12 hours. SEC CIK lookups cache indefinitely.
+    """
+    _ensure_enabled()
+
+    from services.market_data.corporate_events import get_corporate_events as _fetch
+
+    response = _fetch(symbol=symbol, since=since, types=types, limit=limit)
+    return _redact(response, tool_name="get_corporate_events")
+
+
+@_asymptote_mcp.tool()
+def enrich_holdings(
+    collection_id: str | None = None,
+    identifier: str | None = None,
+    include: list[str] | None = None,
+    max_symbols: int = 100,
+) -> dict[str, Any]:
+    """Walk the holdings table for a collection and enrich every distinct
+    ticker with classification, company profile, (optionally) corporate
+    events and 1-year price history.
+
+    This is the composite tool that turns a bare portfolio file into an
+    answerable data structure: sector concentration, growth vs value,
+    CEO changes, recent M&A, price action — all with one call. Every
+    underlying feed caches aggressively; re-runs within the TTL are
+    near-instant.
+
+    Parameters:
+      - collection_id: Collection to enrich. Defaults to the server's
+        default collection.
+      - identifier: Optional table_name / filename / document_id. If
+        omitted, auto-picks the first table with a detected `ticker`
+        role.
+      - include: Subset of ["classification", "profile", "events",
+        "price_1y"]. Default: ["classification", "profile"]. Add
+        "events" for filings/dividends/splits and "price_1y" for the
+        daily OHLCV series — each adds an extra round of calls per
+        symbol.
+      - max_symbols: Cap on distinct symbols to enrich (default 100,
+        max 500).
+
+    Returns: collection_id, table_name, include, symbol_count, truncated,
+    holdings (list of {symbol, classification?, profile?, events?,
+    price_1y?}), source.
+
+    On lookup failure returns { error, message, ... } with codes:
+    no_holdings_table, no_symbols, invalid_include.
+    """
+    _ensure_enabled()
+    resolved_collection = _resolve_collection_id(collection_id)
+
+    from services.market_data.enrich import enrich_holdings as _enrich
+
+    response = _enrich(
+        collection_id=resolved_collection,
+        identifier=identifier,
+        include=include,
+        max_symbols=max_symbols,
+    )
+    return _redact(response, tool_name="enrich_holdings")
+
+
+@_asymptote_mcp.tool()
 def get_redaction_config(
     collection_id: str | None = None,
 ) -> dict[str, Any]:

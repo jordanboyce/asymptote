@@ -2,20 +2,26 @@
   <div class="flex flex-col h-full min-h-0">
 
       <!-- Header row -->
-      <div class="flex items-center justify-end flex-shrink-0">
-        <div class="flex items-center gap-2">
+      <div class="flex items-center justify-between flex-shrink-0 py-1.5 mb-1 border-b border-base-300/60">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <Bot :size="14" class="text-base-content/40 flex-shrink-0" aria-hidden="true" />
+          <span class="text-sm font-medium truncate text-base-content/80">{{ activeSessionTitle }}</span>
+          <span v-if="messages.length > 0" class="text-xs text-base-content/40 ml-1 flex-shrink-0">
+            · {{ messages.length }}
+          </span>
+        </div>
+
+        <div class="flex items-center gap-0.5">
           <!-- Session switcher -->
           <div class="dropdown dropdown-end">
             <label
               tabindex="0"
-              class="btn btn-sm btn-ghost gap-1"
+              class="btn btn-xs btn-ghost btn-square text-base-content/50 hover:text-base-content"
               title="Switch chat session"
               :aria-label="`Switch chat session. Current: ${activeSessionTitle}`"
               aria-haspopup="menu"
             >
-              <History :size="14" aria-hidden="true" />
-              <span class="hidden sm:inline truncate max-w-[140px]">{{ activeSessionTitle }}</span>
-              <ChevronDown :size="12" aria-hidden="true" />
+              <History :size="13" aria-hidden="true" />
             </label>
             <ul tabindex="0" class="dropdown-content z-[60] menu p-2 shadow-lg bg-base-100 border border-base-300 rounded-box w-72 max-h-96 overflow-y-auto">
               <li class="menu-title">
@@ -47,22 +53,22 @@
           </div>
 
           <button
-            class="btn btn-sm btn-primary gap-1"
+            class="btn btn-xs btn-ghost btn-square text-base-content/50 hover:text-base-content"
             @click="startNewChat"
-            title="Start a new chat session"
+            title="New chat"
+            aria-label="New chat"
           >
-            <Plus :size="14" />
-            New chat
+            <Plus :size="13" />
           </button>
 
           <button
             v-if="messages.length > 0"
-            class="btn btn-sm btn-ghost gap-1"
+            class="btn btn-xs btn-ghost btn-square text-base-content/50 hover:text-error"
             @click="clearChat"
-            title="Clear messages in this session"
+            title="Clear this session"
+            aria-label="Clear messages"
           >
-            <Trash2 :size="14" />
-            Clear
+            <Trash2 :size="13" />
           </button>
         </div>
       </div>
@@ -232,23 +238,37 @@
               </div>
               <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-4 py-3 shadow-sm flex-1">
                 <div
-                  class="prose prose-sm max-w-none whitespace-pre-wrap"
-                  :class="msg.slashCommand ? 'font-mono text-xs leading-snug' : 'text-sm'"
+                  v-if="msg.slashCommand"
+                  class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug"
                 >{{ msg.content }}</div>
+                <div
+                  v-else
+                  class="prose prose-sm max-w-none text-sm chat-markdown"
+                  v-html="renderAssistantMarkdown(msg.content)"
+                ></div>
 
                 <!-- Structured query / metric results -->
                 <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
+                  <template v-for="(sr, srIdx) in msg.structuredResults" :key="srIdx">
+
+                  <!-- Thinking breadcrumb: prose the agent emitted between tool calls -->
                   <div
-                    v-for="(sr, srIdx) in msg.structuredResults"
-                    :key="srIdx"
+                    v-if="sr.tool === '_thinking'"
+                    class="flex items-start gap-2 text-xs text-base-content/50 italic px-1 py-0.5"
+                  >
+                    <Sparkles :size="11" class="mt-0.5 flex-shrink-0 text-base-content/30" />
+                    <span class="whitespace-pre-wrap">{{ sr.result?.text }}</span>
+                  </div>
+
+                  <!-- Tool call card -->
+                  <div
+                    v-else
                     class="rounded-lg border border-base-300 bg-base-100 overflow-hidden"
                   >
                     <div class="flex items-center gap-2 px-3 py-1.5 bg-base-200 border-b border-base-300">
-                      <Table2 :size="12" class="text-success" />
-                      <span class="text-xs font-semibold">
-                        {{ sr.tool === 'compute_portfolio_metric' ? (sr.args?.metric || 'metric') : 'sql query' }}
-                      </span>
-                      <span v-if="sr.args?.table" class="text-xs text-base-content/50 font-mono truncate">{{ sr.args.table }}</span>
+                      <component :is="toolIcon(sr.tool)" :size="12" :class="toolIconClass(sr.tool)" />
+                      <span class="text-xs font-semibold">{{ toolLabel(sr) }}</span>
+                      <span v-if="toolDetail(sr)" class="text-xs text-base-content/50 font-mono truncate">{{ toolDetail(sr) }}</span>
                       <button
                         class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0 text-base-content/40"
                         @click="toggleStructuredDetail(srIdx, index)"
@@ -320,11 +340,72 @@
                       <span v-if="sr.result.column" class="ml-2 text-xs text-base-content/50">from "{{ sr.result.column }}"</span>
                     </div>
 
-                    <!-- Concentration / weighted_return / other -->
-                    <div v-else-if="sr.result" class="px-3 py-2 text-xs font-mono">
+                    <!-- Document search results -->
+                    <div v-else-if="sr.tool === 'search_documents' && sr.result?.results" class="px-3 py-2 space-y-1">
+                      <div class="text-xs text-base-content/50">
+                        {{ sr.result.total_results }} result{{ sr.result.total_results === 1 ? '' : 's' }}
+                      </div>
+                      <ul class="space-y-0.5">
+                        <li
+                          v-for="r in sr.result.results.slice(0, 6)"
+                          :key="r.rank + r.filename"
+                          class="text-xs flex items-baseline gap-2"
+                        >
+                          <span class="text-base-content/40 font-mono">#{{ r.rank }}</span>
+                          <span class="font-medium truncate">{{ r.filename }}</span>
+                          <span v-if="r.page_number" class="text-base-content/40">p.{{ r.page_number }}</span>
+                          <span class="text-base-content/40 ml-auto font-mono">{{ Number(r.similarity_score).toFixed(3) }}</span>
+                        </li>
+                      </ul>
+                    </div>
+
+                    <!-- Document context fetch -->
+                    <div v-else-if="sr.tool === 'get_document_context' && sr.result" class="px-3 py-2 text-xs">
+                      <div class="text-base-content/50">
+                        {{ sr.result.filename }}
+                        <span v-if="sr.result.total_pages">· {{ sr.result.total_pages }} pages</span>
+                        · {{ sr.result.total_chars }} chars retrieved
+                      </div>
+                    </div>
+
+                    <!-- Company news -->
+                    <div v-else-if="sr.tool === 'get_company_news' && sr.result?.news" class="px-3 py-2 space-y-1.5">
+                      <div v-if="sr.result.count === 0" class="text-xs text-base-content/50">No recent news.</div>
+                      <ul v-else class="space-y-1.5">
+                        <li v-for="(n, nIdx) in sr.result.news.slice(0, 8)" :key="nIdx" class="text-xs">
+                          <a v-if="n.url" :href="n.url" target="_blank" rel="noopener" class="font-medium link link-hover">{{ n.title }}</a>
+                          <span v-else class="font-medium">{{ n.title }}</span>
+                          <div class="text-base-content/40 text-[10px]">
+                            {{ n.publisher || 'unknown' }}<span v-if="n.published_at"> · {{ n.published_at }}</span>
+                          </div>
+                        </li>
+                      </ul>
+                    </div>
+
+                    <!-- Company profile -->
+                    <div v-else-if="sr.tool === 'get_company_profile' && sr.result?.name" class="px-3 py-2 space-y-1 text-xs">
+                      <div class="font-semibold text-sm">{{ sr.result.name }} <span class="text-base-content/40 font-normal">· {{ sr.result.symbol }}</span></div>
+                      <div v-if="sr.result.ceo" class="text-base-content/70">CEO: {{ sr.result.ceo.name }}<span v-if="sr.result.ceo.title" class="text-base-content/40"> · {{ sr.result.ceo.title }}</span></div>
+                      <div class="text-base-content/50">
+                        <span v-if="sr.result.sector">{{ sr.result.sector }}</span>
+                        <span v-if="sr.result.industry"> · {{ sr.result.industry }}</span>
+                        <span v-if="sr.result.employees"> · {{ sr.result.employees.toLocaleString() }} employees</span>
+                      </div>
+                    </div>
+
+                    <!-- list_tables / list_collections / get_collection_info -->
+                    <div v-else-if="sr.result?.tables" class="px-3 py-2 text-xs text-base-content/60">
+                      {{ sr.result.tables.length }} table{{ sr.result.tables.length === 1 ? '' : 's' }}
+                    </div>
+                    <div v-else-if="sr.result?.collections" class="px-3 py-2 text-xs text-base-content/60">
+                      {{ sr.result.collections.length }} collection{{ sr.result.collections.length === 1 ? '' : 's' }}
+                    </div>
+
+                    <!-- Generic key/value fallback -->
+                    <div v-else-if="sr.result" class="px-3 py-2 text-xs font-mono space-y-0.5 max-h-48 overflow-y-auto">
                       <div v-for="(val, key) in sr.result" :key="key" class="flex gap-2">
                         <span class="text-base-content/50">{{ key }}:</span>
-                        <span>{{ formatCell(val) }}</span>
+                        <span class="truncate">{{ formatCell(val) }}</span>
                       </div>
                     </div>
 
@@ -338,6 +419,7 @@
                       </div>
                     </div>
                   </div>
+                  </template>
                 </div>
 
                 <!-- Token + provider badge -->
@@ -464,7 +546,22 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import axios from 'axios'
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2 } from 'lucide-vue-next'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+marked.setOptions({ gfm: true, breaks: true })
+
+const renderMarkdown = (text) => {
+  if (!text) return ''
+  const html = marked.parse(String(text))
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
+}
+
+const renderAssistantMarkdown = (text) => {
+  const html = renderMarkdown(text)
+  return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
+}
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -551,12 +648,10 @@ const deleteSession = (sessionId) => {
 }
 
 const suggestions = [
-  'Summarize the key topics in these documents',
-  'What are the main findings?',
-  'List the most important conclusions',
-  'Total market value by sector',
   'Top 10 holdings by market value',
   'Portfolio concentration — top 5 positions',
+  'Allocation breakdown by sector',
+  'Largest unrealized gains and losses',
 ]
 
 // Expanded-details state for structured result cards: Set of "msgIdx:srIdx"
@@ -573,6 +668,37 @@ const isStructuredOpen = (srIdx, msgIdx) =>
   openStructuredDetails.value.has(structuredKey(srIdx, msgIdx))
 
 const isNumeric = (v) => typeof v === 'number' || (typeof v === 'string' && v !== '' && !isNaN(Number(v)))
+
+// Map agent tool names to a renderer label, icon, and primary detail.
+const TOOL_META = {
+  search_documents:        { label: 'Searching documents',  icon: Search,   color: 'text-info' },
+  get_document_context:    { label: 'Reading document',     icon: BookOpen, color: 'text-info' },
+  list_tables:             { label: 'Listing tables',       icon: ListTree, color: 'text-base-content/60' },
+  get_table_schema:        { label: 'Inspecting schema',    icon: ListTree, color: 'text-base-content/60' },
+  get_table_rows:          { label: 'Reading table rows',   icon: Table2,   color: 'text-success' },
+  query_table:             { label: 'SQL query',            icon: Table2,   color: 'text-success' },
+  aggregate_table:         { label: 'Aggregating table',    icon: Table2,   color: 'text-success' },
+  compute_portfolio_metric:{ label: 'Portfolio metric',     icon: Table2,   color: 'text-success' },
+  list_collections:        { label: 'Listing collections',  icon: Database, color: 'text-base-content/60' },
+  get_collection_info:     { label: 'Collection info',      icon: Database, color: 'text-base-content/60' },
+  get_price_history:       { label: 'Price history',        icon: LineChart,color: 'text-warning' },
+  get_security_classification: { label: 'Security info',    icon: Tag,      color: 'text-warning' },
+  get_company_profile:     { label: 'Company profile',      icon: Building2,color: 'text-warning' },
+  get_company_news:        { label: 'Company news',         icon: Newspaper,color: 'text-warning' },
+}
+
+const toolMeta = (name) => TOOL_META[name] || { label: name || 'tool', icon: Wrench, color: 'text-base-content/50' }
+const toolIcon = (name) => toolMeta(name).icon
+const toolIconClass = (name) => toolMeta(name).color
+const toolLabel = (sr) => {
+  const meta = toolMeta(sr.tool)
+  if (sr.tool === 'compute_portfolio_metric') return sr.args?.metric || meta.label
+  return meta.label
+}
+const toolDetail = (sr) => {
+  const a = sr.args || {}
+  return a.query || a.identifier || a.symbol || a.table || a.filename || a.document_id || ''
+}
 
 const formatCell = (v) => {
   if (v == null) return ''

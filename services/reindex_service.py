@@ -17,6 +17,7 @@ from services.chunker import TextChunker
 from services.embedder import EmbeddingService
 from services.vector_store import VectorStore
 from services.metadata_store import MetadataStore
+from services.indexing.indexer import DocumentIndexer
 from models.schemas import ChunkMetadata
 from config import settings
 
@@ -147,6 +148,19 @@ class ReindexService:
                 embedding_dim=embedding_service.embedding_dim
             )
 
+            # Delegate all per-document work to DocumentIndexer so CSV/XLSX
+            # files get routed through the tabular path (structured SQL
+            # tables + row-level chunks) and code files get symbol-aware
+            # chunking. Previously this loop reinvented the chunk-embed-add
+            # pipeline and silently skipped the tabular branch, leaving
+            # csv_schemas empty after a re-index.
+            indexer = DocumentIndexer(
+                vector_store=vector_store,
+                embedding_service=embedding_service,
+                document_extractor=document_extractor,
+                text_chunker=text_chunker,
+            )
+
             # Get list of documents from metadata store (includes local references)
             # This ensures we reindex ALL documents, not just those in the documents_dir
             document_list = self._get_documents_to_reindex(
@@ -172,12 +186,10 @@ class ReindexService:
             # Process each document
             for idx, doc_info in enumerate(document_list, 1):
                 doc_path = doc_info["path"]
-                original_doc_id = doc_info.get("document_id")
                 source_type = doc_info.get("source_type", "upload")
                 source_path = doc_info.get("source_path")
 
                 try:
-                    # Update progress
                     app_db.update_reindex_job(
                         job_id,
                         current_file=doc_path.name,
@@ -186,60 +198,22 @@ class ReindexService:
 
                     logger.info(f"Re-indexing ({idx}/{total_docs}): {doc_path.name} (source_type={source_type})")
 
-                    # Check if file exists
                     if not doc_path.exists():
                         logger.warning(f"Document not found, skipping: {doc_path}")
                         continue
 
-                    # Extract text
-                    pages = document_extractor.extract_text(doc_path)
-                    if not pages:
-                        logger.warning(f"No text extracted from {doc_path.name}")
-                        continue
+                    metadata = indexer.index_document(doc_path, doc_path.name)
 
-                    # Generate document ID from content
-                    import hashlib
-                    from datetime import datetime
-                    with open(doc_path, "rb") as f:
-                        doc_id = hashlib.sha256(f.read()).hexdigest()[:16]
-
-                    # Chunk and embed using the proper chunker method
-                    chunk_metadata_list = text_chunker.chunk_document(
-                        page_texts=pages,
-                        document_id=doc_id,
-                        filename=doc_path.name
-                    )
-
-                    if not chunk_metadata_list:
-                        logger.warning(f"No chunks created from {doc_path.name}")
-                        continue
-
-                    # Generate embeddings
-                    texts = [chunk.text for chunk in chunk_metadata_list]
-                    embeddings = embedding_service.embed_texts(texts)
-
-                    # Add to index using add_chunks (the correct method)
-                    vector_store.add_chunks(chunk_metadata_list, embeddings)
-
-                    # Add document record to metadata store
-                    vector_store.metadata_store.add_document(
-                        document_id=doc_id,
-                        filename=doc_path.name,
-                        num_pages=len(pages),
-                        num_chunks=len(chunk_metadata_list),
-                        upload_timestamp=datetime.utcnow().isoformat(),
-                        source_format=doc_path.suffix.lower().lstrip("."),
-                        extraction_method="text",
-                        embedding_model=embedding_model,
-                        chunk_size=chunk_size,
-                        chunk_overlap=chunk_overlap,
-                        source_path=source_path if source_type == "local_reference" else None,
-                        source_type=source_type,
-                    )
+                    if source_type == "local_reference" and source_path:
+                        vector_store.metadata_store.update_document_source(
+                            document_id=metadata.document_id,
+                            source_path=source_path,
+                            source_type=source_type,
+                        )
 
                     logger.info(
                         f"Indexed {doc_path.name}: "
-                        f"{len(pages)} pages, {len(chunk_metadata_list)} chunks"
+                        f"{metadata.total_pages} pages, {metadata.total_chunks} chunks"
                     )
 
                 except Exception as e:
@@ -473,6 +447,13 @@ class ReindexService:
                 embedding_dim=embedding_service.embedding_dim
             )
 
+            indexer = DocumentIndexer(
+                vector_store=vector_store,
+                embedding_service=embedding_service,
+                document_extractor=document_extractor,
+                text_chunker=text_chunker,
+            )
+
             # Get list of documents from metadata store (includes local references)
             document_list = self._get_documents_to_reindex(
                 vector_store.metadata_store,
@@ -501,7 +482,6 @@ class ReindexService:
                 source_path = doc_info.get("source_path")
 
                 try:
-                    # Update progress
                     app_db.update_reindex_job(
                         job_id,
                         current_file=doc_path.name,
@@ -510,67 +490,28 @@ class ReindexService:
 
                     logger.info(f"Re-indexing ({idx}/{total_docs}): {doc_path.name}")
 
-                    # Check if file exists
                     if not doc_path.exists():
                         logger.warning(f"Document not found, skipping: {doc_path}")
                         continue
 
-                    # Extract text
-                    pages = document_extractor.extract_text(doc_path)
-                    if not pages:
-                        logger.warning(f"No text extracted from {doc_path.name}")
-                        continue
+                    metadata = indexer.index_document(doc_path, doc_path.name)
 
-                    # Generate document ID from content
-                    import hashlib
-                    from datetime import datetime
-                    with open(doc_path, "rb") as f:
-                        doc_id = hashlib.sha256(f.read()).hexdigest()[:16]
-
-                    # Chunk and embed using the proper chunker method
-                    chunk_metadata_list = text_chunker.chunk_document(
-                        page_texts=pages,
-                        document_id=doc_id,
-                        filename=doc_path.name
-                    )
-
-                    if not chunk_metadata_list:
-                        logger.warning(f"No chunks created from {doc_path.name}")
-                        continue
-
-                    # Generate embeddings
-                    texts = [chunk.text for chunk in chunk_metadata_list]
-                    embeddings = embedding_service.embed_texts(texts)
-
-                    # Add to index using add_chunks (the correct method)
-                    vector_store.add_chunks(chunk_metadata_list, embeddings)
-
-                    # Add document record to metadata store
-                    vector_store.metadata_store.add_document(
-                        document_id=doc_id,
-                        filename=doc_path.name,
-                        num_pages=len(pages),
-                        num_chunks=len(chunk_metadata_list),
-                        upload_timestamp=datetime.utcnow().isoformat(),
-                        source_format=doc_path.suffix.lower().lstrip("."),
-                        extraction_method="text",
-                        embedding_model=embedding_model,
-                        chunk_size=chunk_size,
-                        chunk_overlap=chunk_overlap,
-                        source_path=source_path if source_type == "local_reference" else None,
-                        source_type=source_type,
-                    )
+                    if source_type == "local_reference" and source_path:
+                        vector_store.metadata_store.update_document_source(
+                            document_id=metadata.document_id,
+                            source_path=source_path,
+                            source_type=source_type,
+                        )
 
                     logger.info(
                         f"Indexed {doc_path.name}: "
-                        f"{len(pages)} pages, {len(chunk_metadata_list)} chunks"
+                        f"{metadata.total_pages} pages, {metadata.total_chunks} chunks"
                     )
 
                 except Exception as e:
                     logger.error(f"Failed to process {doc_path.name}: {e}")
                     continue
 
-                # Yield control to allow other async operations (like status checks)
                 await asyncio.sleep(0)
 
             # Save the index to disk

@@ -27,13 +27,15 @@ from services.chunker import TextChunker
 from services.embedder import EmbeddingService
 from services.vector_store import VectorStore
 from services.indexing import DocumentIndexer
-from services.ai_service import AIService, create_provider, detect_ollama
+from services.ai_service import AIService, AnthropicProvider, OpenAIProvider, create_provider, detect_ollama
+from services.agent_tools import anthropic_tools, openai_tools
 from services.config_manager import config_manager
 from services.reindex_service import reindex_service
 from services.collection_service import collection_service
 from services.sharing_service import sharing_service
 from services.indexer_manager import indexer_manager
 from services.structured_chat import (
+    _summarize_args as _summarize_for_log,
     build_structured_context,
     build_tool_use_instructions,
     collect_structured_tables,
@@ -1215,12 +1217,15 @@ async def chat_with_documents(
 
         scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
 
-        # Only describe LARGE tables to the tool loop — small tables are
-        # already fully inlined as JSONL in `inline_block`, so the model
-        # should answer directly from that data instead of round-tripping
-        # through SQL.
+        # The agent always has the full toolkit available (search, table tools,
+        # market data, etc.). Only the LARGE-table schema block is conditional
+        # on tool_tables — small tables are already inlined as JSONL.
         tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
-        tools_block = build_tool_use_instructions() if tool_tables else ""
+        tools_block = build_tool_use_instructions()
+        agent_context = {
+            "collection_id": collection_id,
+            "scope": chat_request.scope,
+        }
 
         base_system_parts = [
             f"You are a helpful assistant with access to a private document knowledge base ({scope_note}).",
@@ -1271,71 +1276,167 @@ async def chat_with_documents(
             parts.append("Assistant:")
             return "\n\n".join(parts)
 
-        # --- Tool-use loop (only when LARGE structured tables exist) ---
-        # Small tables are answered directly from inlined JSONL without any
-        # tool round-trip. Large tables still use the SQL tool loop.
+        # --- Agentic tool-use loop ---
+        # When the provider supports native tool-calling (Anthropic, OpenAI
+        # family) we drive the messages API directly — the model can't
+        # respond with prose-only once it's decided to call a tool, which
+        # eliminates the "let me query that for you" dead-end failure mode.
+        # Ollama and other providers without native tools fall back to the
+        # ReAct-over-prose path below.
         executed_results: list[dict] = []
         total_input_tokens = 0
         total_output_tokens = 0
         model_used = ai_service.quality_model
         response_text = ""
-        suffix = ""
-        max_iterations = 3 if tool_tables else 1
+        max_iterations = 8
 
-        for iteration in range(max_iterations):
-            prompt = compose_prompt(suffix)
-            result = provider.complete(
-                prompt=prompt,
-                max_tokens=2048,
-                model=ai_service.quality_model,
-            )
-            raw_text = result["text"]
-            usage_iter = result.get("usage", {}) or {}
-            total_input_tokens += usage_iter.get("input_tokens", 0)
-            total_output_tokens += usage_iter.get("output_tokens", 0)
-            model_used = usage_iter.get("model", model_used)
+        # Build system prompt (no conversation history/user — those go into
+        # messages natively) for the native-tools path.
+        system_parts_native = [base_system, f"COLLECTION OVERVIEW:\n{collection_overview}"]
+        if inline_block:
+            system_parts_native.append(inline_block)
+        if context_text and context_text != "No relevant context found.":
+            system_parts_native.append(f"PRE-RETRIEVED CONTEXT (optional primer):\n{context_text}")
+        if tables_block:
+            system_parts_native.append(f"LARGE TABLES AVAILABLE:\n{tables_block}")
+        system_text_native = "\n\n".join(system_parts_native)
 
-            if not tool_tables:
-                response_text = raw_text.strip()
-                break
+        if provider.supports_native_tools():
+            is_anthropic = isinstance(provider, AnthropicProvider)
+            tools_spec = anthropic_tools() if is_anthropic else openai_tools()
 
-            calls = parse_tool_calls(raw_text)
-            if not calls:
-                response_text = raw_text.strip()
-                break
+            # Seed messages with prior conversation + latest user query.
+            messages: list[dict] = [
+                {"role": m.role, "content": m.content}
+                for m in chat_request.messages
+            ]
 
-            iter_results = execute_tool_calls(calls, structured_stores, tool_tables)
-            executed_results.extend(iter_results)
-
-            # Next iteration: append the model's own tool_call turn + results so
-            # the model sees what it just did and can produce a final answer.
-            suffix = (
-                (suffix + "\n\n" if suffix else "")
-                + f"Assistant (previous turn):\n{raw_text.strip()}\n\n"
-                + format_results_for_prompt(iter_results)
-                + "\n\nNow produce the final answer for the user. Cite numeric results verbatim. "
-                + "Do NOT emit any more <tool_call> blocks — just the final answer."
-            )
-            # On the last iteration we'll take whatever comes back as the answer.
-            if iteration == max_iterations - 1:
-                # Force a final pass without tool-call permission
-                prompt = compose_prompt(suffix)
-                final_result = provider.complete(
-                    prompt=prompt,
+            for iteration in range(max_iterations):
+                logger.info("[agent] iter=%d provider=%s msgs=%d", iteration,
+                            provider.__class__.__name__, len(messages))
+                turn = provider.complete_with_tools(
+                    messages=messages,
+                    tools=tools_spec,
                     max_tokens=2048,
                     model=ai_service.quality_model,
+                    system=system_text_native,
                 )
-                response_text = strip_tool_calls(final_result["text"]).strip()
-                final_usage = final_result.get("usage", {}) or {}
-                total_input_tokens += final_usage.get("input_tokens", 0)
-                total_output_tokens += final_usage.get("output_tokens", 0)
-                model_used = final_usage.get("model", model_used)
-                break
-        else:
-            response_text = strip_tool_calls(response_text).strip()
+                usage_iter = turn.get("usage", {}) or {}
+                total_input_tokens += usage_iter.get("input_tokens", 0)
+                total_output_tokens += usage_iter.get("output_tokens", 0)
+                model_used = usage_iter.get("model", model_used)
 
-        # Strip any stray tool_call blocks from the final text for display.
-        response_text = strip_tool_calls(response_text)
+                tool_calls = turn.get("tool_calls") or []
+                thinking = turn.get("text") or ""
+                logger.info(
+                    "[agent] iter=%d stop=%s tool_calls=%d thinking=%r",
+                    iteration, turn.get("stop_reason"), len(tool_calls),
+                    thinking[:200] if thinking else "",
+                )
+                for tc in tool_calls:
+                    logger.info("[agent]   -> %s %s", tc["name"], _summarize_for_log(tc.get("input") or {}))
+
+                # Record any narration the model emitted alongside tool calls
+                # so the UI can show the chain of thought.
+                if tool_calls and thinking:
+                    executed_results.append({
+                        "tool": "_thinking",
+                        "args": {"iteration": iteration},
+                        "result": {"text": thinking},
+                    })
+
+                if not tool_calls:
+                    response_text = thinking.strip()
+                    break
+
+                # Append the assistant turn verbatim (provider-native shape)
+                # so the next call has the tool_use history.
+                messages.append(turn["assistant_message"])
+
+                # Execute each tool call and append tool results.
+                adapted_calls = [
+                    {"tool": tc["name"], **(tc.get("input") or {})}
+                    for tc in tool_calls
+                ]
+                iter_results = execute_tool_calls(adapted_calls, agent_context=agent_context)
+                executed_results.extend(iter_results)
+
+                # Pair each call id with its result payload for the provider.
+                import json as _json
+                if is_anthropic:
+                    tool_result_content = []
+                    for tc, res in zip(tool_calls, iter_results):
+                        payload = res.get("error") or res.get("result") or {}
+                        tool_result_content.append({
+                            "type": "tool_result",
+                            "tool_use_id": tc["id"],
+                            "content": _json.dumps(payload, default=str)[:60000],
+                            **({"is_error": True} if res.get("error") else {}),
+                        })
+                    messages.append({"role": "user", "content": tool_result_content})
+                else:
+                    for tc, res in zip(tool_calls, iter_results):
+                        payload = res.get("error") or res.get("result") or {}
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": _json.dumps(payload, default=str)[:60000],
+                        })
+
+            if not response_text:
+                # Hit iteration cap without a clean final turn — force one
+                # more pass with no tools so we always return an answer.
+                try:
+                    turn = provider.complete_with_tools(
+                        messages=messages,
+                        tools=[],
+                        max_tokens=2048,
+                        model=ai_service.quality_model,
+                        system=system_text_native
+                        + "\n\nDo not call any more tools. Summarize the final answer.",
+                    )
+                    response_text = (turn.get("text") or "").strip()
+                    usage_iter = turn.get("usage", {}) or {}
+                    total_input_tokens += usage_iter.get("input_tokens", 0)
+                    total_output_tokens += usage_iter.get("output_tokens", 0)
+                    model_used = usage_iter.get("model", model_used)
+                except Exception as e:
+                    logger.warning(f"Agent final-answer pass failed: {e}")
+                    response_text = "I ran several tool calls but couldn't settle on a final answer — please rephrase or narrow the question."
+
+        else:
+            # --- ReAct fallback for providers without native tools (Ollama, etc.) ---
+            suffix = ""
+            for iteration in range(5):
+                prompt = compose_prompt(suffix)
+                result = provider.complete(prompt=prompt, max_tokens=2048, model=ai_service.quality_model)
+                raw_text = result["text"]
+                usage_iter = result.get("usage", {}) or {}
+                total_input_tokens += usage_iter.get("input_tokens", 0)
+                total_output_tokens += usage_iter.get("output_tokens", 0)
+                model_used = usage_iter.get("model", model_used)
+
+                calls = parse_tool_calls(raw_text)
+                thinking = strip_tool_calls(raw_text).strip()
+                if calls and thinking:
+                    executed_results.append({
+                        "tool": "_thinking",
+                        "args": {"iteration": iteration},
+                        "result": {"text": thinking},
+                    })
+                if not calls:
+                    response_text = raw_text.strip()
+                    break
+                iter_results = execute_tool_calls(calls, agent_context=agent_context)
+                executed_results.extend(iter_results)
+                suffix = (
+                    (suffix + "\n\n" if suffix else "")
+                    + f"Assistant (previous turn):\n{raw_text.strip()}\n\n"
+                    + format_results_for_prompt(iter_results)
+                    + "\n\nYou may call more tools, or produce the final answer. "
+                    + "When done, write the answer with no <tool_call> blocks."
+                )
+            response_text = strip_tool_calls(response_text).strip()
         usage = {
             "input_tokens": total_input_tokens,
             "output_tokens": total_output_tokens,

@@ -18,6 +18,35 @@ from typing import Any
 
 from config import settings
 
+# Tools whose responses are 100% public market data sourced from external
+# providers (yfinance, etc.). They never touch private documents or PII, so
+# we skip Presidio entirely — otherwise author bylines, headlines containing
+# years, and tickers shaped like names get scrubbed for no benefit.
+_BYPASS_TOOLS = frozenset({
+    "get_company_news",
+    "get_company_profile",
+    "get_price_history",
+    "get_security_classification",
+})
+
+# Column names (in tabular tool results) whose values are structural
+# identifiers, not PII. When a tool returns {columns:[...], rows:[[...]]},
+# cells under these columns bypass redaction even though they have no parent
+# dict key the walker could match against.
+_TABLE_SAFE_COLUMNS = frozenset({
+    "symbol", "ticker", "tickers", "cusip", "isin", "sedol",
+    "security_id", "security_identifier", "security",
+    "sector", "industry", "asset_class", "asset_type", "asset_category",
+    "currency", "ccy", "exchange", "country", "region",
+    "rating", "credit_rating",
+})
+
+
+def _is_table_safe_column(name: Any) -> bool:
+    if not isinstance(name, str):
+        return False
+    return re.sub(r"[\s_\-]+", "_", name).strip("_").lower() in _TABLE_SAFE_COLUMNS
+
 logger = logging.getLogger(__name__)
 
 # Context variable tracking the current MCP session for audit grouping
@@ -112,6 +141,9 @@ def redact_mcp_response(
     if not getattr(settings, "enable_pii_redaction", False):
         return response
 
+    if tool_name in _BYPASS_TOOLS:
+        return response
+
     from services.privacy.redaction_engine import redaction_engine, RedactionDetail
     from services.privacy.redaction_log import redaction_log
 
@@ -148,18 +180,46 @@ def _walk_and_redact(
     collection_id: str | None,
     details: list,
     parent_key: str | None = None,
+    safe_cell_indices: frozenset[int] | None = None,
 ) -> Any:
     """Recursively walk a data structure and redact string values in place."""
     if isinstance(obj, dict):
+        # Tabular tool results: {columns: [...], rows: [[...]]}. Build a
+        # per-column skip set so structural identifier cells (symbol,
+        # ticker, sector, ...) bypass Presidio.
+        cell_safe: frozenset[int] | None = None
+        cols = obj.get("columns")
+        if isinstance(cols, list) and isinstance(obj.get("rows"), list):
+            cell_safe = frozenset(
+                i for i, c in enumerate(cols) if _is_table_safe_column(c)
+            )
+
         for key in list(obj.keys()):
             if key in _STRIP_KEYS:
                 del obj[key]
                 continue
             if key in _SKIP_KEYS:
                 continue
-            obj[key] = _walk_and_redact(obj[key], collection_id, details, parent_key=key)
+            child_safe = cell_safe if key == "rows" else None
+            obj[key] = _walk_and_redact(
+                obj[key], collection_id, details,
+                parent_key=key, safe_cell_indices=child_safe,
+            )
         return obj
     elif isinstance(obj, list):
+        # If we're inside a `rows` list whose parent dict carried a
+        # `columns` header, treat each top-level entry as a row and skip
+        # cells whose column index is in safe_cell_indices.
+        if safe_cell_indices is not None:
+            for i, row in enumerate(obj):
+                if isinstance(row, list):
+                    for j, cell in enumerate(row):
+                        if j in safe_cell_indices:
+                            continue
+                        row[j] = _walk_and_redact(cell, collection_id, details)
+                else:
+                    obj[i] = _walk_and_redact(row, collection_id, details, parent_key=parent_key)
+            return obj
         for i, item in enumerate(obj):
             obj[i] = _walk_and_redact(item, collection_id, details, parent_key=parent_key)
         return obj

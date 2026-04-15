@@ -77,77 +77,6 @@
         </div>
       </section>
 
-      <!-- Monte Carlo Simulation -->
-      <section class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="open.monte = !open.monte"
-          :aria-expanded="open.monte"
-        >
-          <Dices :size="13" class="text-primary flex-shrink-0" />
-          <span class="text-xs font-semibold flex-1">Monte Carlo Simulation</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="open.monte ? 'rotate-180' : ''" />
-        </button>
-        <div v-show="open.monte" class="px-3 pb-3 space-y-2">
-          <p class="text-[11px] text-base-content/50 leading-snug">
-            Project portfolio outcomes from historical statistics.
-          </p>
-
-          <label class="block">
-            <span class="text-[11px] text-base-content/60">Time horizon (years)</span>
-            <input
-              v-model.number="monte.years"
-              type="number"
-              min="1"
-              max="50"
-              class="input input-bordered input-xs w-full mt-0.5"
-            />
-          </label>
-
-          <label class="block">
-            <span class="text-[11px] text-base-content/60">Simulations</span>
-            <input
-              v-model.number="monte.runs"
-              type="number"
-              min="100"
-              max="50000"
-              step="100"
-              class="input input-bordered input-xs w-full mt-0.5"
-            />
-          </label>
-
-          <label class="block">
-            <span class="text-[11px] text-base-content/60">Initial value ($)</span>
-            <input
-              v-model.number="monte.initial"
-              type="number"
-              min="0"
-              step="1000"
-              class="input input-bordered input-xs w-full mt-0.5"
-            />
-          </label>
-
-          <label class="block">
-            <span class="text-[11px] text-base-content/60">Annual contribution ($)</span>
-            <input
-              v-model.number="monte.contribution"
-              type="number"
-              min="0"
-              step="500"
-              class="input input-bordered input-xs w-full mt-0.5"
-            />
-          </label>
-
-          <button
-            class="btn btn-primary btn-xs w-full gap-1"
-            @click="runMonteCarlo"
-          >
-            <Sparkles :size="11" />
-            Run simulation
-          </button>
-        </div>
-      </section>
-
       <!-- Notes -->
       <section class="border-b border-base-300">
         <button
@@ -188,10 +117,6 @@
             <FileText :size="11" />
             Notes (.md)
           </button>
-          <button class="btn btn-outline btn-xs w-full gap-1" @click="sendToChat('Summarize the most important findings from our chat into a concise client-ready brief.')">
-            <Sparkles :size="11" />
-            Generate brief
-          </button>
         </div>
       </section>
     </div>
@@ -201,8 +126,8 @@
 <script setup>
 import { ref, reactive, computed, watch } from 'vue'
 import {
-  X, ChevronDown, ChevronRight, TrendingUp, Table2, Dices, StickyNote,
-  Download, Sparkles, FlaskConical, FileText, List, Eye,
+  X, ChevronDown, ChevronRight, TrendingUp, Table2, StickyNote,
+  Download, FlaskConical, FileText, List, Eye,
   BarChart3, PieChart, Layers, Target, Activity, DollarSign
 } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
@@ -213,7 +138,6 @@ const collectionStore = useCollectionStore()
 const open = reactive({
   metrics: true,
   tables: false,
-  monte: false,
   notes: false,
   export: false,
 })
@@ -236,26 +160,6 @@ const runMetric = (m) => {
   sendToChat(
     `Run the canned portfolio metric "${m.id}" on the structured table in this collection and explain the result in plain English.`
   )
-}
-
-// Monte Carlo
-const monte = reactive({
-  years: 20,
-  runs: 1000,
-  initial: 100000,
-  contribution: 12000,
-})
-
-const runMonteCarlo = () => {
-  const prompt =
-    `Run a Monte Carlo simulation on the portfolio in this collection with these inputs:\n` +
-    `- Time horizon: ${monte.years} years\n` +
-    `- Simulations: ${monte.runs}\n` +
-    `- Initial value: $${monte.initial.toLocaleString()}\n` +
-    `- Annual contribution: $${monte.contribution.toLocaleString()}\n\n` +
-    `Use historical mean/volatility from the structured table when available. ` +
-    `Report the median, 10th, and 90th percentile ending values and the probability of beating the initial value.`
-  sendToChat(prompt)
 }
 
 // Notes (per-collection localStorage)

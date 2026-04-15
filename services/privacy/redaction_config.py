@@ -100,7 +100,23 @@ _DEFAULT_PROFILE = RedactionProfile(
     strict_mode=True,
     # PHONE_NUMBER at 0.4 fires on decimal numbers; DATE_TIME at 0.4 fires
     # on words like "Annual" and "Monthly". Raise these.
-    entity_score_thresholds={"PHONE_NUMBER": 0.7, "DATE_TIME": 0.6},
+    entity_score_thresholds={
+        "PHONE_NUMBER": 0.7,
+        "DATE_TIME": 0.6,
+        # PERSON at 0.4 fires on 3-4 letter all-caps strings (tickers like
+        # GLW, TXN, IBM, KO) and on company names containing common given
+        # names (e.g. "Procter & Gamble"). Raise the bar so only
+        # high-confidence person-name detections are redacted.
+        "PERSON": 0.85,
+        # LOCATION at 0.4 catches business words like "States", "America"
+        # in company names and headlines.
+        "LOCATION": 0.85,
+        # NRP (nationality/religion/political) over-fires on financial
+        # jargon — the explicit allow list handles the few real cases.
+        "NRP": 0.85,
+        # URL detection in news headlines hides the article identifier.
+        "URL": 0.95,
+    },
 )
 
 

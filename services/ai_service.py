@@ -80,6 +80,33 @@ class AIProvider(ABC):
         """
         raise NotImplementedError(f"{self.__class__.__name__} does not support vision/image input")
 
+    def supports_native_tools(self) -> bool:
+        """Whether this provider implements `complete_with_tools`."""
+        return False
+
+    def complete_with_tools(
+        self,
+        messages: list,
+        tools: list,
+        max_tokens: int,
+        model: str,
+        system: str | None = None,
+    ) -> dict:
+        """Run one turn of a tool-calling conversation.
+
+        `messages` is the ongoing message list in each provider's native shape
+        (appended to across the loop). `tools` is the provider-native tool list.
+        Returns a dict:
+          {
+            "stop_reason": "tool_use" | "end_turn" | "stop",
+            "text": str (concatenated assistant text; may be "" when only tool_use),
+            "tool_calls": [{"id": str, "name": str, "input": dict}, ...],
+            "assistant_message": dict (provider-native message to append verbatim),
+            "usage": {"input_tokens": int, "output_tokens": int, "model": str},
+          }
+        """
+        raise NotImplementedError(f"{self.__class__.__name__} does not support native tool calling")
+
 
 class AnthropicProvider(AIProvider):
     """Anthropic Claude provider."""
@@ -130,6 +157,62 @@ class AnthropicProvider(AIProvider):
         )
         return {
             "text": response.content[0].text.strip(),
+            "usage": {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "model": model,
+            },
+        }
+
+    def supports_native_tools(self) -> bool:
+        return True
+
+    def complete_with_tools(self, messages, tools, max_tokens, model, system=None):
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+            "tools": tools,
+        }
+        if system:
+            kwargs["system"] = system
+        response = self.client.messages.create(**kwargs)
+
+        text_parts: list[str] = []
+        tool_calls: list[dict] = []
+        for block in response.content:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text_parts.append(block.text)
+            elif btype == "tool_use":
+                tool_calls.append({
+                    "id": block.id,
+                    "name": block.name,
+                    "input": dict(block.input or {}),
+                })
+        assistant_message = {
+            "role": "assistant",
+            # Anthropic expects the raw content blocks back on replay
+            "content": [
+                (
+                    {"type": "text", "text": b.text}
+                    if getattr(b, "type", None) == "text"
+                    else {
+                        "type": "tool_use",
+                        "id": b.id,
+                        "name": b.name,
+                        "input": dict(b.input or {}),
+                    }
+                )
+                for b in response.content
+                if getattr(b, "type", None) in ("text", "tool_use")
+            ],
+        }
+        return {
+            "stop_reason": response.stop_reason,
+            "text": "".join(text_parts).strip(),
+            "tool_calls": tool_calls,
+            "assistant_message": assistant_message,
             "usage": {
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
@@ -213,6 +296,59 @@ class OpenAIProvider(AIProvider):
         )
         return {
             "text": response.choices[0].message.content.strip(),
+            "usage": {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+                "model": model,
+            },
+        }
+
+    def supports_native_tools(self) -> bool:
+        return True
+
+    def complete_with_tools(self, messages, tools, max_tokens, model, system=None):
+        import json as _json
+        payload_messages = list(messages)
+        if system and (not payload_messages or payload_messages[0].get("role") != "system"):
+            payload_messages = [{"role": "system", "content": system}] + payload_messages
+        response = self.client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=payload_messages,
+            tools=tools,
+        )
+        choice = response.choices[0]
+        message = choice.message
+        text = (message.content or "").strip()
+        tool_calls_raw = getattr(message, "tool_calls", None) or []
+        tool_calls: list[dict] = []
+        for tc in tool_calls_raw:
+            args_str = tc.function.arguments or "{}"
+            try:
+                args = _json.loads(args_str)
+            except Exception:
+                args = {}
+            tool_calls.append({"id": tc.id, "name": tc.function.name, "input": args})
+
+        # Rebuild the assistant message in OpenAI's native shape so it can be
+        # appended back for the next turn.
+        assistant_message: dict = {"role": "assistant", "content": message.content}
+        if tool_calls_raw:
+            assistant_message["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"},
+                }
+                for tc in tool_calls_raw
+            ]
+
+        stop_map = {"tool_calls": "tool_use", "stop": "end_turn", "length": "end_turn"}
+        return {
+            "stop_reason": stop_map.get(choice.finish_reason, choice.finish_reason),
+            "text": text,
+            "tool_calls": tool_calls,
+            "assistant_message": assistant_message,
             "usage": {
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,

@@ -704,11 +704,56 @@ class StructuredStore:
         lot rows; and computes a weighted-average unit cost when both cost_basis
         and quantity are present. Non-numeric / non-role columns are omitted to
         avoid ambiguous GROUP BY semantics.
+
+        Excludes parent-rollup rows (Pershing-style files include both a
+        position-level summary row AND its child lot rows for the same
+        security; summing both double-counts) and footer/total rows.
         """
         SUMMABLE_ROLES = {'market_value', 'cost_basis', 'pnl', 'quantity'}
         FIRST_ROLES = {'name', 'asset_class', 'sector', 'region', 'currency', 'account', 'rating'}
 
-        select_parts: List[str] = [f'"{symbol_col}" AS "{symbol_col}"']
+        # Lookup helpers
+        sql_name_by_norm: Dict[str, str] = {}
+        for c in col_infos:
+            orig = (c.get('name') or '').strip().lower()
+            norm = re.sub(r'[\s_\-]+', '_', orig).strip('_')
+            if norm:
+                sql_name_by_norm[norm] = c['sql_name']
+            sql_name_by_norm[c['sql_name'].lower()] = c['sql_name']
+
+        # A column that's populated only on lot rows (and blank on parent
+        # rollups) is the cleanest signal that lot/rollup duplication exists.
+        # Pershing uses "Original Quantity"; other custodians may use
+        # "Lot Quantity", "Acquired Quantity", "Open Date", etc.
+        LOT_ONLY_HINTS = (
+            'original_quantity', 'original_total_cost', 'original_adjusted_cost',
+            'lot_quantity', 'acquired_quantity', 'acquisition_date', 'open_date',
+        )
+        lot_marker_col: Optional[str] = next(
+            (sql_name_by_norm[h] for h in LOT_ONLY_HINTS if h in sql_name_by_norm),
+            None,
+        )
+
+        # Identify identifier columns we'll fall back to when symbol is blank
+        # so CUSIP-only securities (UITs, munis, CDs) each get their own bucket
+        # instead of all collapsing into a single empty-symbol row.
+        cusip_col = next(
+            (c['sql_name'] for c in col_infos if c.get('role') == 'cusip' and c['sql_name'] != symbol_col),
+            None,
+        )
+        secid_col = sql_name_by_norm.get('security_identifier') or sql_name_by_norm.get('security_id')
+        name_col = next(
+            (c['sql_name'] for c in col_infos if c.get('role') == 'name'),
+            None,
+        )
+
+        group_key_parts = [f'NULLIF(TRIM("{symbol_col}"), \'\')']
+        for fallback in (cusip_col, secid_col, name_col):
+            if fallback and fallback != symbol_col:
+                group_key_parts.append(f'NULLIF(TRIM(CAST("{fallback}" AS TEXT)), \'\')')
+        group_key = f'COALESCE({", ".join(group_key_parts)})' if len(group_key_parts) > 1 else group_key_parts[0]
+
+        select_parts: List[str] = [f'{group_key} AS "{symbol_col}"']
         cost_basis_col: Optional[str] = None
         qty_col: Optional[str] = None
 
@@ -735,18 +780,43 @@ class StructuredStore:
                 f'ELSE NULL END AS unit_cost'
             )
 
+        # Build the WHERE clause:
+        #   - drop parent rollup rows (lot marker column is NULL/blank)
+        #   - drop footer "TOTAL" rows (have no quantity)
+        #   - drop rows where the grouping key is entirely NULL
+        where_clauses: List[str] = [f'{group_key} IS NOT NULL']
+        if lot_marker_col:
+            where_clauses.append(
+                f'("{lot_marker_col}" IS NOT NULL '
+                f'AND TRIM(CAST("{lot_marker_col}" AS TEXT)) != \'\')'
+            )
+        if qty_col:
+            where_clauses.append(f'"{qty_col}" IS NOT NULL')
+        # Filter common footer markers (case-insensitive) appearing in
+        # name/security identifier columns
+        footer_marker_cols = [c for c in (name_col, secid_col, symbol_col) if c]
+        for fc in footer_marker_cols:
+            where_clauses.append(
+                f'(UPPER(COALESCE(CAST("{fc}" AS TEXT), \'\')) NOT IN '
+                f"('TOTAL', 'GRAND TOTAL', 'SUBTOTAL', 'TOTALS'))"
+            )
+
         view_name = f'{table_name}__by_symbol'
         sql = (
             f'CREATE VIEW IF NOT EXISTS "{view_name}" AS\n'
             f'SELECT {", ".join(select_parts)}\n'
             f'FROM "{table_name}"\n'
-            f'GROUP BY "{symbol_col}"'
+            f'WHERE {" AND ".join(where_clauses)}\n'
+            f'GROUP BY {group_key}'
         )
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
             conn.execute(sql)
             conn.commit()
-        logger.info(f"Created rollup view {view_name} (grouping by '{symbol_col}')")
+        logger.info(
+            f"Created rollup view {view_name} "
+            f"(group_key={group_key!r}, lot_marker={lot_marker_col!r})"
+        )
 
     def delete_document(self, document_id: str) -> int:
         """Drop all structured tables + schema rows belonging to a document."""

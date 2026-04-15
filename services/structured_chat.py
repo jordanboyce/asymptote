@@ -32,7 +32,24 @@ _TOOL_CALL_RE = re.compile(
 _MAX_STRUCTURED_ROWS_PER_TOOL = 200
 _MAX_SCHEMA_PROMPT_COLS = 40
 
-SUPPORTED_TOOLS = {"query_table", "compute_portfolio_metric"}
+SUPPORTED_TOOLS = {
+    "query_table",
+    "compute_portfolio_metric",
+    "search_documents",
+    "get_document_context",
+    "list_tables",
+    "get_table_schema",
+    "get_table_rows",
+    "aggregate_table",
+    "list_collections",
+    "get_collection_info",
+    "get_price_history",
+    "get_security_classification",
+    "get_company_profile",
+    "get_company_news",
+    "get_corporate_events",
+    "enrich_holdings",
+}
 
 
 def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 20) -> str:
@@ -70,35 +87,103 @@ def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 2
 
 
 def build_tool_use_instructions() -> str:
-    """Render the tool-use protocol description for the system prompt."""
+    """Render the agentic tool-use protocol for the system prompt.
+
+    Describes every tool the chat loop can dispatch (document retrieval,
+    structured tables, market data, collection listing). Provider-agnostic
+    because we use ReAct-style `<tool_call>{...}</tool_call>` blocks rather
+    than each provider's native tool-calling API.
+    """
     return (
         "TOOL USE PROTOCOL:\n"
-        "Whenever the user asks a numeric, aggregation, filtering, ranking, "
-        "sum, average, top-N, bottom-N, breakdown, concentration, or exposure "
-        "question about the tables above, you MUST call one or more tools "
-        "BEFORE answering. Do not guess or estimate numbers from memory.\n\n"
+        "You are an agent. You may call tools to retrieve documents, run "
+        "structured queries against ingested CSV/XLSX tables, look up market "
+        "data, or enumerate collections. Call tools whenever the answer "
+        "requires data you don't already have in this prompt — do not guess.\n\n"
+        "CRITICAL: Do NOT narrate what you are about to do (\"Let me query...\", "
+        "\"I'll look this up...\"). Either emit an actual <tool_call> block, "
+        "OR write the final answer. Prose that only announces intent without "
+        "an accompanying tool_call is a bug. If you need data, emit the "
+        "tool_call block immediately with no preamble.\n\n"
         "To call a tool, emit a JSON block wrapped in <tool_call>...</tool_call> "
-        "on its own line. You may call multiple tools in one turn by emitting "
-        "multiple blocks. After the tool results come back you will be asked "
-        "to produce a final answer.\n\n"
-        "Available tools:\n"
-        "  1. query_table — run read-only SQL SELECT against the tables.\n"
-        '     <tool_call>{"tool": "query_table", "sql": "SELECT \\"sector\\", SUM(\\"market_value\\") FROM \\"csv_data_abc\\" GROUP BY \\"sector\\" ORDER BY 2 DESC"}</tool_call>\n'
-        "     Rules: SELECT / WITH only; single statement; quote every identifier "
-        "     in double quotes; column names are case-sensitive; use the exact "
-        "     sql_name shown in the schema.\n\n"
-        "  2. compute_portfolio_metric — run a canned financial portfolio metric.\n"
-        "     Only use this when the table has financial roles (market_value, pnl, etc.).\n"
-        '     <tool_call>{"tool": "compute_portfolio_metric", "table": "csv_data_abc", "metric": "top_holdings", "limit": 5}</tool_call>\n'
-        "     Available metrics: row_count, total_market_value, total_cost_basis, "
-        "total_pnl, top_holdings, bottom_holdings, largest_gains, largest_losses, "
-        "concentration, breakdown_by_sector, breakdown_by_asset_class, "
-        "breakdown_by_region, breakdown_by_currency, weighted_return, "
-        "summary_statistics. `table` accepts a table_name, filename, or document_id.\n\n"
-        "If the answer doesn't need structured data (narrative questions, "
-        "summaries of prose documents) you can answer directly without tool calls. "
-        "When you do answer after tool calls, cite the numbers verbatim from the "
-        "tool results and NEVER invent a value the tools didn't return."
+        "on its own line. You may emit multiple blocks in one turn to call "
+        "tools in parallel. After tool results come back you'll get another "
+        "turn to either call more tools or produce the final answer.\n\n"
+        "DOCUMENT RETRIEVAL:\n"
+        '  - search_documents — semantic / keyword / hybrid search of the '
+        'collection. Use for narrative / prose / conceptual questions.\n'
+        '    <tool_call>{"tool": "search_documents", "query": "Q3 revenue commentary", "mode": "semantic", "top_k": 5}</tool_call>\n'
+        '  - get_document_context — fetch the full text of a document, page, '
+        'or chunk neighborhood. Use after search_documents to read more than '
+        'the truncated excerpt.\n'
+        '    <tool_call>{"tool": "get_document_context", "document_id": "<uuid>", "page_number": 3, "window": 1}</tool_call>\n\n'
+        "STRUCTURED TABLES (CSV / XLSX ingested as typed SQL tables):\n"
+        '  - list_tables — enumerate available tables. Call FIRST when a '
+        'question involves CSV/XLSX data you don\'t already see inlined.\n'
+        '    <tool_call>{"tool": "list_tables"}</tool_call>\n'
+        '  - get_table_schema — full typed schema (columns, types, '
+        'financial roles, sample values, stats).\n'
+        '    <tool_call>{"tool": "get_table_schema", "identifier": "portfolio.csv"}</tool_call>\n'
+        '  - get_table_rows — return the full rows of a small/medium table '
+        'in one call (no SQL needed).\n'
+        '    <tool_call>{"tool": "get_table_rows", "identifier": "portfolio.csv", "limit": 200}</tool_call>\n'
+        '  - aggregate_table — group-by aggregation without writing SQL.\n'
+        '    <tool_call>{"tool": "aggregate_table", "identifier": "portfolio.csv", "aggregate_col": "market_value", "agg_fn": "sum", "group_by": "sector", "sort_by": "value_desc"}</tool_call>\n'
+        '  - query_table — read-only SQL SELECT for ad-hoc analytics.\n'
+        '    <tool_call>{"tool": "query_table", "sql": "SELECT \\"sector\\", SUM(\\"market_value\\") FROM \\"csv_data_abc\\" GROUP BY \\"sector\\""}</tool_call>\n'
+        '    Rules: SELECT/WITH only, single statement, double-quote every '
+        'identifier, column names are case-sensitive (use the exact sql_name).\n'
+        '  - compute_portfolio_metric — canned financial metric. Only valid '
+        'when get_table_schema reports financial_roles.\n'
+        '    <tool_call>{"tool": "compute_portfolio_metric", "identifier": "portfolio.csv", "metric": "top_holdings", "limit": 5}</tool_call>\n'
+        '    Metrics: row_count, total_market_value, total_cost_basis, '
+        'total_pnl, top_holdings, bottom_holdings, largest_gains, '
+        'largest_losses, concentration, breakdown_by_sector, '
+        'breakdown_by_asset_class, breakdown_by_region, breakdown_by_currency, '
+        'weighted_return, summary_statistics.\n\n'
+        "COLLECTION META:\n"
+        '  - list_collections — list every available collection (id, name, '
+        'doc count). Use when the user references a different client/project.\n'
+        '    <tool_call>{"tool": "list_collections"}</tool_call>\n'
+        '  - get_collection_info — full document listing for a collection.\n'
+        '    <tool_call>{"tool": "get_collection_info", "collection_id": "..."}</tool_call>\n\n'
+        "MARKET DATA:\n"
+        '  - get_price_history — historical OHLCV for a ticker.\n'
+        '    <tool_call>{"tool": "get_price_history", "symbol": "AAPL", "period": "1y"}</tool_call>\n'
+        '  - get_security_classification — sector, market cap, asset class.\n'
+        '    <tool_call>{"tool": "get_security_classification", "symbol": "AAPL"}</tool_call>\n'
+        '  - get_company_profile — CEO, sector, employee count, business summary.\n'
+        '    <tool_call>{"tool": "get_company_profile", "symbol": "AAPL"}</tool_call>\n'
+        '  - get_company_news — recent headlines for a ticker.\n'
+        '    <tool_call>{"tool": "get_company_news", "symbol": "AAPL", "limit": 5}</tool_call>\n'
+        '  - get_corporate_events — SEC filings (8-K/10-K/10-Q, merger), '
+        'dividends, splits, upcoming earnings since a date.\n'
+        '    <tool_call>{"tool": "get_corporate_events", "symbol": "AAPL", "since": "2025-01-01", "types": ["8-K", "dividend"]}</tool_call>\n'
+        '  - enrich_holdings — composite: pulls classification + company '
+        'profile (optional events, price_1y) for every distinct ticker in '
+        'a collection\'s holdings table. One call answers sector/growth-vs-'
+        'value/CEO-changes questions at the portfolio level.\n'
+        '    <tool_call>{"tool": "enrich_holdings", "collection_id": "...", "include": ["classification", "profile"]}</tool_call>\n\n'
+        "OUTPUT FORMATTING:\n"
+        "- Final answers are rendered as GitHub-flavored markdown. Use "
+        "headings, bullets, bold, and tables when they help — but prefer "
+        "tight prose for short answers.\n"
+        "- When citing news from get_company_news, render every link as "
+        "[Title](url) using the EXACT `url` field from the tool result. "
+        "NEVER use `#`, `(here)`, or any placeholder href — if a result "
+        "has no url, omit the link entirely. Same rule for any other "
+        "tool that returns urls.\n\n"
+        "GUIDANCE:\n"
+        "- For numeric/aggregation/ranking questions about CSV/XLSX data, "
+        "always go through the structured-table tools — never estimate from "
+        "search excerpts.\n"
+        "- For prose/conceptual questions about PDFs/docs, prefer "
+        "search_documents (the prompt may already include retrieved chunks).\n"
+        "- When you have everything you need, stop calling tools and write "
+        "the final answer. Cite numbers verbatim from tool results; never "
+        "invent values the tools didn't return.\n"
+        "- Omit `collection_id` to use the active chat collection. Pass an "
+        "explicit id only when the user asks about a different collection."
     )
 
 
@@ -157,18 +242,39 @@ def _resolve_store_for_sql(
     return next(iter(stores.values()))
 
 
+_TOOL_ALIASES = {
+    "query_structured_table": "query_table",
+    "search": "search_documents",
+    "search_collection": "search_documents",
+    "document_context": "get_document_context",
+}
+
+
+def _coerce_collection_id(call: Dict[str, Any], default_collection_id: Optional[str]) -> Optional[str]:
+    explicit = call.get("collection_id")
+    if explicit:
+        return explicit
+    return default_collection_id
+
+
 def execute_tool_calls(
     calls: List[Dict[str, Any]],
-    stores: Dict[str, StructuredStore],
-    tables: List[Dict[str, Any]],
+    agent_context: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Run each parsed tool call and return a parallel list of result dicts.
+    """Run each parsed tool call in-process via the MCP tool functions.
 
-    `stores` maps collection_id → StructuredStore. `tables` is the combined
-    table list from `collect_structured_tables`, with a `collection_id` field
-    on every entry. When the same table exists in multiple collections the
-    first match wins.
+    `agent_context` carries the chat-level defaults the agent inherits when
+    its tool call doesn't specify them — most importantly `collection_id`.
+    All MCP wrappers apply Presidio redaction internally before returning,
+    so results are safe to feed back into the AI prompt.
     """
+    # Lazy import — services.mcp_server pulls in heavy deps and the agent
+    # loop is the only consumer here.
+    from services import mcp_server as mcp
+
+    ctx = agent_context or {}
+    default_collection_id = ctx.get("collection_id")
+
     results: List[Dict[str, Any]] = []
     for call in calls:
         if call.get("error"):
@@ -180,9 +286,7 @@ def execute_tool_calls(
             continue
 
         tool = call.get("tool")
-        # Accept legacy name emitted by older prompts
-        if tool == "query_structured_table":
-            tool = "query_table"
+        tool = _TOOL_ALIASES.get(tool, tool)
         if tool not in SUPPORTED_TOOLS:
             results.append({
                 "tool": tool,
@@ -191,47 +295,228 @@ def execute_tool_calls(
             })
             continue
 
+        collection_id = _coerce_collection_id(call, default_collection_id)
+        args_for_log: Dict[str, Any] = {}
+
         try:
-            if tool == "query_table":
+            if tool == "search_documents":
+                query = call.get("query")
+                if not query:
+                    raise ValueError("search_documents requires 'query'")
+                mode = call.get("mode")
+                top_k = call.get("top_k")
+                args_for_log = {"query": query, "mode": mode, "top_k": top_k, "collection_id": collection_id}
+                data = mcp.search_collection(
+                    query=query,
+                    collection_id=collection_id,
+                    mode=mode,
+                    top_k=int(top_k) if top_k is not None else None,
+                )
+
+            elif tool == "get_document_context":
+                document_id = call.get("document_id")
+                if not document_id:
+                    raise ValueError("get_document_context requires 'document_id'")
+                args_for_log = {
+                    "document_id": document_id,
+                    "page_number": call.get("page_number"),
+                    "chunk_id": call.get("chunk_id"),
+                    "window": call.get("window", 1),
+                    "collection_id": collection_id,
+                }
+                data = mcp.get_document_context(
+                    document_id=document_id,
+                    page_number=call.get("page_number"),
+                    chunk_id=call.get("chunk_id"),
+                    window=int(call.get("window", 1)),
+                    max_chars=int(call.get("max_chars", 12000)),
+                    collection_id=collection_id,
+                )
+
+            elif tool == "list_tables":
+                args_for_log = {"collection_id": collection_id}
+                data = mcp.list_tables(collection_id=collection_id)
+
+            elif tool == "get_table_schema":
+                identifier = call.get("identifier") or call.get("table") or call.get("filename")
+                if not identifier:
+                    raise ValueError("get_table_schema requires 'identifier'")
+                args_for_log = {"identifier": identifier, "collection_id": collection_id}
+                data = mcp.get_table_schema(identifier=identifier, collection_id=collection_id)
+
+            elif tool == "get_table_rows":
+                identifier = call.get("identifier") or call.get("table") or call.get("filename")
+                if not identifier:
+                    raise ValueError("get_table_rows requires 'identifier'")
+                limit = int(call.get("limit", 200))
+                args_for_log = {"identifier": identifier, "limit": limit, "collection_id": collection_id}
+                data = mcp.get_table_rows(
+                    identifier=identifier,
+                    limit=limit,
+                    collection_id=collection_id,
+                )
+
+            elif tool == "query_table":
                 sql = call.get("sql") or call.get("query")
                 if not sql:
                     raise ValueError("query_table requires 'sql'")
-                store = _resolve_store_for_sql(sql, stores, tables)
-                if store is None:
-                    raise ValueError("No structured tables available in this collection.")
-                max_rows = min(
-                    int(call.get("max_rows", _MAX_STRUCTURED_ROWS_PER_TOOL)),
-                    _MAX_STRUCTURED_ROWS_PER_TOOL,
+                max_rows = min(int(call.get("max_rows", _MAX_STRUCTURED_ROWS_PER_TOOL)), 2000)
+                args_for_log = {"sql": sql, "max_rows": max_rows, "collection_id": collection_id}
+                data = mcp.query_table(
+                    sql=sql,
+                    max_rows=max_rows,
+                    collection_id=collection_id,
                 )
-                data = store.execute_query(sql, max_rows=max_rows)
-                results.append({
-                    "tool": "query_table",
-                    "args": {"sql": sql, "max_rows": max_rows},
-                    "result": data,
-                })
+
+            elif tool == "aggregate_table":
+                identifier = call.get("identifier") or call.get("table") or call.get("filename")
+                aggregate_col = call.get("aggregate_col") or call.get("column")
+                agg_fn = call.get("agg_fn") or call.get("fn")
+                if not identifier or not aggregate_col or not agg_fn:
+                    raise ValueError("aggregate_table requires 'identifier', 'aggregate_col', 'agg_fn'")
+                args_for_log = {
+                    "identifier": identifier,
+                    "aggregate_col": aggregate_col,
+                    "agg_fn": agg_fn,
+                    "group_by": call.get("group_by"),
+                    "sort_by": call.get("sort_by"),
+                    "limit": call.get("limit"),
+                    "collection_id": collection_id,
+                }
+                data = mcp.aggregate_table(
+                    identifier=identifier,
+                    aggregate_col=aggregate_col,
+                    agg_fn=agg_fn,
+                    group_by=call.get("group_by"),
+                    sort_by=call.get("sort_by"),
+                    limit=int(call["limit"]) if call.get("limit") is not None else None,
+                    collection_id=collection_id,
+                )
+
             elif tool == "compute_portfolio_metric":
-                identifier = call.get("table") or call.get("identifier") or call.get("filename")
+                identifier = call.get("identifier") or call.get("table") or call.get("filename")
                 metric = call.get("metric")
                 if not identifier or not metric:
-                    raise ValueError("compute_portfolio_metric requires 'table' and 'metric'")
-                store = _resolve_store_for_identifier(identifier, stores, tables)
-                if store is None:
-                    raise ValueError("No structured tables available in this collection.")
+                    raise ValueError("compute_portfolio_metric requires 'identifier' and 'metric'")
                 limit = int(call.get("limit", 10))
-                data = compute_financial_metric(store, identifier, metric, limit=limit)
-                results.append({
-                    "tool": tool,
-                    "args": {"table": identifier, "metric": metric, "limit": limit},
-                    "result": data,
-                })
+                args_for_log = {"identifier": identifier, "metric": metric, "limit": limit, "collection_id": collection_id}
+                data = mcp.compute_portfolio_metric(
+                    identifier=identifier,
+                    metric=metric,
+                    limit=limit,
+                    group_by_symbol=bool(call.get("group_by_symbol", True)),
+                    collection_id=collection_id,
+                )
+
+            elif tool == "list_collections":
+                args_for_log = {}
+                data = mcp.list_collections()
+
+            elif tool == "get_collection_info":
+                args_for_log = {"collection_id": collection_id}
+                data = mcp.get_collection_info(collection_id=collection_id)
+
+            elif tool == "get_price_history":
+                symbol = call.get("symbol") or call.get("ticker")
+                if not symbol:
+                    raise ValueError("get_price_history requires 'symbol'")
+                args_for_log = {
+                    "symbol": symbol,
+                    "period": call.get("period", "1y"),
+                    "interval": call.get("interval", "1d"),
+                }
+                data = mcp.get_price_history(
+                    symbol=symbol,
+                    period=call.get("period", "1y"),
+                    interval=call.get("interval", "1d"),
+                )
+
+            elif tool == "get_security_classification":
+                symbol = call.get("symbol") or call.get("ticker")
+                if not symbol:
+                    raise ValueError("get_security_classification requires 'symbol'")
+                args_for_log = {"symbol": symbol}
+                data = mcp.get_security_classification(symbol=symbol)
+
+            elif tool == "get_company_profile":
+                symbol = call.get("symbol") or call.get("ticker")
+                if not symbol:
+                    raise ValueError("get_company_profile requires 'symbol'")
+                args_for_log = {"symbol": symbol}
+                data = mcp.get_company_profile(symbol=symbol)
+
+            elif tool == "get_company_news":
+                symbol = call.get("symbol") or call.get("ticker")
+                if not symbol:
+                    raise ValueError("get_company_news requires 'symbol'")
+                limit = int(call.get("limit", 10))
+                args_for_log = {"symbol": symbol, "limit": limit}
+                data = mcp.get_company_news(symbol=symbol, limit=limit)
+
+            elif tool == "get_corporate_events":
+                symbol = call.get("symbol") or call.get("ticker")
+                if not symbol:
+                    raise ValueError("get_corporate_events requires 'symbol'")
+                types = call.get("types")
+                since = call.get("since")
+                limit = int(call.get("limit", 50))
+                args_for_log = {
+                    "symbol": symbol,
+                    "since": since,
+                    "types": types,
+                    "limit": limit,
+                }
+                data = mcp.get_corporate_events(
+                    symbol=symbol, since=since, types=types, limit=limit,
+                )
+
+            elif tool == "enrich_holdings":
+                include = call.get("include")
+                identifier = call.get("identifier")
+                max_symbols = int(call.get("max_symbols", 100))
+                args_for_log = {
+                    "collection_id": collection_id,
+                    "identifier": identifier,
+                    "include": include,
+                    "max_symbols": max_symbols,
+                }
+                data = mcp.enrich_holdings(
+                    collection_id=collection_id,
+                    identifier=identifier,
+                    include=include,
+                    max_symbols=max_symbols,
+                )
+
+            else:
+                raise ValueError(f"No dispatcher for tool '{tool}'")
+
+            logger.info("[agent] tool=%s args=%s -> ok", tool, _summarize_args(args_for_log))
+            results.append({"tool": tool, "args": args_for_log, "result": data})
+
         except SQLValidationError as e:
-            results.append({"tool": tool, "args": call, "error": f"SQL rejected: {e}"})
+            logger.info("[agent] tool=%s args=%s -> sql_rejected: %s", tool, _summarize_args(args_for_log), e)
+            results.append({"tool": tool, "args": args_for_log or call, "error": f"SQL rejected: {e}"})
         except ValueError as e:
-            results.append({"tool": tool, "args": call, "error": str(e)})
+            logger.info("[agent] tool=%s args=%s -> error: %s", tool, _summarize_args(args_for_log), e)
+            results.append({"tool": tool, "args": args_for_log or call, "error": str(e)})
         except Exception as e:
-            logger.exception(f"Structured tool call failed: {tool}")
-            results.append({"tool": tool, "args": call, "error": f"Tool execution failed: {e}"})
+            logger.exception("[agent] tool=%s args=%s -> exception", tool, _summarize_args(args_for_log))
+            results.append({"tool": tool, "args": args_for_log or call, "error": f"Tool execution failed: {e}"})
     return results
+
+
+def _summarize_args(args: Dict[str, Any]) -> str:
+    """Compact one-line representation of tool args for logs."""
+    if not args:
+        return "{}"
+    parts = []
+    for k, v in args.items():
+        if v is None:
+            continue
+        if isinstance(v, str) and len(v) > 80:
+            v = v[:77] + "..."
+        parts.append(f"{k}={v!r}")
+    return "{" + ", ".join(parts) + "}"
 
 
 def format_results_for_prompt(results: List[Dict[str, Any]]) -> str:
