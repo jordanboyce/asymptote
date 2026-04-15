@@ -489,7 +489,7 @@ class TestRedactionMCPTools:
         from config import settings
         monkeypatch.setattr(settings, "enable_mcp", True)
         from services.mcp_server import redaction_preview
-        result = redaction_preview("The market is volatile today")
+        result = redaction_preview("Markets fluctuate based on economic conditions and corporate fundamentals.")
         assert result["had_pii"] is False
         assert result["entity_count"] == 0
         assert result["entities"] == []

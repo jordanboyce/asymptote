@@ -143,9 +143,11 @@ def get_redaction_profile(collection_id: str | None = None) -> RedactionProfile:
             strict_mode=_DEFAULT_PROFILE.strict_mode,
         )
 
-    # Merge global financial allow-list into every profile
-    merged = set(a.lower() for a in _FINANCIAL_ALLOW_LIST) | set(a.lower() for a in profile.allow_list)
-    profile.allow_list = list(merged)
+    # Merge global financial allow-list into every profile, preserving original
+    # casing of user-provided items (the engine lowercases when matching anyway).
+    user_lower = {a.lower() for a in profile.allow_list}
+    extra = [a for a in _FINANCIAL_ALLOW_LIST if a.lower() not in user_lower]
+    profile.allow_list = list(profile.allow_list) + extra
 
     # Merge default per-entity score thresholds (profile-specific overrides win)
     effective_thresholds = dict(_DEFAULT_PROFILE.entity_score_thresholds)
