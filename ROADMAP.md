@@ -50,10 +50,10 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 | P0.1 — Header detection | ✅ Shipped | Integrated in [document_extractor.py](services/document_extractor.py); 5 read sites wired |
 | P0.2 — Numeric coercion | ✅ Shipped | `_parse_generic_number` (commas, parens, K/M/B), `_parse_date_like`, 80% threshold, `__raw` sibling columns |
 | P0.3 — Lot rollup | ✅ Shipped | Auto-created `<table>__by_symbol` VIEW; `compute_portfolio_metric` uses it when `group_by_symbol=True` |
-| P0.4 — Vendor profiles | 🟡 Partial | Profile framework + YAMLs for Pershing / Schwab / Fidelity / Vanguard present; Pershing UGL YAML column hints don't match the real export format; NetX360 HBIL preprocessor not started |
+| P0.4 — Vendor profiles | ✅ Shipped | Profile framework + YAMLs for Pershing / Schwab / Fidelity / Vanguard / NetX360; Pershing UGL column hints corrected; NetX360 HBIL hierarchical preprocessor (`services/ingest_profiles/netx360.py`) flattens multi-account exports |
 | P0.5 — LLM role inference | 🟡 Partial | `services/llm_role_inference.py` exists; provenance field (`profile`/`heuristic`/`llm`) on schema columns needs verification |
 | P0.6 — Numeric sanity guards | ❌ Open | Not implemented |
-| P0.7 — Regression suite | 🟡 Partial | 4 of 5 fixtures + [tests/test_ingest.py](tests/test_ingest.py) green (44/44 passing). Remaining: NetX360 HBIL fixture + snapshot-based assertions per fixture |
+| P0.7 — Regression suite | 🟡 Partial | 5 of 5 fixtures + [tests/test_ingest.py](tests/test_ingest.py) green (57/57 passing). NetX360 HBIL fixture added. Remaining: snapshot-based assertions per fixture |
 | P0.8 — PDF table extraction | ❌ Open | Not started |
 
 ### P0.0 — PII Redaction Layer (Presidio) — ✅ Shipped
@@ -557,4 +557,4 @@ Items that aren't funded yet but belong in the same direction of travel.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-04-16 (ship-status audit + P0.7 triage)
+**Last updated:** 2026-04-16 (P0.4 shipped — NetX360 HBIL preprocessor + Pershing UGL fix)
