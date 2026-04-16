@@ -171,6 +171,7 @@ class CollectionService:
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         embedding_model: Optional[str] = None,
+        guide: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         app_db.update_collection(
             collection_id=collection_id,
@@ -180,6 +181,7 @@ class CollectionService:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             embedding_model=embedding_model,
+            guide=guide,
         )
         return app_db.get_collection(collection_id)
 

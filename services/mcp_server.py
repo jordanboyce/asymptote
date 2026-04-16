@@ -21,6 +21,7 @@ from services.structured_chat import (
     build_structured_context,
     collect_structured_tables,
     render_table_as_jsonl,
+    render_table_as_rows,
 )
 from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
 from services.structured_store import SQLValidationError, StructuredStore
@@ -223,6 +224,60 @@ def _mcp_safe_description(collection: dict[str, Any] | None, fallback: str = "")
     return collection.get("mcp_display_description") or collection.get("description", fallback)
 
 
+_GUIDE_SUMMARY_CHAR_LIMIT = 500
+
+import re as _re
+
+# Single-word triggers matched on word boundaries so "sum" doesn't fire on
+# "summarize", "max" doesn't fire on "maximum_value", etc.
+_NUMERIC_INTENT_WORDS = (
+    "total", "totals", "sum", "sums", "average", "averages", "avg", "mean",
+    "median", "count", "largest", "smallest", "highest", "lowest", "min",
+    "max", "ratio", "percent", "percentage", "weight", "concentration",
+    "breakdown", "aggregate",
+)
+_NUMERIC_INTENT_WORD_RE = _re.compile(
+    r"\b(" + "|".join(_re.escape(w) for w in _NUMERIC_INTENT_WORDS) + r")\b"
+)
+
+# Multi-word / phrase triggers (matched as literal substrings)
+_NUMERIC_INTENT_PHRASES = (
+    "how many", "how much", "top ", "bottom ", "group by",
+)
+
+_EXACT_MATCH_INTENT_WORDS = (
+    "verbatim", "exact", "exactly", "literal", "literally", "quoted",
+)
+_EXACT_MATCH_INTENT_WORD_RE = _re.compile(
+    r"\b(" + "|".join(_re.escape(w) for w in _EXACT_MATCH_INTENT_WORDS) + r")\b"
+)
+
+
+def _detect_numeric_intent(query: str) -> bool:
+    q = query.lower()
+    if _NUMERIC_INTENT_WORD_RE.search(q):
+        return True
+    return any(phrase in q for phrase in _NUMERIC_INTENT_PHRASES)
+
+
+def _detect_exact_match_intent(query: str) -> bool:
+    if '"' in query:
+        return True
+    return bool(_EXACT_MATCH_INTENT_WORD_RE.search(query.lower()))
+
+
+def _guide_summary(guide: str | None, limit: int = _GUIDE_SUMMARY_CHAR_LIMIT) -> str | None:
+    """Return a short guide snippet suitable for inlining in every tool response."""
+    if not guide:
+        return None
+    text = guide.strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
 def _resolve_collection_id(explicit: str | None = None) -> str:
     """Resolve which collection an MCP tool call should target.
 
@@ -343,6 +398,13 @@ def get_collection_info(
         "counts" returns only aggregate stats (total documents/chunks/pages
         and file-type histogram) — use this when you only need a quick sizing
         check and don't want the full document array in your context window.
+
+    The response includes a `guide` field — the user-authored markdown brief
+    for this collection (currency assumptions, entity aliases, column meanings,
+    date conventions, etc.). Read it before answering — it encodes durable
+    context you cannot recover from the files alone. A short summary is also
+    travelled inline in every `search_collection` response; `get_collection_info`
+    returns the full guide.
     """
     _ensure_enabled()
 
@@ -374,10 +436,13 @@ def get_collection_info(
             entry["source_path"] = doc["source_path"]
         doc_list.append(entry)
 
+    guide_text = (collection or {}).get("guide") or None
+
     payload: dict[str, Any] = {
         "collection_id": resolved_collection,
         "collection_name": _mcp_safe_name(collection, resolved_collection),
         "description": _mcp_safe_description(collection, ""),
+        "guide": guide_text,
         "total_documents": stats.get("total_documents", 0),
         "total_chunks": stats.get("total_chunks", 0),
         "total_pages": stats.get("total_pages", 0),
@@ -428,12 +493,18 @@ def search_collection(
     - Narrative / prose / conceptual questions about PDFs, text, code, notes.
     - "How does X work", "where is Y described", "what does the doc say about Z".
 
+    For exact-string lookups (ticker symbols, CUSIPs, quoted phrases, policy
+    numbers, any verbatim identifier the user cites word-for-word), prefer
+    `find_in_documents` — it does a literal substring match and doesn't
+    drop stopwords or tokenize the query.
+
     Convenience: the response auto-inlines the full contents of any small
-    CSV/XLSX table in the collection as `structured_tables` (one JSONL
-    payload per table). Any question involving numbers from those files must
-    be answered DIRECTLY and EXCLUSIVELY from `structured_tables` — not from
-    the `results` excerpts. Chunks for fully-inlined files are dropped from
-    `results` so you aren't tempted to use them.
+    CSV/XLSX table in the collection as `structured_tables` — each entry
+    carries `columns` and `rows` (list of lists). Any question involving
+    numbers from those files must be answered DIRECTLY and EXCLUSIVELY from
+    `structured_tables` — not from the `results` excerpts. Chunks for
+    fully-inlined files are dropped from `results` so you aren't tempted to
+    use them.
 
     The response always includes a `collection_summary` field with document,
     page, and chunk counts so you can answer meta-questions about the
@@ -487,19 +558,30 @@ def search_collection(
                     store = s_stores.get(cid) if cid else None
                     if not store:
                         continue
-                    jsonl = render_table_as_jsonl(
+                    rendered = render_table_as_rows(
                         store, t, max_rows=resolved_inline_row_threshold
                     )
-                    if not jsonl:
+                    if not rendered:
                         continue
-                    structured_tables_payload.append({
+                    entry: dict[str, Any] = {
                         "filename": t.get("filename"),
                         "sheet_name": t.get("sheet_name"),
                         "table_name": t.get("table_name"),
                         "row_count": t.get("row_count"),
                         "column_count": t.get("column_count"),
-                        "rows_jsonl": jsonl,
-                    })
+                        "columns": rendered["columns"],
+                        "rows": rendered["rows"],
+                    }
+                    # Keep rows_jsonl as a fallback for large inlined tables
+                    # where the list-of-lists representation would bloat the
+                    # response (very wide columns × many rows).
+                    if len(rendered["rows"]) > 50:
+                        jsonl = render_table_as_jsonl(
+                            store, t, max_rows=resolved_inline_row_threshold
+                        )
+                        if jsonl:
+                            entry["rows_jsonl"] = jsonl
+                    structured_tables_payload.append(entry)
         except Exception as e:
             logger.warning(f"MCP search_collection: structured context failed: {e}")
 
@@ -516,6 +598,7 @@ def search_collection(
     # meta-questions like "how many sources are in this collection?" without
     # having to call get_collection_info() as a separate round-trip.
     stats = indexer_manager.get_collection_stats(resolved_collection)
+    guide_snippet = _guide_summary((collection or {}).get("guide"))
     collection_summary = {
         "collection_id": resolved_collection,
         "collection_name": collection_name,
@@ -524,6 +607,12 @@ def search_collection(
         "total_chunks": stats.get("total_chunks", 0),
         "total_pages": stats.get("total_pages", 0),
     }
+    if guide_snippet:
+        collection_summary["guide_summary"] = guide_snippet
+        collection_summary["guide_summary_note"] = (
+            "User-authored brief for this collection. For the full guide call "
+            "get_collection_info()."
+        )
 
     response: dict[str, Any] = {
         "query": normalized_query,
@@ -535,16 +624,43 @@ def search_collection(
         "total_results": len(search_result.get("results", [])),
     }
 
+    suggested_next: list[dict[str, str]] = []
+    if _detect_numeric_intent(normalized_query):
+        suggested_next.append({
+            "tool": "list_tables",
+            "reason": (
+                "Query looks numeric/aggregation-shaped. If the answer lives "
+                "in a CSV/XLSX table, list_tables → get_table_schema → "
+                "aggregate_table / query_table / compute_portfolio_metric "
+                "will give correct totals; search_collection results are "
+                "truncated chunks."
+            ),
+        })
+    if _detect_exact_match_intent(normalized_query):
+        suggested_next.append({
+            "tool": "find_in_documents",
+            "reason": (
+                "Query contains a quoted string or explicit 'exact/verbatim' "
+                "wording. find_in_documents does a literal substring match "
+                "without stopword-dropping and is more precise than semantic "
+                "search for verbatim lookups."
+            ),
+        })
+    if suggested_next:
+        response["suggested_next"] = suggested_next
+
     if structured_tables_payload:
         response["structured_tables"] = structured_tables_payload
         response["structured_tables_hint"] = (
             "The collection contains CSV/XLSX tables whose FULL contents are "
-            "included above in `structured_tables` as JSONL (one JSON object "
-            "per row, every row present). For any numeric, aggregation, sum, "
-            "count, average, filter, ranking, or date-range question about "
-            "these files, answer DIRECTLY and EXCLUSIVELY from those rows — "
-            "the chunk excerpts in `results` are truncated and must not be "
-            "used for numeric reasoning. Chunks for fully-inlined files have "
+            "included above in `structured_tables`. Each entry has `columns` "
+            "(display headers) and `rows` (list of lists, same order as "
+            "`columns`); larger tables may additionally carry `rows_jsonl` as "
+            "a JSONL fallback. For any numeric, aggregation, sum, count, "
+            "average, filter, ranking, or date-range question about these "
+            "files, answer DIRECTLY and EXCLUSIVELY from those rows — the "
+            "chunk excerpts in `results` are truncated and must not be used "
+            "for numeric reasoning. Chunks for fully-inlined files have "
             "already been removed from `results`."
         )
 
@@ -699,6 +815,121 @@ def get_document_context(
     }, "get_document_context")
 
 
+_FIND_EXCERPT_PAD_CHARS = 80
+_FIND_MAX_RESULTS = 100
+
+
+def _find_literal_excerpt(text: str, pattern: str, case_insensitive: bool) -> tuple[int, str] | None:
+    """Locate pattern in text, return (offset, excerpt_with_markers) or None."""
+    if not text or not pattern:
+        return None
+    hay = text.lower() if case_insensitive else text
+    needle = pattern.lower() if case_insensitive else pattern
+    idx = hay.find(needle)
+    if idx < 0:
+        return None
+    start = max(0, idx - _FIND_EXCERPT_PAD_CHARS)
+    end = min(len(text), idx + len(pattern) + _FIND_EXCERPT_PAD_CHARS)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    excerpt = (
+        prefix
+        + text[start:idx]
+        + "«"
+        + text[idx:idx + len(pattern)]
+        + "»"
+        + text[idx + len(pattern):end]
+        + suffix
+    )
+    return idx, excerpt
+
+
+@_asymptote_mcp.tool()
+def find_in_documents(
+    pattern: str,
+    literal: bool = True,
+    case_sensitive: bool = False,
+    collection_id: str | None = None,
+    max_results: int = 20,
+) -> dict[str, Any]:
+    """Exact substring search across a collection's indexed text chunks.
+
+    Use this tool when the user cites an exact string that should appear
+    verbatim in a document: a ticker symbol, a CUSIP, a client-name fragment,
+    a quoted phrase, an identifier, a policy number, or any verbatim term.
+    Unlike `search_collection` (which is tuned for semantic / BM25 ranking
+    and drops stopwords and punctuation), this tool does a literal substring
+    match — the pattern either appears in the chunk or it doesn't.
+
+    Parameters:
+      - pattern: The exact string to find. Not a regex. Leading/trailing
+        whitespace is preserved.
+      - literal: Reserved for future regex support; currently always literal.
+      - case_sensitive: If true, the match is byte-exact. If false (default),
+        matches ignore ASCII case. Use case_sensitive=true for ticker symbols
+        or other identifiers where case matters.
+      - collection_id: Optional. If omitted, uses the server's default
+        collection.
+      - max_results: Max matches to return (default 20, cap 100). One chunk
+        can match at most once — if a chunk contains the pattern multiple
+        times it still counts as one result.
+
+    Returns a list of matches, each with:
+      - filename, document_id, chunk_id, page_number
+      - excerpt: the chunk text around the match, with the matched span
+        wrapped in « » so it's easy to spot
+      - offset: character offset of the match within the chunk
+
+    When NOT to use this tool:
+      - For conceptual / paraphrased questions — use `search_collection`
+        with mode="semantic" or "hybrid" instead.
+      - For numeric or aggregation questions about CSV / Excel data — use
+        `get_table_rows`, `aggregate_table`, or `query_table` instead;
+        tabular chunks are truncated and an exact match may miss rows.
+    """
+    _ensure_enabled()
+    if not pattern or not pattern.strip():
+        raise ValueError("pattern must not be empty")
+    if not literal:
+        raise ValueError("regex / non-literal search is not yet supported; pass literal=True")
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    capped = max(1, min(int(max_results), _FIND_MAX_RESULTS))
+
+    indexer = indexer_manager.get_indexer(resolved_collection)
+    metadata_store = indexer.vector_store.metadata_store
+
+    matches: list[dict[str, Any]] = []
+    scanned = 0
+    for chunk in metadata_store.get_all_chunks_ordered():
+        scanned += 1
+        text = chunk.get("text") or ""
+        hit = _find_literal_excerpt(text, pattern, case_insensitive=not case_sensitive)
+        if not hit:
+            continue
+        offset, excerpt = hit
+        matches.append({
+            "filename": chunk.get("filename"),
+            "document_id": chunk.get("document_id"),
+            "chunk_id": chunk.get("chunk_id"),
+            "page_number": chunk.get("page_number"),
+            "offset": offset,
+            "excerpt": excerpt,
+        })
+        if len(matches) >= capped:
+            break
+
+    return _redact({
+        "collection_id": resolved_collection,
+        "pattern": pattern,
+        "case_sensitive": bool(case_sensitive),
+        "total_matches": len(matches),
+        "chunks_scanned": scanned,
+        "truncated": len(matches) >= capped,
+        "matches": matches,
+    }, "find_in_documents")
+
+
 def _get_structured_store(collection_id: str) -> StructuredStore:
     indexer = indexer_manager.get_indexer(collection_id)
     return indexer.vector_store.structured_store
@@ -787,7 +1018,11 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
 
 
 @_asymptote_mcp.tool()
-def get_table_schema(identifier: str, collection_id: str | None = None) -> dict[str, Any]:
+def get_table_schema(
+    identifier: str,
+    collection_id: str | None = None,
+    identifier_type: Literal["table_name", "filename", "document_id"] | None = None,
+) -> dict[str, Any]:
     """Return the full typed schema of an ingested CSV / Excel sheet.
 
     Parameters:
@@ -796,6 +1031,10 @@ def get_table_schema(identifier: str, collection_id: str | None = None) -> dict[
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
         table lives in a specific client / portfolio collection.
+      - identifier_type: Optional. Restrict the lookup to exactly one of
+        "table_name", "filename", or "document_id". When omitted (default),
+        all three are searched — the auto-detect behavior. Pass this only
+        when you've seen the identifier match the wrong record.
 
     The response lists every column with its inferred type, sample values,
     and stats (min/max/mean/sum/p25/p50/p75 for numeric columns). Use this
@@ -811,7 +1050,7 @@ def get_table_schema(identifier: str, collection_id: str | None = None) -> dict[
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
-    schema = store.get_schema(identifier)
+    schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
         raise ValueError(
             f"No structured table found for '{identifier}' in collection "
@@ -825,6 +1064,7 @@ def get_table_rows(
     identifier: str,
     limit: int = 200,
     collection_id: str | None = None,
+    identifier_type: Literal["table_name", "filename", "document_id"] | None = None,
 ) -> dict[str, Any]:
     """Return the full rows of an ingested CSV / Excel table in one call.
 
@@ -840,6 +1080,9 @@ def get_table_rows(
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
         table lives in a specific client / project collection.
+      - identifier_type: Optional. Restrict the lookup to exactly one of
+        "table_name", "filename", or "document_id". When omitted (default),
+        all three are searched.
 
     Returns:
       - columns: original column headers from the source file (display names)
@@ -854,7 +1097,7 @@ def get_table_rows(
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
-    schema = store.get_schema(identifier)
+    schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
         raise ValueError(
             f"No structured table found for '{identifier}' in collection "
@@ -962,6 +1205,7 @@ def compute_portfolio_metric(
     limit: int = 10,
     group_by_symbol: bool = True,
     collection_id: str | None = None,
+    identifier_type: Literal["table_name", "filename", "document_id"] | None = None,
 ) -> dict[str, Any]:
     """Compute a canned financial portfolio metric on an ingested table.
 
@@ -983,6 +1227,9 @@ def compute_portfolio_metric(
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
         portfolio lives in a specific client collection.
+      - identifier_type: Optional. Restrict the lookup to exactly one of
+        "table_name", "filename", or "document_id". When omitted (default),
+        all three are searched.
 
     Supported metrics:
       - row_count
@@ -1014,6 +1261,7 @@ def compute_portfolio_metric(
         metric,
         limit=limit,
         group_by_symbol=group_by_symbol,
+        identifier_type=identifier_type,
     )
     return _redact({"collection_id": resolved_collection, **result}, "compute_portfolio_metric")
 
@@ -1036,6 +1284,7 @@ def aggregate_table(
     sort_by: Literal["value_asc", "value_desc", "group_asc", "group_desc"] | None = None,
     limit: int | None = None,
     collection_id: str | None = None,
+    identifier_type: Literal["table_name", "filename", "document_id"] | None = None,
 ) -> dict[str, Any]:
     """Group-by / aggregate a table column — no SQL required.
 
@@ -1058,6 +1307,9 @@ def aggregate_table(
       - limit: optional row cap on the result (useful for "top N" queries).
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id from `list_collections` when needed.
+      - identifier_type: Optional. Restrict the lookup to exactly one of
+        "table_name", "filename", or "document_id". When omitted (default),
+        all three are searched.
 
     Examples:
       - Total revenue by region:
@@ -1075,7 +1327,7 @@ def aggregate_table(
 
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
-    schema = store.get_schema(identifier)
+    schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
         raise ValueError(
             f"No structured table found for '{identifier}' in collection "

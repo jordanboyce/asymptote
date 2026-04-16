@@ -559,6 +559,29 @@ def render_table_as_jsonl(
     Returns None if the table is empty or the query fails. Long string values are
     truncated to keep prompt size bounded.
     """
+    rendered = render_table_as_rows(store, table_info, max_rows=max_rows)
+    if not rendered:
+        return None
+    columns = rendered["columns"]
+    rows = rendered["rows"]
+    lines: List[str] = []
+    for row in rows:
+        obj: Dict[str, Any] = {display_name: row[i] for i, display_name in enumerate(columns)}
+        lines.append(json.dumps(obj, default=str, ensure_ascii=False))
+    return "\n".join(lines)
+
+
+def render_table_as_rows(
+    store: StructuredStore,
+    table_info: Dict[str, Any],
+    max_rows: int = _DEFAULT_INLINE_ROW_LIMIT,
+) -> Optional[Dict[str, Any]]:
+    """Return a full structured table as {"columns": [...], "rows": [[...], ...]}.
+
+    Uses original (display) column names. Long string values are truncated
+    to keep response size bounded. Returns None if the table is empty or the
+    query fails.
+    """
     table_name = table_info.get("table_name")
     if not table_name:
         return None
@@ -569,12 +592,12 @@ def render_table_as_jsonl(
     try:
         data = store.execute_query(sql, max_rows=max_rows)
     except Exception as e:
-        logger.warning(f"render_table_as_jsonl failed for {table_name}: {e}")
+        logger.warning(f"render_table_as_rows failed for {table_name}: {e}")
         return None
 
-    columns: List[str] = data.get("columns") or []
-    rows: List[List[Any]] = data.get("rows") or []
-    if not columns or not rows:
+    raw_columns: List[str] = data.get("columns") or []
+    raw_rows: List[List[Any]] = data.get("rows") or []
+    if not raw_columns or not raw_rows:
         return None
 
     sql_to_orig = {
@@ -582,22 +605,24 @@ def render_table_as_jsonl(
         for c in table_info.get("columns", [])
         if c.get("sql_name") and c.get("name")
     }
-    keep: List[Tuple[int, str]] = [
-        (i, sql_to_orig.get(col, col))
-        for i, col in enumerate(columns)
-        if col != "__row_number"
+    keep_idx: List[int] = [
+        i for i, col in enumerate(raw_columns) if col != "__row_number"
+    ]
+    columns: List[str] = [
+        sql_to_orig.get(raw_columns[i], raw_columns[i]) for i in keep_idx
     ]
 
-    lines: List[str] = []
-    for row in rows:
-        obj: Dict[str, Any] = {}
-        for idx, display_name in keep:
-            val = row[idx]
+    rows: List[List[Any]] = []
+    for raw_row in raw_rows:
+        projected: List[Any] = []
+        for i in keep_idx:
+            val = raw_row[i]
             if isinstance(val, str) and len(val) > _CELL_CHAR_LIMIT:
                 val = val[:_CELL_CHAR_LIMIT] + "..."
-            obj[display_name] = val
-        lines.append(json.dumps(obj, default=str, ensure_ascii=False))
-    return "\n".join(lines)
+            projected.append(val)
+        rows.append(projected)
+
+    return {"columns": columns, "rows": rows}
 
 
 def build_structured_context(

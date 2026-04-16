@@ -88,6 +88,7 @@ def compute_financial_metric(
     metric: str,
     limit: int = 10,
     group_by_symbol: bool = True,
+    identifier_type: str | None = None,
 ) -> Dict[str, Any]:
     """Compute a canned portfolio metric against an ingested structured table.
 
@@ -106,8 +107,12 @@ def compute_financial_metric(
         the table, metrics are computed against the rolled-up view.  This
         prevents lot-level rows from inflating totals.  Set to ``False`` to
         query the raw lot-level table.
+    identifier_type:
+        Optional. Restrict schema lookup to a single identifier column —
+        "table_name", "filename", or "document_id".  When ``None`` (default),
+        all three are searched.
     """
-    schema = store.get_schema(identifier)
+    schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
         raise ValueError(f"No structured table found for '{identifier}'")
 

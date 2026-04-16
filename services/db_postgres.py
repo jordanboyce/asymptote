@@ -113,11 +113,17 @@ class PostgresBackend(DatabaseBackend):
                         chunk_overlap INTEGER DEFAULT 50,
                         embedding_model TEXT DEFAULT 'all-MiniLM-L6-v2',
                         owner_id TEXT DEFAULT 'default',
+                        guide TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     )
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_collections_owner ON collections(owner_id)")
+                # v4.3: per-collection guide (markdown, surfaced to calling LLM)
+                try:
+                    cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS guide TEXT")
+                except Exception:
+                    pass
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS collection_documents (
                         collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
@@ -359,11 +365,13 @@ class PostgresBackend(DatabaseBackend):
             self._put(conn)
 
     def update_collection(self, collection_id: str, name=None, description=None, color=None,
-                          chunk_size=None, chunk_overlap=None, embedding_model=None):
+                          chunk_size=None, chunk_overlap=None, embedding_model=None,
+                          guide=None):
         updates, params = [], []
         for field, val in [("name", name), ("description", description), ("color", color),
                            ("chunk_size", chunk_size), ("chunk_overlap", chunk_overlap),
-                           ("embedding_model", embedding_model)]:
+                           ("embedding_model", embedding_model),
+                           ("guide", guide)]:
             if val is not None:
                 updates.append(f"{field} = %s")
                 params.append(val)

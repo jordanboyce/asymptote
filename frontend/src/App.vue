@@ -622,15 +622,32 @@
         </div>
 
         <div class="form-control w-full mb-4">
-          <label class="label" for="edit-collection-description">
+          <label class="label pb-1" for="edit-collection-description">
             <span class="label-text">Description</span>
           </label>
           <textarea
             id="edit-collection-description"
             v-model="editCollectionDescription"
-            class="textarea textarea-bordered"
+            class="textarea textarea-bordered w-full"
+            rows="2"
             placeholder="What kind of sources does this collection contain?"
           ></textarea>
+        </div>
+
+        <div class="form-control w-full mb-4">
+          <label class="label pb-1" for="edit-collection-guide">
+            <span class="label-text">Guide for calling agents</span>
+          </label>
+          <textarea
+            id="edit-collection-guide"
+            v-model="editCollectionGuide"
+            class="textarea textarea-bordered w-full font-mono text-sm"
+            rows="6"
+            placeholder="e.g. currency is USD; 'Jane' = Jane Smith; dates are MM/DD/YYYY; 'NAV' column is market value net of fees."
+          ></textarea>
+          <p class="text-xs opacity-70 mt-1">
+            Surfaced in every MCP response (~500 char summary in search, full text in get_collection_info) so the calling LLM has durable context.
+          </p>
         </div>
 
         <div class="form-control w-full mb-4">
@@ -1023,6 +1040,7 @@ const editingCollectionId = ref('')
 const editCollectionName = ref('')
 const editCollectionDescription = ref('')
 const editCollectionColor = ref('#3b82f6')
+const editCollectionGuide = ref('')
 const updatingCollection = ref(false)
 
 // Delete confirmation modal state
@@ -1188,6 +1206,7 @@ const openEditCollectionModal = (collection) => {
   editCollectionName.value = collection.name
   editCollectionDescription.value = collection.description || ''
   editCollectionColor.value = collection.color || '#3b82f6'
+  editCollectionGuide.value = collection.guide || ''
   showEditModal.value = true
 }
 
@@ -1199,7 +1218,8 @@ const updateCollection = async () => {
     await collectionStore.updateCollection(editingCollectionId.value, {
       name: editingCollectionId.value === 'default' ? undefined : editCollectionName.value.trim(),
       description: editCollectionDescription.value.trim(),
-      color: editCollectionColor.value
+      color: editCollectionColor.value,
+      guide: editCollectionGuide.value
     })
     showEditModal.value = false
   } catch (err) {

@@ -3161,7 +3161,8 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
         color=updates.get("color"),
         chunk_size=updates.get("chunk_size"),
         chunk_overlap=updates.get("chunk_overlap"),
-        embedding_model=updates.get("embedding_model")
+        embedding_model=updates.get("embedding_model"),
+        guide=updates.get("guide"),
     )
 
     if not collection:

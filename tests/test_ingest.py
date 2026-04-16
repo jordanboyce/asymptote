@@ -23,6 +23,8 @@ from typing import Any, Dict, List
 
 import pytest
 
+import services.financial  # noqa: F401 - registers currency/percent type extensions
+
 FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 
 
@@ -225,9 +227,10 @@ class TestSchwabUnrealizedGL:
         )
 
     def test_total_market_value_plausible(self, store, schema):
+        from services.financial.metrics import compute_financial_metric
         mv_col = _col_by_role(schema, "market_value")
         assert mv_col is not None
-        result = store.compute_metric("schwab_unrealized_gl.csv", "total_market_value")
+        result = compute_financial_metric(store, "schwab_unrealized_gl.csv", "total_market_value")
         val = result["value"]
         assert val is not None, "total_market_value returned NULL — column likely stored as TEXT"
         assert val > 1_000, f"total_market_value = {val}, expected > $1,000 for this fixture"
@@ -258,7 +261,8 @@ class TestSchwabUnrealizedGL:
         )
 
     def test_top_holdings_uses_rollup(self, store):
-        result = store.compute_metric("schwab_unrealized_gl.csv", "top_holdings", limit=5)
+        from services.financial.metrics import compute_financial_metric
+        result = compute_financial_metric(store, "schwab_unrealized_gl.csv", "top_holdings", limit=5)
         assert "rows" in result
         assert len(result["rows"]) > 0
 
@@ -373,7 +377,8 @@ class TestPershingUnrealizedGL:
         assert _view_exists(store, view_name)
 
     def test_total_market_value_plausible(self, store):
-        result = store.compute_metric("pershing_unrealized_gl.csv", "total_market_value")
+        from services.financial.metrics import compute_financial_metric
+        result = compute_financial_metric(store, "pershing_unrealized_gl.csv", "total_market_value")
         val = result["value"]
         assert val is not None and val > 100_000, (
             f"total_market_value = {val}, expected > $100,000 for this fixture"
@@ -433,7 +438,7 @@ class TestParseNumber:
 
     @pytest.fixture(autouse=True)
     def import_fn(self):
-        from services.structured_store import _parse_number
+        from services.financial.type_hints import _parse_number
         self.parse = _parse_number
 
     def test_plain_float(self):

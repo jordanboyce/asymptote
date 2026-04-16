@@ -76,6 +76,7 @@ class DatabaseBackend(ABC):
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         embedding_model: Optional[str] = None,
+        guide: Optional[str] = None,
     ):
         ...
 

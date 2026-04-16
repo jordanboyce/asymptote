@@ -303,11 +303,23 @@ def infer_column_type(values: List[Any]) -> Dict[str, Any]:
                     'stats': _numeric_stats(numeric_vals),
                 }
 
-    # 4 & 5. Generic numeric (≥80%)
+    # 4 & 5. Generic numeric OR extension-coercible (≥80%).
+    # Fallback when no single extension hit 80% on its own (e.g. a column
+    # mixing "$1,591.20" and "(408.80)" — currency matches once, generic
+    # matches once, neither clears threshold individually). Any value that
+    # parses as a number via either path counts toward promotion.
     numeric_vals: List[float] = []
     int_count = 0
+    had_extension_match = False
     for s in sample_strs:
-        num = _parse_generic_number(s)
+        num: Optional[float] = _parse_generic_number(s)
+        if num is None:
+            for ext in _type_extensions:
+                val = ext.coerce(s)
+                if isinstance(val, (int, float)):
+                    num = float(val)
+                    had_extension_match = True
+                    break
         if num is not None:
             numeric_vals.append(num)
             if num == int(num):
@@ -315,7 +327,10 @@ def infer_column_type(values: List[Any]) -> Dict[str, Any]:
 
     numeric_frac = len(numeric_vals) / n
     if numeric_frac >= threshold:
-        if int_count == len(numeric_vals):
+        # If any value needed extension coercion (currency / percent formatting),
+        # classify as real — an "integer" column shouldn't quietly absorb
+        # currency-formatted cells even if they happen to be whole dollars.
+        if int_count == len(numeric_vals) and not had_extension_match:
             return {'type': 'integer', 'null_count': null_count, 'distinct_count': distinct,
                     'stats': _numeric_stats(numeric_vals)}
         return {'type': 'real', 'null_count': null_count, 'distinct_count': distinct,
@@ -406,6 +421,15 @@ def _coerce_value(val: Any, inferred_type: str) -> Any:
 
     if inferred_type in {'integer', 'real'}:
         num = _parse_generic_number(s)
+        if num is None:
+            # Fall back to any registered extension coercer. Covers the case
+            # where a 'real' column holds currency-formatted cells (e.g.
+            # "$1,591.20") that _parse_generic_number intentionally ignores.
+            for ext in _type_extensions:
+                val = ext.coerce(s)
+                if isinstance(val, (int, float)):
+                    num = float(val)
+                    break
         if num is None:
             return None
         return int(num) if inferred_type == 'integer' else num
@@ -881,17 +905,44 @@ class StructuredStore:
                 })
             return result
 
-    def get_schema(self, identifier: str) -> Optional[Dict[str, Any]]:
-        """Look up a table schema by table_name, filename, or document_id."""
+    def get_schema(
+        self,
+        identifier: str,
+        identifier_type: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Look up a table schema by table_name, filename, or document_id.
+
+        When identifier_type is provided ("table_name", "filename", or
+        "document_id"), the lookup is restricted to that column — useful when
+        multiple tables might match the same literal but you need a specific
+        interpretation. When None (default), all three fields are searched.
+        """
+        if identifier_type is not None and identifier_type not in {
+            "table_name", "filename", "document_id",
+        }:
+            raise ValueError(
+                f"identifier_type must be one of 'table_name', 'filename', "
+                f"'document_id', or None; got {identifier_type!r}"
+            )
+
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                f'''SELECT schema_json FROM {self.SCHEMA_REGISTRY}
-                    WHERE table_name = ? OR filename = ? OR document_id = ?
-                    ORDER BY sheet_name
-                    LIMIT 1''',
-                (identifier, identifier, identifier),
-            )
+            if identifier_type is not None:
+                cursor = conn.execute(
+                    f'''SELECT schema_json FROM {self.SCHEMA_REGISTRY}
+                        WHERE {identifier_type} = ?
+                        ORDER BY sheet_name
+                        LIMIT 1''',
+                    (identifier,),
+                )
+            else:
+                cursor = conn.execute(
+                    f'''SELECT schema_json FROM {self.SCHEMA_REGISTRY}
+                        WHERE table_name = ? OR filename = ? OR document_id = ?
+                        ORDER BY sheet_name
+                        LIMIT 1''',
+                    (identifier, identifier, identifier),
+                )
             row = cursor.fetchone()
             if not row:
                 return None

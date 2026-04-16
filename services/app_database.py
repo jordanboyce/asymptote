@@ -136,6 +136,7 @@ class SQLiteBackend(DatabaseBackend):
                     chunk_overlap INTEGER DEFAULT 50,
                     embedding_model TEXT DEFAULT 'all-MiniLM-L6-v2',
                     owner_id TEXT DEFAULT 'default',
+                    guide TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -249,6 +250,12 @@ class SQLiteBackend(DatabaseBackend):
                     conn.execute(f"ALTER TABLE collections ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass
+
+            # v4.3: per-collection guide (markdown, surfaced to calling LLM)
+            try:
+                conn.execute("ALTER TABLE collections ADD COLUMN guide TEXT")
+            except sqlite3.OperationalError:
+                pass
 
             # Add phase columns to upload_jobs if missing
             for col, default in [
@@ -441,6 +448,7 @@ class SQLiteBackend(DatabaseBackend):
         embedding_model: Optional[str] = None,
         mcp_display_name: Optional[str] = None,
         mcp_display_description: Optional[str] = None,
+        guide: Optional[str] = None,
     ):
         updates = []
         params = []
@@ -448,7 +456,8 @@ class SQLiteBackend(DatabaseBackend):
                              ("chunk_size", chunk_size), ("chunk_overlap", chunk_overlap),
                              ("embedding_model", embedding_model),
                              ("mcp_display_name", mcp_display_name),
-                             ("mcp_display_description", mcp_display_description)]:
+                             ("mcp_display_description", mcp_display_description),
+                             ("guide", guide)]:
             if value is not None:
                 updates.append(f"{field} = ?")
                 params.append(value)

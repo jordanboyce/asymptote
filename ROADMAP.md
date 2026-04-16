@@ -42,7 +42,21 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 
 > **Gating note:** P0.0 (PII Redaction) must be implemented and verified before any feature that touches LLM tool responses, chat context, or search results. P0.1–P0.8 can proceed in parallel for local ingest logic, but no LLM-facing output path ships without P0.0 in place. P0.5 (LLM-assisted column inference) is explicitly blocked on P0.0 because it sends column names and sample values to an external model.
 
-### P0.0 — PII Redaction Layer (Presidio)
+### Status snapshot
+
+| Item | Status | Notes |
+|---|---|---|
+| P0.0 — PII redaction | ✅ Shipped | `services/privacy/` module, Presidio engine, middleware, four MCP tools, SQLite audit log, regression test |
+| P0.1 — Header detection | ✅ Shipped | Integrated in [document_extractor.py](services/document_extractor.py); 5 read sites wired |
+| P0.2 — Numeric coercion | ✅ Shipped | `_parse_generic_number` (commas, parens, K/M/B), `_parse_date_like`, 80% threshold, `__raw` sibling columns |
+| P0.3 — Lot rollup | ✅ Shipped | Auto-created `<table>__by_symbol` VIEW; `compute_portfolio_metric` uses it when `group_by_symbol=True` |
+| P0.4 — Vendor profiles | 🟡 Partial | Profile framework + YAMLs for Pershing / Schwab / Fidelity / Vanguard present; Pershing UGL YAML column hints don't match the real export format; NetX360 HBIL preprocessor not started |
+| P0.5 — LLM role inference | 🟡 Partial | `services/llm_role_inference.py` exists; provenance field (`profile`/`heuristic`/`llm`) on schema columns needs verification |
+| P0.6 — Numeric sanity guards | ❌ Open | Not implemented |
+| P0.7 — Regression suite | 🟡 Partial | 4 of 5 fixtures + [tests/test_ingest.py](tests/test_ingest.py) green (44/44 passing). Remaining: NetX360 HBIL fixture + snapshot-based assertions per fixture |
+| P0.8 — PDF table extraction | ❌ Open | Not started |
+
+### P0.0 — PII Redaction Layer (Presidio) — ✅ Shipped
 
 **Priority:** Highest — this is a prerequisite for shipping anything to production. No identifiable data can leave Asymptote when content is sent to external LLM providers (Claude, ChatGPT, Google, or any other). This is especially critical for financial data, which routinely contains account numbers, Social Security numbers, names, and other highly sensitive identifiers.
 
@@ -185,7 +199,7 @@ Presidio's default recognizer set covers common US/EU PII well, but financial wo
 - [ ] `en_core_web_lg` added to setup/install instructions
 - [ ] Regression test: a fixture containing known PII (fake but realistic) runs through the full MCP path and none of the PII appears in the tool response
 
-### P0.1 — Smart header detection
+### P0.1 — Smart header detection — ✅ Shipped
 
 **Problem:** Brokerage/bank/CRM exports almost always have N preamble rows before the actual header. Current importer assumes row 1 is the header.
 
@@ -196,7 +210,7 @@ Presidio's default recognizer set covers common US/EU PII well, but financial wo
 - Fall back to `pd.read_csv` defaults if no candidate row is found.
 - Same logic applies to XLSX sheets.
 
-### P0.2 — Numeric coercion for currency / accounting strings
+### P0.2 — Numeric coercion for currency / accounting strings — ✅ Shipped
 
 **Problem:** `"1,591.20"`, `"$1,591.20"`, `"(123.45)"`, `"1.5K"` all currently land as TEXT. Downstream `CAST(... AS DOUBLE)` silently coerces to wrong values.
 
@@ -205,7 +219,7 @@ Presidio's default recognizer set covers common US/EU PII well, but financial wo
 - Record the original raw string in a sibling `_raw` column (or in the column's metadata) so the agent can still see the source if needed.
 - Apply the same pass to date-like columns (`Trade Date`, `Settle Date`, `Maturity`) → ISO date strings or DATE.
 
-### P0.3 — Lot / row rollup as a first-class concept
+### P0.3 — Lot / row rollup as a first-class concept — ✅ Shipped
 
 **Problem:** Every brokerage file represents a single position as N rows (one per tax lot). Lots are an implementation detail; no human or agent should care about them.
 
@@ -214,7 +228,7 @@ Presidio's default recognizer set covers common US/EU PII well, but financial wo
 - Add a `group_by_symbol: bool = True` parameter to `compute_portfolio_metric` that rolls up lots before computing.
 - The raw lot-level table stays available for tax/cost-basis questions that genuinely need it.
 
-### P0.4 — Known-vendor schema profiles
+### P0.4 — Known-vendor schema profiles — 🟡 Partial
 
 **Problem:** Schwab, Fidelity, Vanguard, Pershing, Raymond James, etc. each export the same logical concepts under different column names and layouts. Heuristic role detection works on common cases but misses the long tail.
 
@@ -260,7 +274,7 @@ Two distinct export formats analyzed from real advisor files:
 - File signature: filename matches `HBIL*`, or first two rows contain `"Report Type"` and `"Holdings by Investor"`
 - Test fixture: `tests/fixtures/ingest/netx360_holdings_by_investor.csv`
 
-### P0.5 — LLM-assisted column role inference (narrow, for deterministic aggregation only)
+### P0.5 — LLM-assisted column role inference (narrow, for deterministic aggregation only) — 🟡 Partial
 
 > **Blocked on P0.0.** This feature sends column names and sample cell values to an external LLM. Sample values may contain PII/CUI (account numbers embedded in column headers, names in the first data row, etc.). P0.0's redaction layer must be applied to the sample values before they leave Asymptote. Do not ship P0.5 until P0.0 is verified end-to-end.
 
@@ -284,7 +298,7 @@ For every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `searc
 - Confirm every MCP tool other than `compute_portfolio_metric` returns correct data when `financial_roles` is empty. `query_table`, `get_table_rows`, `aggregate_table`, `search_collection`, `get_document_context` should all be role-agnostic. Any place that silently depends on a role is a bug.
 - Add a test that ingests a file with completely unknown headers and verifies (a) `query_table` returns correct rows with raw headers, (b) `compute_portfolio_metric` returns a structured "no role detected, use query_table" error rather than an empty result or a wrong number.
 
-### P0.6 — Numeric sanity guards on aggregates
+### P0.6 — Numeric sanity guards on aggregates — ❌ Open
 
 **Problem:** A `compute_portfolio_metric` or aggregated SQL query that returns nonsensical values (market values < $10 next to gain/loss > $100, weights summing to 12%, NULL leakage in critical columns) should never be returned silently.
 
@@ -293,7 +307,7 @@ For every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `searc
 - On failure, attach `warnings: ["aggregation_likely_lost_precision: column X looks numeric but is stored as TEXT"]` to the response. Don't suppress the result, but never ship it without the warning.
 - Same guard fires inside the SQL execution path in [services/structured_store.py](services/structured_store.py) — if a query SUMs a TEXT column that contains digit+comma values, warn.
 
-### P0.7 — Regression suite of real exports
+### P0.7 — Regression suite of real exports — 🟡 Partial (tests green; NetX360 HBIL fixture still missing)
 
 **Problem:** Without test fixtures of real broker/bank exports, every fix to the ingestion path risks breaking another vendor's format.
 
@@ -304,7 +318,7 @@ For every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `searc
 - CI runs the full ingestion path against every fixture and asserts the snapshot. Any drift requires explicit acceptance.
 - This is the only thing keeping the "never silently wrong" bar honest over time.
 
-### P0.8 — PDF table extraction (promoted from old v4.3)
+### P0.8 — PDF table extraction (promoted from old v4.3) — ❌ Open
 
 **Problem:** Many custodians ship statements as PDF, not CSV. Today there's no path from a PDF statement to `structured_store`.
 
@@ -323,7 +337,7 @@ The collection-guide / `find_in_documents` / `rows_jsonl` / `identifier` disambi
 
 ---
 
-## v4.2 — Enrichment data feeds as MCP tools
+## v4.2 — Enrichment data feeds as MCP tools — ✅ Shipped
 
 Most advisor questions ("what's in a downtrend?", "growth vs value?", "any CEO changes?") fundamentally need data Asymptote doesn't have. Each missing feed becomes a small, contained MCP tool.
 
@@ -357,33 +371,33 @@ Most advisor questions ("what's in a downtrend?", "growth vs value?", "any CEO c
 
 ---
 
-## v4.3 — MCP surface polish (the previous v4.1 batch, deferred)
+## v4.3 — MCP surface polish (shipped)
 
-These items are still right; they just sit behind the ingestion-fidelity work because they don't help if the data is wrong.
+All five items below shipped together — small, contained improvements to the calling-LLM experience. Regression coverage: [tests/test_v43_mcp_polish.py](tests/test_v43_mcp_polish.py).
 
-### Per-collection guide memory
+### Per-collection guide memory — shipped
 
-User-editable markdown blob per collection surfacing currency assumptions, entity aliases ("Jane" = Jane Smith), date conventions, plain-language column meanings. New column on `collections` (or dedicated `collection_guides` table). Surfaced in full inside `get_collection_info()` and as a ≤500-char summary inside every `search_collection` response. Frontend: markdown editor in the existing collection settings panel. Default template seeded on creation.
+User-editable markdown blob per collection. Stored on the `collections` table in a new `guide TEXT` column (migration in both SQLite and Postgres backends). Full text returned by `get_collection_info()`; a ≤500-char summary is inlined into every `search_collection` response as `collection_summary.guide_summary` so it travels with retrieval. Frontend textarea wired into the existing Edit Collection modal in [frontend/src/App.vue](frontend/src/App.vue).
 
-**Why it pays off:** agents using Claude Desktop lose context between sessions. A guide that travels with every tool response is the cheapest way to give Asymptote durable memory.
+**Why it paid off:** agents using Claude Desktop lose context between sessions. A guide that travels with every tool response is the cheapest way to give Asymptote durable memory. Next improvement (deferred): default-template seeding on collection creation.
 
 **Cross-link with v4.5:** the client profile object below is the structured cousin of this. The guide is freeform markdown ("how to think about this collection"); the profile is typed fields ("risk_tolerance: moderate"). They coexist — the guide is for narrative, the profile is for primitives.
 
-### `find_in_documents(pattern, literal=True, collection_id=None, max_results=20)`
+### `find_in_documents(pattern, case_sensitive=False, collection_id=None, max_results=20)` — shipped
 
-New MCP tool backed by [services/bm25_service.py](services/bm25_service.py). Returns filename, page, chunk_id, tight excerpt with match highlighted. Docstring positions it as "use for exact strings, ticker symbols, identifiers, quoted phrases" vs `search_collection` for concepts.
+New MCP tool at [services/mcp_server.py](services/mcp_server.py). Does a literal substring scan against every indexed chunk via `metadata_store.get_all_chunks_ordered()`. Returns filename, page, chunk_id, character offset, and an excerpt with the match wrapped in `«…»`. Docstring positions it as the right tool for exact strings, ticker symbols, CUSIPs, identifiers, and quoted phrases — contrasted against `search_collection` for concepts. The `literal` parameter is reserved for future regex support (currently always literal).
 
-### `rows_jsonl` → structured `rows` output
+### `rows_jsonl` → structured `rows` output — shipped
 
-For tables under (say) 200 rows, emit `rows: list[dict]` or `rows: list[list] + columns: list[str]` instead of the current JSONL string at [services/mcp_server.py:489](services/mcp_server.py#L489). Keep `rows_jsonl` as a fallback only when the row count would bloat the response.
+`search_collection` now emits `structured_tables[].columns` + `structured_tables[].rows` (list of lists, display-name headers) for every inlined small table. `rows_jsonl` is kept as a fallback for inlined tables with more than 50 rows so very wide × tall tables don't bloat the response when a JSONL representation is more compact. Helper: new `render_table_as_rows()` in [services/structured_chat.py](services/structured_chat.py), used by the existing `render_table_as_jsonl()`.
 
-### Disambiguate the overloaded `identifier` parameter
+### Disambiguate the overloaded `identifier` parameter — shipped
 
-`get_table_schema`, `get_structured_table_rows`, and `compute_portfolio_metric` all accept `identifier` as `table_name | filename | document_id`. Add a clarifying enum `identifier_type: Literal["table_name", "filename", "document_id"] | None = None` (None = auto-detect, current behavior). Non-breaking. Agents that want precision get it.
+`get_table_schema`, `get_table_rows`, `compute_portfolio_metric`, and `aggregate_table` all now accept `identifier_type: Literal["table_name", "filename", "document_id"] | None = None`. When provided, `StructuredStore.get_schema` restricts the SQL lookup to that one column instead of searching all three. Default (`None`) is auto-detect — fully backwards compatible.
 
-### `suggested_next_tools` hints in responses
+### `suggested_next_tools` hints in responses — shipped
 
-When `search_collection` detects numeric intent (`"total"`, `"average"`, `"how many"`), include `suggested_next: ["list_structured_tables"]` or similar in the response. Pure bonus signal — hosts that ignore it still work.
+`search_collection` detects numeric intent (`total`, `sum`, `average`, `mean`, `count`, `top N`, `breakdown`, etc. matched on word boundaries so "summarize" doesn't trigger "sum") and exact-match intent (double-quoted substrings, `verbatim`, `literal`, `exact`) in the query string. When detected, the response includes `suggested_next: [{tool, reason}, ...]` pointing at `list_tables` for numeric questions and `find_in_documents` for verbatim lookups. Pure bonus signal — hosts that ignore it still work.
 
 ---
 
@@ -543,4 +557,4 @@ Items that aren't funded yet but belong in the same direction of travel.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-04-11
+**Last updated:** 2026-04-16 (ship-status audit + P0.7 triage)
