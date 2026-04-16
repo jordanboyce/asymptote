@@ -1,0 +1,39 @@
+# NetX360 "Holdings by Investor" (HBIL) profile
+#
+# This format is hierarchical — the preprocessor in netx360.py flattens it
+# into a single table before normal profile matching runs.
+#
+# After preprocessing the flat columns are:
+#   Account Name, Account Number, Account Type,
+#   Asset, Ticker, Asset Type, Manager, Quantity, Price, Value
+#
+# Detection is handled by the preprocessor (is_netx360_hbil), not by the
+# standard column-hint path, so file_signatures are intentionally sparse.
+
+- vendor: netx360
+  display_name: "NetX360 — Holdings by Investor (HBIL)"
+  file_signatures:
+    filename_patterns:
+      - "HBIL*"
+      - "hbil*"
+      - "*netx360*"
+      - "*NetX360*"
+      - "*holdings*investor*"
+      - "*Holdings*Investor*"
+    required_strings:
+      - "Holdings by Investor"
+  # Column roles apply to the FLATTENED output columns from netx360.py
+  column_roles:
+    "Ticker": ticker
+    "Asset": name
+    "Quantity": quantity
+    "Price": price
+    "Value": market_value
+    "Asset Type": asset_class
+    "Account Name": account
+    "Account Number": account_number
+    "Manager": manager
+  type_overrides:
+    "Quantity": real
+    "Price": real
+    "Value": currency

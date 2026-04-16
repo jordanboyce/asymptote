@@ -899,6 +899,38 @@ class DocumentExtractor:
         ext = file_path.suffix.lower()
 
         if ext == '.csv':
+            # Check for NetX360 HBIL hierarchical format before normal CSV reading.
+            # The HBIL format has multiple ASSET header rows interspersed with account
+            # metadata blocks — standard header sniffing cannot handle it.
+            try:
+                from services.ingest_profiles.netx360 import is_netx360_hbil, preprocess_hbil
+                if is_netx360_hbil(file_path):
+                    logger.info(
+                        f"CSV {file_path.name}: detected NetX360 HBIL format, "
+                        "applying hierarchical preprocessor"
+                    )
+                    columns, rows = preprocess_hbil(file_path)
+                    sheet = {
+                        'sheet_name': '',
+                        'columns': columns,
+                        'rows': rows,
+                        'row_texts': [
+                            ' '.join(str(v) for v in r.values() if v is not None)
+                            for r in rows
+                        ],
+                        'document_metadata': {},
+                        'role_overrides': {},
+                        'type_overrides': {},
+                        'vendor_profile': None,
+                    }
+                    self._apply_ingest_profile(sheet, file_path)
+                    return [sheet]
+            except Exception as e:
+                logger.warning(
+                    f"NetX360 HBIL check/preprocess failed for {file_path.name}: {e}; "
+                    "falling back to standard CSV reader"
+                )
+
             header_idx, doc_metadata = _sniff_csv_header(file_path)
             try:
                 df = pd.read_csv(file_path, skiprows=header_idx)

@@ -200,4 +200,23 @@ def apply_profile(
                     f"grouping/subtotal rows (empty '{drop_col}')"
                 )
 
+    # Drop rows where a column matches specific values (e.g. TOTAL footer rows)
+    drop_value_spec = profile.get('drop_rows_where_col_value_in')
+    if drop_value_spec:
+        drop_col_name = drop_value_spec.get('column', '')
+        drop_values = {str(v).strip().lower() for v in drop_value_spec.get('values', [])}
+        drop_col = col_lower.get(drop_col_name.lower().strip())
+        if drop_col and drop_values:
+            before = len(rows)
+            rows = [
+                r for r in rows
+                if str(r.get(drop_col, '') or '').strip().lower() not in drop_values
+            ]
+            dropped = before - len(rows)
+            if dropped:
+                logger.info(
+                    f"Profile '{profile.get('display_name')}': dropped {dropped} "
+                    f"footer/structural rows ('{drop_col}' in drop list)"
+                )
+
     return columns, rows, col_role_map, col_type_map

@@ -47,9 +47,32 @@ def _extract_tabular_sheets(csv_path: Path) -> List[Dict[str, Any]]:
         extractor = extractor_mod.DocumentExtractor()
         return extractor.extract_tabular_sheets(csv_path)
     except ImportError:
-        # Fallback: minimal CSV reader + header sniffing + profile detection
+        # Fallback: minimal CSV reader + header sniffing + profile detection.
+        # Also handles NetX360 HBIL hierarchical format via the preprocessor.
         import pandas as pd
         from services.ingest_profiles import detect_profile, apply_profile
+
+        # NetX360 HBIL: hierarchical format — bypass normal pandas read entirely
+        try:
+            from services.ingest_profiles.netx360 import is_netx360_hbil, preprocess_hbil
+            if is_netx360_hbil(csv_path):
+                columns, rows = preprocess_hbil(csv_path)
+                profile = detect_profile(csv_path.name, columns, csv_path)
+                role_overrides: Dict[str, str] = {}
+                type_overrides: Dict[str, str] = {}
+                if profile:
+                    _, rows, role_overrides, type_overrides = apply_profile(profile, columns, rows)
+                return [{
+                    "sheet_name": "",
+                    "columns": columns,
+                    "rows": rows,
+                    "row_texts": [],
+                    "role_overrides": role_overrides,
+                    "type_overrides": type_overrides,
+                    "vendor_profile": profile.get("display_name") if profile else None,
+                }]
+        except Exception:
+            pass  # fall through to normal CSV path
 
         # Header sniffing: parse CSV line-by-line, pad to max width, find header
         import csv as _csv
@@ -427,6 +450,118 @@ class TestVanguardHoldings:
                 f'SELECT MIN("{pnl_col}") FROM "{table}"'
             ).fetchone()[0]
         assert min_val is not None and min_val < 0
+
+
+# ---------------------------------------------------------------------------
+# NetX360 Holdings by Investor (HBIL) — hierarchical format
+# ---------------------------------------------------------------------------
+
+class TestNetX360HoldingsByInvestor:
+    """Fixture: netx360_holdings_by_investor.csv
+
+    Hierarchical multi-account export: multiple ASSET header rows interspersed
+    with account metadata.  The preprocessor must flatten it into a single
+    table with Account Name / Account Number / Account Type added to each row.
+    """
+
+    FIXTURE = FIXTURES / "netx360_holdings_by_investor.csv"
+
+    @pytest.fixture(scope="class")
+    def store(self):
+        return _ingest_csv(self.FIXTURE)
+
+    @pytest.fixture(scope="class")
+    def schema(self, store):
+        return _get_schema(store, "netx360_holdings_by_investor.csv")
+
+    def test_file_detected_as_hbil(self):
+        """Signature detection: is_netx360_hbil must return True for the fixture."""
+        from services.ingest_profiles.netx360 import is_netx360_hbil
+        assert is_netx360_hbil(self.FIXTURE)
+
+    def test_preprocessor_emits_expected_columns(self):
+        """Preprocessor must produce the canonical FLAT_COLUMNS."""
+        from services.ingest_profiles.netx360 import preprocess_hbil, FLAT_COLUMNS
+        columns, rows = preprocess_hbil(self.FIXTURE)
+        assert set(columns) == set(FLAT_COLUMNS)
+
+    def test_preprocessor_strips_account_headers_and_totals(self):
+        """No Account Total or structural rows should appear in output."""
+        from services.ingest_profiles.netx360 import preprocess_hbil
+        _, rows = preprocess_hbil(self.FIXTURE)
+        for row in rows:
+            asset = (row.get("Asset") or "").lower()
+            assert not asset.startswith("account total"), (
+                f"Account Total row leaked into output: {row}"
+            )
+            assert asset not in ("total", ""), (
+                f"Structural row leaked into output: {row}"
+            )
+
+    def test_preprocessor_row_count(self):
+        """Fixture has 7 position rows (4 in account 1, 3 in account 2)."""
+        from services.ingest_profiles.netx360 import preprocess_hbil
+        _, rows = preprocess_hbil(self.FIXTURE)
+        assert len(rows) == 7, f"Expected 7 position rows, got {len(rows)}"
+
+    def test_account_name_propagated(self):
+        """Account Name must be non-null on every row."""
+        from services.ingest_profiles.netx360 import preprocess_hbil
+        _, rows = preprocess_hbil(self.FIXTURE)
+        for row in rows:
+            assert row.get("Account Name"), f"Missing Account Name on row: {row}"
+
+    def test_multiple_accounts_represented(self):
+        """Both accounts from the fixture must appear."""
+        from services.ingest_profiles.netx360 import preprocess_hbil
+        _, rows = preprocess_hbil(self.FIXTURE)
+        account_numbers = {row.get("Account Number") for row in rows}
+        assert "SMP-001234" in account_numbers
+        assert "SMP-005678" in account_numbers
+
+    def test_has_rows(self, schema):
+        assert schema["row_count"] >= 5
+
+    def test_market_value_role_present(self, schema):
+        mv_col = _col_by_role(schema, "market_value")
+        assert mv_col is not None, "No market_value role detected for NetX360 fixture"
+
+    def test_market_value_numeric(self, schema):
+        mv_col = _col_by_role(schema, "market_value")
+        if mv_col is None:
+            pytest.skip("market_value role not detected")
+        col_type = _col_type(schema, mv_col)
+        assert col_type in ("real", "currency", "integer"), (
+            f"market_value column type = '{col_type}', expected numeric"
+        )
+
+    def test_ticker_role_present(self, schema):
+        ticker_col = _col_by_role(schema, "ticker")
+        assert ticker_col is not None, "No ticker role detected for NetX360 fixture"
+
+    def test_vendor_profile_matched(self, store):
+        """The NetX360 HBIL YAML profile must be matched at ingest time."""
+        sheets = _extract_tabular_sheets(self.FIXTURE)
+        assert sheets, "No sheets returned"
+        vp = sheets[0].get("vendor_profile")
+        assert vp is not None and "NetX360" in vp, (
+            f"Expected NetX360 vendor_profile, got: {vp!r}"
+        )
+
+    def test_by_symbol_view_exists(self, store, schema):
+        view_name = schema["table_name"] + "__by_symbol"
+        assert _view_exists(store, view_name)
+
+    def test_total_market_value_plausible(self, store):
+        """Fixture total value is $1,154,647.30 — metric must be in the right ballpark."""
+        from services.financial.metrics import compute_financial_metric
+        result = compute_financial_metric(
+            store, "netx360_holdings_by_investor.csv", "total_market_value"
+        )
+        val = result["value"]
+        assert val is not None and val > 500_000, (
+            f"total_market_value = {val}, expected > $500,000 for this fixture"
+        )
 
 
 # ---------------------------------------------------------------------------
