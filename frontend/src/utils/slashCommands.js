@@ -119,81 +119,134 @@ const formatHelp = () => {
   return lines.join('\n')
 }
 
+// Shorten long account identifiers (NetX360 HBIL includes full name+address)
+const _shortAccount = (raw) => {
+  if (!raw) return 'Unknown Account'
+  const s = String(raw).replace(/\s+/g, ' ').trim()
+  // If it fits on one line, keep it
+  if (s.length <= 45) return s
+  // Take the first line-break chunk (name before address lines)
+  const firstChunk = s.split(/\d{3,5}\s+[A-Z]|\b[A-Z]{2}\s+\d{5}/)[0].trim()
+  return firstChunk.length > 10 ? firstChunk.slice(0, 42).trimEnd() + '…' : s.slice(0, 42) + '…'
+}
+
+const _fmtMoney = (n) => {
+  if (n == null) return '—'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`
+  return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+}
+
 const formatBrief = (brief) => {
   if (!brief) return 'No portfolio data found in this collection.'
   const lines = []
   const fmt = (n) => (n == null ? '—' : typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n))
 
   // Household summary
+  // NOTE: brief_generator uses keys: total_market_value, total_cost_basis, total_unrealized_pnl
   const hs = brief.household_summary || {}
   lines.push('MEETING BRIEF', '═'.repeat(40))
   lines.push(`Generated: ${brief.generated_at ? new Date(brief.generated_at).toLocaleString() : '—'}`, '')
   lines.push('HOUSEHOLD SUMMARY', '─'.repeat(20))
-  if (hs.total_market_value != null) lines.push(`Market Value:    $${fmt(hs.total_market_value)}`)
-  if (hs.total_cost_basis != null)   lines.push(`Cost Basis:      $${fmt(hs.total_cost_basis)}`)
-  if (hs.total_unrealized_gl != null) {
-    const sign = hs.total_unrealized_gl >= 0 ? '+' : ''
-    lines.push(`Unrealized G/L:  ${sign}$${fmt(hs.total_unrealized_gl)}`)
+  if (hs.total_market_value != null) lines.push(`Market Value:    ${_fmtMoney(hs.total_market_value)}`)
+  if (hs.total_cost_basis != null)   lines.push(`Cost Basis:      ${_fmtMoney(hs.total_cost_basis)}`)
+  const pnl = hs.total_unrealized_pnl ?? hs.total_unrealized_gl ?? null
+  if (pnl != null) {
+    const sign = pnl >= 0 ? '+' : ''
+    lines.push(`Unrealized G/L:  ${sign}${_fmtMoney(pnl)}`)
   }
-  if (hs.num_positions != null) lines.push(`Positions:       ${hs.num_positions}`)
   lines.push('')
 
-  // Accounts
+  // Accounts — deduplicate by key and truncate long names from HBIL exports
   if (brief.accounts?.length) {
     lines.push('ACCOUNTS', '─'.repeat(20))
+    const seen = new Set()
     for (const acc of brief.accounts) {
-      const label = acc.account || acc.account_type || 'Account'
-      lines.push(`${label}: $${fmt(acc.market_value)}`)
+      const label = _shortAccount(acc.account || acc.account_type || 'Account')
+      const key = `${label}|${acc.market_value}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      lines.push(`${label}: ${_fmtMoney(acc.market_value)}`)
     }
     lines.push('')
   }
 
-  // Top positions
+  // Top positions — deduplicate by name+value (same position may appear from both files)
   if (brief.top_positions?.length) {
     lines.push('TOP POSITIONS', '─'.repeat(20))
-    for (const p of brief.top_positions) {
-      const sym = p.symbol || p.description || '?'
-      const pct = p.weight_pct != null ? ` (${fmt(p.weight_pct)}%)` : ''
-      lines.push(`${sym}${pct}: $${fmt(p.market_value)}`)
+    const seen = new Set()
+    // Sort by market_value descending, deduplicate, take top 10
+    const sorted = [...brief.top_positions].sort((a, b) => (b.market_value || 0) - (a.market_value || 0))
+    const totalMv = hs.total_market_value || 0
+    let shown = 0
+    for (const p of sorted) {
+      // brief_generator returns 'name' (from name_col) and optionally 'ticker'
+      const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
+      const mv = p.market_value || 0
+      const dedupKey = `${sym}|${Math.round(mv)}`
+      if (seen.has(dedupKey)) continue
+      seen.add(dedupKey)
+      const pct = totalMv > 0 ? ` (${(mv / totalMv * 100).toFixed(1)}%)` : ''
+      lines.push(`${sym}${pct}: ${_fmtMoney(mv)}`)
+      if (++shown >= 10) break
     }
     lines.push('')
   }
 
-  // Tax-loss candidates
+  // Tax-loss candidates — brief_generator uses 'name', 'unrealized_loss' (positive number = loss)
   if (brief.tax_loss_candidates?.length) {
     lines.push(`⚠️  TAX-LOSS CANDIDATES (${brief.tax_loss_candidates.length})`, '─'.repeat(20))
+    const seen = new Set()
     for (const p of brief.tax_loss_candidates) {
-      const sym = p.symbol || p.description || '?'
-      lines.push(`${sym}: $(${fmt(Math.abs(p.unrealized_gl || 0))}) loss`)
+      const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
+      const loss = p.unrealized_loss ?? p.unrealized_gl ?? 0
+      const dedupKey = `${sym}|${Math.round(loss)}`
+      if (seen.has(dedupKey)) continue
+      seen.add(dedupKey)
+      lines.push(`${sym}: -${_fmtMoney(Math.abs(loss))} unrealized loss`)
     }
     lines.push('')
   }
 
-  // Concentration alerts
+  // Concentration alerts — brief_generator uses 'name', 'pct_of_portfolio'
   if (brief.concentration_alerts?.length) {
     lines.push(`🔴 CONCENTRATION ALERTS (${brief.concentration_alerts.length})`, '─'.repeat(20))
+    const seen = new Set()
     for (const p of brief.concentration_alerts) {
-      const sym = p.symbol || p.description || '?'
-      lines.push(`${sym}: ${fmt(p.weight_pct)}% of portfolio`)
+      const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
+      const pct = p.pct_of_portfolio ?? p.weight_pct
+      if (seen.has(sym)) continue
+      seen.add(sym)
+      lines.push(`${sym}: ${pct != null ? fmt(pct) + '%' : '—'} of portfolio`)
     }
     lines.push('')
   }
 
-  // Cash drag
+  // Cash drag — brief_generator uses 'name', dedup by value
   if (brief.cash_drag_alerts?.length) {
-    lines.push(`💵 CASH DRAG (${brief.cash_drag_alerts.length})`, '─'.repeat(20))
+    lines.push(`💵 CASH DRAG (${brief.cash_drag_alerts.length} position${brief.cash_drag_alerts.length !== 1 ? 's' : ''})`, '─'.repeat(20))
+    const seen = new Set()
     for (const p of brief.cash_drag_alerts) {
-      const desc = p.description || p.symbol || 'Cash'
-      lines.push(`${desc}: $${fmt(p.market_value)}`)
+      const desc = p.ticker || p.name || p.description || p.symbol || 'Cash'
+      const mv = p.market_value || 0
+      const key = `${Math.round(mv)}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      lines.push(`${desc}: ${_fmtMoney(mv)}`)
     }
     lines.push('')
   }
 
-  // Sector allocation
+  // Sector allocation — brief_generator uses 'sector', 'market_value' (no weight_pct — compute it)
   if (brief.sector_allocation?.length) {
     lines.push('SECTOR ALLOCATION', '─'.repeat(20))
+    const totalMv = hs.total_market_value || brief.sector_allocation.reduce((s, r) => s + (r.market_value || 0), 0)
     for (const s of brief.sector_allocation) {
-      lines.push(`${s.sector || '?'}: ${fmt(s.weight_pct)}%`)
+      const pct = totalMv > 0 ? ((s.market_value || 0) / totalMv * 100).toFixed(1) : '—'
+      // brief_generator uses 'weight_pct' OR compute from market_value
+      const displayPct = s.weight_pct != null ? fmt(s.weight_pct) : pct
+      lines.push(`${s.sector || '?'}: ${displayPct}%`)
     }
   }
 
