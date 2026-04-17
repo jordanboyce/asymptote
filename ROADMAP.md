@@ -6,16 +6,16 @@ Forward-looking work for Asymptote. Items that have already shipped are not list
 
 ## Strategic frame
 
-Asymptote's product surface is the **MCP server** ([services/mcp_server.py](services/mcp_server.py)), not the web chat. The Vue frontend stays as an admin/config UI; the primary way users query their data is by pointing Claude Desktop / Cursor / ChatGPT at the MCP endpoint. Every roadmap item is evaluated against "does this make Asymptote a better tool for a calling agent?"
+Asymptote's primary product surface is the **in-app chat** inside the Vue frontend. An advisor installs Asymptote, pastes an Anthropic or OpenAI API key into settings, uploads their files, and starts asking questions — no Claude Desktop, no Cursor, no MCP configuration. The MCP endpoint ([services/mcp_server.py](services/mcp_server.py)) stays supported as a secondary surface for power users who already live in an external MCP client.
 
-**Asymptote is not a chat app.** It does not compete with Claude, ChatGPT, or any other chat interface on reasoning, synthesis, reranking, or natural-language polish — those tools are far better at that work than anything we would build. The built-in chat tab exists for admin testing and for users without another MCP client, not as a product surface.
+**We do not rebuild the chat app.** The in-app chat is a thin adapter on top of the Anthropic Messages API (native tool use) and OpenAI Responses API (function calling). We reuse their SDKs for streaming, conversation state, and tool-call orchestration. Our job is to translate the existing tool registry into the provider's tool schema, run the standard tool-use loop on the backend, and stream tokens to the frontend. Every hour spent building chat primitives is an hour not spent on what Asymptote actually owns.
 
-**What Asymptote is:** the trustworthy, privacy-preserving data layer that makes a user's own documents usable by whatever LLM they already trust. The intelligence layer lives upstream in the host LLM. Asymptote owns:
+**What Asymptote is:** the trustworthy, privacy-preserving data layer that makes a user's own documents usable by whatever LLM they already trust — reached through Asymptote's own chat UI by default, or through an external MCP client when the user prefers one. The intelligence layer lives upstream in Anthropic / OpenAI. Asymptote owns:
 
 1. **Ingest arbitrary tabular and document data** from arbitrary tools (brokerages, banks, CRMs, planning software, internal systems) and make every file faithfully agent-queryable, regardless of vendor or column naming convention.
-2. **Return PII-free and CUI-free context.** Every MCP tool response is redacted before it leaves the process (see P0.0). No personal identifier, no account number, no Controlled Unclassified Information element reaches an external LLM. This is the feature — without it, regulated users (financial advisors, federal contractors, healthcare, legal) cannot use any external LLM against their data at all.
+2. **Return PII-free and CUI-free context.** Every tool response — whether served to the in-app chat or to an external MCP client — is redacted before it leaves the process (see P0.0). No personal identifier, no account number, no Controlled Unclassified Information element reaches an external LLM. This is the feature — without it, regulated users (financial advisors, federal contractors, healthcare, legal) cannot use any external LLM against their data at all.
 3. **Pass raw data through by default; only abstract when we must.** Column headers, row values, document text are returned as-is (modulo redaction) so the calling LLM does its own semantic translation. Role mapping and other semantic layers exist only where *Asymptote itself* has to act deterministically — aggregations, metric computation, routing — not as a translation step for the LLM.
-4. **Expose analytical and enrichment primitives** as MCP tools that compose against that data (price history, corporate events, security classification, deterministic aggregations).
+4. **Expose analytical and enrichment primitives as a single tool registry** callable from both surfaces — the in-app chat (via the provider tool-use loop) and external MCP clients. One set of primitives; two delivery surfaces; no feature drift between them.
 5. **Never be silently wrong.** A data-layer tool that returns confidently incorrect numbers is worse than no tool. Aggregations, type coercions, and unit conversions must surface uncertainty rather than collapse it. When role detection fails, degrade to raw-data tools and let the LLM handle semantics — never guess and pretend.
 
 Financial advisors are the first wedge, but the architecture is general — any tabular export from any tool should land cleanly, and any regulated user who needs PII/CUI scrubbing before sending context to an external model is a target user.
@@ -381,7 +381,7 @@ User-editable markdown blob per collection. Stored on the `collections` table in
 
 **Why it paid off:** agents using Claude Desktop lose context between sessions. A guide that travels with every tool response is the cheapest way to give Asymptote durable memory. Next improvement (deferred): default-template seeding on collection creation.
 
-**Cross-link with v4.5:** the client profile object below is the structured cousin of this. The guide is freeform markdown ("how to think about this collection"); the profile is typed fields ("risk_tolerance: moderate"). They coexist — the guide is for narrative, the profile is for primitives.
+**Cross-link with v4.6:** the client profile object below is the structured cousin of this. The guide is freeform markdown ("how to think about this collection"); the profile is typed fields ("risk_tolerance: moderate"). They coexist — the guide is for narrative, the profile is for primitives.
 
 ### `find_in_documents(pattern, case_sensitive=False, collection_id=None, max_results=20)` — shipped
 
@@ -401,7 +401,49 @@ New MCP tool at [services/mcp_server.py](services/mcp_server.py). Does a literal
 
 ---
 
-## v4.4 — Meeting capture wedge
+## v4.4 — In-app chat surface (primary product surface)
+
+The wedge that turns Asymptote from "data layer behind an MCP endpoint" into "the tool advisors actually open every morning." Until this ships, every demo requires Claude Desktop or Cursor — a setup step that's already killed trial-to-usage conversion more than once. This is the first post-v4.1 delivery priority.
+
+**Non-goal: build a chat app.** We do not compete with Claude Desktop or ChatGPT on branching, regeneration, artifact rendering, image analysis, or any other chat-UX surface. We build the smallest possible chat that lets an advisor point at their collection and get the Asymptote tool set through a frontier model.
+
+### Architecture
+
+- **Backend chat adapter** (new module, `services/chat_adapter.py` or similar). Runs the provider's native tool-use loop:
+  1. Take the conversation (list of messages) + a `tools` array derived from the existing MCP tool registry.
+  2. Call the provider API (Anthropic Messages API or OpenAI Responses API, depending on which key the user configured).
+  3. When the provider asks for a tool call, dispatch it to the existing tool function — same path, same redaction middleware.
+  4. Append the tool result and loop until the provider stops asking for tools.
+  5. Stream tokens back to the frontend via SSE.
+- **No reimplementation of conversation state, streaming, or tool-call orchestration.** The `anthropic` and `openai` SDKs already ship these. Our job is the tool-registry translator and the dispatcher.
+- **Conversation memory** = the messages array the provider consumes. No new storage format. If we later want conversation history beyond one session, persist the messages array as-is.
+- **Per-collection tool scoping.** When a conversation is bound to a collection, the tool list filters to that collection's tables/documents. Smaller provider-side context; clearer tool-call behavior.
+- **Unified tool registry.** Both surfaces (in-app chat and external MCP client) call into the same set of primitives. No forking, no feature drift.
+
+### Configuration
+
+- BYO-key settings panel in the frontend: Anthropic API key, OpenAI API key, default provider, default model, default collection.
+- Keys stored locally (OS keyring or encrypted `.env`), never sent anywhere except the configured provider.
+- Provider selection is per-conversation with a sensible default; switching providers mid-conversation is not supported in v1.
+
+### UI
+
+- Extend the existing chat tab in [frontend/src/App.vue](frontend/src/App.vue) rather than building a new page.
+- Streaming tokens, tool-call indicators (cheap "calling `search_collection`..." status), and a collapsible redaction-summary panel so the advisor can see what was stripped before each outbound call.
+- No thread branching, no regeneration, no message editing in v1 — these are chat-app features, not data-layer features.
+
+### Acceptance test
+
+The full 12-step Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) runs end-to-end **entirely inside Asymptote's chat tab**, with no Claude Desktop and no Cursor. Every tool call visible in the redaction preview. Every number correct per v4.1 acceptance bar.
+
+### Out of scope (stays in the MCP endpoint path)
+
+- MCP client config generators (Claude Desktop JSON, Cursor `.vscode/mcp.json`) stay for power users but stop being the hero path. Moves to v4.7 (Distribution).
+- Any feature that duplicates provider UX (artifact rendering, image input, voice, file attachments beyond the existing upload flow).
+
+---
+
+## v4.5 — Meeting capture wedge
 
 The first feature that turns Asymptote from "data layer" into "advisor workflow tool." Built on top of v4.1 + v4.2 — meeting prep is only useful if the portfolio drift it surfaces is correct.
 
@@ -432,7 +474,7 @@ The first feature that turns Asymptote from "data layer" into "advisor workflow 
 
 ---
 
-## v4.5 — Client profile object & advisor analytics
+## v4.6 — Client profile object & advisor analytics
 
 With ingestion fidelity solid, enrichment feeds available, and meetings captured, these become small additions rather than new systems.
 
@@ -463,9 +505,9 @@ With ingestion fidelity solid, enrichment feeds available, and meetings captured
 
 ---
 
-## v4.6 — Distribution (deferred from old v4.2)
+## v4.7 — Distribution (deferred from old v4.2)
 
-Getting Asymptote into the places agents already live. **Deferred until at least one advisor firm is using the v4.1–v4.5 stack daily.** Distribution doesn't matter without product-market fit at one customer first.
+Getting Asymptote into the places agents already live. **Deferred until at least one advisor firm is using the v4.1–v4.6 stack daily.** Distribution doesn't matter without product-market fit at one customer first.
 
 When it's time:
 
@@ -478,7 +520,7 @@ When it's time:
 
 ---
 
-## v4.7 — Ingestion depth (the rest of old v4.3)
+## v4.8 — Ingestion depth (the rest of old v4.3)
 
 PDF table extraction was promoted into v4.1 P0.8 because it's load-bearing for advisor files. The remainder:
 
@@ -488,7 +530,7 @@ PDF table extraction was promoted into v4.1 P0.8 because it's load-bearing for a
 
 ### Email ingestion
 
-- `.eml` / `.msg` / Gmail MBOX import. Strip signatures + quoted history at ingest. Thread-level grouping so reply + parent end up adjacent in retrieval. Email is where half the client context lives — pairs naturally with v4.4 meeting capture.
+- `.eml` / `.msg` / Gmail MBOX import. Strip signatures + quoted history at ingest. Thread-level grouping so reply + parent end up adjacent in retrieval. Email is where half the client context lives — pairs naturally with v4.5 meeting capture.
 
 ### Semantic / structure-aware chunking
 
@@ -550,11 +592,11 @@ Items that aren't funded yet but belong in the same direction of travel.
 ## How to use this file
 
 - **v4.1 is the only thing that matters right now.** Don't start anything below it until P0.1–P0.7 are done. The advisor demo bugs above are the acceptance test: re-run those three questions against the same Schwab file and they should produce correct numbers without manual workaround SQL.
-- **v4.2 is next** — small, contained tools that each independently unlock a real advisor question.
-- **v4.3 is the previously-planned MCP polish work**, still valid, just deferred.
-- **v4.4 / v4.5** are the advisor-workflow wedge that turns this into a product, not a query layer.
-- **v4.6 / v4.7** wait until there's daily usage at one firm.
+- **v4.2 and v4.3 shipped** — enrichment feeds and MCP surface polish, each independently unlocking a real advisor question.
+- **v4.4 — in-app chat surface** is the next delivery priority. Until it ships, advisors have to stand up Claude Desktop or Cursor to touch their data, which is the exact friction we're trying to remove. This is the new primary product surface.
+- **v4.5 / v4.6** are the advisor-workflow wedge (meeting capture + client profile) that turns this into a product, not a query layer.
+- **v4.7 / v4.8** wait until there's daily usage at one firm.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-04-16 (P0.4 shipped — NetX360 HBIL preprocessor + Pershing UGL fix)
+**Last updated:** 2026-04-16 (strategic pivot: in-app chat promoted to primary surface as new v4.4; meeting capture / client profile / distribution / ingestion depth bumped to v4.5 / v4.6 / v4.7 / v4.8)
