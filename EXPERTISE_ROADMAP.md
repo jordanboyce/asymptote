@@ -1,6 +1,6 @@
 # Expertise Library — MVP Roadmap
 
-**Target:** Ship end-to-end by end of day tomorrow.
+**Status: ✅ SHIPPED** — committed to `csv-updates` on 2026-04-17.
 **Scope:** Playbook-style expertise only. No formula engine, no PDF extraction, no versioning.
 
 ---
@@ -183,12 +183,14 @@ Total: ~7 hours of focused work, which fits a day with overhead.
 
 ## Definition of done (MVP)
 
-- [ ] Advisor can open the Expertise Library, create a pack "Conservative Income Policy" with guidance text, and save it.
-- [ ] The pack appears in the library list and can be re-opened and edited.
-- [ ] On a portfolio collection, the advisor can attach that pack via the Applied Expertise section.
-- [ ] When the advisor asks "How does this portfolio align with our investment policy?", the AI's answer clearly reflects language and rules from the pack (not boilerplate).
-- [ ] Detaching the pack and asking the same question again produces a visibly different answer (proves injection is load-bearing).
-- [ ] Deleting a pack removes it from the library and from any collection it was attached to.
+- [x] Advisor can open the Expertise Library, create a pack "Conservative Income Policy" with guidance text, and save it.
+- [x] The pack appears in the library list and can be re-opened and edited.
+- [x] On a portfolio collection, the advisor can attach that pack via the Applied Expertise section.
+- [x] When the advisor asks "How does this portfolio align with our investment policy?", the AI's answer clearly reflects language and rules from the pack (not boilerplate).
+- [x] Detaching the pack and asking the same question again produces a visibly different answer (proves injection is load-bearing).
+- [x] Deleting a pack removes it from the library and from any collection it was attached to.
+
+> **Empty state:** The library starts empty by design — no seed data. Advisors create their first pack via the "New Pack" button. The empty state UI shows a prompt to get started.
 
 ---
 
