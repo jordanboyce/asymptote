@@ -30,6 +30,39 @@ class ExpertiseStore:
 
     def __init__(self, db_path: Path = Path("data/app.db")):
         self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_tables()
+
+    def _ensure_tables(self) -> None:
+        """Create expertise tables if they don't exist yet.
+
+        Safe to call on every startup — all statements use IF NOT EXISTS.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS expertise_packs (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    description TEXT,
+                    body        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS collection_expertise (
+                    collection_id TEXT NOT NULL,
+                    pack_id       TEXT NOT NULL,
+                    attached_at   TEXT NOT NULL,
+                    PRIMARY KEY (collection_id, pack_id),
+                    FOREIGN KEY (pack_id) REFERENCES expertise_packs(id) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_collection_expertise_collection
+                ON collection_expertise(collection_id)
+            """)
+            conn.commit()
 
     # ── internal helpers ─────────────────────────────────────────────────────
 
