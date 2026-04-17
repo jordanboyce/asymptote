@@ -120,14 +120,31 @@ const formatHelp = () => {
 }
 
 // Shorten long account identifiers (NetX360 HBIL includes full name+address)
+// Strategy: stop at the first trust/account-role keyword, then at a street
+// number, and finally hard-truncate — whichever gives the shortest clean label.
 const _shortAccount = (raw) => {
   if (!raw) return 'Unknown Account'
   const s = String(raw).replace(/\s+/g, ' ').trim()
-  // If it fits on one line, keep it
   if (s.length <= 45) return s
-  // Take the first line-break chunk (name before address lines)
-  const firstChunk = s.split(/\d{3,5}\s+[A-Z]|\b[A-Z]{2}\s+\d{5}/)[0].trim()
-  return firstChunk.length > 10 ? firstChunk.slice(0, 42).trimEnd() + '…' : s.slice(0, 42) + '…'
+
+  // 1. Split at common trust / account-role keywords (inclusive: keep keyword)
+  const roleMatch = s.match(/^(.*?\b(?:TTEE|TRUST|IRA|ROTH|UGMA|UTMA|LLC|INC|CORP|JTWROS|TOD|FBO|DBA)\b)/i)
+  if (roleMatch) {
+    const candidate = roleMatch[1].trim()
+    if (candidate.length >= 6 && candidate.length <= 60) {
+      return candidate.length <= 45 ? candidate : candidate.slice(0, 42).trimEnd() + '…'
+    }
+  }
+
+  // 2. Detect where a US street address starts (digits followed by a direction or street)
+  const addrIdx = s.search(/\b\d{2,5}\s+[A-Z]/)
+  if (addrIdx > 6) {
+    const beforeAddr = s.slice(0, addrIdx).trim()
+    return beforeAddr.length <= 45 ? beforeAddr : beforeAddr.slice(0, 42).trimEnd() + '…'
+  }
+
+  // 3. Hard truncate
+  return s.slice(0, 42).trimEnd() + '…'
 }
 
 const _fmtMoney = (n) => {
@@ -173,17 +190,21 @@ const formatBrief = (brief) => {
   }
 
   // Top positions — deduplicate by name+value (same position may appear from both files)
+  // Also filter out phantom header-value rows (e.g. name="Symbol") from multi-account CSVs
+  // that haven't been re-indexed yet after the header-row fix.
+  const _knownHeaders = new Set(['symbol', 'description', 'account name', 'account number',
+    'name', 'ticker', 'quantity', 'price', 'value', 'market value', 'cost basis'])
   if (brief.top_positions?.length) {
     lines.push('TOP POSITIONS', '─'.repeat(20))
     const seen = new Set()
-    // Sort by market_value descending, deduplicate, take top 10
     const sorted = [...brief.top_positions].sort((a, b) => (b.market_value || 0) - (a.market_value || 0))
     const totalMv = hs.total_market_value || 0
     let shown = 0
     for (const p of sorted) {
-      // brief_generator returns 'name' (from name_col) and optionally 'ticker'
       const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
       const mv = p.market_value || 0
+      // Skip phantom header rows
+      if (_knownHeaders.has(sym.toLowerCase().trim())) continue
       const dedupKey = `${sym}|${Math.round(mv)}`
       if (seen.has(dedupKey)) continue
       seen.add(dedupKey)
@@ -196,17 +217,24 @@ const formatBrief = (brief) => {
 
   // Tax-loss candidates — brief_generator uses 'name', 'unrealized_loss' (positive number = loss)
   if (brief.tax_loss_candidates?.length) {
-    lines.push(`⚠️  TAX-LOSS CANDIDATES (${brief.tax_loss_candidates.length})`, '─'.repeat(20))
     const seen = new Set()
+    const realLosses = []
     for (const p of brief.tax_loss_candidates) {
       const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
+      if (_knownHeaders.has(sym.toLowerCase().trim())) continue
       const loss = p.unrealized_loss ?? p.unrealized_gl ?? 0
       const dedupKey = `${sym}|${Math.round(loss)}`
       if (seen.has(dedupKey)) continue
       seen.add(dedupKey)
-      lines.push(`${sym}: -${_fmtMoney(Math.abs(loss))} unrealized loss`)
+      realLosses.push({ sym, loss })
     }
-    lines.push('')
+    if (realLosses.length) {
+      lines.push(`⚠️  TAX-LOSS CANDIDATES (${realLosses.length})`, '─'.repeat(20))
+      for (const { sym, loss } of realLosses) {
+        lines.push(`${sym}: -${_fmtMoney(Math.abs(loss))} unrealized loss`)
+      }
+      lines.push('')
+    }
   }
 
   // Concentration alerts — brief_generator uses 'name', 'pct_of_portfolio'
@@ -223,17 +251,25 @@ const formatBrief = (brief) => {
     lines.push('')
   }
 
-  // Cash drag — brief_generator uses 'name', dedup by value
+  // Cash drag — group same fund across multiple HBIL accounts by name prefix
   if (brief.cash_drag_alerts?.length) {
-    lines.push(`💵 CASH DRAG (${brief.cash_drag_alerts.length} position${brief.cash_drag_alerts.length !== 1 ? 's' : ''})`, '─'.repeat(20))
-    const seen = new Set()
+    // Group entries whose names share the same first ~40 chars (same fund, different accounts)
+    const cashGroups = new Map()
     for (const p of brief.cash_drag_alerts) {
-      const desc = p.ticker || p.name || p.description || p.symbol || 'Cash'
-      const mv = p.market_value || 0
-      const key = `${Math.round(mv)}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      lines.push(`${desc}: ${_fmtMoney(mv)}`)
+      const rawName = p.ticker || p.name || p.description || p.symbol || 'Cash'
+      const groupKey = rawName.slice(0, 40).trimEnd().toLowerCase()
+      if (!cashGroups.has(groupKey)) {
+        cashGroups.set(groupKey, { name: rawName, total: 0, count: 0 })
+      }
+      const g = cashGroups.get(groupKey)
+      g.total += p.market_value || 0
+      g.count++
+    }
+    const cashList = [...cashGroups.values()].sort((a, b) => b.total - a.total)
+    lines.push(`💵 CASH DRAG (${cashList.length} position${cashList.length !== 1 ? 's' : ''})`, '─'.repeat(20))
+    for (const g of cashList) {
+      const acctNote = g.count > 1 ? ` (${g.count} accounts)` : ''
+      lines.push(`${g.name}: ${_fmtMoney(g.total)}${acctNote}`)
     }
     lines.push('')
   }

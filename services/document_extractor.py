@@ -1010,6 +1010,14 @@ class DocumentExtractor:
         import pandas as pd
 
         columns = [str(col) for col in df.columns]
+        # Build a set of column names (lowercased) to detect repeated header rows.
+        # Multi-account brokerage exports (Fidelity, Schwab, etc.) often embed the
+        # header row again at the start of each account section, e.g.:
+        #   Symbol, Description, Quantity, ...   ← real header (used by pandas)
+        #   AAPL,   Apple Inc,   10, ...
+        #   Symbol, Description, Quantity, ...   ← repeated header ← must skip
+        #   MSFT,   Microsoft,   5, ...
+        col_name_set = {c.lower().strip() for c in columns}
         rows: List[Dict[str, Any]] = []
         row_texts: List[str] = []
 
@@ -1029,6 +1037,20 @@ class DocumentExtractor:
                         row_dict[col] = str(val)
                     display = str(val)
                 text_parts.append(f"{col}: {display}")
+
+            # Skip rows whose non-null string values are all column header names
+            # (repeated header rows from multi-account CSV exports).
+            non_null_str = [
+                str(v).lower().strip()
+                for v in row_dict.values()
+                if v is not None and str(v).strip()
+            ]
+            if len(non_null_str) >= 3:
+                matching = sum(1 for v in non_null_str if v in col_name_set)
+                if matching / len(non_null_str) >= 0.6:
+                    logger.debug("Skipped repeated header row in CSV sheet '%s'", sheet_name)
+                    continue
+
             rows.append(row_dict)
             prefix = f"[Sheet: {sheet_name}] " if sheet_name else ""
             row_texts.append(prefix + " | ".join(text_parts))

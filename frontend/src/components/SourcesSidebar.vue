@@ -136,69 +136,7 @@
             <button class="ml-1 underline" @click="indexError = ''">Dismiss</button>
           </div>
 
-          <!-- Advanced options (collapsible) -->
-          <div class="border-t border-base-300 pt-2 mt-1">
-            <button
-              class="flex items-center gap-1.5 text-xs text-base-content/50 hover:text-base-content/70 transition-colors w-full text-left"
-              @click="advancedOpen = !advancedOpen"
-            >
-              <ChevronDown :size="10" class="transition-transform" :class="advancedOpen ? 'rotate-180' : ''" />
-              Advanced options
-            </button>
-
-            <div v-show="advancedOpen" class="mt-2 space-y-2">
-              <!-- Source code toggle -->
-              <label class="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" class="toggle toggle-xs toggle-primary" v-model="isSourceCode" :disabled="indexing" />
-                <span class="text-xs">Source code mode</span>
-              </label>
-
-              <!-- Source code options (when in source code mode) -->
-              <div v-if="isSourceCode" class="space-y-1.5 pl-1">
-                <label class="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" v-model="includeDocumentation" :disabled="indexing" />
-                  <span class="text-xs">Include docs (.md, .json)</span>
-                </label>
-                <div class="flex flex-wrap gap-1">
-                  <label
-                    v-for="ext in fileExtensions"
-                    :key="ext.value"
-                    class="flex items-center gap-1 px-1.5 py-0.5 rounded cursor-pointer text-xs transition-colors"
-                    :class="ext.enabled ? 'bg-primary/20 border border-primary/40' : 'bg-base-300 hover:bg-base-200'"
-                  >
-                    <input type="checkbox" v-model="ext.enabled" class="checkbox checkbox-xs checkbox-primary" :disabled="indexing" />
-                    {{ ext.label }}
-                  </label>
-                </div>
-              </div>
-
-              <!-- Copy & Background options -->
-              <div class="flex items-center gap-3 text-xs">
-                <label class="flex items-center gap-1 cursor-pointer" title="Copy files to library storage">
-                  <input type="checkbox" class="toggle toggle-xs" v-model="copyToLibrary" :disabled="indexing" />
-                  Copy to library
-                </label>
-                <label class="flex items-center gap-1 cursor-pointer" title="Index files in the background">
-                  <input type="checkbox" class="toggle toggle-xs toggle-secondary" v-model="useBackgroundIndexing" :disabled="indexing" />
-                  Background
-                </label>
-              </div>
-
-              <!-- Recent repos (source code mode only) -->
-              <div v-if="isSourceCode && recentRepos.length > 0" class="space-y-1">
-                <div class="text-xs font-medium text-base-content/50">Recent repos</div>
-                <div
-                  v-for="(repo, idx) in recentRepos"
-                  :key="idx"
-                  class="flex items-center gap-1.5 p-1.5 rounded hover:bg-base-200 cursor-pointer text-xs"
-                  @click="selectRecentRepo(repo)"
-                >
-                  <FolderOpen :size="11" class="text-primary flex-shrink-0" />
-                  <span class="flex-1 truncate" :title="repo.path">{{ repo.name }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <!-- Advanced options hidden for financial advisor build -->
 
         </div>
       </div>
