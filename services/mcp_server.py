@@ -26,6 +26,7 @@ from services.structured_chat import (
 from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
 from services.structured_store import SQLValidationError, StructuredStore
 from services.privacy.redaction_middleware import redact_mcp_response
+from services.brief_generator import generate_meeting_brief as _generate_brief
 
 logger = logging.getLogger(__name__)
 
@@ -376,6 +377,85 @@ def list_collections() -> dict[str, Any]:
         "default_collection_id": default_id,
         "collections": entries,
     }, "list_collections")
+
+
+@_asymptote_mcp.tool()
+def generate_meeting_brief(
+    collection_id: str | None = None,
+    tax_loss_min: float = 500.0,
+    concentration_pct: float = 10.0,
+    cash_drag_min: float = 50000.0,
+    top_n: int = 10,
+) -> dict[str, Any]:
+    """Generate a pre-meeting portfolio brief for a collection.
+
+    The PRIMARY tool for advisor meeting preparation. Scans every CSV / Excel
+    table in the collection that has detected financial roles and computes a
+    ready-to-read brief across seven sections:
+
+      household_summary     — total market value, cost basis, unrealized P&L
+      accounts              — per-account breakdown (when an account column exists)
+      top_positions         — top N holdings by market value
+      tax_loss_candidates   — underwater positions with loss >= tax_loss_min
+      concentration_alerts  — single positions >= concentration_pct of portfolio
+      cash_drag_alerts      — cash / money-market positions >= cash_drag_min
+      sector_allocation     — market value grouped by sector
+
+    Call this FIRST at the start of any client meeting prep, portfolio review,
+    or "what should I know about this portfolio?" question. It works across
+    multi-sheet and multi-file collections — all tables are merged into one
+    household view.
+
+    Parameters:
+      - collection_id: Optional. If omitted, uses the server's default
+        collection. Pass an explicit id (from `list_collections`) to target
+        a specific client portfolio.
+      - tax_loss_min: Minimum unrealized loss (in dollars) to surface as a
+        tax-loss harvesting candidate. Default 500.
+      - concentration_pct: Single-position percentage threshold. Positions
+        at or above this share of total market value appear in
+        concentration_alerts. Default 10.0 (10 %).
+      - cash_drag_min: Minimum cash / money-market balance (in dollars) to
+        flag as cash drag. Default 50000.
+      - top_n: Number of top positions by market value to return. Default 10.
+
+    Returns a dict with:
+      - collection_id, tables_scanned, generated_at
+      - household_summary: total_market_value, total_cost_basis,
+        total_unrealized_pnl, sources (per-file breakdown)
+      - accounts: list of {account, market_value}
+      - top_positions: list of {name, market_value, cost_basis?,
+        unrealized_pnl?, ticker?, sector?}
+      - tax_loss_candidates: list of {name, market_value, cost_basis,
+        unrealized_loss, ticker?}
+      - concentration_alerts: list of {name, market_value,
+        pct_of_portfolio, threshold_pct}
+      - cash_drag_alerts: list of {name, market_value, threshold}
+      - sector_allocation: list of {sector, market_value,
+        position_count, pct_of_portfolio?}
+
+    When NOT to use this tool:
+      - For detailed SQL analysis of a single table → use query_table.
+      - For a specific canned metric → use compute_portfolio_metric.
+      - For semantic / narrative questions → use search_collection.
+    """
+    _ensure_enabled()
+    resolved_collection = _resolve_collection_id(collection_id)
+    store = _get_structured_store(resolved_collection)
+
+    thresholds = {
+        'tax_loss_min': tax_loss_min,
+        'concentration_pct': concentration_pct,
+        'cash_drag_min': cash_drag_min,
+        'top_n': top_n,
+    }
+
+    try:
+        brief = _generate_brief(store, collection_id=resolved_collection, thresholds=thresholds)
+    except Exception as exc:
+        raise ValueError(f"Brief generation failed: {exc}") from exc
+
+    return _redact(brief, "generate_meeting_brief")
 
 
 @_asymptote_mcp.tool()
