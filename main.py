@@ -34,6 +34,8 @@ from services.reindex_service import reindex_service
 from services.collection_service import collection_service
 from services.sharing_service import sharing_service
 from services.indexer_manager import indexer_manager
+from services.expertise_store import ExpertiseStore
+expertise_store = ExpertiseStore()
 from services.structured_chat import (
     _summarize_args as _summarize_for_log,
     build_structured_context,
@@ -75,6 +77,11 @@ from models.schemas import (
     ChatSource,
     RepoUploadRequest,
     RepoUploadResponse,
+    ExpertisePack,
+    ExpertisePackCreate,
+    ExpertisePackUpdate,
+    CollectionExpertiseResponse,
+    SetCollectionExpertiseRequest,
 )
 from services.upload_service import upload_service
 from services.form_field_extractor import (
@@ -1250,6 +1257,30 @@ async def chat_with_documents(
         base_system_parts.append(
             "Use RETRIEVED CONTEXT for prose/document questions, citing [Source N] as needed."
         )
+
+        # --- Expertise Library injection (single-collection scope only) ---
+        # Load packs attached to this collection and build the guidance block.
+        # Skipped for "all" scope to avoid conflicting guidance across clients.
+        expertise_block: str = ""
+        if chat_request.scope != "all":
+            try:
+                attached_packs = expertise_store.get_packs_for_collection(collection_id)
+                if attached_packs:
+                    base_system_parts.append(
+                        "When ADVISOR EXPERTISE is provided, follow its guidance, rules, and "
+                        "frameworks as authoritative instructions for this analysis."
+                    )
+                    guidance_sections = "\n\n".join(
+                        f"## {p.name}\n{(p.description + chr(10)) if p.description else ''}{p.body}".strip()
+                        for p in attached_packs
+                    )
+                    expertise_block = (
+                        "ADVISOR EXPERTISE (apply these frameworks when analyzing this portfolio):\n"
+                        + guidance_sections
+                    )
+            except Exception as _ep_err:
+                logger.warning("Failed to load expertise packs for collection %s: %s", collection_id, _ep_err)
+
         base_system = " ".join(base_system_parts)
 
         def compose_prompt(extra_suffix: str = "") -> str:
@@ -1258,6 +1289,8 @@ async def chat_with_documents(
                 "",
                 f"COLLECTION OVERVIEW:\n{collection_overview}",
             ]
+            if expertise_block:
+                parts.extend(["", expertise_block])
             if inline_block:
                 parts.extend(["", inline_block])
             parts.extend(["", f"RETRIEVED CONTEXT:\n{context_text}"])
@@ -1293,6 +1326,8 @@ async def chat_with_documents(
         # Build system prompt (no conversation history/user — those go into
         # messages natively) for the native-tools path.
         system_parts_native = [base_system, f"COLLECTION OVERVIEW:\n{collection_overview}"]
+        if expertise_block:
+            system_parts_native.append(expertise_block)
         if inline_block:
             system_parts_native.append(inline_block)
         if context_text and context_text != "No relevant context found.":
@@ -3694,6 +3729,69 @@ async def revoke_share(share_id: str, user_id: str = Depends(get_current_user_id
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+
+# ── Expertise Library endpoints ───────────────────────────────────────────────
+
+@app.get("/api/expertise/packs", response_model=list[ExpertisePack], tags=["expertise"])
+async def list_expertise_packs():
+    """Return all expertise packs ordered by name."""
+    return expertise_store.list_packs()
+
+
+@app.post("/api/expertise/packs", response_model=ExpertisePack, status_code=201, tags=["expertise"])
+async def create_expertise_pack(data: ExpertisePackCreate):
+    """Create a new expertise pack."""
+    return expertise_store.create_pack(data)
+
+
+@app.get("/api/expertise/packs/{pack_id}", response_model=ExpertisePack, tags=["expertise"])
+async def get_expertise_pack(pack_id: str):
+    """Return a single expertise pack by ID."""
+    pack = expertise_store.get_pack(pack_id)
+    if pack is None:
+        raise HTTPException(status_code=404, detail="Expertise pack not found")
+    return pack
+
+
+@app.put("/api/expertise/packs/{pack_id}", response_model=ExpertisePack, tags=["expertise"])
+async def update_expertise_pack(pack_id: str, data: ExpertisePackUpdate):
+    """Partially update an expertise pack."""
+    pack = expertise_store.update_pack(pack_id, data)
+    if pack is None:
+        raise HTTPException(status_code=404, detail="Expertise pack not found")
+    return pack
+
+
+@app.delete("/api/expertise/packs/{pack_id}", status_code=204, tags=["expertise"])
+async def delete_expertise_pack(pack_id: str):
+    """Delete an expertise pack (also removes all collection attachments)."""
+    deleted = expertise_store.delete_pack(pack_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Expertise pack not found")
+
+
+@app.get(
+    "/api/collections/{collection_id}/expertise",
+    response_model=CollectionExpertiseResponse,
+    tags=["expertise"],
+)
+async def get_collection_expertise(collection_id: str):
+    """List all expertise packs attached to a collection."""
+    packs = expertise_store.get_packs_for_collection(collection_id)
+    return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
+
+
+@app.put(
+    "/api/collections/{collection_id}/expertise",
+    response_model=CollectionExpertiseResponse,
+    tags=["expertise"],
+)
+async def set_collection_expertise(collection_id: str, data: SetCollectionExpertiseRequest):
+    """Replace the full set of expertise packs attached to a collection."""
+    expertise_store.set_packs_for_collection(collection_id, data.pack_ids)
+    packs = expertise_store.get_packs_for_collection(collection_id)
+    return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
 
 
 # Redirect bare /mcp (no trailing slash) to /mcp/ so MCP clients that use the old

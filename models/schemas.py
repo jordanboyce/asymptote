@@ -1,5 +1,6 @@
 """Pydantic schemas for API request/response models."""
 
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
@@ -352,3 +353,45 @@ class RepoUploadResponse(BaseModel):
     total_chunks: int = Field(0, description="Total chunks created")
     document_ids: List[str] = Field(default_factory=list, description="List of created document IDs")
     failed_files: List[Dict[str, str]] = Field(default_factory=list, description="List of files that failed with error messages")
+
+
+# ── Expertise Library schemas ─────────────────────────────────────────────────
+
+class ExpertisePack(BaseModel):
+    """A named, reusable block of advisor guidance injected into collection chat prompts."""
+
+    id: str = Field(..., description="UUID primary key")
+    name: str = Field(..., description="Short human-readable name for the pack")
+    description: Optional[str] = Field(None, description="One-line summary shown in the library list")
+    body: str = Field(..., description="Markdown body — the full guidance text injected into the LLM prompt")
+    created_at: datetime = Field(..., description="UTC creation timestamp")
+    updated_at: datetime = Field(..., description="UTC last-update timestamp")
+
+
+class ExpertisePackCreate(BaseModel):
+    """Request body for creating a new expertise pack."""
+
+    name: str = Field(..., min_length=1, description="Pack name")
+    description: Optional[str] = Field(None, description="Optional one-line summary")
+    body: str = Field(..., min_length=1, description="Markdown guidance body")
+
+
+class ExpertisePackUpdate(BaseModel):
+    """Partial-update request body for an expertise pack (all fields optional)."""
+
+    name: Optional[str] = Field(None, description="New name")
+    description: Optional[str] = Field(None, description="New description")
+    body: Optional[str] = Field(None, description="New markdown body")
+
+
+class CollectionExpertiseResponse(BaseModel):
+    """Response listing packs attached to a collection."""
+
+    collection_id: str
+    packs: List[ExpertisePack]
+
+
+class SetCollectionExpertiseRequest(BaseModel):
+    """Request body for replacing a collection's attached pack list."""
+
+    pack_ids: List[str] = Field(..., description="Full set of pack IDs to attach (replaces existing)")

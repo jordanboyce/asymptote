@@ -203,6 +203,72 @@
         </div>
       </div>
 
+      <!-- Applied Expertise section (collapsible) -->
+      <div class="border-b border-base-300">
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
+          @click="expertiseSectionOpen = !expertiseSectionOpen"
+          aria-label="Toggle Applied Expertise section"
+        >
+          <BookOpen :size="13" class="text-accent flex-shrink-0" aria-hidden="true" />
+          <span class="text-xs font-semibold text-accent flex-1">Applied Expertise</span>
+          <span v-if="attachedPackIds.length > 0" class="badge badge-xs badge-accent">{{ attachedPackIds.length }}</span>
+          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="expertiseSectionOpen ? 'rotate-180' : ''" />
+        </button>
+
+        <div v-show="expertiseSectionOpen" class="px-3 pb-3 space-y-2">
+          <!-- Attached packs -->
+          <div v-if="attachedPackIds.length === 0" class="text-xs text-base-content/50 py-1">
+            No expertise packs applied. Add one below to shape AI analysis.
+          </div>
+          <div v-else class="space-y-1">
+            <div
+              v-for="pack in attachedPacks"
+              :key="pack.id"
+              class="flex items-center gap-1.5 bg-accent/10 border border-accent/20 rounded px-2 py-1.5"
+            >
+              <FileText :size="11" class="text-accent shrink-0" aria-hidden="true" />
+              <span class="text-xs flex-1 truncate" :title="pack.name">{{ pack.name }}</span>
+              <button
+                class="btn btn-ghost btn-xs btn-circle text-error"
+                :title="`Remove ${pack.name}`"
+                :disabled="expertiseLoading"
+                @click.stop="removeExpertisePack(pack.id)"
+              >
+                <X :size="11" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Add pack dropdown -->
+          <div v-if="availablePacks.length > 0" class="dropdown w-full">
+            <label
+              tabindex="0"
+              class="btn btn-outline btn-xs w-full gap-1"
+              :class="{ 'btn-disabled': expertiseLoading }"
+            >
+              <Plus :size="11" />
+              Add expertise…
+              <ChevronDown :size="11" class="ml-auto" />
+            </label>
+            <ul tabindex="0" class="dropdown-content z-[50] menu p-1 shadow-lg bg-base-100 border border-base-300 rounded-box w-full max-h-48 overflow-y-auto flex-nowrap">
+              <li v-for="pack in availablePacks" :key="pack.id">
+                <a class="text-xs py-1.5" @click.prevent="addExpertisePack(pack.id)">
+                  <FileText :size="11" class="shrink-0" />
+                  <span class="truncate">{{ pack.name }}</span>
+                </a>
+              </li>
+            </ul>
+          </div>
+          <p v-else-if="expertiseStore.packs.length === 0" class="text-xs text-base-content/40">
+            No packs in the Expertise Library yet.
+          </p>
+          <p v-else class="text-xs text-base-content/40">
+            All packs are already applied.
+          </p>
+        </div>
+      </div>
+
       <!-- Document list header -->
       <div class="flex items-center gap-2 px-3 py-2 border-b border-base-300 flex-shrink-0">
         <input
@@ -455,18 +521,22 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
+import { useExpertiseStore } from '../stores/expertiseStore'
 
 const emit = defineEmits(['document-deleted', 'background-job-started', 'close'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
+const expertiseStore = useExpertiseStore()
 
 // Sidebar-specific state
 const addSectionOpen = ref(true)
 const advancedOpen = ref(false)
+const expertiseSectionOpen = ref(false)
+const expertiseLoading = ref(false)
 
 // Source code mode
 const isSourceCode = ref(false)
@@ -1137,10 +1207,57 @@ const deleteBulk = async () => {
 }
 
 // Watch for collection changes
-watch(() => collectionStore.currentCollectionId, () => {
+watch(() => collectionStore.currentCollectionId, (newId) => {
   loadDocuments()
   selectedDocuments.value = []
+  loadExpertise(newId)
 })
+
+// Applied Expertise helpers
+
+const attachedPackIds = computed(() =>
+  expertiseStore.attachedPackIds[collectionStore.currentCollectionId] || []
+)
+
+const attachedPacks = computed(() =>
+  expertiseStore.getAttachedPackObjects(collectionStore.currentCollectionId)
+)
+
+const availablePacks = computed(() =>
+  expertiseStore.packs.filter(p => !attachedPackIds.value.includes(p.id))
+)
+
+async function loadExpertise(collId) {
+  const id = collId || collectionStore.currentCollectionId
+  try {
+    await Promise.all([
+      expertiseStore.fetchPacks(),
+      expertiseStore.fetchAttached(id),
+    ])
+  } catch (e) {
+    // non-fatal
+  }
+}
+
+async function addExpertisePack(packId) {
+  expertiseLoading.value = true
+  try {
+    const newIds = [...attachedPackIds.value, packId]
+    await expertiseStore.setAttached(collectionStore.currentCollectionId, newIds)
+  } finally {
+    expertiseLoading.value = false
+  }
+}
+
+async function removeExpertisePack(packId) {
+  expertiseLoading.value = true
+  try {
+    const newIds = attachedPackIds.value.filter(id => id !== packId)
+    await expertiseStore.setAttached(collectionStore.currentCollectionId, newIds)
+  } finally {
+    expertiseLoading.value = false
+  }
+}
 
 // Watch for completed background uploads to reload documents
 watch(() => backgroundJobsStore.uploadJobs, (jobs) => {
@@ -1220,6 +1337,7 @@ const selectRecentRepo = async (repo) => {
 onMounted(() => {
   loadDocuments()
   loadRecentRepos()
+  loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
 })
 

@@ -425,6 +425,7 @@
             </div>
 
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
+            <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
             <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
             <TokenizerTab v-if="activeTab === 'tokenizer'" />
@@ -902,7 +903,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen } from 'lucide-vue-next'
 
 const chatTabEnabled = ref(true)
 
@@ -910,6 +911,7 @@ const tabs = computed(() => {
   const t = []
   if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
   t.push({ id: 'search', label: 'Search', icon: Search })
+  t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   return t
 })
 
@@ -927,6 +929,7 @@ import ChatTab from './components/ChatTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
 import MCPTab from './components/MCPTab.vue'
 import ShareModal from './components/ShareModal.vue'
+import ExpertiseLibrary from './components/ExpertiseLibrary.vue'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'

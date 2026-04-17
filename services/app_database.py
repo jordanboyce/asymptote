@@ -237,6 +237,33 @@ class SQLiteBackend(DatabaseBackend):
                 ON collections(owner_id)
             """)
 
+            # ── v5: Expertise Library ─────────────────────────
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS expertise_packs (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    description TEXT,
+                    body        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS collection_expertise (
+                    collection_id TEXT NOT NULL,
+                    pack_id       TEXT NOT NULL,
+                    attached_at   TEXT NOT NULL,
+                    PRIMARY KEY (collection_id, pack_id),
+                    FOREIGN KEY (pack_id) REFERENCES expertise_packs(id) ON DELETE CASCADE
+                )
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_collection_expertise_collection
+                ON collection_expertise(collection_id)
+            """)
+
             # ── Migrations for existing databases ────────────
             # Add owner_id to collections if missing
             try:
