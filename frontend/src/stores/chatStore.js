@@ -131,6 +131,91 @@ export const useChatStore = defineStore('chat', () => {
     saveToStorage()
   }
 
+  // --- Streaming support ---
+  // Add a blank in-flight assistant message that will be mutated by SSE events.
+  const addStreamingMessage = (collectionId) => {
+    const session = getActiveSession(collectionId)
+    session.messages.push({
+      role: 'assistant',
+      content: '',
+      streaming: true,
+      structuredResults: [],
+      sources: [],
+      aiUsage: null,
+      timestamp: Date.now(),
+    })
+    session.updatedAt = Date.now()
+    // Don't persist to storage while streaming — wait for finalizeStreamingMessage
+  }
+
+  const _lastAssistantMsg = (collectionId) => {
+    const msgs = getActiveSession(collectionId)?.messages || []
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') return msgs[i]
+    }
+    return null
+  }
+
+  const appendStreamingText = (collectionId, delta) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (msg) msg.content += delta
+  }
+
+  const addStreamingToolCall = (collectionId, tool, args) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (msg) {
+      if (!msg.structuredResults) msg.structuredResults = []
+      msg.structuredResults.push({ tool, args, result: null, pending: true })
+    }
+  }
+
+  const resolveStreamingToolCall = (collectionId, tool, result) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (!msg || !msg.structuredResults) return
+    // Find the most recent pending entry for this tool and resolve it
+    for (let i = msg.structuredResults.length - 1; i >= 0; i--) {
+      const sr = msg.structuredResults[i]
+      if (sr.tool === tool && sr.pending) {
+        msg.structuredResults[i] = { tool, args: sr.args, ...result, pending: false }
+        break
+      }
+    }
+  }
+
+  const addStreamingThinking = (collectionId, text) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (msg) {
+      if (!msg.structuredResults) msg.structuredResults = []
+      msg.structuredResults.push({ tool: '_thinking', args: {}, result: { text }, pending: false })
+    }
+  }
+
+  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults } = {}) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (!msg) return
+    msg.streaming = false
+    if (sources) msg.sources = sources
+    if (usage) msg.aiUsage = { synthesis: { ...usage }, total_input_tokens: usage.input_tokens || 0, total_output_tokens: usage.output_tokens || 0 }
+    // Replace structuredResults with the server's authoritative list if provided
+    if (structuredResults && structuredResults.length > 0) msg.structuredResults = structuredResults
+    const session = getActiveSession(collectionId)
+    if (session) session.updatedAt = Date.now()
+    saveToStorage()
+  }
+
+  const removeLastStreamingMessage = (collectionId) => {
+    const session = getActiveSession(collectionId)
+    if (!session) return
+    const msgs = session.messages
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant' && msgs[i].streaming) {
+        msgs.splice(i, 1)
+        break
+      }
+    }
+    session.updatedAt = Date.now()
+  }
+
   const clearMessages = (collectionId) => {
     const session = getActiveSession(collectionId)
     if (session) {
@@ -220,5 +305,13 @@ export const useChatStore = defineStore('chat', () => {
     deleteSession,
     renameSession,
     clearCollectionChat,
+    // Streaming
+    addStreamingMessage,
+    appendStreamingText,
+    addStreamingToolCall,
+    resolveStreamingToolCall,
+    addStreamingThinking,
+    finalizeStreamingMessage,
+    removeLastStreamingMessage,
   }
 })

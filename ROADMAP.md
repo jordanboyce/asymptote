@@ -401,9 +401,9 @@ New MCP tool at [services/mcp_server.py](services/mcp_server.py). Does a literal
 
 ---
 
-## v4.4 — In-app chat surface (primary product surface)
+## v4.4 — In-app chat surface (primary product surface) — ✅ Shipped
 
-The wedge that turns Asymptote from "data layer behind an MCP endpoint" into "the tool advisors actually open every morning." Until this ships, every demo requires Claude Desktop or Cursor — a setup step that's already killed trial-to-usage conversion more than once. This is the first post-v4.1 delivery priority.
+The wedge that turns Asymptote from "data layer behind an MCP endpoint" into "the tool advisors actually open every morning." Until this shipped, every demo required Claude Desktop or Cursor — a setup step that killed trial-to-usage conversion more than once.
 
 **Non-goal: build a chat app.** We do not compete with Claude Desktop or ChatGPT on branching, regeneration, artifact rendering, image analysis, or any other chat-UX surface. We build the smallest possible chat that lets an advisor point at their collection and get the Asymptote tool set through a frontier model.
 
@@ -432,9 +432,19 @@ The wedge that turns Asymptote from "data layer behind an MCP endpoint" into "th
 - Streaming tokens, tool-call indicators (cheap "calling `search_collection`..." status), and a collapsible redaction-summary panel so the advisor can see what was stripped before each outbound call.
 - No thread branching, no regeneration, no message editing in v1 — these are chat-app features, not data-layer features.
 
+### What shipped (2026-04-17)
+
+- **`POST /api/chat/stream`** — SSE streaming endpoint that emits `tool_start`, `tool_end`, `thinking`, `text_delta`, `sources`, and `done` events as the agent works. The full native tool-use loop (Anthropic + OpenAI, up to 8 iterations) runs in this path with real-time feedback; Ollama/ReAct path also emits tool-start/end events.
+- **Live tool-call cards** — As each tool fires, a card appears in the chat bubble with a spinning indicator and "running…" label. The card resolves with results when the call returns.
+- **Streaming text** — The final response streams word-by-word into the bubble instead of appearing all at once after a 15–30 second wait.
+- **Streaming cursor** — Blinking cursor at the end of in-flight text.
+- **`POST /api/collections/{id}/brief`** — Dedicated REST endpoint calling `brief_generator.py` directly (no token cost).
+- **`/brief` slash command** — Type `/brief` or click "Generate Meeting Brief" to instantly generate a structured one-page portfolio summary (household snapshot, accounts, top positions, tax-loss candidates, concentration alerts, cash drag, sector allocation).
+- **"Generate Meeting Brief" quick-action button** — Surfaces on the empty-chat state as a one-click shortcut to the brief.
+
 ### Acceptance test
 
-The full 12-step Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) runs end-to-end **entirely inside Asymptote's chat tab**, with no Claude Desktop and no Cursor. Every tool call visible in the redaction preview. Every number correct per v4.1 acceptance bar.
+The full Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) runs end-to-end entirely inside Asymptote's chat tab, no Claude Desktop required. Live tool-call indicators visible during every query. /brief produces the one-page meeting brief in under 30 seconds.
 
 ### Out of scope (stays in the MCP endpoint path)
 
@@ -592,11 +602,11 @@ Items that aren't funded yet but belong in the same direction of travel.
 ## How to use this file
 
 - **v4.1 is the only thing that matters right now.** Don't start anything below it until P0.1–P0.7 are done. The advisor demo bugs above are the acceptance test: re-run those three questions against the same Schwab file and they should produce correct numbers without manual workaround SQL.
-- **v4.2 and v4.3 shipped** — enrichment feeds and MCP surface polish, each independently unlocking a real advisor question.
-- **v4.4 — in-app chat surface** is the next delivery priority. Until it ships, advisors have to stand up Claude Desktop or Cursor to touch their data, which is the exact friction we're trying to remove. This is the new primary product surface.
+- **v4.2 and v4.3 shipped** — enrichment feeds and MCP surface polish.
+- **v4.4 shipped** — streaming in-app chat with live tool indicators, `/brief` command, one-click "Generate Meeting Brief" button. The primary demo surface is now self-contained.
 - **v4.5 / v4.6** are the advisor-workflow wedge (meeting capture + client profile) that turns this into a product, not a query layer.
 - **v4.7 / v4.8** wait until there's daily usage at one firm.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-04-16 (strategic pivot: in-app chat promoted to primary surface as new v4.4; meeting capture / client profile / distribution / ingestion depth bumped to v4.5 / v4.6 / v4.7 / v4.8)
+**Last updated:** 2026-04-17 (v4.4 shipped: SSE streaming chat, /brief slash command, Generate Meeting Brief button, POST /api/collections/{id}/brief endpoint)

@@ -1542,6 +1542,382 @@ async def chat_with_documents(
         )
 
 
+# ---------------------------------------------------------------------------
+# v4.4 — Streaming chat endpoint (SSE)
+# ---------------------------------------------------------------------------
+# Mirrors /api/chat but emits Server-Sent Events so the frontend can display
+# live tool-call indicators and stream the final text token-by-token.
+#
+# Event types (each line: "data: <json>\n\n"):
+#   tool_start  — a tool call is about to execute
+#   tool_end    — tool call finished (result included)
+#   thinking    — prose the model emitted between tool calls
+#   text_delta  — one word/chunk of the final response
+#   sources     — final source list
+#   done        — completion marker + usage stats
+#   error       — something went wrong
+
+@app.post("/api/chat/stream", tags=["chat"])
+async def chat_stream_endpoint(
+    chat_request: ChatRequest,
+    request: Request,
+    collection_id: str = "default",
+    x_ai_key: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """
+    Streaming version of /api/chat. Returns text/event-stream (SSE).
+
+    Events are emitted as the agent works so the frontend can show live
+    tool-call indicators and stream text as it arrives.
+    """
+    import json as _json
+
+    async def generate():  # noqa: C901 (complexity fine for one function)
+        try:
+            # ---------- provider -------------------------------------------------
+            try:
+                if chat_request.provider == "ollama":
+                    model_name = x_ai_model or x_ollama_model or "llama3.2"
+                    extra: dict = {"model": model_name}
+                    if x_ai_base_url:
+                        extra["base_url"] = x_ai_base_url
+                    provider = create_provider("ollama", **extra)
+                else:
+                    if not x_ai_key and chat_request.provider != "openai_compatible":
+                        yield f"data: {_json.dumps({'type':'error','message':f'API key required for {chat_request.provider}'})}\n\n"
+                        return
+                    extra = {}
+                    model_name = x_ai_model or x_anthropic_model or x_openai_model
+                    if model_name:
+                        extra["model"] = model_name
+                    if x_ai_base_url:
+                        extra["base_url"] = x_ai_base_url
+                    provider = create_provider(chat_request.provider, x_ai_key, **extra)
+            except Exception as e:
+                yield f"data: {_json.dumps({'type':'error','message':f'Failed to initialize AI provider: {e}'})}\n\n"
+                return
+
+            ai_service = AIService(provider=provider)
+
+            # ---------- context retrieval ----------------------------------------
+            user_messages = [m for m in chat_request.messages if m.role == "user"]
+            if not user_messages:
+                yield f"data: {_json.dumps({'type':'error','message':'No user messages in conversation'})}\n\n"
+                return
+            latest_query = user_messages[-1].content
+
+            prior_messages = chat_request.messages[:-1]
+            if prior_messages:
+                history_for_reformulation = [
+                    {"role": m.role, "content": m.content} for m in prior_messages
+                ]
+                search_query = ai_service.reformulate_query(history_for_reformulation, latest_query)
+            else:
+                search_query = latest_query
+
+            context_results = []
+            result_collection_ids = []
+
+            if chat_request.scope == "all":
+                all_collections = collection_service.get_all_collections()
+                for col in all_collections:
+                    col_id = col["id"]
+                    try:
+                        col_indexer = get_indexer(col_id)
+                        col_search = col_indexer.search(
+                            query=search_query, top_k=chat_request.top_k, mode=chat_request.mode
+                        )
+                        for r in col_search["results"]:
+                            context_results.append(r)
+                            result_collection_ids.append(col_id)
+                    except Exception as e:
+                        logger.warning(f"Stream chat: search failed for collection '{col_id}': {e}")
+                paired = sorted(
+                    zip(context_results, result_collection_ids),
+                    key=lambda x: x[0].similarity_score, reverse=True,
+                )[:chat_request.top_k]
+                context_results = [p[0] for p in paired]
+                result_collection_ids = [p[1] for p in paired]
+            else:
+                try:
+                    indexer = get_indexer(collection_id)
+                except ValueError as e:
+                    yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
+                    return
+                sr = indexer.search(query=search_query, top_k=chat_request.top_k, mode=chat_request.mode)
+                context_results = sr["results"]
+                result_collection_ids = [collection_id] * len(context_results)
+
+            # ---------- structured tables ----------------------------------------
+            overview_ids = (
+                [c["id"] for c in collection_service.get_all_collections()]
+                if chat_request.scope == "all"
+                else [collection_id]
+            )
+            structured_tables, structured_stores = collect_structured_tables(overview_ids)
+            structured_ctx = build_structured_context(structured_tables, structured_stores) if structured_tables else {
+                "inline_block": "", "tool_tables": [], "inlined_filenames": set(), "inlined_document_ids": set()
+            }
+            inlined_filenames = structured_ctx["inlined_filenames"]
+            tool_tables = structured_ctx["tool_tables"]
+            inline_block = structured_ctx["inline_block"]
+
+            filtered_results = [
+                (r, cid) for (r, cid) in zip(context_results, result_collection_ids)
+                if r.filename not in inlined_filenames
+            ]
+            context_text = "\n\n---\n\n".join(
+                f"[Source {i+1}: {r.filename}, page {r.page_number}]\n{r.text_snippet}"
+                for i, (r, _) in enumerate(filtered_results)
+            ) or "No relevant context found."
+
+            try:
+                collection_overview = _build_collection_overview(overview_ids)
+            except Exception as e:
+                logger.warning(f"Stream chat: failed to build collection overview: {e}")
+                collection_overview = "(Collection overview unavailable.)"
+
+            tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
+
+            # ---------- system prompt --------------------------------------------
+            base_system_parts = [
+                f"You are a helpful assistant with access to a private document knowledge base ({'all collections' if chat_request.scope == 'all' else 'the current collection'}).",
+                "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED TABLES (when provided), and RETRIEVED CONTEXT below.",
+                "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself (file counts, available documents, date ranges).",
+            ]
+            if inline_block:
+                base_system_parts.append(
+                    "When STRUCTURED TABLES are included below, they are the FULL contents of CSV/XLSX files as JSONL — every row is present. "
+                    "For any numeric, sum, count, average, filter, date-range, or ranking question about those files, answer DIRECTLY from the JSONL rows and show your arithmetic. "
+                    "Do NOT guess from chunk snippets and do NOT assume data is missing."
+                )
+            if tool_tables:
+                base_system_parts.append(
+                    "For questions about the LARGE tables listed under TOOL USE PROTOCOL, call the structured-query tools — do not estimate from row text."
+                )
+            base_system_parts.append("Use RETRIEVED CONTEXT for prose/document questions, citing [Source N] as needed.")
+
+            expertise_block = ""
+            if chat_request.scope != "all":
+                try:
+                    attached_packs = expertise_store.get_packs_for_collection(collection_id)
+                    if attached_packs:
+                        base_system_parts.append(
+                            "When ADVISOR EXPERTISE is provided, follow its guidance, rules, and frameworks as authoritative instructions for this analysis."
+                        )
+                        expertise_block = (
+                            "ADVISOR EXPERTISE (apply these frameworks when analyzing this portfolio):\n"
+                            + "\n\n".join(
+                                f"## {p.name}\n{(p.description + chr(10)) if p.description else ''}{p.body}".strip()
+                                for p in attached_packs
+                            )
+                        )
+                except Exception as _ep:
+                    logger.warning("Stream chat: failed to load expertise packs: %s", _ep)
+
+            system_parts = [base_system_parts[0]]
+            if len(base_system_parts) > 1:
+                system_parts = base_system_parts
+            system_text = "\n\n".join(
+                [" ".join(base_system_parts),
+                 f"COLLECTION OVERVIEW:\n{collection_overview}"]
+                + ([expertise_block] if expertise_block else [])
+                + ([inline_block] if inline_block else [])
+                + ([f"PRE-RETRIEVED CONTEXT (optional primer):\n{context_text}"] if context_text and context_text != "No relevant context found." else [])
+                + ([f"LARGE TABLES AVAILABLE:\n{tables_block}"] if tables_block else [])
+            )
+
+            # ---------- agent loop -----------------------------------------------
+            agent_context = {"collection_id": collection_id, "scope": chat_request.scope}
+            executed_results: list[dict] = []
+            total_input_tokens = 0
+            total_output_tokens = 0
+            model_used = ai_service.quality_model
+            response_text = ""
+            max_iterations = 8
+
+            if provider.supports_native_tools():
+                is_anthropic = isinstance(provider, AnthropicProvider)
+                tools_spec = anthropic_tools() if is_anthropic else openai_tools()
+
+                messages: list[dict] = [
+                    {"role": m.role, "content": m.content} for m in chat_request.messages
+                ]
+
+                for iteration in range(max_iterations):
+                    turn = provider.complete_with_tools(
+                        messages=messages,
+                        tools=tools_spec,
+                        max_tokens=4096,
+                        model=ai_service.quality_model,
+                        system=system_text,
+                    )
+                    usage_iter = turn.get("usage", {}) or {}
+                    total_input_tokens += usage_iter.get("input_tokens", 0)
+                    total_output_tokens += usage_iter.get("output_tokens", 0)
+                    model_used = usage_iter.get("model", model_used)
+
+                    tool_calls = turn.get("tool_calls") or []
+                    thinking = turn.get("text") or ""
+
+                    if not tool_calls:
+                        response_text = thinking.strip()
+                        break
+
+                    # Emit any narration the model produced alongside tool calls
+                    if thinking:
+                        executed_results.append({"tool": "_thinking", "args": {"iteration": iteration}, "result": {"text": thinking}})
+                        yield f"data: {_json.dumps({'type':'thinking','text':thinking})}\n\n"
+
+                    # Emit tool_start for each call
+                    for tc in tool_calls:
+                        yield f"data: {_json.dumps({'type':'tool_start','tool':tc['name'],'args':tc.get('input') or {}})}\n\n"
+
+                    messages.append(turn["assistant_message"])
+
+                    # Execute all tool calls
+                    adapted_calls = [{"tool": tc["name"], **(tc.get("input") or {})} for tc in tool_calls]
+                    iter_results = execute_tool_calls(adapted_calls, agent_context=agent_context)
+                    executed_results.extend(iter_results)
+
+                    # Emit tool_end for each result
+                    for tc, res in zip(tool_calls, iter_results):
+                        yield f"data: {_json.dumps({'type':'tool_end','tool':tc['name'],'result':res})}\n\n"
+
+                    # Append results to conversation
+                    if is_anthropic:
+                        tool_result_content = []
+                        for tc, res in zip(tool_calls, iter_results):
+                            payload = res.get("error") or res.get("result") or {}
+                            tool_result_content.append({
+                                "type": "tool_result",
+                                "tool_use_id": tc["id"],
+                                "content": _json.dumps(payload, default=str)[:60000],
+                                **({"is_error": True} if res.get("error") else {}),
+                            })
+                        messages.append({"role": "user", "content": tool_result_content})
+                    else:
+                        for tc, res in zip(tool_calls, iter_results):
+                            payload = res.get("error") or res.get("result") or {}
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": _json.dumps(payload, default=str)[:60000],
+                            })
+
+                if not response_text:
+                    try:
+                        turn = provider.complete_with_tools(
+                            messages=messages, tools=[], max_tokens=2048,
+                            model=ai_service.quality_model,
+                            system=system_text + "\n\nDo not call any more tools. Summarize the final answer.",
+                        )
+                        response_text = (turn.get("text") or "").strip()
+                        usage_iter = turn.get("usage", {}) or {}
+                        total_input_tokens += usage_iter.get("input_tokens", 0)
+                        total_output_tokens += usage_iter.get("output_tokens", 0)
+                    except Exception as e:
+                        logger.warning("Stream chat: final-answer pass failed: %s", e)
+                        response_text = "I ran several tool calls but couldn't settle on a final answer — please rephrase or narrow the question."
+
+            else:
+                # ReAct fallback for Ollama — run synchronously then stream the text
+                suffix = ""
+                base_system = " ".join(base_system_parts)
+                history_parts = [
+                    f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
+                    for m in chat_request.messages[:-1]
+                ]
+                history_text = "\n\n".join(history_parts) if history_parts else "(Start of conversation)"
+                tools_block = build_tool_use_instructions()
+
+                def _compose(extra=""):
+                    parts = [base_system, "", f"COLLECTION OVERVIEW:\n{collection_overview}"]
+                    if expertise_block:
+                        parts.extend(["", expertise_block])
+                    if inline_block:
+                        parts.extend(["", inline_block])
+                    parts.extend(["", f"RETRIEVED CONTEXT:\n{context_text}"])
+                    if tables_block:
+                        parts.extend(["", f"LARGE TABLES (use SQL tool calls):\n{tables_block}"])
+                    if tools_block:
+                        parts.extend(["", f"TOOL USE PROTOCOL:\n{tools_block}"])
+                    parts.extend(["", f"CONVERSATION HISTORY:\n{history_text}", "", f"User: {latest_query}"])
+                    if extra:
+                        parts.append(extra)
+                    parts.append("Assistant:")
+                    return "\n\n".join(parts)
+
+                for iteration in range(5):
+                    prompt = _compose(suffix)
+                    result = provider.complete(prompt=prompt, max_tokens=2048, model=ai_service.quality_model)
+                    raw_text = result["text"]
+                    usage_iter = result.get("usage", {}) or {}
+                    total_input_tokens += usage_iter.get("input_tokens", 0)
+                    total_output_tokens += usage_iter.get("output_tokens", 0)
+                    model_used = usage_iter.get("model", model_used)
+
+                    from services.structured_chat import parse_tool_calls
+                    tool_calls_react = parse_tool_calls(raw_text)
+                    if not tool_calls_react:
+                        response_text = raw_text.strip()
+                        break
+                    for tc in tool_calls_react:
+                        yield f"data: {_json.dumps({'type':'tool_start','tool':tc.get('tool','unknown'),'args':{}})}\n\n"
+                    iter_results = execute_tool_calls(tool_calls_react, agent_context=agent_context)
+                    executed_results.extend(iter_results)
+                    for tc, res in zip(tool_calls_react, iter_results):
+                        yield f"data: {_json.dumps({'type':'tool_end','tool':tc.get('tool','unknown'),'result':res})}\n\n"
+                    result_text = _json.dumps([r.get("result") or r.get("error") for r in iter_results], default=str)
+                    suffix = f"\nTool results: {result_text}\nContinue:"
+
+            # ---------- stream the final text word-by-word -----------------------
+            if response_text:
+                words = response_text.split(" ")
+                for i, word in enumerate(words):
+                    chunk = word + (" " if i < len(words) - 1 else "")
+                    yield f"data: {_json.dumps({'type':'text_delta','delta':chunk})}\n\n"
+                    await asyncio.sleep(0.008)
+
+            # ---------- sources --------------------------------------------------
+            base_url = str(request.base_url).rstrip("/")
+            sources_data = [
+                {
+                    "filename": r.filename,
+                    "page_number": r.page_number,
+                    "text_snippet": r.text_snippet,
+                    "similarity_score": r.similarity_score,
+                    "document_id": r.document_id,
+                    "pdf_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}",
+                    "page_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}",
+                }
+                for r, col_id in filtered_results
+            ]
+            yield f"data: {_json.dumps({'type':'sources','sources':sources_data})}\n\n"
+
+            # ---------- done -----------------------------------------------------
+            yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':total_input_tokens,'output_tokens':total_output_tokens,'model':model_used},'structured_results':executed_results})}\n\n"
+
+        except Exception as e:
+            logger.exception("Stream chat failed")
+            yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
 # Local File Reference endpoints (v3.1 feature)
 
 @app.post(
@@ -3729,6 +4105,55 @@ async def revoke_share(share_id: str, user_id: str = Depends(get_current_user_id
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+
+# ── Meeting Brief REST endpoint (v4.4) ────────────────────────────────────────
+
+@app.post(
+    "/api/collections/{collection_id}/brief",
+    tags=["chat"],
+    summary="Generate a pre-meeting portfolio brief",
+)
+async def generate_brief_endpoint(
+    collection_id: str,
+    tax_loss_min: float = 500.0,
+    concentration_pct: float = 10.0,
+    cash_drag_min: float = 50000.0,
+    top_n: int = 10,
+):
+    """
+    Generate a pre-meeting portfolio brief for *collection_id*.
+
+    Calls the brief_generator directly (no LLM token cost) and returns
+    a structured JSON brief with sections: household_summary, accounts,
+    top_positions, tax_loss_candidates, concentration_alerts,
+    cash_drag_alerts, sector_allocation, generated_at.
+    """
+    from services.brief_generator import generate_meeting_brief as _gen_brief
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        store = indexer.vector_store.structured_store
+    except AttributeError:
+        raise HTTPException(status_code=422, detail="No structured store found for this collection.")
+
+    try:
+        thresholds = {
+            "tax_loss_min": tax_loss_min,
+            "concentration_pct": concentration_pct,
+            "cash_drag_min": cash_drag_min,
+            "top_n": top_n,
+        }
+        brief = _gen_brief(store, collection_id=collection_id, thresholds=thresholds)
+    except Exception as e:
+        logger.error("Brief generation failed for collection %s: %s", collection_id, e)
+        raise HTTPException(status_code=500, detail=f"Brief generation failed: {e}")
+
+    return brief
 
 
 # ── Expertise Library endpoints ───────────────────────────────────────────────

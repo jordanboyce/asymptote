@@ -241,11 +241,24 @@
                   v-if="msg.slashCommand"
                   class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug"
                 >{{ msg.content }}</div>
-                <div
-                  v-else
-                  class="prose prose-sm max-w-none text-sm chat-markdown"
-                  v-html="renderAssistantMarkdown(msg.content)"
-                ></div>
+                <div v-else class="relative">
+                  <div
+                    class="prose prose-sm max-w-none text-sm chat-markdown"
+                    v-html="renderAssistantMarkdown(msg.content)"
+                  ></div>
+                  <!-- Blinking cursor while streaming -->
+                  <span
+                    v-if="msg.streaming && msg.content"
+                    class="inline-block w-0.5 h-4 bg-primary align-middle ml-0.5 animate-pulse"
+                    aria-hidden="true"
+                  ></span>
+                  <!-- Subtle spinner when streaming but no text yet -->
+                  <div v-if="msg.streaming && !msg.content && (!msg.structuredResults || msg.structuredResults.length === 0)"
+                    class="flex items-center gap-2 text-xs text-base-content/50 py-0.5">
+                    <span class="loading loading-dots loading-xs text-primary"></span>
+                    <span>Thinking…</span>
+                  </div>
+                </div>
 
                 <!-- Structured query / metric results -->
                 <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
@@ -263,13 +276,20 @@
                   <!-- Tool call card -->
                   <div
                     v-else
-                    class="rounded-lg border border-base-300 bg-base-100 overflow-hidden"
+                    class="rounded-lg border bg-base-100 overflow-hidden transition-colors"
+                    :class="sr.pending ? 'border-primary/40 bg-primary/5' : 'border-base-300'"
                   >
-                    <div class="flex items-center gap-2 px-3 py-1.5 bg-base-200 border-b border-base-300">
-                      <component :is="toolIcon(sr.tool)" :size="12" :class="toolIconClass(sr.tool)" />
+                    <div class="flex items-center gap-2 px-3 py-1.5 border-b"
+                      :class="sr.pending ? 'bg-primary/10 border-primary/20' : 'bg-base-200 border-base-300'"
+                    >
+                      <!-- Spinning icon while pending, normal icon when done -->
+                      <span v-if="sr.pending" class="loading loading-spinner loading-xs text-primary flex-shrink-0"></span>
+                      <component v-else :is="toolIcon(sr.tool)" :size="12" :class="toolIconClass(sr.tool)" />
                       <span class="text-xs font-semibold">{{ toolLabel(sr) }}</span>
                       <span v-if="toolDetail(sr)" class="text-xs text-base-content/50 font-mono truncate">{{ toolDetail(sr) }}</span>
+                      <span v-if="sr.pending" class="ml-auto text-xs text-primary/60 italic">running…</span>
                       <button
+                        v-else
                         class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0 text-base-content/40"
                         @click="toggleStructuredDetail(srIdx, index)"
                         :title="isStructuredOpen(srIdx, index) ? 'Hide details' : 'Show details'"
@@ -450,17 +470,15 @@
 
         </template>
 
-        <!-- Typing indicator -->
-        <div v-if="loading" class="flex items-start gap-2">
+        <!-- Typing indicator — only show while waiting for the first SSE event -->
+        <div v-if="loading && !hasStreamingMessage" class="flex items-start gap-2">
           <div class="flex-shrink-0 w-7 h-7 rounded-full bg-base-300 flex items-center justify-center">
             <Bot :size="14" class="text-base-content/60" />
           </div>
           <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-4 py-3 shadow-sm">
             <div class="flex items-center gap-2">
               <span class="loading loading-dots loading-xs text-primary"></span>
-              <span class="text-xs text-base-content/50">
-                {{ rerank ? 'Retrieving & reranking context…' : 'Retrieving context & generating response…' }}
-              </span>
+              <span class="text-xs text-base-content/50">Connecting…</span>
             </div>
           </div>
         </div>
@@ -470,6 +488,20 @@
 
       <!-- Input area -->
       <div class="flex-shrink-0 pt-3">
+
+        <!-- Quick-action chips (only shown when chat is empty + provider configured) -->
+        <div v-if="messages.length === 0 && hasAnyProvider && props.chunkCount > 0" class="flex flex-wrap gap-1.5 mb-2">
+          <button
+            class="btn btn-xs btn-outline btn-primary gap-1 rounded-full"
+            :disabled="loading"
+            @click="runBriefCommand"
+            title="Generate pre-meeting portfolio brief"
+          >
+            <FileText :size="11" />
+            Generate Meeting Brief
+          </button>
+        </div>
+
         <div
           class="relative rounded-2xl border border-base-300 bg-base-200/60 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all"
         >
@@ -537,7 +569,7 @@
             </button>
           </div>
         </div>
-        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /stats, /docs, /help</p>
+        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /stats, /docs, /help</p>
       </div>
 
   </div>
@@ -607,6 +639,11 @@ const sendDisabled = computed(() => {
   if (isSlashCommand(inputMessage.value)) return false
   return !hasAnyProvider.value || props.chunkCount === 0
 })
+
+// True while an SSE streaming message is in-flight (has been added to store but not finalized)
+const hasStreamingMessage = computed(() =>
+  messages.value.some(m => m.streaming === true)
+)
 
 const messages = computed(() => chatStore.getMessages(collectionStore.currentCollectionId))
 const sessions = computed(() => chatStore.getSessions(collectionStore.currentCollectionId))
@@ -813,55 +850,116 @@ const sendMessage = async () => {
   error.value = ''
   slashPickerOpen.value = false
 
-  // Intercept slash commands before hitting the LLM — they read collection
-  // metadata directly and don't cost any tokens.
+  // Intercept slash commands before hitting the LLM — zero tokens, instant.
   if (isSlashCommand(userContent)) {
     await runInlineSlashCommand(userContent)
     return
   }
-  // Unknown slash commands (/foo) fall through to normal chat so the LLM sees them.
 
-  // Refuse to send a normal message if no provider is configured.
+  // Refuse to send if no provider is configured.
   if (!hasAnyProvider.value) {
     error.value = 'Configure an AI provider in Settings to chat.'
     return
   }
 
-  chatStore.addMessage(collectionStore.currentCollectionId, { role: 'user', content: userContent })
+  const collectionId = collectionStore.currentCollectionId
+  chatStore.addMessage(collectionId, { role: 'user', content: userContent })
   await scrollToBottom()
 
   loading.value = true
 
+  // Add the in-flight placeholder message immediately so the UI shows it.
+  chatStore.addStreamingMessage(collectionId)
+  await scrollToBottom()
+
   try {
-    const headers = buildProviderHeaders(selectedProvider.value)
+    const providerHeaders = buildProviderHeaders(selectedProvider.value)
+    // Pass only role+content to the API (strip UI-only fields like timestamps).
+    const apiMessages = messages.value
+      .filter(m => !m.streaming)
+      .map(m => ({ role: m.role, content: m.content }))
 
-    // Pass only role+content to the API (strip UI-only fields)
-    const apiMessages = messages.value.map(m => ({ role: m.role, content: m.content }))
-
-    const response = await axios.post(
-      `/api/chat?collection_id=${collectionStore.currentCollectionId}`,
+    const response = await fetch(
+      `/api/chat/stream?collection_id=${collectionId}`,
       {
-        messages: apiMessages,
-        provider: selectedProvider.value,
-        top_k: topK.value,
-        mode: searchMode.value,
-        scope: scope.value,
-        rerank: rerank.value,
-      },
-      { headers }
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...providerHeaders },
+        body: JSON.stringify({
+          messages: apiMessages,
+          provider: selectedProvider.value,
+          top_k: topK.value,
+          mode: searchMode.value,
+          scope: scope.value,
+          rerank: rerank.value,
+        }),
+      }
     )
 
-    chatStore.addAssistantMessage(
-      collectionStore.currentCollectionId,
-      { ...response.data.message, provider: selectedProvider.value, scope: scope.value },
-      response.data.sources,
-      response.data.ai_usage,
-      response.data.structured_results,
-    )
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}))
+      throw new Error(errBody.detail || `HTTP ${response.status}`)
+    }
 
-    await scrollToBottom()
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      // SSE lines end with \n\n — split and process complete events.
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() // last part may be incomplete
+
+      for (const part of parts) {
+        const line = part.trim()
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (!raw || raw === '[DONE]') continue
+
+        let event
+        try { event = JSON.parse(raw) } catch { continue }
+
+        if (event.type === 'tool_start') {
+          chatStore.addStreamingToolCall(collectionId, event.tool, event.args || {})
+          await scrollToBottom()
+        } else if (event.type === 'tool_end') {
+          chatStore.resolveStreamingToolCall(collectionId, event.tool, event.result || {})
+        } else if (event.type === 'thinking') {
+          chatStore.addStreamingThinking(collectionId, event.text || '')
+          await scrollToBottom()
+        } else if (event.type === 'text_delta') {
+          chatStore.appendStreamingText(collectionId, event.delta || '')
+          await scrollToBottom()
+        } else if (event.type === 'sources') {
+          // Sources will be committed in 'done'
+        } else if (event.type === 'done') {
+          chatStore.finalizeStreamingMessage(collectionId, {
+            sources: event.sources || [],
+            usage: event.usage || {},
+            structuredResults: event.structured_results || [],
+          })
+          // Stamp the last assistant message with provider/scope for the badge
+          const msgs = messages.value
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'assistant') {
+              msgs[i].provider = selectedProvider.value
+              msgs[i].scope = scope.value
+              break
+            }
+          }
+          await scrollToBottom()
+        } else if (event.type === 'error') {
+          chatStore.removeLastStreamingMessage(collectionId)
+          error.value = event.message || 'Chat failed. Please try again.'
+        }
+      }
+    }
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Chat failed. Please try again.'
+    chatStore.removeLastStreamingMessage(collectionId)
+    error.value = err.message || 'Chat failed. Please try again.'
   } finally {
     loading.value = false
   }
@@ -871,6 +969,14 @@ const clearChat = () => {
   if (confirm('Clear this conversation? This cannot be undone.')) {
     chatStore.clearMessages(collectionStore.currentCollectionId)
   }
+}
+
+// One-click brief button handler — same as typing `/brief` and hitting Enter
+const runBriefCommand = async () => {
+  if (loading.value) return
+  inputMessage.value = '/brief'
+  await runInlineSlashCommand('/brief')
+  inputMessage.value = ''
 }
 
 // Persist options

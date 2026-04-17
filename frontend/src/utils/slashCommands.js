@@ -5,6 +5,7 @@ import axios from 'axios'
 // instant, deterministic.
 
 export const SLASH_COMMANDS = {
+  '/brief': 'Generate meeting brief for this collection',
   '/stats': 'Show collection statistics',
   '/docs': 'List indexed documents',
   '/help': 'Show available slash commands',
@@ -118,6 +119,87 @@ const formatHelp = () => {
   return lines.join('\n')
 }
 
+const formatBrief = (brief) => {
+  if (!brief) return 'No portfolio data found in this collection.'
+  const lines = []
+  const fmt = (n) => (n == null ? '—' : typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n))
+
+  // Household summary
+  const hs = brief.household_summary || {}
+  lines.push('MEETING BRIEF', '═'.repeat(40))
+  lines.push(`Generated: ${brief.generated_at ? new Date(brief.generated_at).toLocaleString() : '—'}`, '')
+  lines.push('HOUSEHOLD SUMMARY', '─'.repeat(20))
+  if (hs.total_market_value != null) lines.push(`Market Value:    $${fmt(hs.total_market_value)}`)
+  if (hs.total_cost_basis != null)   lines.push(`Cost Basis:      $${fmt(hs.total_cost_basis)}`)
+  if (hs.total_unrealized_gl != null) {
+    const sign = hs.total_unrealized_gl >= 0 ? '+' : ''
+    lines.push(`Unrealized G/L:  ${sign}$${fmt(hs.total_unrealized_gl)}`)
+  }
+  if (hs.num_positions != null) lines.push(`Positions:       ${hs.num_positions}`)
+  lines.push('')
+
+  // Accounts
+  if (brief.accounts?.length) {
+    lines.push('ACCOUNTS', '─'.repeat(20))
+    for (const acc of brief.accounts) {
+      const label = acc.account || acc.account_type || 'Account'
+      lines.push(`${label}: $${fmt(acc.market_value)}`)
+    }
+    lines.push('')
+  }
+
+  // Top positions
+  if (brief.top_positions?.length) {
+    lines.push('TOP POSITIONS', '─'.repeat(20))
+    for (const p of brief.top_positions) {
+      const sym = p.symbol || p.description || '?'
+      const pct = p.weight_pct != null ? ` (${fmt(p.weight_pct)}%)` : ''
+      lines.push(`${sym}${pct}: $${fmt(p.market_value)}`)
+    }
+    lines.push('')
+  }
+
+  // Tax-loss candidates
+  if (brief.tax_loss_candidates?.length) {
+    lines.push(`⚠️  TAX-LOSS CANDIDATES (${brief.tax_loss_candidates.length})`, '─'.repeat(20))
+    for (const p of brief.tax_loss_candidates) {
+      const sym = p.symbol || p.description || '?'
+      lines.push(`${sym}: $(${fmt(Math.abs(p.unrealized_gl || 0))}) loss`)
+    }
+    lines.push('')
+  }
+
+  // Concentration alerts
+  if (brief.concentration_alerts?.length) {
+    lines.push(`🔴 CONCENTRATION ALERTS (${brief.concentration_alerts.length})`, '─'.repeat(20))
+    for (const p of brief.concentration_alerts) {
+      const sym = p.symbol || p.description || '?'
+      lines.push(`${sym}: ${fmt(p.weight_pct)}% of portfolio`)
+    }
+    lines.push('')
+  }
+
+  // Cash drag
+  if (brief.cash_drag_alerts?.length) {
+    lines.push(`💵 CASH DRAG (${brief.cash_drag_alerts.length})`, '─'.repeat(20))
+    for (const p of brief.cash_drag_alerts) {
+      const desc = p.description || p.symbol || 'Cash'
+      lines.push(`${desc}: $${fmt(p.market_value)}`)
+    }
+    lines.push('')
+  }
+
+  // Sector allocation
+  if (brief.sector_allocation?.length) {
+    lines.push('SECTOR ALLOCATION', '─'.repeat(20))
+    for (const s of brief.sector_allocation) {
+      lines.push(`${s.sector || '?'}: ${fmt(s.weight_pct)}%`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
 // Parses, validates, and executes a slash command. Returns { cmd, content } on
 // success or { cmd, content, error: true } on failure. Callers decide how to
 // render the result.
@@ -130,6 +212,11 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
   try {
     if (cmd === '/help') {
       return { cmd, content: formatHelp() }
+    }
+
+    if (cmd === '/brief') {
+      const response = await axios.post(`/api/collections/${collectionId}/brief`)
+      return { cmd, content: formatBrief(response.data) }
     }
 
     const response = await axios.get(`/documents?collection_id=${collectionId}`)
