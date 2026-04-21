@@ -505,6 +505,15 @@
         <button @click="closeChunksModal">close</button>
       </form>
     </dialog>
+
+    <!-- PII Review Modal (CSV / Excel pre-flight) -->
+    <PiiReviewModal
+      ref="piiModal"
+      :file-path="piiReviewFilePath"
+      :collection-id="collectionStore.currentCollectionId"
+      @confirmed="onPiiConfirmed"
+      @cancelled="onPiiCancelled"
+    />
   </div>
 </template>
 
@@ -512,6 +521,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Code, History } from 'lucide-vue-next'
+import PiiReviewModal from './PiiReviewModal.vue'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 
@@ -553,6 +563,45 @@ const currentIndexingFile = ref('')
 const indexSuccess = ref(false)
 const indexError = ref('')
 const indexResult = ref({ count: 0, chunks: 0 })
+
+// PII pre-flight review state
+const piiModal = ref(null)
+const piiReviewFilePath = ref('')
+// Queue of files awaiting PII review — processed one at a time
+const piiReviewQueue = ref([])
+// Files that have been reviewed and are cleared to index
+const piiClearedPaths = ref([])
+
+const TABULAR_EXTENSIONS = new Set(['.csv', '.xlsx', '.xls'])
+
+function needsPiiReview(filePath) {
+  const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase()
+  return TABULAR_EXTENSIONS.has(ext)
+}
+
+function onPiiConfirmed() {
+  // Mark current file as cleared and advance the queue
+  piiClearedPaths.value.push(piiReviewFilePath.value)
+  processNextPiiReview()
+}
+
+function onPiiCancelled() {
+  // Skip this file and advance the queue
+  processNextPiiReview()
+}
+
+function processNextPiiReview() {
+  if (piiReviewQueue.value.length > 0) {
+    piiReviewFilePath.value = piiReviewQueue.value.shift()
+    piiModal.value?.open()
+  } else {
+    // All reviews done — index the cleared files
+    if (piiClearedPaths.value.length > 0) {
+      indexFileList(piiClearedPaths.value)
+      piiClearedPaths.value = []
+    }
+  }
+}
 
 // Document management state
 const documents = ref([])
@@ -693,6 +742,24 @@ const clearAllPaths = () => {
 const indexFiles = async () => {
   if (selectedPaths.value.length === 0) return
 
+  // Separate files and folders
+  const files = selectedPaths.value.filter(p => !p.isFolder)
+  const filePaths = files.map(p => p.path)
+
+  // Route tabular files through PII pre-flight review before indexing.
+  // Non-tabular files (PDF, TXT, DOCX, etc.) bypass review and go straight to index.
+  const tabularPaths = filePaths.filter(p => needsPiiReview(p))
+  const directPaths   = filePaths.filter(p => !needsPiiReview(p))
+
+  if (tabularPaths.length > 0) {
+    piiReviewQueue.value = [...tabularPaths]
+    piiClearedPaths.value = [...directPaths] // non-tabular will index after review finishes
+    processNextPiiReview()
+    // Folder indexing will happen after the queue drains (in processNextPiiReview)
+    // For simplicity, folder indexing is not gated behind PII review.
+    return
+  }
+
   indexing.value = true
   indexProgress.value = 0
   indexProgressPercent.value = 0
@@ -700,9 +767,6 @@ const indexFiles = async () => {
   indexSuccess.value = false
   indexError.value = ''
 
-  // Separate files and folders
-  const files = selectedPaths.value.filter(p => !p.isFolder)
-  const filePaths = files.map(p => p.path)
   const folders = selectedPaths.value.filter(p => p.isFolder)
 
   // Use background indexing based on toggle
@@ -849,6 +913,58 @@ const toggleSelectAll = () => {
 const getDocumentName = (docId) => {
   const doc = documents.value.find(d => d.document_id === docId)
   return doc ? doc.filename : 'Unknown'
+}
+
+// Index a specific list of file paths (used after PII review clears them).
+const indexFileList = async (paths) => {
+  if (!paths || paths.length === 0) return
+
+  indexing.value = true
+  indexProgress.value = 0
+  indexProgressPercent.value = 0
+  currentIndexingFile.value = ''
+  indexSuccess.value = false
+  indexError.value = ''
+
+  let successCount = 0
+  let totalChunks = 0
+  const errors = []
+
+  try {
+    for (let i = 0; i < paths.length; i++) {
+      const fp = paths[i]
+      const name = fp.split(/[/\\]/).pop()
+      currentIndexingFile.value = name
+      indexProgress.value = i + 1
+      indexProgressPercent.value = (i / paths.length) * 100
+      try {
+        const resp = await axios.post('/documents/index-local', {
+          file_path: fp,
+          collection_id: collectionStore.currentCollectionId,
+          copy_to_library: copyToLibrary.value,
+        })
+        successCount++
+        totalChunks += resp.data.total_chunks || 0
+        indexProgressPercent.value = ((i + 1) / paths.length) * 100
+      } catch (err) {
+        errors.push(`${name}: ${err.response?.data?.detail || err.message}`)
+      }
+    }
+
+    if (successCount > 0) {
+      indexSuccess.value = true
+      indexResult.value = { count: successCount, chunks: totalChunks }
+      selectedPaths.value = []
+      loadDocuments()
+      emit('document-deleted')
+    }
+    if (errors.length > 0) {
+      indexError.value = errors.join('\n')
+    }
+  } finally {
+    indexing.value = false
+    currentIndexingFile.value = ''
+  }
 }
 
 const loadDocuments = async () => {

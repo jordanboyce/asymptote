@@ -57,6 +57,7 @@ from services.mcp_server import (
     mcp_server_lifespan,
     save_collection_mcp_profile,
 )
+from services.privacy.redaction_middleware import redact_text_for_ai
 from models.schemas import (
     UploadResponse,
     UploadJobResponse,
@@ -1159,7 +1160,12 @@ async def chat_with_documents(
                     {
                         "index": i,
                         "filename": r.filename,
-                        "text_snippet": r.text_snippet,
+                        # Redact PII from snippets sent to the AI reranker.
+                        "text_snippet": redact_text_for_ai(
+                            r.text_snippet,
+                            collection_id=result_collection_ids[i] if i < len(result_collection_ids) else None,
+                            source_label="chat_rerank",
+                        ),
                         "similarity_score": r.similarity_score,
                     }
                     for i, r in enumerate(context_results)
@@ -1192,7 +1198,13 @@ async def chat_with_documents(
             }
         inlined_filenames = structured_ctx["inlined_filenames"]
         tool_tables = structured_ctx["tool_tables"]
-        inline_block = structured_ctx["inline_block"]
+        # Redact PII from the inlined JSONL table block before it enters the AI prompt.
+        _raw_inline = structured_ctx["inline_block"]
+        inline_block = (
+            redact_text_for_ai(_raw_inline, collection_id=collection_id, source_label="chat_inline_tables")
+            if _raw_inline
+            else _raw_inline
+        )
 
         # --- Format context and history ---
         # Drop chunks from files that are already fully inlined as JSONL: the
@@ -1204,8 +1216,14 @@ async def chat_with_documents(
         ]
         context_parts = []
         for i, (result, _cid) in enumerate(filtered_results):
+            # Redact PII from each snippet before it enters the AI system prompt.
+            safe_snippet = redact_text_for_ai(
+                result.text_snippet,
+                collection_id=_cid,
+                source_label="chat_context",
+            )
             context_parts.append(
-                f"[Source {i + 1}: {result.filename}, page {result.page_number}]\n{result.text_snippet}"
+                f"[Source {i + 1}: {result.filename}, page {result.page_number}]\n{safe_snippet}"
             )
         context_text = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant context found."
 
@@ -4217,6 +4235,84 @@ async def set_collection_expertise(collection_id: str, data: SetCollectionExpert
     expertise_store.set_packs_for_collection(collection_id, data.pack_ids)
     packs = expertise_store.get_packs_for_collection(collection_id)
     return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
+
+
+# ---------------------------------------------------------------------------
+# PII pre-flight + collection blacklist endpoints
+# ---------------------------------------------------------------------------
+
+class PiiBlacklistUpdateRequest(BaseModel):
+    terms: List[str]
+
+
+@app.post(
+    "/api/pii/preflight",
+    summary="Pre-flight PII scan for a tabular file",
+    tags=["privacy"],
+)
+async def pii_preflight(
+    file_path: str,
+    collection_id: str = "default",
+) -> dict:
+    """Scan a CSV or Excel file for PII before indexing.
+
+    Returns per-column findings (role, action, sample values) and the
+    current custom blacklist for the collection.  Does not modify the file
+    or the index.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    ext = path.suffix.lower()
+    if ext not in (".csv", ".xlsx", ".xls"):
+        raise HTTPException(
+            status_code=400,
+            detail="PII pre-flight only supports CSV and Excel files.",
+        )
+    try:
+        from services.privacy.pii_preflight import scan_file
+        return scan_file(path, collection_id=collection_id)
+    except Exception as exc:
+        logger.error("PII preflight failed for %s: %s", file_path, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get(
+    "/api/collections/{collection_id}/pii-blacklist",
+    summary="Get custom PII blacklist for a collection",
+    tags=["privacy"],
+)
+async def get_pii_blacklist(collection_id: str) -> dict:
+    from services.privacy.collection_blacklist import get_blacklist
+    return {"collection_id": collection_id, "terms": get_blacklist(collection_id)}
+
+
+@app.post(
+    "/api/collections/{collection_id}/pii-blacklist",
+    summary="Add terms to the PII blacklist for a collection",
+    tags=["privacy"],
+)
+async def add_pii_blacklist_terms(
+    collection_id: str,
+    body: PiiBlacklistUpdateRequest,
+) -> dict:
+    from services.privacy.collection_blacklist import add_terms
+    updated = add_terms(collection_id, body.terms)
+    return {"collection_id": collection_id, "terms": updated}
+
+
+@app.delete(
+    "/api/collections/{collection_id}/pii-blacklist",
+    summary="Remove terms from the PII blacklist for a collection",
+    tags=["privacy"],
+)
+async def remove_pii_blacklist_terms(
+    collection_id: str,
+    body: PiiBlacklistUpdateRequest,
+) -> dict:
+    from services.privacy.collection_blacklist import remove_terms
+    updated = remove_terms(collection_id, body.terms)
+    return {"collection_id": collection_id, "terms": updated}
 
 
 # Redirect bare /mcp (no trailing slash) to /mcp/ so MCP clients that use the old

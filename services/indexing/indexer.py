@@ -50,25 +50,35 @@ class DocumentIndexer:
         self.document_extractor = document_extractor
         self.text_chunker = text_chunker
 
-    def index_document(self, document_path: Path, filename: str) -> DocumentMetadata:
+    def index_document(
+        self,
+        document_path: Path,
+        filename: str,
+        collection_id: str | None = None,
+    ) -> DocumentMetadata:
         """
         Index a single document (PDF, TXT, DOCX, CSV, MD, or JSON).
 
         Args:
             document_path: Path to the document file
             filename: Original filename
+            collection_id: Collection being indexed into (used for PII blacklist lookup)
 
         Returns:
             DocumentMetadata object
         """
-        # Delegate to progress-aware version with no-op callback
-        return self.index_document_with_progress(document_path, filename, progress_callback=None)
+        return self.index_document_with_progress(
+            document_path, filename,
+            progress_callback=None,
+            collection_id=collection_id,
+        )
 
     def index_document_with_progress(
         self,
         document_path: Path,
         filename: str,
         progress_callback: Optional[ProgressCallback] = None,
+        collection_id: str | None = None,
     ) -> DocumentMetadata:
         """
         Index a single document with granular progress reporting (v4.0).
@@ -107,6 +117,7 @@ class DocumentIndexer:
             return self._index_tabular_document(
                 document_path, filename, document_id, source_format=source_format,
                 progress_callback=progress_callback,
+                collection_id=collection_id,
             )
 
         # Handle code files with symbol-aware chunking
@@ -233,6 +244,7 @@ class DocumentIndexer:
         document_id: str,
         source_format: str = "csv",
         progress_callback: Optional[ProgressCallback] = None,
+        collection_id: str | None = None,
     ) -> DocumentMetadata:
         """
         Index a CSV or Excel workbook.
@@ -260,6 +272,29 @@ class DocumentIndexer:
         sheets = self.document_extractor.extract_tabular_sheets(document_path)
         if not sheets:
             raise ValueError(f"Could not extract any rows from {filename}")
+
+        # ── Index-time PII sanitization ────────────────────────────────────
+        # Strip client identity columns (account holder names, account numbers,
+        # addresses, phone numbers, etc.) before anything is written to disk.
+        # The advisor already has this data in their source system; the AI only
+        # needs the investment/financial data.
+        try:
+            from services.privacy.column_sanitizer import sanitize_tabular_sheet
+            from services.privacy.collection_blacklist import get_blacklist
+            _blacklist = get_blacklist(collection_id) if collection_id else []
+            for sheet in sheets:
+                sanitize_tabular_sheet(sheet, blacklist=_blacklist or None)
+        except Exception as _san_err:
+            # Sanitization failure is non-fatal but we log loudly — we'd rather
+            # refuse to index than store raw PII silently.
+            logger.error(
+                "PII column sanitization failed for %s — aborting index to prevent "
+                "raw PII from being stored: %s",
+                filename, _san_err, exc_info=True,
+            )
+            raise ValueError(
+                f"PII sanitization failed for {filename}: {_san_err}"
+            ) from _san_err
 
         total_rows = sum(len(s['rows']) for s in sheets)
         report("extracting", 100,
@@ -549,11 +584,15 @@ class DocumentIndexer:
         # Step 3: Optionally rerank results
         if ai_active and ai_options.rerank and len(results) > 0:
             try:
+                from services.privacy.redaction_middleware import redact_text_for_ai
                 rerank_input = [
                     {
                         "index": i,
                         "filename": r.filename,
-                        "text_snippet": r.text_snippet,
+                        # Redact PII from snippets sent to the AI reranker.
+                        "text_snippet": redact_text_for_ai(
+                            r.text_snippet, source_label="search_rerank"
+                        ),
                         "similarity_score": r.similarity_score,
                     }
                     for i, r in enumerate(results)
@@ -584,19 +623,28 @@ class DocumentIndexer:
             len(results) > 0 or collection_overview or structured_context
         ):
             try:
+                from services.privacy.redaction_middleware import redact_text_for_ai
+                # Redact PII from snippets and structured table data before synthesis.
                 synth_input = [
                     {
                         "filename": r.filename,
                         "page_number": r.page_number,
-                        "text_snippet": r.text_snippet,
+                        "text_snippet": redact_text_for_ai(
+                            r.text_snippet, source_label="search_synthesis"
+                        ),
                     }
                     for r in results
                 ]
+                safe_structured_context = (
+                    redact_text_for_ai(structured_context, source_label="search_synthesis_tables")
+                    if structured_context
+                    else structured_context
+                )
                 synth_result = ai_service.synthesize_results(
                     query,
                     synth_input,
                     collection_overview=collection_overview,
-                    structured_context=structured_context,
+                    structured_context=safe_structured_context,
                 )
                 synthesis = synth_result["synthesis"]
                 usage = synth_result["usage"]
