@@ -168,15 +168,38 @@ class AnthropicProvider(AIProvider):
         return True
 
     def complete_with_tools(self, messages, tools, max_tokens, model, system=None):
+        # Prompt caching on system + tool schemas. Both are reused across every
+        # iteration of the agent loop and across turns of the same chat, so
+        # caching them drops the per-iteration input cost by ~90% and keeps a
+        # tool-heavy turn from blowing the org's input-tokens-per-minute budget.
+        # One breakpoint on the last tool caches the entire tools array; a
+        # second on the system text block caches through the system.
+        tools_for_call = tools
+        if tools:
+            tools_for_call = list(tools[:-1]) + [
+                {**tools[-1], "cache_control": {"type": "ephemeral"}}
+            ]
+
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
             "messages": messages,
-            "tools": tools,
+            "tools": tools_for_call,
         }
         if system:
-            kwargs["system"] = system
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
         response = self.client.messages.create(**kwargs)
+
+        cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+        if cache_read or cache_write:
+            logger.info(
+                "[anthropic] cache read=%d write=%d input=%d output=%d",
+                cache_read, cache_write,
+                response.usage.input_tokens, response.usage.output_tokens,
+            )
 
         text_parts: list[str] = []
         tool_calls: list[dict] = []

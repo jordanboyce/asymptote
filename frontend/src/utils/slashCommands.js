@@ -8,6 +8,7 @@ export const SLASH_COMMANDS = {
   '/brief': 'Generate meeting brief for this collection',
   '/stats': 'Show collection statistics',
   '/docs': 'List indexed documents',
+  '/tools': 'Show what the assistant can do',
   '/help': 'Show available slash commands',
 }
 
@@ -116,6 +117,65 @@ const formatHelp = () => {
   for (const [cmd, desc] of Object.entries(SLASH_COMMANDS)) {
     lines.push(`${cmd.padEnd(8)}  ${desc}`)
   }
+  return lines.join('\n')
+}
+
+// Curated, human-readable capability list. Grouped so users can see what the
+// assistant can do without reading raw tool schemas. Keep descriptions in
+// user-language, not tool-name-language. When tools change in
+// services/agent_tools.py, update this list.
+const TOOL_CATEGORIES = [
+  {
+    title: 'DOCUMENTS',
+    items: [
+      'Search PDFs, text, and code (keyword, semantic, or hybrid)',
+      'Pull the full text of a document, page, or section',
+      'Browse what\'s indexed across all your collections',
+    ],
+  },
+  {
+    title: 'PORTFOLIO TABLES (CSV / Excel)',
+    items: [
+      'Run read-only SQL or group-by aggregations on imported spreadsheets',
+      'Compute metrics: market value, cost basis, P&L, concentration, top/bottom holdings',
+      'Break down by sector, asset class, region, or currency',
+      'Surface tax-loss candidates and weighted returns',
+      'Inspect schema, column types, and sample rows before querying',
+    ],
+  },
+  {
+    title: 'MARKET DATA (Yahoo Finance)',
+    items: [
+      'Historical OHLCV price history for any ticker',
+      'Sector, market cap, and asset-class classification',
+      'Company profile: CEO, business summary, HQ, employees',
+      'Recent news headlines',
+    ],
+  },
+]
+
+const TOOL_EXAMPLES = [
+  '"List my top 20 holdings by market value"',
+  '"Show my sector breakdown and flag concentration risks"',
+  '"What\'s been happening with AAPL in the news this month?"',
+  '"Find the passage in the 10-K that mentions supply chain risk"',
+  '"What\'s the 1-year return on SPY vs. QQQ?"',
+]
+
+const formatTools = () => {
+  const title = 'What this assistant can do'
+  const lines = [title, '─'.repeat(title.length), '']
+  for (const { title: cat, items } of TOOL_CATEGORIES) {
+    lines.push(cat)
+    for (const item of items) lines.push(`  • ${item}`)
+    lines.push('')
+  }
+  lines.push('Try asking:')
+  for (const ex of TOOL_EXAMPLES) lines.push(`  • ${ex}`)
+  lines.push(
+    '',
+    'You can also just describe what you want in plain language — the assistant picks the right tools automatically.',
+  )
   return lines.join('\n')
 }
 
@@ -301,6 +361,10 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
   try {
     if (cmd === '/help') {
       return { cmd, content: formatHelp() }
+    }
+
+    if (cmd === '/tools') {
+      return { cmd, content: formatTools() }
     }
 
     if (cmd === '/brief') {

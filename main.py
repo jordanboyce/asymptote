@@ -106,6 +106,22 @@ ALL_AI_PROVIDERS = CLOUD_AI_PROVIDERS + ("ollama",)
 _initialized = False
 
 
+MAX_TOOL_RESULT_CHARS = 10000
+
+
+def _truncate_tool_result(payload_json: str) -> str:
+    """Cap a serialized tool-result payload so a fan-out of tool calls on one
+    turn cannot inflate the next request past the provider's per-minute input
+    budget. When truncated, append a marker so the model knows to narrow the
+    next call rather than assume the data simply ended."""
+    if len(payload_json) <= MAX_TOOL_RESULT_CHARS:
+        return payload_json
+    return (
+        payload_json[:MAX_TOOL_RESULT_CHARS]
+        + '\n\n… [truncated — result exceeded size limit; re-call with narrower filters, smaller limit, or a more specific query]'
+    )
+
+
 def get_indexer(collection_id: str = "default") -> DocumentIndexer:
     """Get indexer for a collection."""
     if not _initialized:
@@ -1423,7 +1439,7 @@ async def chat_with_documents(
                         tool_result_content.append({
                             "type": "tool_result",
                             "tool_use_id": tc["id"],
-                            "content": _json.dumps(payload, default=str)[:60000],
+                            "content": _truncate_tool_result(_json.dumps(payload, default=str)),
                             **({"is_error": True} if res.get("error") else {}),
                         })
                     messages.append({"role": "user", "content": tool_result_content})
@@ -1433,7 +1449,7 @@ async def chat_with_documents(
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
-                            "content": _json.dumps(payload, default=str)[:60000],
+                            "content": _truncate_tool_result(_json.dumps(payload, default=str)),
                         })
 
             if not response_text:
@@ -1815,7 +1831,7 @@ async def chat_stream_endpoint(
                             tool_result_content.append({
                                 "type": "tool_result",
                                 "tool_use_id": tc["id"],
-                                "content": _json.dumps(payload, default=str)[:60000],
+                                "content": _truncate_tool_result(_json.dumps(payload, default=str)),
                                 **({"is_error": True} if res.get("error") else {}),
                             })
                         messages.append({"role": "user", "content": tool_result_content})
@@ -1825,7 +1841,7 @@ async def chat_stream_endpoint(
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc["id"],
-                                "content": _json.dumps(payload, default=str)[:60000],
+                                "content": _truncate_tool_result(_json.dumps(payload, default=str)),
                             })
 
                 if not response_text:
@@ -4260,8 +4276,10 @@ async def pii_preflight(
     current custom blacklist for the collection.  Does not modify the file
     or the index.
     """
+    if not file_path or not file_path.strip():
+        raise HTTPException(status_code=400, detail="file_path is required.")
     path = Path(file_path)
-    if not path.exists():
+    if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
     ext = path.suffix.lower()
     if ext not in (".csv", ".xlsx", ".xls"):

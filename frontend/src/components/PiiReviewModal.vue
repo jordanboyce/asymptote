@@ -7,7 +7,7 @@
         <div>
           <h2 id="pii-review-title" class="text-lg font-bold flex items-center gap-2">
             <ShieldAlert :size="20" class="text-warning" />
-            PII Review — {{ filename }}
+            PII Review<span v-if="filename"> — {{ filename }}</span>
           </h2>
           <p class="text-sm text-base-content/60 mt-1">
             Review what will be redacted before this file is indexed. The AI will only see
@@ -22,7 +22,30 @@
       <!-- Scrollable body -->
       <div class="overflow-y-auto flex-1 flex flex-col gap-6 pr-1">
 
+        <!-- Loading state: preflight scan in progress -->
+        <div v-if="loading" class="flex flex-col items-center justify-center gap-4 py-16">
+          <span class="loading loading-spinner loading-lg text-primary"></span>
+          <div class="text-center">
+            <p class="text-sm font-medium">Scanning file for PII…</p>
+            <p class="text-xs text-base-content/50 mt-1">
+              Detecting columns, sampling values, and matching against your blacklist.
+            </p>
+          </div>
+        </div>
+
+        <!-- Error state -->
+        <div v-else-if="error" class="alert alert-error">
+          <ShieldAlert :size="18" />
+          <span>{{ error }}</span>
+        </div>
+
+        <!-- Empty (shouldn't usually hit — preflight always returns sheets) -->
+        <div v-else-if="sheets.length === 0" class="text-center py-16 text-sm text-base-content/50">
+          No columns detected in this file.
+        </div>
+
         <!-- Per-sheet column table -->
+        <template v-else>
         <div v-for="sheet in sheets" :key="sheet.sheet_name">
           <div v-if="sheets.length > 1" class="text-xs font-semibold text-base-content/50 uppercase tracking-wider mb-2">
             Sheet: {{ sheet.sheet_name }} · {{ sheet.total_rows }} rows
@@ -135,15 +158,20 @@
           <span><span class="badge badge-warning badge-sm mr-1">Hashed</span> — replaced with a short ID so grouping still works</span>
           <span><span class="badge badge-success badge-sm mr-1">Kept</span> — financial data, passed through unchanged</span>
         </div>
+        </template>
 
       </div>
 
       <!-- Footer -->
       <div class="modal-action border-t border-base-300 pt-4 mt-0">
         <button class="btn btn-ghost" @click="cancel">Cancel</button>
-        <button class="btn btn-primary gap-2" @click="confirm">
-          <ShieldCheck :size="16" />
-          Confirm & Index
+        <button
+          class="btn btn-primary gap-2"
+          :disabled="loading || !!error || sheets.length === 0"
+          @click="confirm">
+          <ShieldCheck v-if="!loading" :size="16" />
+          <span v-else class="loading loading-spinner loading-xs"></span>
+          {{ loading ? 'Scanning…' : 'Confirm & Index' }}
         </button>
       </div>
     </div>
@@ -179,14 +207,25 @@ const removedTerms = ref([])     // terms removed this session
 const customTermInput = ref('')
 
 // ── open / close ─────────────────────────────────────────────────────────
-async function open() {
+// Accepts an explicit filePath so callers don't have to wait for prop reactivity
+// to propagate (Vue 3 prop updates trail the parent's ref mutation by one tick).
+async function open(filePath) {
+  const path = filePath ?? props.filePath
   error.value = ''
   loading.value = true
+  filename.value = ''
+  sheets.value = []
   modalEl.value?.showModal()
+
+  if (!path) {
+    error.value = 'No file path provided for PII review.'
+    loading.value = false
+    return
+  }
 
   try {
     const { data } = await axios.post('/api/pii/preflight', null, {
-      params: { file_path: props.filePath, collection_id: props.collectionId }
+      params: { file_path: path, collection_id: props.collectionId }
     })
     filename.value = data.filename
     sheets.value = data.sheets

@@ -592,8 +592,9 @@ function onPiiCancelled() {
 
 function processNextPiiReview() {
   if (piiReviewQueue.value.length > 0) {
-    piiReviewFilePath.value = piiReviewQueue.value.shift()
-    piiModal.value?.open()
+    const nextPath = piiReviewQueue.value.shift()
+    piiReviewFilePath.value = nextPath
+    piiModal.value?.open(nextPath)
   } else {
     // All reviews done — index the cleared files
     if (piiClearedPaths.value.length > 0) {

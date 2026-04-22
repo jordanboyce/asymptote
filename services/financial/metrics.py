@@ -257,6 +257,34 @@ def compute_financial_metric(
         if m in ('breakdown_by_sector', 'breakdown_by_asset_class',
                  'breakdown_by_region', 'breakdown_by_currency'):
             group_role = m.replace('breakdown_by_', '')
+            # Soft-fail when the required role isn't present instead of raising.
+            # A raise bubbles up as a red "tool error" in the chat UI and wastes
+            # a turn; a structured not-applicable payload lets the model see
+            # what breakdowns *are* runnable on this table and pick one.
+            missing: List[str] = []
+            if group_role not in role_to_col:
+                missing.append(group_role)
+            if 'market_value' not in role_to_col:
+                missing.append('market_value')
+            if missing:
+                runnable = [
+                    f'breakdown_by_{role}'
+                    for role in ('sector', 'asset_class', 'region', 'currency')
+                    if role in role_to_col and 'market_value' in role_to_col
+                ]
+                return {
+                    'metric': metric,
+                    'filename': schema['filename'],
+                    'table_used': table,
+                    'applicable': False,
+                    'reason': (
+                        f"{schema['filename']} has no column with role "
+                        f"{', '.join(repr(r) for r in missing)} — this breakdown "
+                        f"isn't available for this table."
+                    ),
+                    'detected_roles': sorted(role_to_col.keys()),
+                    'runnable_breakdowns': runnable,
+                }
             result = _breakdown(conn, schema, table, group_role, 'market_value')
             _sanity_check_breakdown(result.get('groups', []), warnings)
             if warnings:

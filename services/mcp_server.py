@@ -1584,6 +1584,7 @@ def get_price_history(
     start: str | None = None,
     end: str | None = None,
     interval: str = "1d",
+    period: str | None = None,
 ) -> dict[str, Any]:
     """Return historical OHLCV price data for a security.
 
@@ -1594,10 +1595,13 @@ def get_price_history(
 
     Parameters:
       - symbol: Ticker symbol (e.g. "AAPL", "MSFT", "^GSPC"). Required.
-      - start: ISO date (YYYY-MM-DD) or omit for a sensible default
-        lookback based on interval (7 days for intraday, 1 year for
-        daily, longer for weekly/monthly).
-      - end: ISO date (YYYY-MM-DD) or omit for today.
+      - period: Yahoo-Finance shorthand for the lookback window. One of:
+        1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max. Use this for
+        simple "last N days/months/years" queries — it is usually easier
+        than computing explicit dates.
+      - start / end: ISO dates (YYYY-MM-DD). Use these when you need a
+        specific window that doesn't align with `period`. If both `period`
+        and `start` are provided, `start` wins.
       - interval: Bar size. One of: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h,
         1d, 5d, 1wk, 1mo, 3mo. Default "1d". Note: yfinance limits
         intraday intervals to recent windows (e.g. 1m is last 7 days).
@@ -1607,9 +1611,10 @@ def get_price_history(
     { date, open, high, low, close, volume }.
 
     On lookup failure returns { error, message, symbol } with error
-    codes: missing_symbol, invalid_interval, symbol_not_found_or_no_data,
-    yfinance_fetch_failed. Agents should fall back to reporting the
-    error to the user rather than inventing values.
+    codes: missing_symbol, invalid_interval, invalid_period,
+    symbol_not_found_or_no_data, yfinance_fetch_failed. Agents should
+    fall back to reporting the error to the user rather than inventing
+    values.
 
     Results are cached locally on disk; repeat calls within the TTL
     (30 min intraday, 12 h daily, 24 h weekly+) return instantly.
@@ -1618,7 +1623,13 @@ def get_price_history(
 
     from services.market_data.price_history import get_price_history as _fetch
 
-    response = _fetch(symbol=symbol, start=start, end=end, interval=interval)
+    response = _fetch(
+        symbol=symbol,
+        start=start,
+        end=end,
+        interval=interval,
+        period=period,
+    )
     return _redact(response, tool_name="get_price_history")
 
 

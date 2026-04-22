@@ -136,6 +136,45 @@ def _default_start_for_interval(interval: str, end: str) -> str:
     return (end_dt - timedelta(days=delta_days)).isoformat()
 
 
+# Yahoo-Finance-style period strings → lookback days from `end`. "max" and
+# "ytd" get special-cased by the caller.
+_PERIOD_TO_DAYS: dict[str, int] = {
+    "1d": 1,
+    "5d": 5,
+    "7d": 7,
+    "1mo": 30,
+    "3mo": 91,
+    "6mo": 182,
+    "1y": 365,
+    "2y": 365 * 2,
+    "5y": 365 * 5,
+    "10y": 365 * 10,
+}
+
+
+def _start_from_period(period: str, end: str) -> str | None:
+    """Resolve a Yahoo-style period string to an ISO start date.
+
+    Returns None for unsupported strings so the caller can surface a
+    clear invalid_period error instead of silently using a default.
+    """
+    from datetime import timedelta
+
+    p = period.strip().lower()
+    end_dt = datetime.fromisoformat(end).date()
+
+    if p == "max":
+        # yfinance treats "max" as "whatever is available"; we approximate
+        # with a 20-year window so the cache key stays deterministic.
+        return (end_dt - timedelta(days=365 * 20)).isoformat()
+    if p == "ytd":
+        return date(end_dt.year, 1, 1).isoformat()
+    days = _PERIOD_TO_DAYS.get(p)
+    if days is None:
+        return None
+    return (end_dt - timedelta(days=days)).isoformat()
+
+
 @dataclass
 class PriceHistoryError(Exception):
     code: str
@@ -231,8 +270,13 @@ def get_price_history(
     start: str | date | datetime | None = None,
     end: str | date | datetime | None = None,
     interval: str = "1d",
+    period: str | None = None,
 ) -> dict[str, Any]:
-    """Return OHLCV price history for `symbol` between `start` and `end`.
+    """Return OHLCV price history for `symbol`.
+
+    Callers can specify the window either as a `period` (Yahoo-Finance-style
+    shorthand like "1y", "6mo", "ytd", "max") or an explicit `start`/`end`
+    pair. If both are given, explicit `start`/`end` wins.
 
     Results are cached on disk keyed by (symbol, start, end, interval)
     with a TTL that depends on the interval.
@@ -254,7 +298,20 @@ def get_price_history(
     sym = _normalize_symbol(symbol)
     today = datetime.now(tz=timezone.utc).date().isoformat()
     end_norm = _normalize_date(end, fallback=today)
-    start_norm = _normalize_date(start, fallback=_default_start_for_interval(interval, end_norm))
+
+    if start is None and period:
+        derived = _start_from_period(period, end_norm)
+        if derived is None:
+            return {
+                "error": "invalid_period",
+                "message": (
+                    f"period must be one of {sorted(_PERIOD_TO_DAYS)} "
+                    "or 'ytd'/'max'"
+                ),
+            }
+        start_norm = derived
+    else:
+        start_norm = _normalize_date(start, fallback=_default_start_for_interval(interval, end_norm))
 
     key = _cache_key(sym, start_norm, end_norm, interval)
     ttl = _ttl_for_interval(interval)

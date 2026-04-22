@@ -504,8 +504,9 @@ function onPiiCancelled() {
 }
 function advancePiiQueue() {
   if (piiReviewQueue.value.length > 0) {
-    piiReviewFilePath.value = piiReviewQueue.value.shift()
-    piiModal.value?.open()
+    const nextPath = piiReviewQueue.value.shift()
+    piiReviewFilePath.value = nextPath
+    piiModal.value?.open(nextPath)
   } else {
     if (piiClearedPaths.value.length > 0) {
       indexFileList(piiClearedPaths.value)
@@ -517,13 +518,14 @@ function advancePiiQueue() {
 // Open PII review for an already-indexed document (from the PII badge on the card).
 // source_path is the original filesystem path stored at index time.
 function openPiiReview(doc) {
-  piiReviewFilePath.value = doc.source_path || ''
-  if (!piiReviewFilePath.value) {
+  const path = doc.source_path || ''
+  if (!path) {
     // Fallback: shouldn't normally happen, but show a useful message
     console.warn('PII review: no source_path available for', doc.filename)
     return
   }
-  piiModal.value?.open()
+  piiReviewFilePath.value = path
+  piiModal.value?.open(path)
 }
 
 // Sidebar-specific state

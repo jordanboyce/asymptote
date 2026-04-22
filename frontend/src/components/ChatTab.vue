@@ -241,26 +241,17 @@
                   v-if="msg.slashCommand"
                   class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug"
                 >{{ msg.content }}</div>
-                <div v-else class="relative">
-                  <div
-                    class="prose prose-sm max-w-none text-sm chat-markdown"
-                    v-html="renderAssistantMarkdown(msg.content)"
-                  ></div>
-                  <!-- Blinking cursor while streaming -->
-                  <span
-                    v-if="msg.streaming && msg.content"
-                    class="inline-block w-0.5 h-4 bg-primary align-middle ml-0.5 animate-pulse"
-                    aria-hidden="true"
-                  ></span>
-                  <!-- Subtle spinner when streaming but no text yet -->
-                  <div v-if="msg.streaming && !msg.content && (!msg.structuredResults || msg.structuredResults.length === 0)"
-                    class="flex items-center gap-2 text-xs text-base-content/50 py-0.5">
-                    <span class="loading loading-dots loading-xs text-primary"></span>
-                    <span>Thinking…</span>
-                  </div>
+
+                <!-- Initial "Thinking…" placeholder before any content arrives -->
+                <div v-else-if="msg.streaming && !msg.content && (!msg.structuredResults || msg.structuredResults.length === 0)"
+                  class="flex items-center gap-2 text-xs text-base-content/50 py-0.5">
+                  <span class="loading loading-dots loading-xs text-primary"></span>
+                  <span>Thinking…</span>
                 </div>
 
-                <!-- Structured query / metric results -->
+                <!-- Structured query / metric results (rendered BEFORE the prose answer
+                     so the synthesized response lands at the bottom of the message,
+                     where the auto-scroll anchor keeps it in view as it streams) -->
                 <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
                   <template v-for="(sr, srIdx) in msg.structuredResults" :key="srIdx">
 
@@ -421,6 +412,51 @@
                       {{ sr.result.collections.length }} collection{{ sr.result.collections.length === 1 ? '' : 's' }}
                     </div>
 
+                    <!-- Price history summary -->
+                    <div
+                      v-else-if="sr.tool === 'get_price_history' && sr.result?.points"
+                      class="px-3 py-2 text-xs space-y-1.5"
+                    >
+                      <div class="flex flex-wrap gap-x-3 gap-y-1 text-base-content/70">
+                        <span class="font-mono">{{ sr.result.symbol }}</span>
+                        <span class="text-base-content/40">·</span>
+                        <span>{{ sr.result.interval }} bars</span>
+                        <span class="text-base-content/40">·</span>
+                        <span>{{ sr.result.start }} → {{ sr.result.end }}</span>
+                        <span class="text-base-content/40">·</span>
+                        <span>{{ sr.result.point_count }} points</span>
+                        <span v-if="sr.result.currency" class="text-base-content/40">·</span>
+                        <span v-if="sr.result.currency" class="font-mono">{{ sr.result.currency }}</span>
+                      </div>
+                      <div v-if="priceHistorySummary(sr.result)" class="flex flex-wrap gap-x-4 gap-y-1 font-mono">
+                        <span>
+                          <span class="text-base-content/50">open:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).firstClose) }}
+                        </span>
+                        <span>
+                          <span class="text-base-content/50">close:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).lastClose) }}
+                        </span>
+                        <span
+                          v-if="priceHistorySummary(sr.result).pctChange != null"
+                          :class="priceHistorySummary(sr.result).pctChange >= 0 ? 'text-success' : 'text-error'"
+                        >
+                          {{ priceHistorySummary(sr.result).pctChange >= 0 ? '+' : '' }}{{ priceHistorySummary(sr.result).pctChange.toFixed(2) }}%
+                        </span>
+                        <span>
+                          <span class="text-base-content/50">high:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).high) }}
+                        </span>
+                        <span>
+                          <span class="text-base-content/50">low:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).low) }}
+                        </span>
+                      </div>
+                      <div v-if="sr.result.cached" class="text-base-content/40">
+                        cached · source: {{ sr.result.source }}
+                      </div>
+                    </div>
+
                     <!-- Generic key/value fallback -->
                     <div v-else-if="sr.result" class="px-3 py-2 text-xs font-mono space-y-0.5 max-h-48 overflow-y-auto">
                       <div v-for="(val, key) in sr.result" :key="key" class="flex gap-2">
@@ -442,19 +478,59 @@
                   </template>
                 </div>
 
-                <!-- Token + provider badge -->
-                <div v-if="msg.aiUsage" class="flex items-center gap-2 mt-2 flex-wrap">
-                  <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
-                    {{ providerDisplayName(msg.provider || selectedProvider) }}
-                  </span>
-                  <span class="text-xs text-base-content/40">
-                    {{ msg.aiUsage.total_input_tokens + msg.aiUsage.total_output_tokens }} tokens
-                  </span>
-                  <span v-if="msg.aiUsage.features_used?.includes('reranking')" class="badge badge-xs badge-outline">reranked</span>
-                  <span v-if="msg.aiUsage.features_used?.includes('structured_tools')" class="badge badge-xs badge-success gap-0.5">
-                    <Table2 :size="9" /> sql
-                  </span>
-                  <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
+                <!-- Synthesized prose answer — streams in below the tool cards so
+                     auto-scroll keeps the final response visible. -->
+                <div v-if="!msg.slashCommand && (msg.content || msg.streaming)" class="relative"
+                  :class="{ 'mt-3': msg.structuredResults && msg.structuredResults.length > 0 }">
+                  <div
+                    class="prose prose-sm max-w-none text-sm chat-markdown"
+                    v-html="renderAssistantMarkdown(msg.content)"
+                  ></div>
+                  <!-- Blinking cursor while streaming -->
+                  <span
+                    v-if="msg.streaming && msg.content"
+                    class="inline-block w-0.5 h-4 bg-primary align-middle ml-0.5 animate-pulse"
+                    aria-hidden="true"
+                  ></span>
+                  <!-- Post-tool "Synthesizing…" hint: tools finished, prose not started -->
+                  <div
+                    v-if="msg.streaming && !msg.content && msg.structuredResults?.length > 0 && !msg.structuredResults.some(sr => sr.pending)"
+                    class="flex items-center gap-2 text-xs text-base-content/50 py-0.5"
+                  >
+                    <span class="loading loading-dots loading-xs text-primary"></span>
+                    <span>Synthesizing answer…</span>
+                  </div>
+                </div>
+
+                <!-- Footer row: provider badges + copy button -->
+                <div
+                  v-if="!msg.streaming && (msg.aiUsage || msg.content)"
+                  class="flex items-center gap-2 mt-2 flex-wrap"
+                >
+                  <template v-if="msg.aiUsage">
+                    <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
+                      {{ providerDisplayName(msg.provider || selectedProvider) }}
+                    </span>
+                    <span class="text-xs text-base-content/40">
+                      {{ msg.aiUsage.total_input_tokens + msg.aiUsage.total_output_tokens }} tokens
+                    </span>
+                    <span v-if="msg.aiUsage.features_used?.includes('reranking')" class="badge badge-xs badge-outline">reranked</span>
+                    <span v-if="msg.aiUsage.features_used?.includes('structured_tools')" class="badge badge-xs badge-success gap-0.5">
+                      <Table2 :size="9" /> sql
+                    </span>
+                    <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
+                  </template>
+                  <button
+                    v-if="msg.content"
+                    class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 ml-auto text-base-content/50 hover:text-base-content gap-1"
+                    :title="copiedMessageIndex === index ? 'Copied!' : 'Copy answer'"
+                    :aria-label="copiedMessageIndex === index ? 'Copied to clipboard' : 'Copy answer to clipboard'"
+                    @click="copyMessage(msg, index)"
+                  >
+                    <Check v-if="copiedMessageIndex === index" :size="11" class="text-success" />
+                    <Copy v-else :size="11" />
+                    <span class="text-xs">{{ copiedMessageIndex === index ? 'Copied' : 'Copy' }}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -569,7 +645,7 @@
             </button>
           </div>
         </div>
-        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /stats, /docs, /help</p>
+        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /tools, /stats, /docs, /help</p>
       </div>
 
   </div>
@@ -593,7 +669,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -745,8 +821,46 @@ const formatCell = (v) => {
     if (Number.isInteger(v)) return v.toLocaleString()
     return v.toLocaleString(undefined, { maximumFractionDigits: 4 })
   }
+  if (typeof v === 'boolean') return v ? 'true' : 'false'
+  if (Array.isArray(v)) return `[${v.length} item${v.length === 1 ? '' : 's'}]`
+  if (typeof v === 'object') {
+    // Avoid the default "[object Object]" by showing compact JSON, trimmed.
+    try {
+      const s = JSON.stringify(v)
+      return s.length > 200 ? s.slice(0, 200) + '…' : s
+    } catch {
+      return '[object]'
+    }
+  }
   const s = String(v)
   return s.length > 200 ? s.slice(0, 200) + '…' : s
+}
+
+const priceHistorySummary = (result) => {
+  const pts = Array.isArray(result?.points) ? result.points : []
+  if (pts.length === 0) return null
+  const first = pts[0]
+  const last = pts[pts.length - 1]
+  const firstClose = typeof first.close === 'number' ? first.close : null
+  const lastClose = typeof last.close === 'number' ? last.close : null
+  let pctChange = null
+  if (firstClose != null && lastClose != null && firstClose !== 0) {
+    pctChange = ((lastClose - firstClose) / firstClose) * 100
+  }
+  let hi = -Infinity, lo = Infinity
+  for (const p of pts) {
+    if (typeof p.high === 'number' && p.high > hi) hi = p.high
+    if (typeof p.low === 'number' && p.low < lo) lo = p.low
+  }
+  return {
+    firstDate: first.date,
+    lastDate: last.date,
+    firstClose,
+    lastClose,
+    pctChange,
+    high: isFinite(hi) ? hi : null,
+    low: isFinite(lo) ? lo : null,
+  }
 }
 
 const providerDisplayName = getProviderDisplayName
@@ -775,6 +889,22 @@ const ensureValidProvider = () => {
 const scrollToBottom = async () => {
   await nextTick()
   messagesEnd.value?.scrollIntoView({ behavior: 'smooth' })
+}
+
+// ── Copy answer to clipboard ─────────────────────────────────────────────
+const copiedMessageIndex = ref(null)
+let copyResetTimer = null
+
+const copyMessage = async (msg, index) => {
+  if (!msg?.content) return
+  try {
+    await navigator.clipboard.writeText(msg.content)
+    copiedMessageIndex.value = index
+    if (copyResetTimer) clearTimeout(copyResetTimer)
+    copyResetTimer = setTimeout(() => { copiedMessageIndex.value = null }, 1600)
+  } catch (err) {
+    console.warn('Clipboard write failed:', err)
+  }
 }
 
 const useSuggestion = (suggestion) => {
