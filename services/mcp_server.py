@@ -1015,6 +1015,37 @@ def _get_structured_store(collection_id: str) -> StructuredStore:
     return indexer.vector_store.structured_store
 
 
+def _no_table_error(
+    store: StructuredStore, identifier: str, collection_id: str
+) -> ValueError:
+    """Build a `No structured table found` error with a did_you_mean suggestion.
+
+    The chat model occasionally constructs a mangled identifier (e.g. mashing
+    the filename stem and the full filename together). Rather than force a
+    full `list_tables` round-trip we include up to three likely matches so the
+    model can self-correct on the next turn.
+    """
+    base = (
+        f"No structured table found for '{identifier}' in collection "
+        f"'{collection_id}'."
+    )
+    try:
+        suggestions = store.suggest_identifiers(identifier, limit=3)
+    except Exception:
+        suggestions = []
+    if suggestions:
+        hint_parts = [
+            f"'{s['table_name']}' (source: {s['filename']})"
+            for s in suggestions
+            if s.get('table_name')
+        ]
+        if hint_parts:
+            base += " Did you mean: " + "; ".join(hint_parts) + "?"
+    return ValueError(
+        base + " Call list_tables() to see every available table."
+    )
+
+
 def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     """Trim a full schema payload down to what an LLM needs to write a query."""
     columns = []
@@ -1132,10 +1163,7 @@ def get_table_schema(
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        raise ValueError(
-            f"No structured table found for '{identifier}' in collection "
-            f"'{resolved_collection}'. Call list_tables() to see what's available."
-        )
+        raise _no_table_error(store, identifier, resolved_collection)
     return _redact(_format_schema_summary(schema), "get_table_schema")
 
 
@@ -1179,10 +1207,7 @@ def get_table_rows(
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        raise ValueError(
-            f"No structured table found for '{identifier}' in collection "
-            f"'{resolved_collection}'. Call list_tables() to see what's available."
-        )
+        raise _no_table_error(store, identifier, resolved_collection)
     table_name = schema["table_name"]
     capped = max(1, min(int(limit), 2000))
     select_cols = ['"__row_number"'] + [f'"{c["sql_name"]}"' for c in schema.get("columns", [])]
@@ -1409,10 +1434,7 @@ def aggregate_table(
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        raise ValueError(
-            f"No structured table found for '{identifier}' in collection "
-            f"'{resolved_collection}'. Call list_tables() to see what's available."
-        )
+        raise _no_table_error(store, identifier, resolved_collection)
     table_name = schema["table_name"]
     sql_fn = _AGG_FN_SQL[agg_fn]
     agg_expr = f'{sql_fn}("{aggregate_col}")'
@@ -2075,10 +2097,7 @@ def resource_table(id: str) -> dict[str, Any]:
     store = _get_structured_store(resolved)
     schema = store.get_schema(id)
     if not schema:
-        raise ValueError(
-            f"No structured table found for '{id}' in collection '{resolved}'. "
-            f"Call list_tables() to see what's available."
-        )
+        raise _no_table_error(store, id, resolved)
     summary = _format_schema_summary(schema)
 
     table_name = schema["table_name"]

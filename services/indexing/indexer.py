@@ -210,7 +210,7 @@ class DocumentIndexer:
             upload_timestamp=indexed_at,
             source_format=source_format,
             extraction_method=extraction_method,
-            embedding_model=settings.embedding_model,
+            embedding_model=self.embedding_service.model_name,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             injection_warnings=injection_warnings,
@@ -226,7 +226,7 @@ class DocumentIndexer:
             indexed_at=indexed_at,
             source_format=source_format,
             extraction_method=extraction_method,
-            embedding_model=settings.embedding_model,
+            embedding_model=self.embedding_service.model_name,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
@@ -246,17 +246,17 @@ class DocumentIndexer:
         progress_callback: Optional[ProgressCallback] = None,
         collection_id: str | None = None,
     ) -> DocumentMetadata:
-        """
-        Index a CSV or Excel workbook.
+        """Index a CSV or Excel workbook into the structured SQL store only.
 
-        Builds two indexes in one pass:
-          1. Row-level semantic chunks (embedded for free-text search).
-          2. A typed SQL table in the structured store (for aggregation,
-             filtering, and canned portfolio metrics).
+        Tabular data doesn't go through the chunk/embed pipeline — every real
+        question against it ("top positions", "sector concentration",
+        "unrealized G/L by account") is SQL, which the chat path already runs
+        against the typed tables built here. Skipping embedding saves a
+        network round-trip per upload and avoids false-positive "missing from
+        semantic search" confusion for numeric data.
 
         Every sheet in a multi-sheet workbook gets its own structured table.
         """
-        from models.schemas import ChunkMetadata
 
         def report(phase: str, progress: int, detail: str = None,
                    chunks_done: int = 0, chunks_total: int = 0):
@@ -300,16 +300,13 @@ class DocumentIndexer:
         report("extracting", 100,
                f"Extracted {total_rows} rows across {len(sheets)} sheet(s)")
 
-        # Build row-level chunks and populate the structured store in one pass
-        chunks: List = []
-        chunk_index = 0
+        # Populate the structured store for every sheet. No chunks, no
+        # embeddings — the chat path queries this via SQL.
         for sheet_num, sheet in enumerate(sheets, start=1):
             sheet_name = sheet['sheet_name']
             columns = sheet['columns']
             rows = sheet['rows']
-            row_texts = sheet['row_texts']
 
-            # Structured table (typed SQL)
             try:
                 self.vector_store.structured_store.create_table(
                     document_id=document_id,
@@ -326,84 +323,38 @@ class DocumentIndexer:
                     f"(sheet='{sheet_name}'): {e}"
                 )
 
-            # Semantic row chunks — still needed so chat can cite rows verbatim
-            for row_idx, (row_dict, row_text) in enumerate(zip(rows, row_texts), start=1):
-                chunk_id = f"{document_id}_s{sheet_num}_r{row_idx}"
-                # Use sheet number as "page_number" for multi-sheet workbooks;
-                # single-sheet CSVs keep page_number = row number (legacy behavior).
-                page_number = sheet_num if len(sheets) > 1 else row_idx
-                chunks.append(ChunkMetadata(
-                    chunk_id=chunk_id,
-                    document_id=document_id,
-                    filename=filename,
-                    page_number=page_number,
-                    chunk_index=chunk_index,
-                    text=row_text,
-                    source_format=source_format,
-                    extraction_method="text",
-                    csv_row_number=row_idx,
-                    csv_columns=columns,
-                    csv_values={k: ("" if v is None else str(v)) for k, v in row_dict.items()},
-                ))
-                chunk_index += 1
-
-        num_chunks = len(chunks)
-        report("chunking", 100, f"Prepared {num_chunks} row chunks", 0, num_chunks)
-
-        if num_chunks == 0:
-            raise ValueError(f"Could not create any chunks from {filename}")
-
-        report("embedding", 0, f"Embedding {num_chunks} rows", 0, num_chunks)
-        chunk_texts = [chunk.text for chunk in chunks]
-        batch_size = 32
-        if num_chunks > batch_size and progress_callback:
-            embeddings = []
-            for i in range(0, num_chunks, batch_size):
-                batch = chunk_texts[i:i + batch_size]
-                batch_embeddings = self.embedding_service.embed_texts(batch)
-                embeddings.extend(batch_embeddings)
-                progress = min(100, int((i + len(batch)) / num_chunks * 100))
-                report("embedding", progress,
-                       f"Embedded {min(i + len(batch), num_chunks)}/{num_chunks} rows",
-                       min(i + len(batch), num_chunks), num_chunks)
-        else:
-            embeddings = self.embedding_service.embed_texts(chunk_texts)
-            report("embedding", 100, f"Embedded {num_chunks} rows", num_chunks, num_chunks)
-
-        report("saving", 0, f"Saving {num_chunks} rows to index")
-        self.vector_store.add_chunks(chunks, embeddings)
-
+        report("saving", 0, f"Recording {total_rows} rows")
         indexed_at = datetime.utcnow().isoformat()
         self.vector_store.metadata_store.add_document(
             document_id=document_id,
             filename=filename,
             num_pages=total_rows,
-            num_chunks=num_chunks,
+            num_chunks=0,
             upload_timestamp=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=settings.embedding_model,
+            embedding_model=self.embedding_service.model_name,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
-        report("saving", 100, f"Saved {num_chunks} rows")
+        report("saving", 100, f"Recorded {total_rows} rows")
 
         metadata = DocumentMetadata(
             document_id=document_id,
             filename=filename,
             total_pages=total_rows,
-            total_chunks=num_chunks,
+            total_chunks=0,
             indexed_at=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=settings.embedding_model,
+            embedding_model=self.embedding_service.model_name,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
 
         logger.info(
             f"Successfully indexed {source_format.upper()} {filename}: "
-            f"{total_rows} rows across {len(sheets)} sheet(s), {num_chunks} chunks"
+            f"{total_rows} rows across {len(sheets)} sheet(s) (structured-only)"
         )
         return metadata
 
@@ -498,7 +449,7 @@ class DocumentIndexer:
             upload_timestamp=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=settings.embedding_model,
+            embedding_model=self.embedding_service.model_name,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
@@ -512,7 +463,7 @@ class DocumentIndexer:
             indexed_at=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=settings.embedding_model,
+            embedding_model=self.embedding_service.model_name,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )

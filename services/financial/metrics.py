@@ -114,7 +114,19 @@ def compute_financial_metric(
     """
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        raise ValueError(f"No structured table found for '{identifier}'")
+        msg = f"No structured table found for '{identifier}'."
+        try:
+            suggestions = store.suggest_identifiers(identifier, limit=3)
+        except Exception:
+            suggestions = []
+        if suggestions:
+            hint = "; ".join(
+                f"'{s['table_name']}' (source: {s['filename']})"
+                for s in suggestions if s.get('table_name')
+            )
+            if hint:
+                msg += f" Did you mean: {hint}?"
+        raise ValueError(msg)
 
     role_to_col: Dict[str, str] = {}
     for c in schema['columns']:

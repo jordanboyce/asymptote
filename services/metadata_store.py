@@ -396,6 +396,12 @@ class MetadataStore:
         """
         List all documents with their statistics.
 
+        The query starts FROM the ``documents`` table so files with zero
+        chunks (e.g. CSV/XLSX uploads, which now live entirely in the
+        structured SQL store and never get embedded) still show up in the
+        sources sidebar. ``num_chunks`` and ``num_pages`` are taken from the
+        authoritative document row; the chunks table is no longer consulted.
+
         Returns:
             List of document metadata dictionaries including source_type and source_path
         """
@@ -404,21 +410,18 @@ class MetadataStore:
             self._ensure_v3_1_columns(conn)
 
             conn.row_factory = sqlite3.Row
-            # Join with documents table to get source_type and source_path
             cursor = conn.execute("""
                 SELECT
-                    c.document_id,
-                    c.filename,
-                    COUNT(*) as num_chunks,
-                    COUNT(DISTINCT c.page_number) as num_pages,
+                    d.document_id,
+                    d.filename,
+                    d.num_chunks,
+                    d.num_pages,
                     d.source_type,
                     d.source_path,
                     d.upload_timestamp,
                     d.injection_warnings
-                FROM chunks c
-                LEFT JOIN documents d ON c.document_id = d.document_id
-                GROUP BY c.document_id, c.filename
-                ORDER BY COALESCE(MAX(c.created_at), '1970-01-01') DESC
+                FROM documents d
+                ORDER BY COALESCE(d.upload_timestamp, '1970-01-01') DESC
             """)
 
             rows = []
@@ -600,3 +603,17 @@ class MetadataStore:
             conn.execute("DELETE FROM documents")
             conn.commit()
             logger.info("Cleared all metadata from database")
+
+    def clear_all_chunks(self):
+        """Drop chunk rows but keep document rows.
+
+        Used when the embedding backend changed and we need to invalidate
+        stored vectors without losing the advisor's uploaded-documents list.
+        Structured-SQL tables (csv_schemas and csv_data_*) are in the same
+        database but deliberately untouched — tabular data doesn't depend on
+        embeddings and re-ingesting it would be pointless work.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM chunks")
+            conn.commit()
+            logger.info("Cleared chunk rows (documents and structured tables preserved)")

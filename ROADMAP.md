@@ -22,6 +22,29 @@ Financial advisors are the first wedge, but the architecture is general — any 
 
 ---
 
+## Session handoff — start here next time (2026-04-22)
+
+Last session closed out a rate-limit failure and some UX annoyances. Short summary of what shipped and what's still open.
+
+### Shipped this session
+
+- **In-app chat stopped hitting Anthropic 429 ITPM on tool-heavy turns.** Two fixes:
+  - Per-tool-result payload cap dropped from 60K → 10K chars, with a `… [truncated — re-call with narrower filters]` marker so the model course-corrects instead of assuming data ended. Applied at all four serialization sites in [main.py](main.py) (streaming + non-streaming × Anthropic + OpenAI branches). Helper: `_truncate_tool_result` near [main.py:112](main.py#L112).
+  - Prompt caching on the Anthropic path: `cache_control` markers on the system text block and the last tool schema in [services/ai_service.py:170-202](services/ai_service.py#L170-L202). System + tool schemas (~17K tokens) are reused across iterations and across turns of the same chat. Verified live: `cache read=16896, input=2611` on a second turn of the same chat.
+- **`/tools` slash command.** Curated, zero-token capability list grouped into Documents / Portfolio Tables / Market Data, plus example prompts. Client-side only (same pattern as `/brief`, `/stats`, `/docs`, `/help`). Source: [frontend/src/utils/slashCommands.js](frontend/src/utils/slashCommands.js). Drift is managed by convention — update the `TOOL_CATEGORIES` constant when adding/removing tools in [services/agent_tools.py](services/agent_tools.py).
+- **`breakdown_by_*` metrics no longer render a red tool error when the required role isn't in the schema.** Previously, calling `breakdown_by_sector` against e.g. a Pershing Unrealized G/L table (no sector column) raised `ValueError` → was caught → rendered as a red error bar in the chat UI, even though the agent recovered on the next turn. Now returns a soft `{"applicable": false, "detected_roles": [...], "runnable_breakdowns": [...]}` payload that the model reasons over. Change scoped narrowly to breakdowns in [services/financial/metrics.py:257-289](services/financial/metrics.py#L257-L289). All 59 existing metric tests still pass.
+- **Table-name resolution bug fixed.** The model was writing SQL against `"<stem> - <filename>"` (e.g. `"HBIL178aef9d - HBIL178aef9d.csv"`) on the first turn of a chat. Root cause: the LARGE-TABLES system-prompt block rendered each table as `TABLE "csv_data_X"  — source: X.csv`, and the inline-JSONL header as `--- TABLE: X.csv ---`. The em-dash and two different "TABLE" labelings left the model guessing which string was the actual SQL identifier. Three fixes in this session: (1) `describe_tables_for_prompt` now uses an explicit `sql_table_name:` / `source_file:` multi-line format plus an IDENTIFIER RULE instruction telling the model never to combine fields; (2) the inline-JSONL header surfaces `sql_table_name` alongside the filename so the fallback-to-SQL path has the right identifier; (3) `StructuredStore.suggest_identifiers` does fuzzy matching on lookup misses, and all four MCP lookup sites ([mcp_server.py](services/mcp_server.py) `get_table_schema`/`get_table_rows`/`aggregate_table`/`table://` resource + `compute_financial_metric`) now surface a "Did you mean: `csv_data_X` (source: X.csv)?" hint when the identifier doesn't resolve — so the model self-corrects on the next turn without a full `list_tables` round-trip. Regression tests in [tests/test_structured_store.py](tests/test_structured_store.py) (5 new).
+
+### Still open — pick up here
+
+- **Follow-ups deferred from the rate-limit work** (do if 429s come back):
+  - Cap concurrent tool calls per iteration (e.g. 4); reject the rest back to the model with "pick the most important, I can only run 4 per turn."
+  - Retry on 429 honoring `Retry-After` in `complete_with_tools`, with SSE progress events.
+  - After iter 3+, replace old tool_result blocks with one-line summaries so long chats stop growing linearly.
+- **Soft-fail pattern for other non-applicable metrics.** `breakdown_by_*` is fixed; `weighted_return`, `largest_gains`, etc. still raise via `require()` when a required role is missing. Apply the same pattern if those surface as annoyances.
+
+---
+
 ## Why this batch is reordered (read first if picking this up cold)
 
 Three advisor sessions against a real Schwab unrealized-gain/loss CSV surfaced bugs that make the previous batch order wrong:
@@ -609,4 +632,4 @@ Items that aren't funded yet but belong in the same direction of travel.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-04-17 (v4.4 shipped: SSE streaming chat, /brief slash command, Generate Meeting Brief button, POST /api/collections/{id}/brief endpoint)
+**Last updated:** 2026-04-22 (rate-limit hardening: 10K tool-result cap + Anthropic prompt caching; `/tools` slash command; soft-fail on `breakdown_by_*` when role absent; table-name resolution bug fixed — LARGE-TABLES prompt block now uses unambiguous `sql_table_name:` key, inline-JSONL header surfaces the SQL identifier, and lookup failures include did-you-mean hints so the model self-corrects without a `list_tables` round-trip.)

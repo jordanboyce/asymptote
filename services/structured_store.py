@@ -39,6 +39,19 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+_IDENTIFIER_NORMALIZE_RE = re.compile(r'[-_\s.]+')
+
+
+def _normalize_for_match(s: str) -> str:
+    """Lowercase + strip quotes/extensions + collapse separators for fuzzy id matching."""
+    if not s:
+        return ''
+    out = s.strip().strip('"').strip("'").lower()
+    if out.endswith('.csv') or out.endswith('.xlsx') or out.endswith('.xls'):
+        out = out.rsplit('.', 1)[0]
+    return _IDENTIFIER_NORMALIZE_RE.sub('', out)
+
+
 # ---------------------------------------------------------------------------
 # Plugin registry
 # ---------------------------------------------------------------------------
@@ -947,6 +960,62 @@ class StructuredStore:
             if not row:
                 return None
             return json.loads(row['schema_json'])
+
+    def suggest_identifiers(self, identifier: str, limit: int = 3) -> List[Dict[str, str]]:
+        """Suggest likely matches for an identifier the model guessed wrong.
+
+        The model sometimes concatenates or lightly mangles a table identifier
+        (e.g. "doc_stem - doc_stem.csv" instead of "csv_data_doc_stem"). Rather
+        than forcing a `list_tables` round-trip, we surface a did_you_mean hint
+        on the lookup-failure error so the model can self-correct on the next
+        turn.
+
+        Matching strategy (cheap, local, deterministic):
+          - normalize both sides: lowercase, strip quotes, drop extensions,
+            collapse [-_\\s]+ to empty
+          - any registered identifier (table_name / filename / document_id)
+            whose normalized form is contained in — or contains — the
+            normalized guess is a candidate
+          - rank by longest common substring length, return top `limit`
+
+        Returns a list of ``{"table_name", "filename", "document_id"}`` dicts.
+        """
+        norm_guess = _normalize_for_match(identifier)
+        if not norm_guess:
+            return []
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                f'''SELECT document_id, sheet_name, filename, table_name
+                    FROM {self.SCHEMA_REGISTRY}
+                    ORDER BY filename, sheet_name'''
+            )
+            rows = cursor.fetchall()
+
+        scored: List[tuple[int, Dict[str, str]]] = []
+        for row in rows:
+            candidates = (row['table_name'], row['filename'], row['document_id'])
+            best = 0
+            for cand in candidates:
+                if not cand:
+                    continue
+                norm_cand = _normalize_for_match(cand)
+                if not norm_cand:
+                    continue
+                if norm_guess == norm_cand:
+                    best = max(best, 10_000)
+                elif norm_guess in norm_cand or norm_cand in norm_guess:
+                    best = max(best, min(len(norm_guess), len(norm_cand)))
+            if best > 0:
+                scored.append((best, {
+                    'table_name': row['table_name'],
+                    'filename': row['filename'],
+                    'document_id': row['document_id'],
+                }))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [entry for _, entry in scored[:limit]]
 
     def get_schemas_for_document(self, document_id: str) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
