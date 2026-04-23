@@ -299,10 +299,20 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
             "list_collections() to see what is available."
         )
     if not collection_service.get_collection(candidate):
-        raise ValueError(
-            f"Collection '{candidate}' not found. Call list_collections() to "
-            f"see available collections."
+        # The model may have passed the collection's display name rather than its
+        # UUID — do a case-insensitive name lookup before giving up.
+        all_cols = collection_service.get_all_collections()
+        name_match = next(
+            (c for c in all_cols if c.get("name", "").strip().lower() == candidate.lower()),
+            None,
         )
+        if name_match:
+            candidate = name_match["id"]
+        else:
+            raise ValueError(
+                f"Collection '{candidate}' not found. Call list_collections() to "
+                f"see available collections."
+            )
     return candidate
 
 
