@@ -4367,7 +4367,12 @@ async def mcp_trailing_slash_redirect(request: Request):
 # Mount static files at root to serve /assets/* and other static content
 # This must be last so it doesn't override API routes
 app.mount("/mcp", embedded_mcp_app, name="mcp")
-app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+
+# SERVE_STATIC=false disables static file serving — used in Electron mode where
+# the renderer is bundled with Electron and loaded via file://, not from this server.
+_serve_static = os.environ.get("SERVE_STATIC", "true").lower() not in ("false", "0", "no")
+if _serve_static and (static_dir / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 
 if __name__ == "__main__":

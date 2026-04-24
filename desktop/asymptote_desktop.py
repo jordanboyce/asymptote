@@ -137,7 +137,14 @@ class AsymptoteApp:
     def __init__(self):
         self.server_thread = None
         self.server = None
-        self.port = find_free_port(settings.port)
+        # When launched by the Electron wrapper, it picks a free port and
+        # passes it via the PORT env var so both processes use the same one.
+        # Fall back to find_free_port() when running standalone.
+        env_port = os.environ.get('PORT')
+        if env_port and env_port.isdigit():
+            self.port = int(env_port)
+        else:
+            self.port = find_free_port(settings.port)
         self.base_url = f"http://localhost:{self.port}"
         self.running = False
 

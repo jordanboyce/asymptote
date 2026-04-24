@@ -10,6 +10,32 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 docling_datas, docling_binaries, docling_hiddenimports = collect_all('docling')
 docling_models_datas, docling_models_binaries, docling_models_hiddenimports = collect_all('docling_core')
 
+# Collect presidio — uses dynamic component registration that PyInstaller misses
+presidio_analyzer_datas, presidio_analyzer_binaries, presidio_analyzer_hiddenimports = collect_all('presidio_analyzer')
+presidio_anonymizer_datas, presidio_anonymizer_binaries, presidio_anonymizer_hiddenimports = collect_all('presidio_anonymizer')
+
+# Collect spaCy and the NLP model used by Presidio
+spacy_datas, spacy_binaries, spacy_hiddenimports = collect_all('spacy')
+try:
+    en_core_web_lg_datas, en_core_web_lg_binaries, en_core_web_lg_hiddenimports = collect_all('en_core_web_lg')
+except Exception:
+    # Fall back to small model if large not installed
+    en_core_web_lg_datas, en_core_web_lg_binaries, en_core_web_lg_hiddenimports = [], [], []
+try:
+    en_core_web_sm_datas, en_core_web_sm_binaries, en_core_web_sm_hiddenimports = collect_all('en_core_web_sm')
+except Exception:
+    en_core_web_sm_datas, en_core_web_sm_binaries, en_core_web_sm_hiddenimports = [], [], []
+
+# Collect faster-whisper / ctranslate2 (native libs PyInstaller often misses)
+try:
+    ctranslate2_datas, ctranslate2_binaries, ctranslate2_hiddenimports = collect_all('ctranslate2')
+except Exception:
+    ctranslate2_datas, ctranslate2_binaries, ctranslate2_hiddenimports = [], [], []
+try:
+    faster_whisper_datas, faster_whisper_binaries, faster_whisper_hiddenimports = collect_all('faster_whisper')
+except Exception:
+    faster_whisper_datas, faster_whisper_binaries, faster_whisper_hiddenimports = [], [], []
+
 # Get paths
 spec_root = os.path.abspath(SPECPATH)
 project_root = os.path.dirname(spec_root)
@@ -32,48 +58,128 @@ a = Analysis(
         os.path.join(project_root, 'main.py'),  # Include main FastAPI app
     ],
     pathex=[project_root],
-    binaries=[] + docling_binaries + docling_models_binaries,
+    binaries=(
+        []
+        + docling_binaries
+        + docling_models_binaries
+        + presidio_analyzer_binaries
+        + presidio_anonymizer_binaries
+        + spacy_binaries
+        + en_core_web_lg_binaries
+        + en_core_web_sm_binaries
+        + ctranslate2_binaries
+        + faster_whisper_binaries
+    ),
     datas=[entry for entry in ([
-        # Include the entire static folder (frontend build)
+        # Frontend build
         (os.path.join(project_root, 'static'), 'static'),
-        # NOTE: data/ directory is NOT included - it's created at runtime
-        # This prevents accidentally bundling user data, API keys, or indexed documents
-        # Include .env.example as template
+        # NOTE: data/ is NOT included — created at runtime to avoid bundling user data
+        # Config template
         (os.path.join(project_root, '.env.example'), '.'),
-        # Include desktop icon for tray
+        # Desktop tray icon
         (os.path.join(spec_root, 'icon.ico'), 'desktop'),
-        # Include all Python source directories
+        # Application source directories
         (os.path.join(project_root, 'services'), 'services'),
         (os.path.join(project_root, 'models'), 'models'),
-        # Include SSL certificates for HuggingFace downloads
+        (os.path.join(project_root, 'middleware'), 'middleware'),
+        # SSL certificates for HuggingFace downloads
         (os.path.join(certifi_path, 'cacert.pem'), 'certifi'),
-        # Include corporate CA certificates (for environments behind corporate proxies/firewalls)
+        # Corporate CA certificates (for environments behind proxies/firewalls)
         (os.path.join(project_root, 'certs'), 'certs'),
-    ] + docling_datas + docling_models_datas) if not _is_project_runtime_data(entry[0])],
+    ]
+    + docling_datas
+    + docling_models_datas
+    + presidio_analyzer_datas
+    + presidio_anonymizer_datas
+    + spacy_datas
+    + en_core_web_lg_datas
+    + en_core_web_sm_datas
+    + ctranslate2_datas
+    + faster_whisper_datas
+    ) if not _is_project_runtime_data(entry[0])],
     hiddenimports=[
-        # Main app and dependencies
+        # Entry points
         'main',
         'config',
-        # Application modules
+
+        # ── Core services ──────────────────────────────────────────────────
         'services',
         'services.ai_service',
-        'services.embedder',
-        'services.vector_store',
-        'services.metadata_store',
-        'services.document_extractor',
-        'services.chunker',
-        'services.indexer_manager',
-        'services.collection_service',
-        'services.backup_service',
-        'services.reindex_service',
-        'services.config_manager',
+        'services.agent_tools',
         'services.app_database',
-        'services.mcp_server',
+        'services.audio_transcriber',
+        'services.backup_service',
+        'services.bm25_service',
+        'services.brief_generator',
+        'services.chunker',
+        'services.code_extractor',
+        'services.collection_overview',
+        'services.collection_service',
+        'services.config_manager',
+        'services.db_backend',
+        'services.db_postgres',
+        'services.document_extractor',
+        'services.embedder',
+        'services.expertise_store',
+        'services.file_picker',
+        'services.form_field_extractor',
+        'services.index_repair',
+        'services.indexer_manager',
         'services.indexing',
         'services.indexing.indexer',
+        'services.llm_role_inference',
+        'services.mcp_server',
+        'services.metadata_store',
+        'services.ocr_engine',
+        'services.prompt_injection_detector',
+        'services.reindex_service',
+        'services.sharing_service',
+        'services.structured_chat',
+        'services.structured_store',
+        'services.upload_service',
+        'services.vector_store',
+
+        # ── Privacy / PII redaction ────────────────────────────────────────
+        'services.privacy',
+        'services.privacy.collection_blacklist',
+        'services.privacy.column_sanitizer',
+        'services.privacy.custom_recognizers',
+        'services.privacy.custom_recognizers.cusip_in_context',
+        'services.privacy.custom_recognizers.financial_account',
+        'services.privacy.custom_recognizers.trust_account_name',
+        'services.privacy.pii_preflight',
+        'services.privacy.redaction_config',
+        'services.privacy.redaction_engine',
+        'services.privacy.redaction_log',
+        'services.privacy.redaction_middleware',
+
+        # ── Market data ───────────────────────────────────────────────────
+        'services.market_data',
+        'services.market_data.classification',
+        'services.market_data.company',
+        'services.market_data.corporate_events',
+        'services.market_data.enrich',
+        'services.market_data.price_history',
+
+        # ── Financial helpers ─────────────────────────────────────────────
+        'services.financial',
+        'services.financial.metrics',
+        'services.financial.roles',
+        'services.financial.type_hints',
+
+        # ── Ingest profiles (vendor schemas) ─────────────────────────────
+        'services.ingest_profiles',
+        'services.ingest_profiles.netx360',
+
+        # ── Middleware ────────────────────────────────────────────────────
+        'middleware',
+        'middleware.user_context',
+
+        # ── Models ───────────────────────────────────────────────────────
         'models',
         'models.schemas',
-        # Uvicorn
+
+        # ── Uvicorn ──────────────────────────────────────────────────────
         'uvicorn.logging',
         'uvicorn.loops',
         'uvicorn.loops.auto',
@@ -84,31 +190,58 @@ a = Analysis(
         'uvicorn.protocols.websockets.auto',
         'uvicorn.lifespan',
         'uvicorn.lifespan.on',
-        # AI providers
+
+        # ── FastAPI / Starlette ───────────────────────────────────────────
+        'starlette.middleware',
+        'starlette.middleware.cors',
+        'starlette.routing',
+
+        # ── AI providers ─────────────────────────────────────────────────
         'anthropic',
         'openai',
-        # Document processing
+        'httpx',
+
+        # ── Document processing ───────────────────────────────────────────
         'pypdf',
         'pdfplumber',
         'docx',
         'pandas',
-        # ML/Vector
+        'openpyxl',
+
+        # ── ML / Vector search ────────────────────────────────────────────
         'sentence_transformers',
         'faiss',
         'torch',
         'transformers',
         'huggingface_hub',
-        # SSL/Certificates
-        'certifi',
-        'ssl',
-        # FastAPI dependencies
-        'starlette.middleware',
-        'starlette.middleware.cors',
-        # MCP server
+
+        # ── PII redaction (Presidio + spaCy) ─────────────────────────────
+        # presidio uses dynamic recognizer registry — collect_all handles most
+        # of it but explicit entries guard against missed lazy imports
+        'presidio_analyzer',
+        'presidio_analyzer.nlp_engine',
+        'presidio_analyzer.nlp_engine.spacy_nlp_engine',
+        'presidio_analyzer.predefined_recognizers',
+        'presidio_anonymizer',
+        'presidio_anonymizer.operators',
+        'spacy',
+        'en_core_web_lg',
+        'en_core_web_sm',
+
+        # ── Audio transcription ───────────────────────────────────────────
+        'faster_whisper',
+        'ctranslate2',
+
+        # ── Market data ───────────────────────────────────────────────────
+        'yfinance',
+        'yfinance.base',
+
+        # ── MCP server ────────────────────────────────────────────────────
         'mcp',
         'mcp.server',
         'mcp.server.fastmcp',
-        # OCR - docling
+
+        # ── OCR — docling ─────────────────────────────────────────────────
         'docling',
         'docling.document_converter',
         'docling.datamodel',
@@ -119,7 +252,20 @@ a = Analysis(
         'docling_core',
         'docling_core.types',
         'docling_core.types.doc',
-    ] + docling_hiddenimports + docling_models_hiddenimports,
+
+        # ── SSL / Certificates ────────────────────────────────────────────
+        'certifi',
+        'ssl',
+    ]
+    + docling_hiddenimports
+    + docling_models_hiddenimports
+    + presidio_analyzer_hiddenimports
+    + presidio_anonymizer_hiddenimports
+    + spacy_hiddenimports
+    + en_core_web_lg_hiddenimports
+    + en_core_web_sm_hiddenimports
+    + ctranslate2_hiddenimports
+    + faster_whisper_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
