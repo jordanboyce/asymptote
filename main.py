@@ -6,6 +6,7 @@ Supports PDF, TXT, DOCX, and CSV files.
 
 import logging
 import json
+import os
 import tempfile
 import asyncio
 from contextlib import asynccontextmanager
