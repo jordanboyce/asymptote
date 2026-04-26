@@ -84,6 +84,12 @@ from models.schemas import (
     ExpertisePackUpdate,
     CollectionExpertiseResponse,
     SetCollectionExpertiseRequest,
+    NotesRequest,
+    FollowupRequest,
+    NoteResponse,
+    CollectionGroupCreate,
+    CollectionGroupUpdate,
+    CollectionGroup,
 )
 from services.upload_service import upload_service
 from services.form_field_extractor import (
@@ -320,8 +326,11 @@ async def upload_documents(
     failed_docs = []
     total_pages = 0
     total_chunks = 0
+    transcript_saved = False
+    transcript_filename: Optional[str] = None
 
     for file in files:
+        file_path = None
         try:
             # Save uploaded file to collection's document directory
             # Preserve relative path context by replacing separators with underscores
@@ -340,8 +349,41 @@ async def upload_documents(
 
             logger.info(f"Saved uploaded file: {safe_filename} to collection {collection_id}")
 
-            # Index the document
-            doc_metadata = indexer.index_document(file_path, safe_filename)
+            # Audio files: transcribe → save .md → index the .md (not the raw audio)
+            from services.audio_transcriber import is_audio_file as _is_audio
+            if _is_audio(file_path):
+                from services.audio_transcriber import get_transcriber, format_transcript_with_timestamps
+                from datetime import datetime as _dt
+                transcriber = get_transcriber(
+                    model_size=settings.whisper_model,
+                    device=settings.whisper_device,
+                    compute_type=settings.whisper_compute_type,
+                )
+                language = settings.whisper_language or None
+                tr = transcriber.transcribe(file_path, language=language)
+                now = _dt.now()
+                duration_str = f"{int(tr.duration // 60)}:{int(tr.duration % 60):02d}"
+                md_name = f"Meeting Notes - {now.strftime('%Y-%m-%d %H-%M')}.md"
+                transcript_body = format_transcript_with_timestamps(tr)
+                md_content = (
+                    f"# Meeting Notes\n\n"
+                    f"**Date:** {now.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"**Duration:** {duration_str}\n"
+                    f"**Language:** {tr.language}\n"
+                    f"**Source file:** {safe_filename}\n\n"
+                    f"---\n\n"
+                    f"{transcript_body}\n"
+                )
+                md_path = document_dir / md_name
+                md_path.write_text(md_content, encoding="utf-8")
+                logger.info(f"Saved transcript: {md_name}")
+                # Index the .md, not the audio
+                doc_metadata = indexer.index_document(md_path, md_name)
+                transcript_saved = True
+                transcript_filename = md_name
+            else:
+                # Index the document
+                doc_metadata = indexer.index_document(file_path, safe_filename)
 
             # Register document with collection
             collection_service.add_document(collection_id, doc_metadata.document_id)
@@ -355,7 +397,7 @@ async def upload_documents(
             failed_docs.append({"filename": file.filename, "error": str(e)})
             # Clean up the saved file if indexing failed
             try:
-                if file_path.exists():
+                if file_path and file_path.exists():
                     file_path.unlink()
             except Exception:
                 pass
@@ -388,6 +430,8 @@ async def upload_documents(
         total_pages=total_pages,
         total_chunks=total_chunks,
         document_ids=indexed_docs,
+        transcript_saved=transcript_saved,
+        transcript_filename=transcript_filename,
     )
 
 
@@ -1131,8 +1175,16 @@ async def chat_with_documents(
         if chat_request.scope == "all":
             # Search every collection and merge results by similarity score
             all_collections = collection_service.get_all_collections()
-            for col in all_collections:
-                col_id = col["id"]
+            search_col_ids = [c["id"] for c in all_collections]
+        elif chat_request.scope.startswith("group:"):
+            from services.app_database import app_db as _app_db
+            _group = _app_db.get_collection_group(chat_request.scope[6:])
+            search_col_ids = _group["collection_ids"] if _group else [collection_id]
+        else:
+            search_col_ids = None  # single collection, handled below
+
+        if search_col_ids is not None:
+            for col_id in search_col_ids:
                 try:
                     col_indexer = get_indexer(col_id)
                     col_search = col_indexer.search(
@@ -1201,8 +1253,8 @@ async def chat_with_documents(
 
         # --- Collect structured CSV/XLSX tables early so we can both inline
         # the small ones as JSONL AND know which files to drop from chunks. ---
-        if chat_request.scope == "all":
-            overview_ids = [c["id"] for c in collection_service.get_all_collections()]
+        if search_col_ids is not None:
+            overview_ids = search_col_ids
         else:
             overview_ids = [collection_id]
         structured_tables, structured_stores = collect_structured_tables(overview_ids)
@@ -1257,7 +1309,7 @@ async def chat_with_documents(
             logger.warning(f"Failed to build collection overview: {e}")
             collection_overview = "(Collection overview unavailable.)"
 
-        scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
+        scope_note = "all collections" if search_col_ids is not None else "the current collection"
 
         # The agent always has the full toolkit available (search, table tools,
         # market data, etc.). Only the LARGE-table schema block is conditional
@@ -1668,9 +1720,16 @@ async def chat_stream_endpoint(
             result_collection_ids = []
 
             if chat_request.scope == "all":
-                all_collections = collection_service.get_all_collections()
-                for col in all_collections:
-                    col_id = col["id"]
+                _stream_col_ids = [c["id"] for c in collection_service.get_all_collections()]
+            elif chat_request.scope.startswith("group:"):
+                from services.app_database import app_db as _app_db
+                _grp = _app_db.get_collection_group(chat_request.scope[6:])
+                _stream_col_ids = _grp["collection_ids"] if _grp else [collection_id]
+            else:
+                _stream_col_ids = None
+
+            if _stream_col_ids is not None:
+                for col_id in _stream_col_ids:
                     try:
                         col_indexer = get_indexer(col_id)
                         col_search = col_indexer.search(
@@ -1698,11 +1757,7 @@ async def chat_stream_endpoint(
                 result_collection_ids = [collection_id] * len(context_results)
 
             # ---------- structured tables ----------------------------------------
-            overview_ids = (
-                [c["id"] for c in collection_service.get_all_collections()]
-                if chat_request.scope == "all"
-                else [collection_id]
-            )
+            overview_ids = _stream_col_ids if _stream_col_ids is not None else [collection_id]
             structured_tables, structured_stores = collect_structured_tables(overview_ids)
             structured_ctx = build_structured_context(structured_tables, structured_stores) if structured_tables else {
                 "inline_block": "", "tool_tables": [], "inlined_filenames": set(), "inlined_document_ids": set()
@@ -1729,7 +1784,7 @@ async def chat_stream_endpoint(
             tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
 
             # ---------- system prompt --------------------------------------------
-            _scope_note = 'all collections' if chat_request.scope == 'all' else 'the current collection'
+            _scope_note = 'all collections' if _stream_col_ids is not None else 'the current collection'
             base_system_parts = [
                 f"You are an analytical assistant for a financial advisor. The person "
                 f"chatting with you is the advisor — not the client. The documents, "
@@ -4210,6 +4265,408 @@ async def generate_brief_endpoint(
         raise HTTPException(status_code=500, detail=f"Brief generation failed: {e}")
 
     return brief
+
+
+# ── Meeting Capture endpoints (v4.5) ──────────────────────────────────────────
+
+def _build_ai_provider_from_headers(provider_name: str, ai_key: str, model: str, base_url: str):
+    """Shared helper to construct an AI provider from request headers."""
+    if provider_name == "ollama":
+        extra: dict = {"model": model or "llama3.2"}
+        if base_url:
+            extra["base_url"] = base_url
+        return create_provider("ollama", **extra)
+    extra = {}
+    if model:
+        extra["model"] = model
+    if base_url:
+        extra["base_url"] = base_url
+    return create_provider(provider_name, ai_key, **extra)
+
+
+def _find_recent_transcript(collection_id: str) -> str:
+    """Return the text of the most recently indexed Meeting Notes doc, or empty string."""
+    try:
+        indexer = get_indexer(collection_id)
+        docs = indexer.list_documents()
+        notes_docs = [d for d in docs if d.get("filename", "").startswith("Meeting Notes")]
+        if not notes_docs:
+            return ""
+        # Most recent by filename (timestamp embedded: 'Meeting Notes - YYYY-MM-DD HH-MM.md')
+        notes_docs.sort(key=lambda d: d.get("filename", ""), reverse=True)
+        latest_id = notes_docs[0]["document_id"]
+        # Pull all chunks for this document
+        results = indexer.search(f"meeting notes transcript", top_k=20, mode="keyword")
+        chunks = [r.text_snippet for r in results["results"] if r.document_id == latest_id]
+        if not chunks:
+            # Fall back: search by document id
+            results2 = indexer.search(notes_docs[0]["filename"], top_k=20, mode="keyword")
+            chunks = [r.text_snippet for r in results2["results"] if r.document_id == latest_id]
+        return "\n\n".join(chunks)
+    except Exception as e:
+        logger.warning(f"Could not find recent transcript for {collection_id}: {e}")
+        return ""
+
+
+def _get_brief_text(collection_id: str) -> str:
+    """Return a text summary of the portfolio brief for use in prompts, or empty string."""
+    try:
+        from services.brief_generator import generate_meeting_brief as _gen_brief
+        indexer = get_indexer(collection_id)
+        store = indexer.vector_store.structured_store
+        brief = _gen_brief(store, collection_id=collection_id)
+        hs = brief.get("household_summary", {})
+        lines = [
+            f"Total market value: ${hs.get('total_market_value', 0):,.0f}",
+            f"Unrealized G/L: ${hs.get('total_unrealized_pnl', 0):,.0f}",
+        ]
+        top = brief.get("top_positions", [])[:5]
+        if top:
+            lines.append("Top positions: " + ", ".join(
+                f"{p.get('ticker') or p.get('name', '?')} (${p.get('market_value', 0):,.0f})"
+                for p in top
+            ))
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+@app.post(
+    "/api/collections/{collection_id}/notes",
+    response_model=NoteResponse,
+    tags=["chat"],
+    summary="Generate compliance Note of Record from recent meeting",
+)
+async def generate_compliance_note(
+    collection_id: str,
+    body: NotesRequest,
+    x_ai_key: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """Draft a structured compliance Note of Record using the most recent transcript + chat history."""
+    try:
+        provider = _build_ai_provider_from_headers(
+            body.provider, x_ai_key,
+            x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
+            x_ai_base_url,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
+
+    transcript = _find_recent_transcript(collection_id)
+    portfolio_summary = _get_brief_text(collection_id)
+
+    chat_lines = []
+    for m in (body.messages or [])[-30:]:
+        if m.content and not m.content.startswith("/"):
+            chat_lines.append(f"{m.role.upper()}: {m.content[:500]}")
+    chat_context = "\n".join(chat_lines)
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+
+    prompt = f"""You are a compliance assistant for a registered investment advisor.
+Generate a structured Note of Record for today's client meeting ({today}).
+Use the transcript excerpt, advisor chat, and portfolio summary below.
+If information is missing, use reasonable placeholders marked [UNKNOWN].
+
+## TRANSCRIPT EXCERPT
+{transcript or "(No transcript found — summarize from chat context)"}
+
+## ADVISOR CHAT CONTEXT
+{chat_context or "(No chat history provided)"}
+
+## PORTFOLIO SUMMARY
+{portfolio_summary or "(No portfolio data available)"}
+
+---
+Draft the Note of Record with these sections:
+1. **Date & Attendees** — infer names from transcript if possible
+2. **Topics Discussed** — bullet list from transcript
+3. **Recommendations Made** — from advisor chat/tool calls
+4. **Action Items** — concrete follow-ups with owner and due date
+5. **Redaction Confirmation** — state that PII was reviewed per firm policy
+
+Be concise and professional. Use bullet points where appropriate.
+"""
+
+    try:
+        result = provider.complete(prompt, max_tokens=1500, model=provider.QUALITY_MODEL)
+        raw_note = result["text"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
+
+    redacted = redact_text_for_ai(raw_note, collection_id=collection_id, source_label="notes_output")
+    return NoteResponse(content=redacted)
+
+
+@app.post(
+    "/api/collections/{collection_id}/followup",
+    response_model=NoteResponse,
+    tags=["chat"],
+    summary="Draft a client-safe follow-up email from the recent meeting",
+)
+async def generate_followup_email(
+    collection_id: str,
+    body: FollowupRequest,
+    x_ai_key: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """Draft a PII-redacted client-safe follow-up email summarizing the meeting."""
+    try:
+        provider = _build_ai_provider_from_headers(
+            body.provider, x_ai_key,
+            x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
+            x_ai_base_url,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
+
+    transcript = _find_recent_transcript(collection_id)
+    portfolio_summary = _get_brief_text(collection_id)
+
+    chat_lines = []
+    for m in (body.messages or [])[-30:]:
+        if m.content and not m.content.startswith("/"):
+            chat_lines.append(f"{m.role.upper()}: {m.content[:500]}")
+    chat_context = "\n".join(chat_lines)
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%B %d, %Y")
+
+    prompt = f"""You are a compliance-aware assistant for a registered investment advisor.
+Draft a professional follow-up email to the client after today's meeting ({today}).
+The email must be client-safe — do NOT include internal compliance notes or sensitive portfolio numbers unless rounded.
+Use the information below to make it specific and actionable.
+
+## TRANSCRIPT EXCERPT
+{transcript or "(No transcript found — use chat context)"}
+
+## ADVISOR CHAT CONTEXT
+{chat_context or "(No chat history provided)"}
+
+## PORTFOLIO SUMMARY
+{portfolio_summary or "(No portfolio data available)"}
+
+---
+Draft the follow-up email with:
+- Subject line
+- Professional greeting
+- Brief recap of topics discussed
+- Action items agreed upon (with any deadlines)
+- Next steps / next meeting mention
+- Professional sign-off
+
+Keep it under 250 words. Do not include specific dollar amounts or account numbers.
+Write [CLIENT NAME] and [ADVISOR NAME] as placeholders.
+"""
+
+    try:
+        result = provider.complete(prompt, max_tokens=800, model=provider.QUALITY_MODEL)
+        raw_email = result["text"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
+
+    redacted = redact_text_for_ai(raw_email, collection_id=collection_id, source_label="followup_output")
+    return NoteResponse(content=redacted)
+
+
+# ── Collection Group endpoints (v4.5) ─────────────────────────────────────────
+
+@app.get("/api/groups", tags=["groups"], summary="List all collection groups")
+async def list_groups():
+    from services.app_database import app_db
+    groups = app_db.get_all_collection_groups()
+    return {"groups": groups}
+
+
+@app.post("/api/groups", tags=["groups"], status_code=201, summary="Create a collection group")
+async def create_group(body: CollectionGroupCreate):
+    from services.app_database import app_db
+    group_id = app_db.create_collection_group(body.name, body.color)
+    group = app_db.get_collection_group(group_id)
+    return group
+
+
+@app.get("/api/groups/{group_id}", tags=["groups"], summary="Get a collection group")
+async def get_group(group_id: str):
+    from services.app_database import app_db
+    group = app_db.get_collection_group(group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return group
+
+
+@app.patch("/api/groups/{group_id}", tags=["groups"], summary="Update a collection group")
+async def update_group(group_id: str, body: CollectionGroupUpdate):
+    from services.app_database import app_db
+    updated = app_db.update_collection_group(group_id, name=body.name, color=body.color)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return app_db.get_collection_group(group_id)
+
+
+@app.delete("/api/groups/{group_id}", tags=["groups"], status_code=204, summary="Delete a collection group")
+async def delete_group(group_id: str):
+    from services.app_database import app_db
+    deleted = app_db.delete_collection_group(group_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+
+@app.post("/api/groups/{group_id}/members/{collection_id}", tags=["groups"], status_code=204,
+          summary="Add a collection to a group")
+async def add_group_member(group_id: str, collection_id: str):
+    from services.app_database import app_db
+    if not app_db.get_collection_group(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    app_db.add_collection_to_group(group_id, collection_id)
+
+
+@app.delete("/api/groups/{group_id}/members/{collection_id}", tags=["groups"], status_code=204,
+            summary="Remove a collection from a group")
+async def remove_group_member(group_id: str, collection_id: str):
+    from services.app_database import app_db
+    app_db.remove_collection_from_group(group_id, collection_id)
+
+
+@app.post(
+    "/api/groups/{group_id}/brief",
+    tags=["groups"],
+    summary="Generate a household-level brief across all collections in a group",
+)
+async def generate_group_brief(
+    group_id: str,
+    tax_loss_min: float = 500.0,
+    concentration_pct: float = 10.0,
+    cash_drag_min: float = 50000.0,
+    top_n: int = 10,
+):
+    """Aggregate portfolio briefs for every collection in the group into a household-level brief."""
+    from services.app_database import app_db
+    from services.brief_generator import generate_meeting_brief as _gen_brief
+
+    group = app_db.get_collection_group(group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    thresholds = {
+        "tax_loss_min": tax_loss_min,
+        "concentration_pct": concentration_pct,
+        "cash_drag_min": cash_drag_min,
+        "top_n": top_n,
+    }
+
+    briefs = []
+    for col_id in group["collection_ids"]:
+        try:
+            indexer = get_indexer(col_id)
+            store = indexer.vector_store.structured_store
+            b = _gen_brief(store, collection_id=col_id, thresholds=thresholds)
+            briefs.append(b)
+        except Exception as e:
+            logger.warning(f"Group brief: skipping collection {col_id}: {e}")
+
+    if not briefs:
+        raise HTTPException(status_code=422, detail="No portfolio data found in any group member collection")
+
+    # Merge briefs into household summary
+    merged = _merge_briefs(briefs, thresholds)
+    merged["group_id"] = group_id
+    merged["group_name"] = group["name"]
+    return merged
+
+
+def _merge_briefs(briefs: list, thresholds: dict) -> dict:
+    """Combine per-collection briefs into a single household-level dict."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    total_mv = sum(b.get("household_summary", {}).get("total_market_value") or 0 for b in briefs)
+    total_cb = sum(b.get("household_summary", {}).get("total_cost_basis") or 0 for b in briefs)
+    total_pnl = sum(b.get("household_summary", {}).get("total_unrealized_pnl") or 0 for b in briefs)
+
+    accounts = []
+    seen_acct = set()
+    for b in briefs:
+        for a in b.get("accounts", []):
+            key = f"{a.get('account')}|{a.get('market_value')}"
+            if key not in seen_acct:
+                seen_acct.add(key)
+                accounts.append(a)
+
+    all_positions = []
+    seen_pos = set()
+    for b in briefs:
+        for p in b.get("top_positions", []):
+            key = f"{p.get('ticker') or p.get('name')}|{round(p.get('market_value', 0))}"
+            if key not in seen_pos:
+                seen_pos.add(key)
+                all_positions.append(p)
+    all_positions.sort(key=lambda p: p.get("market_value", 0), reverse=True)
+    top_n = thresholds.get("top_n", 10)
+    top_positions = all_positions[:top_n]
+
+    # Re-compute concentration against total portfolio
+    conc_pct = thresholds.get("concentration_pct", 10.0)
+    concentration_alerts = [
+        {**p, "pct_of_portfolio": round(p.get("market_value", 0) / total_mv * 100, 2)}
+        for p in all_positions
+        if total_mv > 0 and (p.get("market_value", 0) / total_mv * 100) >= conc_pct
+    ]
+
+    tax_loss = []
+    seen_tax = set()
+    for b in briefs:
+        for p in b.get("tax_loss_candidates", []):
+            key = f"{p.get('ticker') or p.get('name')}|{round(p.get('unrealized_loss', 0))}"
+            if key not in seen_tax:
+                seen_tax.add(key)
+                tax_loss.append(p)
+
+    cash = []
+    seen_cash = set()
+    for b in briefs:
+        for p in b.get("cash_drag_alerts", []):
+            key = f"{p.get('name') or p.get('ticker')}|{round(p.get('market_value', 0))}"
+            if key not in seen_cash:
+                seen_cash.add(key)
+                cash.append(p)
+
+    # Merge sector allocation
+    sector_totals: dict = {}
+    for b in briefs:
+        for s in b.get("sector_allocation", []):
+            sec = s.get("sector", "Unknown")
+            sector_totals[sec] = sector_totals.get(sec, 0) + (s.get("market_value") or 0)
+    sector_allocation = [
+        {"sector": sec, "market_value": mv,
+         "weight_pct": round(mv / total_mv * 100, 2) if total_mv else 0}
+        for sec, mv in sorted(sector_totals.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    return {
+        "household_summary": {
+            "total_market_value": total_mv,
+            "total_cost_basis": total_cb,
+            "total_unrealized_pnl": total_pnl,
+        },
+        "accounts": accounts,
+        "top_positions": top_positions,
+        "concentration_alerts": concentration_alerts,
+        "tax_loss_candidates": tax_loss,
+        "cash_drag_alerts": cash,
+        "sector_allocation": sector_allocation,
+        "generated_at": _dt.now(_tz.utc).isoformat(),
+        "collection_count": len(briefs),
+    }
 
 
 # ── Expertise Library endpoints ───────────────────────────────────────────────

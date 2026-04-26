@@ -264,6 +264,39 @@ class SQLiteBackend(DatabaseBackend):
                 ON collection_expertise(collection_id)
             """)
 
+            # ── v4.5: Collection Groups (Households) ──────────
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS collection_groups (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    color TEXT DEFAULT '#8b5cf6',
+                    owner_id TEXT DEFAULT 'default',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS collection_group_members (
+                    group_id TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    added_at TEXT NOT NULL,
+                    PRIMARY KEY (group_id, collection_id),
+                    FOREIGN KEY (group_id) REFERENCES collection_groups(id) ON DELETE CASCADE,
+                    FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+                )
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_group_members_group
+                ON collection_group_members(group_id)
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_group_members_collection
+                ON collection_group_members(collection_id)
+            """)
+
             # ── Migrations for existing databases ────────────
             # Add owner_id to collections if missing
             try:
@@ -989,6 +1022,103 @@ class SQLiteBackend(DatabaseBackend):
             cursor = conn.execute("DELETE FROM mcp_resources WHERE id = ?", (resource_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+
+    # ── Collection Groups ────────────────────────────────────
+
+    def create_collection_group(self, name: str, color: str = "#8b5cf6", owner_id: str = "default") -> str:
+        group_id = str(uuid.uuid4())[:8]
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO collection_groups (id, name, color, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (group_id, name, color, owner_id, timestamp, timestamp),
+            )
+            conn.commit()
+        logger.info(f"Created collection group: {name} ({group_id})")
+        return group_id
+
+    def get_collection_group(self, group_id: str) -> Optional[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM collection_groups WHERE id = ?", (group_id,)).fetchone()
+            if not row:
+                return None
+            group = dict(row)
+            group["collection_ids"] = [
+                r[0] for r in conn.execute(
+                    "SELECT collection_id FROM collection_group_members WHERE group_id = ?", (group_id,)
+                ).fetchall()
+            ]
+            return group
+
+    def get_all_collection_groups(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if owner_id:
+                rows = conn.execute(
+                    "SELECT * FROM collection_groups WHERE owner_id = ? ORDER BY name ASC", (owner_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM collection_groups ORDER BY name ASC").fetchall()
+            groups = []
+            for row in rows:
+                group = dict(row)
+                group["collection_ids"] = [
+                    r[0] for r in conn.execute(
+                        "SELECT collection_id FROM collection_group_members WHERE group_id = ?", (group["id"],)
+                    ).fetchall()
+                ]
+                groups.append(group)
+            return groups
+
+    def update_collection_group(self, group_id: str, name: Optional[str] = None, color: Optional[str] = None) -> bool:
+        updates, params = [], []
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if color is not None:
+            updates.append("color = ?")
+            params.append(color)
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        params.extend([datetime.utcnow().isoformat(), group_id])
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(f"UPDATE collection_groups SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_collection_group(self, group_id: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM collection_groups WHERE id = ?", (group_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def add_collection_to_group(self, group_id: str, collection_id: str):
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO collection_group_members (group_id, collection_id, added_at) VALUES (?, ?, ?)",
+                (group_id, collection_id, timestamp),
+            )
+            conn.commit()
+
+    def remove_collection_from_group(self, group_id: str, collection_id: str):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM collection_group_members WHERE group_id = ? AND collection_id = ?",
+                (group_id, collection_id),
+            )
+            conn.commit()
+
+    def get_groups_for_collection(self, collection_id: str) -> List[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            return [
+                r[0] for r in conn.execute(
+                    "SELECT group_id FROM collection_group_members WHERE collection_id = ?", (collection_id,)
+                ).fetchall()
+            ]
 
 
 def create_app_db() -> DatabaseBackend:
