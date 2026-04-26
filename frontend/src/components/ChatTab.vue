@@ -1189,7 +1189,11 @@ watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
 watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
 
-watch(messages, async () => { await scrollToBottom() }, { deep: true })
+// Scroll-on-new-message only. Streaming events (text_delta/thinking/tool_start)
+// already call scrollToBottom() inline as content arrives, so a deep watch on
+// messages would just duplicate work — and on a long conversation it walks the
+// full array on every token.
+watch(() => messages.value.length, async () => { await scrollToBottom() })
 
 const handlePrefill = (e) => {
   const prompt = e?.detail?.prompt
@@ -1210,5 +1214,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('asymptote:prefill-chat', handlePrefill)
+  if (copyResetTimer) clearTimeout(copyResetTimer)
 })
 </script>

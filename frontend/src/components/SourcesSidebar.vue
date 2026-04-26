@@ -1317,15 +1317,21 @@ async function removeExpertisePack(packId) {
   }
 }
 
-// Watch for completed background uploads to reload documents
-watch(() => backgroundJobsStore.uploadJobs, (jobs) => {
-  const completedJob = jobs.find(j => j.status === 'completed' && !j.reloaded)
-  if (completedJob) {
-    completedJob.reloaded = true
-    loadDocuments()
-    emit('document-deleted')
+// Watch for completed background uploads to reload documents.
+// Derived primitive avoids deep-walking the jobs array on every nested mutation.
+watch(
+  () => backgroundJobsStore.uploadJobs.map(j => `${j.id}:${j.status}`).join('|'),
+  () => {
+    const completedJob = backgroundJobsStore.uploadJobs.find(
+      j => j.status === 'completed' && !j.reloaded
+    )
+    if (completedJob) {
+      completedJob.reloaded = true
+      loadDocuments()
+      emit('document-deleted')
+    }
   }
-}, { deep: true })
+)
 
 // Watch for completed reindex jobs to reload documents
 watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {

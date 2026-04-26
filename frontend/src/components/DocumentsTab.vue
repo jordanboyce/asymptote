@@ -1125,15 +1125,22 @@ watch(() => collectionStore.currentCollectionId, () => {
   selectedDocuments.value = []
 })
 
-// Watch for completed background uploads to reload documents
-watch(() => backgroundJobsStore.uploadJobs, (jobs) => {
-  const completedJob = jobs.find(j => j.status === 'completed' && !j.reloaded)
-  if (completedJob) {
-    completedJob.reloaded = true
-    loadDocuments()
-    emit('document-deleted')
+// Watch for completed background uploads to reload documents.
+// Derive a primitive (id:status pairs) so the watcher fires only when a job
+// transitions, not on every nested mutation inside the store.
+watch(
+  () => backgroundJobsStore.uploadJobs.map(j => `${j.id}:${j.status}`).join('|'),
+  () => {
+    const completedJob = backgroundJobsStore.uploadJobs.find(
+      j => j.status === 'completed' && !j.reloaded
+    )
+    if (completedJob) {
+      completedJob.reloaded = true
+      loadDocuments()
+      emit('document-deleted')
+    }
   }
-}, { deep: true })
+)
 
 // Warn user before leaving page during indexing
 const beforeUnloadHandler = (e) => {

@@ -1359,6 +1359,17 @@ const cancelJob = async (jobId) => {
   }
 }
 
+// Theme change handlers — referenced by add/removeEventListener so they must
+// be the same function identity on both sides.
+const onThemeChanged = () => updateThemeFromStorage()
+const onStorageThemeChanged = (e) => {
+  if (e.key === 'theme') updateThemeFromStorage()
+}
+const onSystemThemeChanged = () => {
+  if (!localStorage.getItem('theme')) updateThemeFromStorage()
+}
+let prefersDarkMedia = null
+
 onMounted(async () => {
   // Check whether we need the first-run onboarding takeover. Done first so
   // the screen paints immediately — the rest of the boot continues behind it.
@@ -1388,27 +1399,17 @@ onMounted(async () => {
   // Initialize theme
   updateThemeFromStorage()
 
-  // Listen for theme changes (from Settings tab via custom event)
-  window.addEventListener('theme-changed', () => {
-    updateThemeFromStorage()
-  })
-
-  // Listen for storage changes (theme changed in another tab)
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'theme') {
-      updateThemeFromStorage()
-    }
-  })
-
-  // Listen for system theme changes (only if user hasn't set a preference)
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (!localStorage.getItem('theme')) {
-      updateThemeFromStorage()
-    }
-  })
+  // Theme listeners — named so onBeforeUnmount can detach them
+  window.addEventListener('theme-changed', onThemeChanged)
+  window.addEventListener('storage', onStorageThemeChanged)
+  prefersDarkMedia = window.matchMedia('(prefers-color-scheme: dark)')
+  prefersDarkMedia.addEventListener('change', onSystemThemeChanged)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('theme-changed', onThemeChanged)
+  window.removeEventListener('storage', onStorageThemeChanged)
+  prefersDarkMedia?.removeEventListener('change', onSystemThemeChanged)
   backgroundJobsStore.cleanup()
 })
 </script>

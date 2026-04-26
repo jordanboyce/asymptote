@@ -840,7 +840,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
@@ -859,6 +859,18 @@ const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-t
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
+
+// Track auto-reset timers (clear-feedback-after-Ns) so they don't fire on
+// an unmounted component when the user navigates away mid-countdown.
+const pendingTimers = new Set()
+const trackTimeout = (fn, ms) => {
+  const id = setTimeout(() => {
+    pendingTimers.delete(id)
+    fn()
+  }, ms)
+  pendingTimers.add(id)
+  return id
+}
 
 // UI feature flags
 const chatTabEnabled = ref(true)
@@ -1006,7 +1018,7 @@ const saveOCRSettings = async () => {
       vision_ocr_form_mode: Boolean(visionFormMode.value),
     })
     ocrSettingsSaved.value = true
-    setTimeout(() => { ocrSettingsSaved.value = false }, 5000)
+    trackTimeout(() => { ocrSettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save OCR settings:', error.response?.data?.detail || error)
   }
@@ -1037,7 +1049,7 @@ const savePrivacySettings = async () => {
       pii_score_threshold: Number(piiScoreThreshold.value),
     })
     privacySettingsSaved.value = true
-    setTimeout(() => { privacySettingsSaved.value = false }, 5000)
+    trackTimeout(() => { privacySettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save privacy settings:', error.response?.data?.detail || error)
   }
@@ -1065,7 +1077,7 @@ const saveInferenceSettings = async () => {
       llm_schema_inference_threshold: Number(llmSchemaInferenceThreshold.value),
     })
     inferenceSettingsSaved.value = true
-    setTimeout(() => { inferenceSettingsSaved.value = false }, 5000)
+    trackTimeout(() => { inferenceSettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save inference settings:', error.response?.data?.detail || error)
   }
@@ -1103,12 +1115,12 @@ const saveChunkSettings = async () => {
   const overlap = Number(chunkOverlap.value)
   if (!Number.isFinite(size) || size < 100 || size > 4000) {
     chunkSettingsError.value = 'Chunk size must be between 100 and 4000.'
-    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    trackTimeout(() => { chunkSettingsError.value = '' }, 5000)
     return
   }
   if (!Number.isFinite(overlap) || overlap < 0 || overlap >= size) {
     chunkSettingsError.value = 'Overlap must be 0 or greater and less than chunk size.'
-    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    trackTimeout(() => { chunkSettingsError.value = '' }, 5000)
     return
   }
   try {
@@ -1117,10 +1129,10 @@ const saveChunkSettings = async () => {
       chunk_overlap: overlap,
     })
     chunkSettingsSaved.value = true
-    setTimeout(() => { chunkSettingsSaved.value = false }, 4000)
+    trackTimeout(() => { chunkSettingsSaved.value = false }, 4000)
   } catch (err) {
     chunkSettingsError.value = err.response?.data?.detail || 'Failed to save chunk settings.'
-    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    trackTimeout(() => { chunkSettingsError.value = '' }, 5000)
   }
 }
 
@@ -1131,7 +1143,7 @@ watch(() => collectionStore.currentCollection, loadChunkSettings)
 watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {
   if (newStatus === 'completed' && oldStatus && oldStatus !== 'completed') {
     reindexCompleted.value = true
-    setTimeout(() => { reindexCompleted.value = false }, 8000)
+    trackTimeout(() => { reindexCompleted.value = false }, 8000)
   }
 })
 
@@ -1153,10 +1165,10 @@ const startReindex = async () => {
     })
     backgroundJobsStore.startPolling()
     reindexSuccess.value = true
-    setTimeout(() => { reindexSuccess.value = false }, 8000)
+    trackTimeout(() => { reindexSuccess.value = false }, 8000)
   } catch (error) {
     reindexError.value = error.response?.data?.detail || 'Failed to start re-indexing'
-    setTimeout(() => { reindexError.value = '' }, 8000)
+    trackTimeout(() => { reindexError.value = '' }, 8000)
   } finally {
     reindexing.value = false
   }
@@ -1410,7 +1422,7 @@ const clearAllData = async () => {
     clearModal.value?.close()
     emit('data-cleared')
 
-    setTimeout(() => {
+    trackTimeout(() => {
       clearSuccess.value = false
     }, 5000)
   } catch (error) {
@@ -1437,6 +1449,11 @@ onMounted(() => {
   loadOCRSettings()
   loadPrivacySettings()
   loadInferenceSettings()
+})
+
+onBeforeUnmount(() => {
+  pendingTimers.forEach(clearTimeout)
+  pendingTimers.clear()
 })
 </script>
 
