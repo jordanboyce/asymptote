@@ -42,7 +42,7 @@
               <FileText :size="12" />
               Files
             </button>
-            <button @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
+            <button v-if="isExpertMode" @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
               <FolderOpen :size="12" />
               Folder
             </button>
@@ -122,7 +122,8 @@
           <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
             <CheckCircle :size="12" aria-hidden="true" />
             <span v-if="indexResult.background">Started in background</span>
-            <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
+            <span v-else-if="isExpertMode">{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
+            <span v-else>{{ indexResult.count }} file(s) added</span>
             <button
               class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0"
               @click="indexSuccess = false"
@@ -270,8 +271,9 @@
           <div class="flex-1 min-w-0">
             <div class="text-xs font-semibold truncate leading-tight" :title="doc.filename">{{ doc.filename }}</div>
             <div class="flex items-center gap-1 mt-0.5 flex-wrap">
-              <span class="text-xs text-base-content/50">{{ doc.total_pages }}p · {{ doc.total_chunks }}ch</span>
-              <span class="badge badge-xs" :class="doc.source_type === 'local_reference' ? 'badge-ghost' : 'badge-primary'">
+              <span v-if="isExpertMode" class="text-xs text-base-content/50">{{ doc.total_pages }}p · {{ doc.total_chunks }}ch</span>
+              <span v-else class="text-xs text-base-content/50">{{ doc.total_pages }}p</span>
+              <span v-if="isExpertMode" class="badge badge-xs" :class="doc.source_type === 'local_reference' ? 'badge-ghost' : 'badge-primary'">
                 {{ doc.source_type === 'local_reference' ? 'local' : 'lib' }}
               </span>
               <span
@@ -283,7 +285,7 @@
                 table
               </span>
               <button
-                v-if="doc.injection_warnings && Object.keys(doc.injection_warnings).length > 0"
+                v-if="isExpertMode && doc.injection_warnings && Object.keys(doc.injection_warnings).length > 0"
                 class="badge badge-xs badge-warning gap-0.5 cursor-pointer hover:badge-error transition-colors"
                 @click.stop="openInjectionWarnings(doc)"
                 title="Prompt injection warnings detected — click to view"
@@ -292,7 +294,7 @@
                 {{ Object.keys(doc.injection_warnings).length }}p
               </button>
               <button
-                v-if="isTabularFile(doc.filename)"
+                v-if="isExpertMode && isTabularFile(doc.filename)"
                 class="badge badge-xs badge-ghost gap-0.5 cursor-pointer hover:badge-warning transition-colors"
                 @click.stop="openPiiReview(doc)"
                 title="Review PII redaction — see what's been stripped and add custom terms"
@@ -306,6 +308,7 @@
           <!-- Action buttons -->
           <div class="flex items-center flex-shrink-0 gap-0.5">
             <button
+              v-if="isExpertMode"
               class="btn btn-ghost btn-xs btn-circle"
               @click="openChunks(doc)"
               :disabled="deleting"
@@ -482,6 +485,7 @@ import PiiReviewModal from './PiiReviewModal.vue'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useExpertiseStore } from '../stores/expertiseStore'
+import { isExpertMode } from '../utils/expertMode'
 
 const emit = defineEmits(['document-deleted', 'background-job-started', 'close'])
 
