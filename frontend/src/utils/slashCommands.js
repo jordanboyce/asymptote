@@ -5,7 +5,9 @@ import axios from 'axios'
 // instant, deterministic.
 
 export const SLASH_COMMANDS = {
-  '/brief': 'Generate meeting brief for this collection',
+  '/brief': 'Generate meeting brief for this collection (or household if a group is selected)',
+  '/notes': 'Draft compliance Note of Record from the last meeting transcript',
+  '/followup': 'Draft a client-safe follow-up email from the last meeting',
   '/stats': 'Show collection statistics',
   '/docs': 'List indexed documents',
   '/tools': 'Show what the assistant can do',
@@ -352,7 +354,14 @@ const formatBrief = (brief) => {
 // Parses, validates, and executes a slash command. Returns { cmd, content } on
 // success or { cmd, content, error: true } on failure. Callers decide how to
 // render the result.
-export const runSlashCommand = async (input, { collectionId, collection }) => {
+//
+// options:
+//   collectionId      — active collection ID
+//   collection        — active collection object
+//   groupId           — active group ID (or null) for group-aware commands
+//   messages          — recent chat messages array (for /notes and /followup)
+//   providerHeaders   — AI provider headers { 'x-ai-key': ..., etc. }
+export const runSlashCommand = async (input, { collectionId, collection, groupId, messages, providerHeaders }) => {
   const cmd = input.trim().split(/\s+/)[0].toLowerCase()
   if (!SLASH_COMMANDS[cmd]) {
     return { cmd, content: `Unknown command: ${cmd}`, error: true }
@@ -368,8 +377,42 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
     }
 
     if (cmd === '/brief') {
+      if (groupId) {
+        const response = await axios.post(`/api/groups/${groupId}/brief`)
+        const brief = response.data
+        const header = brief.group_name
+          ? `HOUSEHOLD BRIEF — ${brief.group_name} (${brief.collection_count} account${brief.collection_count !== 1 ? 's' : ''})`
+          : 'HOUSEHOLD BRIEF'
+        return { cmd, content: header + '\n' + '═'.repeat(Math.min(header.length, 48)) + '\n\n' + formatBrief(brief) }
+      }
       const response = await axios.post(`/api/collections/${collectionId}/brief`)
       return { cmd, content: formatBrief(response.data) }
+    }
+
+    if (cmd === '/notes') {
+      const apiMessages = (messages || [])
+        .filter(m => !m.streaming && m.content && !m.slashCommand)
+        .slice(-30)
+        .map(m => ({ role: m.role, content: m.content }))
+      const response = await axios.post(
+        `/api/collections/${collectionId}/notes`,
+        { messages: apiMessages, provider: _inferProvider(providerHeaders) },
+        { headers: providerHeaders || {} },
+      )
+      return { cmd, content: response.data.content }
+    }
+
+    if (cmd === '/followup') {
+      const apiMessages = (messages || [])
+        .filter(m => !m.streaming && m.content && !m.slashCommand)
+        .slice(-30)
+        .map(m => ({ role: m.role, content: m.content }))
+      const response = await axios.post(
+        `/api/collections/${collectionId}/followup`,
+        { messages: apiMessages, provider: _inferProvider(providerHeaders) },
+        { headers: providerHeaders || {} },
+      )
+      return { cmd, content: response.data.content }
     }
 
     const response = await axios.get(`/documents?collection_id=${collectionId}`)
@@ -387,4 +430,11 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
   }
 
   return { cmd, content: `Command ${cmd} is not implemented`, error: true }
+}
+
+function _inferProvider(headers) {
+  if (!headers) return 'anthropic'
+  if (headers['x-ollama-model'] || headers['x-ai-model']?.includes('llama') || headers['x-ai-model']?.includes('mistral')) return 'ollama'
+  if (headers['x-openai-model']) return 'openai'
+  return 'anthropic'
 }

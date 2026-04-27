@@ -1034,6 +1034,9 @@ const runInlineSlashCommand = async (input) => {
   const result = await runSlashCommand(input, {
     collectionId: collectionStore.currentCollectionId,
     collection: collectionStore.currentCollection,
+    groupId: collectionStore.currentGroupId,
+    messages: messages.value,
+    providerHeaders: buildProviderHeaders(selectedProvider.value),
   })
 
   chatStore.addAssistantMessage(
@@ -1093,7 +1096,7 @@ const sendMessage = async () => {
           provider: selectedProvider.value,
           top_k: topK.value,
           mode: searchMode.value,
-          scope: scope.value,
+          scope: collectionStore.currentGroupId ? `group:${collectionStore.currentGroupId}` : scope.value,
           rerank: rerank.value,
         }),
       }
