@@ -42,9 +42,6 @@ DEFAULT_ENTITY_TYPES = [
     "FINANCIAL_ACCOUNT",
     "ROUTING_NUMBER",
     "CUSIP_IN_CONTEXT",
-    # Brokerage-specific name and address patterns
-    "TRUST_ACCOUNT_NAME",
-    "US_ADDRESS",
 ]
 
 
@@ -84,21 +81,10 @@ _FINANCIAL_ALLOW_LIST = [
     "Vanguard", "Fidelity", "Schwab", "BlackRock", "PIMCO",
     "iShares", "SPDR", "Invesco", "Putnam", "Franklin",
     "Templeton", "Nuveen", "Calvert",
-    # Tickers that look like names (extended at PERSON threshold 0.70)
+    # Tickers that look like names
     "MUB", "MAX", "KIM", "LEE", "RAY", "BILL", "MARK", "JOSH",
     "ADAM", "JACK", "CHAD", "TROY", "ROSS", "REED", "DREW",
     "FORD", "ALLY", "DELL",
-    # Additional tickers / fund names at lowered PERSON threshold
-    "TXN", "AXP", "GLW", "KO", "PG", "DIS", "IBM", "GE", "CAT",
-    "JPM", "BAC", "WFC", "MS", "GS", "C", "BRK",
-    "PLADX", "JTWROS",  # fund ticker and legal suffix
-    # Company name words that look like first names to NER at 0.70
-    "Walt", "Disney", "Procter", "Gamble", "Corning", "Aristotle",
-    "American", "Express", "International", "Business", "Texas",
-    "Instruments",
-    # Brokerage / financial institution names
-    "Raymond", "James", "Edward", "Jones", "Merrill", "Lynch",
-    "Morgan", "Stanley", "Goldman", "Sachs",
     # Greek letters / financial metrics misidentified as NRP or PERSON
     "Drawdown", "Sharpe", "Sortino", "Treynor",
     "Alpha", "Beta", "Sigma", "Delta", "Gamma", "Theta", "Vega", "Rho",
@@ -119,13 +105,12 @@ _DEFAULT_PROFILE = RedactionProfile(
         "DATE_TIME": 0.6,
         # PERSON at 0.4 fires on 3-4 letter all-caps strings (tickers like
         # GLW, TXN, IBM, KO) and on company names containing common given
-        # names (e.g. "Procter & Gamble"). The allow list protects tickers
-        # explicitly, so we can lower this to 0.70 to catch more real names.
-        "PERSON": 0.70,
+        # names (e.g. "Procter & Gamble"). Raise the bar so only
+        # high-confidence person-name detections are redacted.
+        "PERSON": 0.85,
         # LOCATION at 0.4 catches business words like "States", "America"
-        # in company names and headlines. USAddressRecognizer handles the
-        # brokerage-format addresses (CITY, ST ZIP) with its own threshold.
-        "LOCATION": 0.75,
+        # in company names and headlines.
+        "LOCATION": 0.85,
         # NRP (nationality/religion/political) over-fires on financial
         # jargon — the explicit allow list handles the few real cases.
         "NRP": 0.85,

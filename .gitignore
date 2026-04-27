@@ -111,6 +111,3 @@ installer_output/
 CLAUDE.md
 AGENTS.md
 .mcp.json
-# Electron build artifacts (source lives in electron/, outputs go here)
-electron/renderer/
-electron-dist/

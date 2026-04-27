@@ -168,38 +168,15 @@ class AnthropicProvider(AIProvider):
         return True
 
     def complete_with_tools(self, messages, tools, max_tokens, model, system=None):
-        # Prompt caching on system + tool schemas. Both are reused across every
-        # iteration of the agent loop and across turns of the same chat, so
-        # caching them drops the per-iteration input cost by ~90% and keeps a
-        # tool-heavy turn from blowing the org's input-tokens-per-minute budget.
-        # One breakpoint on the last tool caches the entire tools array; a
-        # second on the system text block caches through the system.
-        tools_for_call = tools
-        if tools:
-            tools_for_call = list(tools[:-1]) + [
-                {**tools[-1], "cache_control": {"type": "ephemeral"}}
-            ]
-
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
             "messages": messages,
-            "tools": tools_for_call,
+            "tools": tools,
         }
         if system:
-            kwargs["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
+            kwargs["system"] = system
         response = self.client.messages.create(**kwargs)
-
-        cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
-        cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
-        if cache_read or cache_write:
-            logger.info(
-                "[anthropic] cache read=%d write=%d input=%d output=%d",
-                cache_read, cache_write,
-                response.usage.input_tokens, response.usage.output_tokens,
-            )
 
         text_parts: list[str] = []
         tool_calls: list[dict] = []
@@ -646,44 +623,6 @@ class GitHubProvider(OpenAIProvider):
             raise
 
 
-class OllamaCloudProvider(OpenAIProvider):
-    """Ollama Cloud provider — hosted OSS models via OpenAI-compatible API.
-
-    Auth: API key from ollama.com (Bearer token; OpenAI SDK handles this).
-    Endpoint: https://ollama.com/v1 (OpenAI-compatible chat completions).
-    Model tags use plain names (e.g. `gpt-oss:120b`, `gemma4:31b`) — the
-    `:cloud` suffix is only used when routing through a local Ollama daemon.
-    Supports native function calling and vision (inherited from OpenAIProvider).
-    """
-
-    FAST_MODEL = "gpt-oss:20b"
-    QUALITY_MODEL = "gpt-oss:120b"
-
-    def __init__(self, api_key: str, model: Optional[str] = None):
-        super().__init__(api_key, model=model, base_url="https://ollama.com/v1")
-
-    def validate(self) -> bool:
-        from openai import AuthenticationError, RateLimitError, APIConnectionError
-        try:
-            self.client.chat.completions.create(
-                model=self.FAST_MODEL,
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            return True
-        except AuthenticationError:
-            logger.warning("Ollama Cloud authentication failed — check your API key at ollama.com/settings/keys")
-            return False
-        except RateLimitError:
-            return True
-        except APIConnectionError as e:
-            logger.error("Ollama Cloud connection failed: %s", e)
-            raise ConnectionError("Could not reach ollama.com. Check your network connection and try again.") from e
-        except Exception as e:
-            logger.error("Ollama Cloud validation error: %s", e)
-            raise
-
-
 class OpenAICompatibleProvider(OpenAIProvider):
     """Generic OpenAI-compatible provider for custom endpoints (vLLM, LM Studio, Groq, etc.)."""
 
@@ -709,8 +648,8 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
     """Create an AI provider instance.
 
     Args:
-        provider_name: Provider name — anthropic, openai, grok, google, github, openai_compatible, ollama, ollama_cloud
-        api_key: API key for cloud providers (not needed for local Ollama or key-less endpoints)
+        provider_name: Provider name — anthropic, openai, grok, google, github, openai_compatible, ollama
+        api_key: API key for cloud providers (not needed for Ollama or key-less endpoints)
         **kwargs:
             model       – model name override
             base_url    – custom base URL (for openai, openai_compatible, ollama)
@@ -749,10 +688,6 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
             base_url=kwargs.get("base_url", "http://localhost:11434"),
             model=kwargs.get("model", "llama3.2"),
         )
-    elif provider_name == "ollama_cloud":
-        if not api_key:
-            raise ValueError("API key required for Ollama Cloud (get one at https://ollama.com)")
-        return OllamaCloudProvider(api_key, model=kwargs.get("model"))
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
 

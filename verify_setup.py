@@ -28,7 +28,7 @@ def check_dependencies():
         "uvicorn",
         "pypdf",
         "pdfplumber",
-        "httpx",
+        "sentence_transformers",
         "faiss",
         "pydantic",
     ]

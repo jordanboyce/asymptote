@@ -299,20 +299,10 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
             "list_collections() to see what is available."
         )
     if not collection_service.get_collection(candidate):
-        # The model may have passed the collection's display name rather than its
-        # UUID — do a case-insensitive name lookup before giving up.
-        all_cols = collection_service.get_all_collections()
-        name_match = next(
-            (c for c in all_cols if c.get("name", "").strip().lower() == candidate.lower()),
-            None,
+        raise ValueError(
+            f"Collection '{candidate}' not found. Call list_collections() to "
+            f"see available collections."
         )
-        if name_match:
-            candidate = name_match["id"]
-        else:
-            raise ValueError(
-                f"Collection '{candidate}' not found. Call list_collections() to "
-                f"see available collections."
-            )
     return candidate
 
 
@@ -1025,37 +1015,6 @@ def _get_structured_store(collection_id: str) -> StructuredStore:
     return indexer.vector_store.structured_store
 
 
-def _no_table_error(
-    store: StructuredStore, identifier: str, collection_id: str
-) -> ValueError:
-    """Build a `No structured table found` error with a did_you_mean suggestion.
-
-    The chat model occasionally constructs a mangled identifier (e.g. mashing
-    the filename stem and the full filename together). Rather than force a
-    full `list_tables` round-trip we include up to three likely matches so the
-    model can self-correct on the next turn.
-    """
-    base = (
-        f"No structured table found for '{identifier}' in collection "
-        f"'{collection_id}'."
-    )
-    try:
-        suggestions = store.suggest_identifiers(identifier, limit=3)
-    except Exception:
-        suggestions = []
-    if suggestions:
-        hint_parts = [
-            f"'{s['table_name']}' (source: {s['filename']})"
-            for s in suggestions
-            if s.get('table_name')
-        ]
-        if hint_parts:
-            base += " Did you mean: " + "; ".join(hint_parts) + "?"
-    return ValueError(
-        base + " Call list_tables() to see every available table."
-    )
-
-
 def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     """Trim a full schema payload down to what an LLM needs to write a query."""
     columns = []
@@ -1173,7 +1132,10 @@ def get_table_schema(
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        raise _no_table_error(store, identifier, resolved_collection)
+        raise ValueError(
+            f"No structured table found for '{identifier}' in collection "
+            f"'{resolved_collection}'. Call list_tables() to see what's available."
+        )
     return _redact(_format_schema_summary(schema), "get_table_schema")
 
 
@@ -1217,7 +1179,10 @@ def get_table_rows(
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        raise _no_table_error(store, identifier, resolved_collection)
+        raise ValueError(
+            f"No structured table found for '{identifier}' in collection "
+            f"'{resolved_collection}'. Call list_tables() to see what's available."
+        )
     table_name = schema["table_name"]
     capped = max(1, min(int(limit), 2000))
     select_cols = ['"__row_number"'] + [f'"{c["sql_name"]}"' for c in schema.get("columns", [])]
@@ -1444,7 +1409,10 @@ def aggregate_table(
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        raise _no_table_error(store, identifier, resolved_collection)
+        raise ValueError(
+            f"No structured table found for '{identifier}' in collection "
+            f"'{resolved_collection}'. Call list_tables() to see what's available."
+        )
     table_name = schema["table_name"]
     sql_fn = _AGG_FN_SQL[agg_fn]
     agg_expr = f'{sql_fn}("{aggregate_col}")'
@@ -1616,7 +1584,6 @@ def get_price_history(
     start: str | None = None,
     end: str | None = None,
     interval: str = "1d",
-    period: str | None = None,
 ) -> dict[str, Any]:
     """Return historical OHLCV price data for a security.
 
@@ -1627,13 +1594,10 @@ def get_price_history(
 
     Parameters:
       - symbol: Ticker symbol (e.g. "AAPL", "MSFT", "^GSPC"). Required.
-      - period: Yahoo-Finance shorthand for the lookback window. One of:
-        1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max. Use this for
-        simple "last N days/months/years" queries — it is usually easier
-        than computing explicit dates.
-      - start / end: ISO dates (YYYY-MM-DD). Use these when you need a
-        specific window that doesn't align with `period`. If both `period`
-        and `start` are provided, `start` wins.
+      - start: ISO date (YYYY-MM-DD) or omit for a sensible default
+        lookback based on interval (7 days for intraday, 1 year for
+        daily, longer for weekly/monthly).
+      - end: ISO date (YYYY-MM-DD) or omit for today.
       - interval: Bar size. One of: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h,
         1d, 5d, 1wk, 1mo, 3mo. Default "1d". Note: yfinance limits
         intraday intervals to recent windows (e.g. 1m is last 7 days).
@@ -1643,10 +1607,9 @@ def get_price_history(
     { date, open, high, low, close, volume }.
 
     On lookup failure returns { error, message, symbol } with error
-    codes: missing_symbol, invalid_interval, invalid_period,
-    symbol_not_found_or_no_data, yfinance_fetch_failed. Agents should
-    fall back to reporting the error to the user rather than inventing
-    values.
+    codes: missing_symbol, invalid_interval, symbol_not_found_or_no_data,
+    yfinance_fetch_failed. Agents should fall back to reporting the
+    error to the user rather than inventing values.
 
     Results are cached locally on disk; repeat calls within the TTL
     (30 min intraday, 12 h daily, 24 h weekly+) return instantly.
@@ -1655,13 +1618,7 @@ def get_price_history(
 
     from services.market_data.price_history import get_price_history as _fetch
 
-    response = _fetch(
-        symbol=symbol,
-        start=start,
-        end=end,
-        interval=interval,
-        period=period,
-    )
+    response = _fetch(symbol=symbol, start=start, end=end, interval=interval)
     return _redact(response, tool_name="get_price_history")
 
 
@@ -2107,7 +2064,10 @@ def resource_table(id: str) -> dict[str, Any]:
     store = _get_structured_store(resolved)
     schema = store.get_schema(id)
     if not schema:
-        raise _no_table_error(store, id, resolved)
+        raise ValueError(
+            f"No structured table found for '{id}' in collection '{resolved}'. "
+            f"Call list_tables() to see what's available."
+        )
     summary = _format_schema_summary(schema)
 
     table_name = schema["table_name"]

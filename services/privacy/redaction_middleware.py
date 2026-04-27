@@ -126,52 +126,6 @@ def set_session_id(session_id: str) -> None:
     _current_session_id.set(session_id)
 
 
-def redact_text_for_ai(
-    text: str,
-    collection_id: str | None = None,
-    source_label: str = "ai_context",
-) -> str:
-    """Redact PII from a plain text string before it is injected into an AI prompt.
-
-    This covers paths that the MCP response middleware does NOT protect:
-      - Document text_snippets used to seed the chat system prompt
-      - Inlined JSONL table blocks (inline_block / structured_context_str)
-      - Reranking input snippets
-
-    Returns the redacted text. If Presidio is unavailable or redaction is
-    disabled, the original text is returned unchanged.
-
-    Unlike redact_mcp_response (which mutates dict structures), this function
-    operates on a single string so callers can apply it per-snippet for
-    fine-grained audit logging.
-    """
-    if not getattr(settings, "enable_pii_redaction", False):
-        return text
-
-    from services.privacy.redaction_engine import redaction_engine
-    from services.privacy.redaction_log import redaction_log
-
-    if not redaction_engine.available:
-        return text
-
-    result = redaction_engine.redact_text(text, collection_id)
-    if result.had_pii:
-        session_id = get_or_create_session_id()
-        redaction_log.log_redactions(
-            details=result.details,
-            session_id=session_id,
-            collection_id=collection_id,
-            tool_name=source_label,
-        )
-        logger.info(
-            "redact_text_for_ai: removed %d PII entities from %s (session=%s...)",
-            len(result.details),
-            source_label,
-            session_id[:8],
-        )
-    return result.redacted_text
-
-
 def redact_mcp_response(
     response: dict[str, Any],
     tool_name: str,

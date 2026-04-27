@@ -92,18 +92,12 @@ class _RedactionEngine:
         from services.privacy.custom_recognizers.cusip_in_context import (
             CUSIPInContextRecognizer,
         )
-        from services.privacy.custom_recognizers.trust_account_name import (
-            TrustAccountNameRecognizer,
-            USAddressRecognizer,
-        )
 
         assert self._analyzer is not None
         registry = self._analyzer.registry
         registry.add_recognizer(FinancialAccountRecognizer())
         registry.add_recognizer(RoutingNumberRecognizer())
         registry.add_recognizer(CUSIPInContextRecognizer())
-        registry.add_recognizer(TrustAccountNameRecognizer())
-        registry.add_recognizer(USAddressRecognizer())
         logger.info("Registered custom financial PII recognizers.")
 
     def _build_operator_config(
@@ -130,32 +124,6 @@ class _RedactionEngine:
             return OperatorConfig("replace", {"new_value": f"<synthetic-{entity_type.lower()}>"})
         else:
             return OperatorConfig("replace", {"new_value": "[REDACTED]"})
-
-    @staticmethod
-    def _title_case_if_allcaps(text: str) -> tuple[str, bool]:
-        """Return a title-cased copy when the input is predominantly uppercase.
-
-        Brokerage documents store account-holder names, addresses, and trust
-        names in ALL CAPS.  spaCy's NER model was trained on normal mixed-case
-        text and scores PERSON / LOCATION entities near zero on all-caps input.
-        Running a secondary analysis pass on a title-cased copy and merging the
-        results into the original anonymization step fixes this without touching
-        false-positive prevention for normal mixed-case text.
-
-        ``str.title()`` never changes string length, so all span offsets from
-        the title-cased analysis are directly applicable to the original text.
-
-        Returns (normalized_text, was_normalized).
-        """
-        if len(text) < 8:
-            return text, False
-        alpha = [c for c in text if c.isalpha()]
-        if len(alpha) < 6:
-            return text, False
-        upper_ratio = sum(1 for c in alpha if c.isupper()) / len(alpha)
-        if upper_ratio > 0.55:
-            return text.title(), True
-        return text, False
 
     def redact_text(
         self,
@@ -194,23 +162,8 @@ class _RedactionEngine:
         if profile.entity_types_enabled:
             analyzer_kwargs["entities"] = profile.entity_types_enabled
 
-        # Run analysis on the original text
+        # Run analysis
         results: list = self._analyzer.analyze(**analyzer_kwargs)
-
-        # Secondary pass on title-cased text for ALL-CAPS brokerage documents.
-        # spaCy NER scores PERSON/LOCATION near zero on all-caps input, so we
-        # run a second analysis on a title-cased copy (same char positions) and
-        # merge any additional hits. The custom pattern recognizers
-        # (TrustAccountNameRecognizer, USAddressRecognizer) already work on
-        # all-caps text, so this mainly helps the spaCy NLP-based recognizers.
-        norm_text, was_normalized = self._title_case_if_allcaps(text)
-        if was_normalized:
-            norm_kwargs = {**analyzer_kwargs, "text": norm_text}
-            norm_results = self._analyzer.analyze(**norm_kwargs)
-            existing_spans = {(r.start, r.end) for r in results}
-            for r in norm_results:
-                if (r.start, r.end) not in existing_spans:
-                    results.append(r)
 
         if not results:
             return RedactionResult(redacted_text=text)

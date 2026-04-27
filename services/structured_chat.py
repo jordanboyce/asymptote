@@ -53,13 +53,7 @@ SUPPORTED_TOOLS = {
 
 
 def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 20) -> str:
-    """Render table schemas into an unambiguous block for the prompt.
-
-    The `sql_table_name` field is the EXACT string the model should use as
-    the SQL identifier and as the `identifier` argument on table tool calls.
-    Every other field on each entry is metadata — do not concatenate fields
-    to form an identifier.
-    """
+    """Render table schemas into a compact human-readable block for the prompt."""
     if not tables:
         return ""
 
@@ -69,31 +63,20 @@ def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 2
         "ranking question — raw SQL over these tables is dramatically more "
         "accurate than reading row text snippets.",
         "",
-        "IDENTIFIER RULE: For every table below, the `sql_table_name` field is "
-        "the EXACT string to use in SQL FROM clauses and as the `identifier` "
-        "argument to table tools. Never modify it, never combine it with the "
-        "`source_file`, never use the filename as the SQL identifier.",
-        "",
     ]
     for t in tables[:max_tables]:
-        lines.append(f"- sql_table_name: {t['table_name']}")
-        lines.append(f"  source_file: {t['filename']}")
-        if t.get('sheet_name'):
-            lines.append(f"  sheet_name: {t['sheet_name']}")
+        sheet_suffix = f" (sheet: {t['sheet_name']})" if t.get('sheet_name') else ""
+        lines.append(
+            f"TABLE \"{t['table_name']}\"  — source: {t['filename']}{sheet_suffix}"
+        )
         lines.append(f"  rows: {t['row_count']}, columns: {t['column_count']}")
         cols = t.get('columns', [])[:_MAX_SCHEMA_PROMPT_COLS]
-        if cols:
-            lines.append("  columns:")
-            for c in cols:
-                role = f" [role: {c['role']}]" if c.get('role') else ""
-                original = (
-                    f"  original: {c['name']}"
-                    if c.get('name') and c['name'] != c['sql_name']
-                    else ""
-                )
-                lines.append(
-                    f"    - \"{c['sql_name']}\" ({c['type']}){role}{original}"
-                )
+        for c in cols:
+            role = f" [role: {c['role']}]" if c.get('role') else ""
+            lines.append(
+                f"    - \"{c['sql_name']}\" ({c['type']}){role}"
+                + (f"  original: {c['name']}" if c['name'] != c['sql_name'] else "")
+            )
         if len(t.get('columns', [])) > _MAX_SCHEMA_PROMPT_COLS:
             lines.append(f"    ... ({len(t['columns']) - _MAX_SCHEMA_PROMPT_COLS} more columns)")
         lines.append("")
@@ -687,16 +670,9 @@ def build_structured_context(
             if c.get("role")
         ]
         roles_line = f"  detected roles: {', '.join(role_cols)}\n" if role_cols else ""
-        sql_line = (
-            f'  sql_table_name: {t["table_name"]}  '
-            f'(use this exact string if you need to run SQL against this file)\n'
-            if t.get("table_name")
-            else ""
-        )
         header = (
-            f'--- CSV FILE: {t["filename"]}{sheet_suffix} '
+            f'--- TABLE: {t["filename"]}{sheet_suffix} '
             f'({row_count} rows, {t.get("column_count", 0)} cols) ---\n'
-            f'{sql_line}'
             f'{roles_line}'
         )
         block = header + jsonl
