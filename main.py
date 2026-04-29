@@ -4240,6 +4240,86 @@ async def set_collection_expertise(collection_id: str, data: SetCollectionExpert
     return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
 
 
+# ---------------------------------------------------------------------------
+# PII pre-flight + collection blacklist endpoints
+# ---------------------------------------------------------------------------
+
+class PiiBlacklistUpdateRequest(BaseModel):
+    terms: List[str]
+
+
+@app.post(
+    "/api/pii/preflight",
+    summary="Pre-flight PII scan for a tabular file",
+    tags=["privacy"],
+)
+async def pii_preflight(
+    file_path: str,
+    collection_id: str = "default",
+) -> dict:
+    """Scan a CSV or Excel file for PII before indexing.
+
+    Returns per-column findings (role, action, sample values) and the
+    current custom blacklist for the collection.  Does not modify the file
+    or the index.
+    """
+    if not file_path or not file_path.strip():
+        raise HTTPException(status_code=400, detail="file_path is required.")
+    path = Path(file_path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    ext = path.suffix.lower()
+    if ext not in (".csv", ".xlsx", ".xls"):
+        raise HTTPException(
+            status_code=400,
+            detail="PII pre-flight only supports CSV and Excel files.",
+        )
+    try:
+        from services.privacy.pii_preflight import scan_file
+        return scan_file(path, collection_id=collection_id)
+    except Exception as exc:
+        logger.error("PII preflight failed for %s: %s", file_path, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get(
+    "/api/collections/{collection_id}/pii-blacklist",
+    summary="Get custom PII blacklist for a collection",
+    tags=["privacy"],
+)
+async def get_pii_blacklist(collection_id: str) -> dict:
+    from services.privacy.collection_blacklist import get_blacklist
+    return {"collection_id": collection_id, "terms": get_blacklist(collection_id)}
+
+
+@app.post(
+    "/api/collections/{collection_id}/pii-blacklist",
+    summary="Add terms to the PII blacklist for a collection",
+    tags=["privacy"],
+)
+async def add_pii_blacklist_terms(
+    collection_id: str,
+    body: PiiBlacklistUpdateRequest,
+) -> dict:
+    from services.privacy.collection_blacklist import add_terms
+    updated = add_terms(collection_id, body.terms)
+    return {"collection_id": collection_id, "terms": updated}
+
+
+@app.delete(
+    "/api/collections/{collection_id}/pii-blacklist",
+    summary="Remove terms from the PII blacklist for a collection",
+    tags=["privacy"],
+)
+async def remove_pii_blacklist_terms(
+    collection_id: str,
+    body: PiiBlacklistUpdateRequest,
+) -> dict:
+    from services.privacy.collection_blacklist import remove_terms
+    updated = remove_terms(collection_id, body.terms)
+    return {"collection_id": collection_id, "terms": updated}
+
+
 # Redirect bare /mcp (no trailing slash) to /mcp/ so MCP clients that use the old
 # exported URL still work. Uses 307 to preserve the HTTP method (POST stays POST).
 @app.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)
