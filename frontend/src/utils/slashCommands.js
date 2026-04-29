@@ -5,9 +5,12 @@ import axios from 'axios'
 // instant, deterministic.
 
 export const SLASH_COMMANDS = {
-  '/brief': 'Generate meeting brief for this collection',
+  '/brief': 'Generate meeting brief for this collection (or household if a group is selected)',
+  '/notes': 'Draft compliance Note of Record from the last meeting transcript',
+  '/followup': 'Draft a client-safe follow-up email from the last meeting',
   '/stats': 'Show collection statistics',
   '/docs': 'List indexed documents',
+  '/tools': 'Show what the assistant can do',
   '/help': 'Show available slash commands',
 }
 
@@ -116,6 +119,65 @@ const formatHelp = () => {
   for (const [cmd, desc] of Object.entries(SLASH_COMMANDS)) {
     lines.push(`${cmd.padEnd(8)}  ${desc}`)
   }
+  return lines.join('\n')
+}
+
+// Curated, human-readable capability list. Grouped so users can see what the
+// assistant can do without reading raw tool schemas. Keep descriptions in
+// user-language, not tool-name-language. When tools change in
+// services/agent_tools.py, update this list.
+const TOOL_CATEGORIES = [
+  {
+    title: 'DOCUMENTS',
+    items: [
+      'Search PDFs, text, and code (keyword, semantic, or hybrid)',
+      'Pull the full text of a document, page, or section',
+      'Browse what\'s indexed across all your collections',
+    ],
+  },
+  {
+    title: 'PORTFOLIO TABLES (CSV / Excel)',
+    items: [
+      'Run read-only SQL or group-by aggregations on imported spreadsheets',
+      'Compute metrics: market value, cost basis, P&L, concentration, top/bottom holdings',
+      'Break down by sector, asset class, region, or currency',
+      'Surface tax-loss candidates and weighted returns',
+      'Inspect schema, column types, and sample rows before querying',
+    ],
+  },
+  {
+    title: 'MARKET DATA (Yahoo Finance)',
+    items: [
+      'Historical OHLCV price history for any ticker',
+      'Sector, market cap, and asset-class classification',
+      'Company profile: CEO, business summary, HQ, employees',
+      'Recent news headlines',
+    ],
+  },
+]
+
+const TOOL_EXAMPLES = [
+  '"List my top 20 holdings by market value"',
+  '"Show my sector breakdown and flag concentration risks"',
+  '"What\'s been happening with AAPL in the news this month?"',
+  '"Find the passage in the 10-K that mentions supply chain risk"',
+  '"What\'s the 1-year return on SPY vs. QQQ?"',
+]
+
+const formatTools = () => {
+  const title = 'What this assistant can do'
+  const lines = [title, '─'.repeat(title.length), '']
+  for (const { title: cat, items } of TOOL_CATEGORIES) {
+    lines.push(cat)
+    for (const item of items) lines.push(`  • ${item}`)
+    lines.push('')
+  }
+  lines.push('Try asking:')
+  for (const ex of TOOL_EXAMPLES) lines.push(`  • ${ex}`)
+  lines.push(
+    '',
+    'You can also just describe what you want in plain language — the assistant picks the right tools automatically.',
+  )
   return lines.join('\n')
 }
 
@@ -292,7 +354,14 @@ const formatBrief = (brief) => {
 // Parses, validates, and executes a slash command. Returns { cmd, content } on
 // success or { cmd, content, error: true } on failure. Callers decide how to
 // render the result.
-export const runSlashCommand = async (input, { collectionId, collection }) => {
+//
+// options:
+//   collectionId      — active collection ID
+//   collection        — active collection object
+//   groupId           — active group ID (or null) for group-aware commands
+//   messages          — recent chat messages array (for /notes and /followup)
+//   providerHeaders   — AI provider headers { 'x-ai-key': ..., etc. }
+export const runSlashCommand = async (input, { collectionId, collection, groupId, messages, providerHeaders }) => {
   const cmd = input.trim().split(/\s+/)[0].toLowerCase()
   if (!SLASH_COMMANDS[cmd]) {
     return { cmd, content: `Unknown command: ${cmd}`, error: true }
@@ -303,9 +372,47 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
       return { cmd, content: formatHelp() }
     }
 
+    if (cmd === '/tools') {
+      return { cmd, content: formatTools() }
+    }
+
     if (cmd === '/brief') {
+      if (groupId) {
+        const response = await axios.post(`/api/groups/${groupId}/brief`)
+        const brief = response.data
+        const header = brief.group_name
+          ? `HOUSEHOLD BRIEF — ${brief.group_name} (${brief.collection_count} account${brief.collection_count !== 1 ? 's' : ''})`
+          : 'HOUSEHOLD BRIEF'
+        return { cmd, content: header + '\n' + '═'.repeat(Math.min(header.length, 48)) + '\n\n' + formatBrief(brief) }
+      }
       const response = await axios.post(`/api/collections/${collectionId}/brief`)
       return { cmd, content: formatBrief(response.data) }
+    }
+
+    if (cmd === '/notes') {
+      const apiMessages = (messages || [])
+        .filter(m => !m.streaming && m.content && !m.slashCommand)
+        .slice(-30)
+        .map(m => ({ role: m.role, content: m.content }))
+      const response = await axios.post(
+        `/api/collections/${collectionId}/notes`,
+        { messages: apiMessages, provider: _inferProvider(providerHeaders) },
+        { headers: providerHeaders || {} },
+      )
+      return { cmd, content: response.data.content }
+    }
+
+    if (cmd === '/followup') {
+      const apiMessages = (messages || [])
+        .filter(m => !m.streaming && m.content && !m.slashCommand)
+        .slice(-30)
+        .map(m => ({ role: m.role, content: m.content }))
+      const response = await axios.post(
+        `/api/collections/${collectionId}/followup`,
+        { messages: apiMessages, provider: _inferProvider(providerHeaders) },
+        { headers: providerHeaders || {} },
+      )
+      return { cmd, content: response.data.content }
     }
 
     const response = await axios.get(`/documents?collection_id=${collectionId}`)
@@ -323,4 +430,11 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
   }
 
   return { cmd, content: `Command ${cmd} is not implemented`, error: true }
+}
+
+function _inferProvider(headers) {
+  if (!headers) return 'anthropic'
+  if (headers['x-ollama-model'] || headers['x-ai-model']?.includes('llama') || headers['x-ai-model']?.includes('mistral')) return 'ollama'
+  if (headers['x-openai-model']) return 'openai'
+  return 'anthropic'
 }

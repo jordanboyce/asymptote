@@ -102,6 +102,8 @@ class UploadResponse(BaseModel):
     total_pages: int = Field(..., description="Total pages across all documents")
     total_chunks: int = Field(..., description="Total chunks created")
     document_ids: List[str] = Field(..., description="List of created document IDs")
+    transcript_saved: bool = Field(False, description="Whether a transcript .md was auto-saved (audio uploads)")
+    transcript_filename: Optional[str] = Field(None, description="Filename of the saved transcript document")
 
 
 class UploadPhase(str, Enum):
@@ -395,3 +397,47 @@ class SetCollectionExpertiseRequest(BaseModel):
     """Request body for replacing a collection's attached pack list."""
 
     pack_ids: List[str] = Field(..., description="Full set of pack IDs to attach (replaces existing)")
+
+
+# ── Meeting Capture schemas (v4.5) ────────────────────────────────────────────
+
+class NotesRequest(BaseModel):
+    """Request body for /notes compliance note generator."""
+
+    messages: List[ChatMessage] = Field(default_factory=list, description="Recent chat messages for context")
+    provider: str = Field("anthropic", description="AI provider")
+
+
+class FollowupRequest(BaseModel):
+    """Request body for /followup email drafter."""
+
+    messages: List[ChatMessage] = Field(default_factory=list, description="Recent chat messages for context")
+    provider: str = Field("anthropic", description="AI provider")
+
+
+class NoteResponse(BaseModel):
+    """Response from /notes or /followup."""
+
+    content: str = Field(..., description="Generated note or email text (PII-redacted)")
+
+
+# ── Collection Groups schemas (v4.5) ─────────────────────────────────────────
+
+class CollectionGroupCreate(BaseModel):
+    name: str = Field(..., description="Group name", min_length=1)
+    color: str = Field("#8b5cf6", description="Hex color for the group")
+
+
+class CollectionGroupUpdate(BaseModel):
+    name: Optional[str] = Field(None, description="New group name")
+    color: Optional[str] = Field(None, description="New hex color")
+
+
+class CollectionGroup(BaseModel):
+    id: str
+    name: str
+    color: str
+    owner_id: str
+    collection_ids: List[str]
+    created_at: str
+    updated_at: str
