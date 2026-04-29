@@ -8,28 +8,28 @@
           <div class="min-w-0">
             <h3 class="font-semibold text-sm">Interface Mode</h3>
             <p class="text-xs text-base-content/55 mt-0.5">
-              {{ expertMode
+              {{ isExpertMode
                 ? 'Expert mode — all settings and tools are visible.'
                 : 'Basic mode — showing only the essentials. Switch to Expert for advanced configuration.' }}
             </p>
           </div>
           <label class="flex items-center gap-3 flex-shrink-0 cursor-pointer select-none">
-            <span class="text-sm font-medium" :class="!expertMode ? 'text-base-content' : 'text-base-content/40'">Basic</span>
+            <span class="text-sm font-medium" :class="!isExpertMode ? 'text-base-content' : 'text-base-content/40'">Basic</span>
             <input
               type="checkbox"
               class="toggle toggle-primary"
-              :checked="expertMode"
-              @change="expertMode = !expertMode"
+              :checked="isExpertMode"
+              @change="toggleExpertMode"
               aria-label="Toggle expert mode"
             />
-            <span class="text-sm font-medium" :class="expertMode ? 'text-base-content' : 'text-base-content/40'">Expert</span>
+            <span class="text-sm font-medium" :class="isExpertMode ? 'text-base-content' : 'text-base-content/40'">Expert</span>
           </label>
         </div>
       </div>
     </div>
 
     <!-- System Info (expert only) -->
-    <div v-if="expertMode" class="card bg-base-200">
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base">System</h3>
@@ -64,7 +64,7 @@
     </div>
 
     <!-- UI Feature Flags (expert only) -->
-    <div v-if="expertMode" class="card bg-base-200">
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base">UI Features</h3>
@@ -234,7 +234,7 @@
           </div>
 
           <!-- Custom Provider Rows (expert only) -->
-          <template v-if="expertMode">
+          <template v-if="isExpertMode">
             <div v-for="cp in customProvidersConfig" :key="cp.id">
               <div
                 class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
@@ -284,7 +284,7 @@
           </template>
 
           <!-- Add Custom Provider row (expert only) -->
-          <div v-if="showAddCustomForm && expertMode" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+          <div v-if="showAddCustomForm && isExpertMode" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
             <p class="text-sm font-medium">New Custom Endpoint</p>
             <div class="grid gap-3 sm:grid-cols-2">
               <div class="form-control">
@@ -314,7 +314,7 @@
           </div>
         </div>
 
-        <button v-if="!showAddCustomForm && expertMode" class="btn btn-ghost btn-sm self-start gap-1" @click="showAddCustomForm = true">
+        <button v-if="!showAddCustomForm && isExpertMode" class="btn btn-ghost btn-sm self-start gap-1" @click="showAddCustomForm = true">
           + Add Custom Endpoint
         </button>
 
@@ -350,7 +350,7 @@
 
 
     <!-- OCR Settings (expert only) -->
-    <div v-if="expertMode" class="card bg-base-200">
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">OCR Settings</h3>
@@ -629,7 +629,7 @@
           </label>
         </div>
 
-        <div v-if="piiRedactionEnabled && expertMode" class="space-y-4">
+        <div v-if="piiRedactionEnabled && isExpertMode" class="space-y-4">
           <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
             <div class="mb-4">
               <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Redaction Style</h4>
@@ -684,7 +684,7 @@
     </div>
 
     <!-- LLM Schema Inference (expert only) -->
-    <div v-if="expertMode" class="card bg-base-200">
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">LLM Column Role Inference</h3>
@@ -748,7 +748,7 @@
         </div>
 
         <!-- Chunk settings (expert only) -->
-        <template v-if="expertMode">
+        <template v-if="isExpertMode">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div class="form-control">
               <label class="label py-1">
@@ -875,7 +875,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
-import { expertMode } from '../utils/expertMode.js'
+import { isExpertMode, toggleExpertMode } from '../utils/expertMode.js'
 import {
   PROVIDER_DEFS,
   getProvidersConfig,
