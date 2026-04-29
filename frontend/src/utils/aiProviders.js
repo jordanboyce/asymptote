@@ -101,6 +101,25 @@ export const PROVIDER_DEFS = [
     defaultBaseUrl: 'http://localhost:11434',
     models: [], // populated dynamically via detection
   },
+  {
+    id: 'ollama_cloud',
+    name: 'Ollama Cloud',
+    type: 'cloud',
+    badge: 'cloud',
+    keyPlaceholder: 'your Ollama API key',
+    keyLink: 'https://ollama.com/settings/keys',
+    models: [
+      { id: 'gpt-oss:120b', label: 'GPT-OSS 120B (quality)' },
+      { id: 'gpt-oss:20b', label: 'GPT-OSS 20B (fast)' },
+      { id: 'gemma4:31b', label: 'Gemma 4 31B' },
+      { id: 'qwen3-coder-next', label: 'Qwen3 Coder Next' },
+      { id: 'kimi-k2.6', label: 'Kimi K2.6' },
+      { id: 'deepseek-v3.2', label: 'DeepSeek v3.2' },
+      { id: 'glm-4.7', label: 'GLM 4.7' },
+      { id: 'glm-5.1', label: 'GLM 5.1' },
+      { id: 'minimax-m2.7', label: 'MiniMax M2.7' },
+    ],
+  },
 ]
 
 const CONFIG_KEY = 'ai_providers_config'

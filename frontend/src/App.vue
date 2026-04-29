@@ -171,7 +171,7 @@
         >
           <!-- Chat gets full height, no padding wrapper -->
           <div v-if="activeTab === 'chat'" class="h-full p-4">
-            <ChatTab :chunk-count="stats.chunks" @switch-tab="switchTab" />
+            <ChatTab :chunk-count="stats.chunks" :document-count="stats.documents" @switch-tab="switchTab" />
           </div>
 
           <!-- All other tabs: padded scroll container -->
@@ -773,6 +773,13 @@
       @shared="handleShared"
     />
 
+    <!-- First-run onboarding takeover (shown only when no provider is configured) -->
+    <WelcomeOnboarding
+      :show="showOnboarding"
+      @complete="handleOnboardingComplete"
+      @skip="handleOnboardingSkip"
+    />
+
     <!-- Background Jobs Sidebar Drawer -->
     <div
       v-if="showJobsDrawer"
@@ -930,6 +937,8 @@ import SettingsTab from './components/SettingsTab.vue'
 import MCPTab from './components/MCPTab.vue'
 import ShareModal from './components/ShareModal.vue'
 import ExpertiseLibrary from './components/ExpertiseLibrary.vue'
+import WelcomeOnboarding from './components/WelcomeOnboarding.vue'
+import { getConfiguredProviderIds } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
@@ -1058,6 +1067,35 @@ const shareCollectionName = ref('')
 
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
+
+// First-run onboarding: a full-screen takeover shown when the advisor has
+// never configured an AI provider. Resolves the "you installed the app but
+// nothing works until you curl an endpoint" problem we hit earlier.
+const showOnboarding = ref(false)
+
+const checkOnboardingNeeded = () => {
+  // If any provider is already configured in localStorage, skip onboarding.
+  // We intentionally don't also check server-side embedding keys — the
+  // primary gate is "can this advisor have a chat conversation yet."
+  // Advisors who pre-configured a chat provider via another path (e.g. the
+  // MCP setup flow) shouldn't be blocked by this screen.
+  showOnboarding.value = getConfiguredProviderIds().length === 0
+}
+
+const handleOnboardingComplete = () => {
+  showOnboarding.value = false
+  // Nudge any in-flight consumers of the provider config (ChatTab etc.)
+  // to refresh their "configured providers" computed state. Vue's reactivity
+  // doesn't cover localStorage, so dispatch a synthetic event the
+  // components can listen to — or simply rely on re-mount on next tab
+  // switch. For now a page-agnostic event is cheapest.
+  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
+}
+
+const handleOnboardingSkip = () => {
+  showOnboarding.value = false
+  activeTab.value = 'settings'
+}
 
 // Collections overview: view, search, sort
 const collectionsView = ref(localStorage.getItem('collections_view') || 'list')
@@ -1322,6 +1360,10 @@ const cancelJob = async (jobId) => {
 }
 
 onMounted(async () => {
+  // Check whether we need the first-run onboarding takeover. Done first so
+  // the screen paints immediately — the rest of the boot continues behind it.
+  checkOnboardingNeeded()
+
   // Load UI feature flags from server config
   try {
     const cfgResp = await axios.get('/api/config')

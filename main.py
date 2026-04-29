@@ -97,7 +97,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CLOUD_AI_PROVIDERS = ("anthropic", "openai", "grok", "google", "github", "openai_compatible")
+CLOUD_AI_PROVIDERS = ("anthropic", "openai", "grok", "google", "github", "ollama_cloud", "openai_compatible")
 ALL_AI_PROVIDERS = CLOUD_AI_PROVIDERS + ("ollama",)
 
 
@@ -2630,6 +2630,9 @@ async def validate_api_key(
             return {"valid": False, "error": "Your API key has exceeded its quota. Please add credits to your account."}
         elif "rate" in error_str.lower() and "limit" in error_str.lower():
             return {"valid": False, "error": "Rate limit exceeded. Please wait a moment and try again."}
+        elif any(kw in error_str.lower() for kw in ("connection error", "connect error", "connection refused", "name or service not known", "failed to establish")):
+            host = "ollama.com" if x_ai_provider == "ollama_cloud" else "the provider's API"
+            return {"valid": False, "error": f"Could not reach {host}. Check your network connection and try again."}
         else:
             return {"valid": False, "error": error_str}
 
