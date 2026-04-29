@@ -42,7 +42,7 @@
               <FileText :size="12" />
               Files
             </button>
-            <button @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
+            <button v-if="isExpertMode" @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
               <FolderOpen :size="12" />
               Folder
             </button>
@@ -122,7 +122,8 @@
           <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
             <CheckCircle :size="12" aria-hidden="true" />
             <span v-if="indexResult.background">Started in background</span>
-            <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
+            <span v-else-if="isExpertMode">{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
+            <span v-else>{{ indexResult.count }} file(s) added</span>
             <button
               class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0"
               @click="indexSuccess = false"
@@ -270,8 +271,9 @@
           <div class="flex-1 min-w-0">
             <div class="text-xs font-semibold truncate leading-tight" :title="doc.filename">{{ doc.filename }}</div>
             <div class="flex items-center gap-1 mt-0.5 flex-wrap">
-              <span class="text-xs text-base-content/50">{{ doc.total_pages }}p · {{ doc.total_chunks }}ch</span>
-              <span class="badge badge-xs" :class="doc.source_type === 'local_reference' ? 'badge-ghost' : 'badge-primary'">
+              <span v-if="isExpertMode" class="text-xs text-base-content/50">{{ doc.total_pages }}p · {{ doc.total_chunks }}ch</span>
+              <span v-else class="text-xs text-base-content/50">{{ doc.total_pages }}p</span>
+              <span v-if="isExpertMode" class="badge badge-xs" :class="doc.source_type === 'local_reference' ? 'badge-ghost' : 'badge-primary'">
                 {{ doc.source_type === 'local_reference' ? 'local' : 'lib' }}
               </span>
               <span
@@ -283,7 +285,7 @@
                 table
               </span>
               <button
-                v-if="doc.injection_warnings && Object.keys(doc.injection_warnings).length > 0"
+                v-if="isExpertMode && doc.injection_warnings && Object.keys(doc.injection_warnings).length > 0"
                 class="badge badge-xs badge-warning gap-0.5 cursor-pointer hover:badge-error transition-colors"
                 @click.stop="openInjectionWarnings(doc)"
                 title="Prompt injection warnings detected — click to view"
@@ -291,12 +293,22 @@
                 <ShieldAlert :size="9" />
                 {{ Object.keys(doc.injection_warnings).length }}p
               </button>
+              <button
+                v-if="isExpertMode && isTabularFile(doc.filename)"
+                class="badge badge-xs badge-ghost gap-0.5 cursor-pointer hover:badge-warning transition-colors"
+                @click.stop="openPiiReview(doc)"
+                title="Review PII redaction — see what's been stripped and add custom terms"
+              >
+                <ShieldCheck :size="9" />
+                PII
+              </button>
             </div>
           </div>
 
           <!-- Action buttons -->
           <div class="flex items-center flex-shrink-0 gap-0.5">
             <button
+              v-if="isExpertMode"
               class="btn btn-ghost btn-xs btn-circle"
               @click="openChunks(doc)"
               :disabled="deleting"
@@ -453,22 +465,72 @@
       <form method="dialog" class="modal-backdrop"><button @click="closeInjectionModal">close</button></form>
     </dialog>
 
+    <!-- PII Review Modal — triggered at upload time and from the PII badge on each source card -->
+    <PiiReviewModal
+      ref="piiModal"
+      :file-path="piiReviewFilePath"
+      :collection-id="collectionStore.currentCollectionId"
+      @confirmed="onPiiConfirmed"
+      @cancelled="onPiiCancelled"
+    />
+
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, ShieldCheck, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
+import PiiReviewModal from './PiiReviewModal.vue'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useExpertiseStore } from '../stores/expertiseStore'
+import { isExpertMode } from '../utils/expertMode'
 
 const emit = defineEmits(['document-deleted', 'background-job-started', 'close'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const expertiseStore = useExpertiseStore()
+
+// ── PII review state ──────────────────────────────────────────────────────
+const piiModal = ref(null)
+const piiReviewFilePath = ref('')
+const piiReviewQueue = ref([])    // files queued for pre-flight review
+const piiClearedPaths = ref([])   // files confirmed by advisor, ready to index
+
+function onPiiConfirmed() {
+  piiClearedPaths.value.push(piiReviewFilePath.value)
+  advancePiiQueue()
+}
+function onPiiCancelled() {
+  advancePiiQueue()
+}
+function advancePiiQueue() {
+  if (piiReviewQueue.value.length > 0) {
+    const nextPath = piiReviewQueue.value.shift()
+    piiReviewFilePath.value = nextPath
+    piiModal.value?.open(nextPath)
+  } else {
+    if (piiClearedPaths.value.length > 0) {
+      indexFileList(piiClearedPaths.value)
+      piiClearedPaths.value = []
+    }
+  }
+}
+
+// Open PII review for an already-indexed document (from the PII badge on the card).
+// source_path is the original filesystem path stored at index time.
+function openPiiReview(doc) {
+  const path = doc.source_path || ''
+  if (!path) {
+    // Fallback: shouldn't normally happen, but show a useful message
+    console.warn('PII review: no source_path available for', doc.filename)
+    return
+  }
+  piiReviewFilePath.value = path
+  piiModal.value?.open(path)
+}
 
 // Sidebar-specific state
 const addSectionOpen = ref(true)
@@ -837,8 +899,9 @@ const clearAllPaths = () => {
 }
 
 // Main indexing function
-const indexFiles = async () => {
-  if (selectedPaths.value.length === 0) return
+// Index a specific list of paths (called after PII review clears them)
+const indexFileList = async (paths) => {
+  if (!paths || paths.length === 0) return
 
   indexing.value = true
   indexProgress.value = 0
@@ -847,9 +910,70 @@ const indexFiles = async () => {
   indexSuccess.value = false
   indexError.value = ''
 
-  // Separate files and folders
+  let successCount = 0
+  let totalChunks = 0
+  const errors = []
+
+  try {
+    for (let i = 0; i < paths.length; i++) {
+      const fp = paths[i]
+      const name = fp.split(/[/\\]/).pop()
+      currentIndexingFile.value = name
+      indexProgress.value = i + 1
+      indexProgressPercent.value = (i / paths.length) * 100
+      try {
+        const resp = await axios.post('/documents/index-local', {
+          file_path: fp,
+          collection_id: collectionStore.currentCollectionId,
+          copy_to_library: copyToLibrary.value,
+        })
+        successCount++
+        totalChunks += resp.data.total_chunks || 0
+        indexProgressPercent.value = ((i + 1) / paths.length) * 100
+      } catch (err) {
+        errors.push(`${name}: ${err.response?.data?.detail || err.message}`)
+      }
+    }
+    if (successCount > 0) {
+      indexSuccess.value = true
+      indexResult.value = { count: successCount, chunks: totalChunks }
+      selectedPaths.value = []
+      loadDocuments()
+      emit('document-deleted')
+    }
+    if (errors.length > 0) indexError.value = errors.join('\n')
+  } finally {
+    indexing.value = false
+    currentIndexingFile.value = ''
+  }
+}
+
+const indexFiles = async () => {
+  if (selectedPaths.value.length === 0) return
+
+  // Separate files and folders up front
   const files = selectedPaths.value.filter(p => !p.isFolder)
   const filePaths = files.map(p => p.path)
+
+  // Route tabular files through PII review before indexing.
+  // Non-tabular files go straight through.
+  const tabularPaths = filePaths.filter(p => TABULAR_EXTENSIONS.includes('.' + p.split('.').pop().toLowerCase()))
+  const directPaths  = filePaths.filter(p => !TABULAR_EXTENSIONS.includes('.' + p.split('.').pop().toLowerCase()))
+
+  if (tabularPaths.length > 0) {
+    piiReviewQueue.value = [...tabularPaths]
+    piiClearedPaths.value = [...directPaths]
+    advancePiiQueue()
+    return
+  }
+
+  indexing.value = true
+  indexProgress.value = 0
+  indexProgressPercent.value = 0
+  currentIndexingFile.value = ''
+  indexSuccess.value = false
+  indexError.value = ''
+
   const folders = selectedPaths.value.filter(p => p.isFolder)
 
   // Use background indexing based on toggle
@@ -1197,15 +1321,21 @@ async function removeExpertisePack(packId) {
   }
 }
 
-// Watch for completed background uploads to reload documents
-watch(() => backgroundJobsStore.uploadJobs, (jobs) => {
-  const completedJob = jobs.find(j => j.status === 'completed' && !j.reloaded)
-  if (completedJob) {
-    completedJob.reloaded = true
-    loadDocuments()
-    emit('document-deleted')
+// Watch for completed background uploads to reload documents.
+// Derived primitive avoids deep-walking the jobs array on every nested mutation.
+watch(
+  () => backgroundJobsStore.uploadJobs.map(j => `${j.id}:${j.status}`).join('|'),
+  () => {
+    const completedJob = backgroundJobsStore.uploadJobs.find(
+      j => j.status === 'completed' && !j.reloaded
+    )
+    if (completedJob) {
+      completedJob.reloaded = true
+      loadDocuments()
+      emit('document-deleted')
+    }
   }
-}, { deep: true })
+)
 
 // Watch for completed reindex jobs to reload documents
 watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {

@@ -1,8 +1,35 @@
 <template>
   <div class="space-y-6">
 
-    <!-- System Info -->
-    <div class="card bg-base-200">
+    <!-- Basic / Expert Mode Toggle -->
+    <div class="card bg-base-100 border border-base-300">
+      <div class="card-body py-4 px-5">
+        <div class="flex items-center justify-between gap-4 flex-wrap">
+          <div class="min-w-0">
+            <h3 class="font-semibold text-sm">Interface Mode</h3>
+            <p class="text-xs text-base-content/55 mt-0.5">
+              {{ expertMode
+                ? 'Expert mode — all settings and tools are visible.'
+                : 'Basic mode — showing only the essentials. Switch to Expert for advanced configuration.' }}
+            </p>
+          </div>
+          <label class="flex items-center gap-3 flex-shrink-0 cursor-pointer select-none">
+            <span class="text-sm font-medium" :class="!expertMode ? 'text-base-content' : 'text-base-content/40'">Basic</span>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              :checked="expertMode"
+              @change="expertMode = !expertMode"
+              aria-label="Toggle expert mode"
+            />
+            <span class="text-sm font-medium" :class="expertMode ? 'text-base-content' : 'text-base-content/40'">Expert</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- System Info (expert only) -->
+    <div v-if="expertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base">System</h3>
@@ -36,8 +63,8 @@
       </div>
     </div>
 
-    <!-- UI Feature Flags -->
-    <div class="card bg-base-200">
+    <!-- UI Feature Flags (expert only) -->
+    <div v-if="expertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base">UI Features</h3>
@@ -206,56 +233,58 @@
             </div>
           </div>
 
-          <!-- Custom Provider Rows -->
-          <div v-for="cp in customProvidersConfig" :key="cp.id">
-            <div
-              class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
-              @click="toggleExpand(cp.id)"
-            >
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-medium text-sm">{{ cp.name }}</span>
-                  <span class="badge badge-neutral badge-xs badge-outline">custom</span>
+          <!-- Custom Provider Rows (expert only) -->
+          <template v-if="expertMode">
+            <div v-for="cp in customProvidersConfig" :key="cp.id">
+              <div
+                class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
+                @click="toggleExpand(cp.id)"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-medium text-sm">{{ cp.name }}</span>
+                    <span class="badge badge-neutral badge-xs badge-outline">custom</span>
+                  </div>
+                  <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
                 </div>
-                <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <span class="badge badge-success badge-xs">Configured</span>
+                  <span class="text-base-content/35 text-xs">{{ expandedProvider === cp.id ? '▲' : '▼' }}</span>
+                </div>
               </div>
-              <div class="flex items-center gap-2 flex-shrink-0">
-                <span class="badge badge-success badge-xs">Configured</span>
-                <span class="text-base-content/35 text-xs">{{ expandedProvider === cp.id ? '▲' : '▼' }}</span>
+
+              <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="form-control">
+                    <label class="label p-0 pb-1" :for="`custom-name-${cp.id}`"><span class="label-text font-medium">Name</span></label>
+                    <input :id="`custom-name-${cp.id}`" v-model="editBuffer.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+                  </div>
+                  <div class="form-control">
+                    <label class="label p-0 pb-1" :for="`custom-model-${cp.id}`"><span class="label-text font-medium">Model</span></label>
+                    <input :id="`custom-model-${cp.id}`" v-model="editBuffer.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
+                  </div>
+                </div>
+                <div class="form-control">
+                  <label class="label p-0 pb-1" :for="`custom-baseurl-${cp.id}`"><span class="label-text font-medium">Base URL</span></label>
+                  <input :id="`custom-baseurl-${cp.id}`" v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+                  <p class="text-xs text-base-content/50 mt-1">Must be an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter).</p>
+                </div>
+                <div class="form-control">
+                  <label class="label p-0 pb-1" :for="`custom-apikey-${cp.id}`">
+                    <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
+                  </label>
+                  <input :id="`custom-apikey-${cp.id}`" v-model="editBuffer.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
+                </div>
+                <div class="flex gap-2">
+                  <button class="btn btn-sm btn-primary" @click="saveCustomProvider(cp.id)" :disabled="!editBuffer.baseUrl?.trim() || !editBuffer.name?.trim()">Save</button>
+                  <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
+                </div>
               </div>
             </div>
+          </template>
 
-            <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
-              <div class="grid gap-3 sm:grid-cols-2">
-                <div class="form-control">
-                  <label class="label p-0 pb-1" :for="`custom-name-${cp.id}`"><span class="label-text font-medium">Name</span></label>
-                  <input :id="`custom-name-${cp.id}`" v-model="editBuffer.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1" :for="`custom-model-${cp.id}`"><span class="label-text font-medium">Model</span></label>
-                  <input :id="`custom-model-${cp.id}`" v-model="editBuffer.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
-                </div>
-              </div>
-              <div class="form-control">
-                <label class="label p-0 pb-1" :for="`custom-baseurl-${cp.id}`"><span class="label-text font-medium">Base URL</span></label>
-                <input :id="`custom-baseurl-${cp.id}`" v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
-                <p class="text-xs text-base-content/50 mt-1">Must be an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter).</p>
-              </div>
-              <div class="form-control">
-                <label class="label p-0 pb-1" :for="`custom-apikey-${cp.id}`">
-                  <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
-                </label>
-                <input :id="`custom-apikey-${cp.id}`" v-model="editBuffer.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
-              </div>
-              <div class="flex gap-2">
-                <button class="btn btn-sm btn-primary" @click="saveCustomProvider(cp.id)" :disabled="!editBuffer.baseUrl?.trim() || !editBuffer.name?.trim()">Save</button>
-                <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Add Custom Provider row -->
-          <div v-if="showAddCustomForm" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+          <!-- Add Custom Provider row (expert only) -->
+          <div v-if="showAddCustomForm && expertMode" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
             <p class="text-sm font-medium">New Custom Endpoint</p>
             <div class="grid gap-3 sm:grid-cols-2">
               <div class="form-control">
@@ -285,7 +314,7 @@
           </div>
         </div>
 
-        <button v-if="!showAddCustomForm" class="btn btn-ghost btn-sm self-start gap-1" @click="showAddCustomForm = true">
+        <button v-if="!showAddCustomForm && expertMode" class="btn btn-ghost btn-sm self-start gap-1" @click="showAddCustomForm = true">
           + Add Custom Endpoint
         </button>
 
@@ -320,8 +349,8 @@
     </div>
 
 
-    <!-- OCR Settings -->
-    <div class="card bg-base-200">
+    <!-- OCR Settings (expert only) -->
+    <div v-if="expertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">OCR Settings</h3>
@@ -600,7 +629,7 @@
           </label>
         </div>
 
-        <div v-if="piiRedactionEnabled" class="space-y-4">
+        <div v-if="piiRedactionEnabled && expertMode" class="space-y-4">
           <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
             <div class="mb-4">
               <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Redaction Style</h4>
@@ -654,8 +683,8 @@
       </div>
     </div>
 
-    <!-- LLM Schema Inference -->
-    <div class="card bg-base-200">
+    <!-- LLM Schema Inference (expert only) -->
+    <div v-if="expertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">LLM Column Role Inference</h3>
@@ -718,55 +747,57 @@
           </p>
         </div>
 
-        <!-- Chunk settings -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-sm font-medium">Chunk size</span>
-              <span class="label-text-alt text-xs text-base-content/50">characters</span>
-            </label>
-            <input
-              type="number"
-              min="100"
-              max="4000"
-              step="50"
-              class="input input-sm input-bordered"
-              v-model.number="chunkSize"
-              @change="saveChunkSettings"
-            />
-            <p class="text-xs text-base-content/50 mt-1">
-              Smaller = more precise matches. Larger = more context per chunk.
-            </p>
+        <!-- Chunk settings (expert only) -->
+        <template v-if="expertMode">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div class="form-control">
+              <label class="label py-1">
+                <span class="label-text text-sm font-medium">Chunk size</span>
+                <span class="label-text-alt text-xs text-base-content/50">characters</span>
+              </label>
+              <input
+                type="number"
+                min="100"
+                max="4000"
+                step="50"
+                class="input input-sm input-bordered"
+                v-model.number="chunkSize"
+                @change="saveChunkSettings"
+              />
+              <p class="text-xs text-base-content/50 mt-1">
+                Smaller = more precise matches. Larger = more context per chunk.
+              </p>
+            </div>
+            <div class="form-control">
+              <label class="label py-1">
+                <span class="label-text text-sm font-medium">Chunk overlap</span>
+                <span class="label-text-alt text-xs text-base-content/50">characters</span>
+              </label>
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                step="25"
+                class="input input-sm input-bordered"
+                v-model.number="chunkOverlap"
+                @change="saveChunkSettings"
+              />
+              <p class="text-xs text-base-content/50 mt-1">
+                Overlap between adjacent chunks to preserve context across boundaries.
+              </p>
+            </div>
           </div>
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-sm font-medium">Chunk overlap</span>
-              <span class="label-text-alt text-xs text-base-content/50">characters</span>
-            </label>
-            <input
-              type="number"
-              min="0"
-              max="1000"
-              step="25"
-              class="input input-sm input-bordered"
-              v-model.number="chunkOverlap"
-              @change="saveChunkSettings"
-            />
-            <p class="text-xs text-base-content/50 mt-1">
-              Overlap between adjacent chunks to preserve context across boundaries.
-            </p>
-          </div>
-        </div>
-        <p class="text-xs text-base-content/60">
-          Changes take effect on the next re-index.
-        </p>
+          <p class="text-xs text-base-content/60">
+            Changes take effect on the next re-index.
+          </p>
 
-        <div v-if="chunkSettingsSaved" class="alert alert-success py-2 text-sm">
-          <span>Chunk settings saved. Re-index to apply.</span>
-        </div>
-        <div v-if="chunkSettingsError" class="alert alert-error py-2 text-sm">
-          <span>{{ chunkSettingsError }}</span>
-        </div>
+          <div v-if="chunkSettingsSaved" class="alert alert-success py-2 text-sm">
+            <span>Chunk settings saved. Re-index to apply.</span>
+          </div>
+          <div v-if="chunkSettingsError" class="alert alert-error py-2 text-sm">
+            <span>{{ chunkSettingsError }}</span>
+          </div>
+        </template>
 
         <div v-if="reindexSuccess" class="alert alert-success">
           <span>Re-indexing started. Progress is shown in the status bar.</span>
@@ -840,10 +871,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
+import { expertMode } from '../utils/expertMode.js'
 import {
   PROVIDER_DEFS,
   getProvidersConfig,
@@ -859,6 +891,18 @@ const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-t
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
+
+// Track auto-reset timers (clear-feedback-after-Ns) so they don't fire on
+// an unmounted component when the user navigates away mid-countdown.
+const pendingTimers = new Set()
+const trackTimeout = (fn, ms) => {
+  const id = setTimeout(() => {
+    pendingTimers.delete(id)
+    fn()
+  }, ms)
+  pendingTimers.add(id)
+  return id
+}
 
 // UI feature flags
 const chatTabEnabled = ref(true)
@@ -1006,7 +1050,7 @@ const saveOCRSettings = async () => {
       vision_ocr_form_mode: Boolean(visionFormMode.value),
     })
     ocrSettingsSaved.value = true
-    setTimeout(() => { ocrSettingsSaved.value = false }, 5000)
+    trackTimeout(() => { ocrSettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save OCR settings:', error.response?.data?.detail || error)
   }
@@ -1037,7 +1081,7 @@ const savePrivacySettings = async () => {
       pii_score_threshold: Number(piiScoreThreshold.value),
     })
     privacySettingsSaved.value = true
-    setTimeout(() => { privacySettingsSaved.value = false }, 5000)
+    trackTimeout(() => { privacySettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save privacy settings:', error.response?.data?.detail || error)
   }
@@ -1065,7 +1109,7 @@ const saveInferenceSettings = async () => {
       llm_schema_inference_threshold: Number(llmSchemaInferenceThreshold.value),
     })
     inferenceSettingsSaved.value = true
-    setTimeout(() => { inferenceSettingsSaved.value = false }, 5000)
+    trackTimeout(() => { inferenceSettingsSaved.value = false }, 5000)
   } catch (error) {
     console.error('Failed to save inference settings:', error.response?.data?.detail || error)
   }
@@ -1103,12 +1147,12 @@ const saveChunkSettings = async () => {
   const overlap = Number(chunkOverlap.value)
   if (!Number.isFinite(size) || size < 100 || size > 4000) {
     chunkSettingsError.value = 'Chunk size must be between 100 and 4000.'
-    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    trackTimeout(() => { chunkSettingsError.value = '' }, 5000)
     return
   }
   if (!Number.isFinite(overlap) || overlap < 0 || overlap >= size) {
     chunkSettingsError.value = 'Overlap must be 0 or greater and less than chunk size.'
-    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    trackTimeout(() => { chunkSettingsError.value = '' }, 5000)
     return
   }
   try {
@@ -1117,10 +1161,10 @@ const saveChunkSettings = async () => {
       chunk_overlap: overlap,
     })
     chunkSettingsSaved.value = true
-    setTimeout(() => { chunkSettingsSaved.value = false }, 4000)
+    trackTimeout(() => { chunkSettingsSaved.value = false }, 4000)
   } catch (err) {
     chunkSettingsError.value = err.response?.data?.detail || 'Failed to save chunk settings.'
-    setTimeout(() => { chunkSettingsError.value = '' }, 5000)
+    trackTimeout(() => { chunkSettingsError.value = '' }, 5000)
   }
 }
 
@@ -1131,7 +1175,7 @@ watch(() => collectionStore.currentCollection, loadChunkSettings)
 watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {
   if (newStatus === 'completed' && oldStatus && oldStatus !== 'completed') {
     reindexCompleted.value = true
-    setTimeout(() => { reindexCompleted.value = false }, 8000)
+    trackTimeout(() => { reindexCompleted.value = false }, 8000)
   }
 })
 
@@ -1153,10 +1197,10 @@ const startReindex = async () => {
     })
     backgroundJobsStore.startPolling()
     reindexSuccess.value = true
-    setTimeout(() => { reindexSuccess.value = false }, 8000)
+    trackTimeout(() => { reindexSuccess.value = false }, 8000)
   } catch (error) {
     reindexError.value = error.response?.data?.detail || 'Failed to start re-indexing'
-    setTimeout(() => { reindexError.value = '' }, 8000)
+    trackTimeout(() => { reindexError.value = '' }, 8000)
   } finally {
     reindexing.value = false
   }
@@ -1410,7 +1454,7 @@ const clearAllData = async () => {
     clearModal.value?.close()
     emit('data-cleared')
 
-    setTimeout(() => {
+    trackTimeout(() => {
       clearSuccess.value = false
     }, 5000)
   } catch (error) {
@@ -1437,6 +1481,11 @@ onMounted(() => {
   loadOCRSettings()
   loadPrivacySettings()
   loadInferenceSettings()
+})
+
+onBeforeUnmount(() => {
+  pendingTimers.forEach(clearTimeout)
+  pendingTimers.clear()
 })
 </script>
 
