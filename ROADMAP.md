@@ -558,6 +558,11 @@ Items that aren't funded yet but belong in the same direction of travel.
 - Read-only first. Write-back (open accounts, place trades, update CRM records) only after 6+ months of stable read flows.
 - Candidate first targets: Schwab Advisor API, Wealthbox, Redtail.
 
+### Market data provider swap
+
+- v4.2 enrichment runs through a `MarketDataProvider` protocol with a single `yfinance` impl today. Swap to OpenBB or a paid feed (Polygon, Tiingo, Intrinio) when an advisor hits one of: persistent 429s on batch ingest, a yfinance schema break that takes >24h to patch, or a holdings file with instruments yfinance can't classify (munis, pre-IPO, non-US small-cap, options chains).
+- Swap is a one-line config change (`market_data_provider`) plus a new `services/market_data/providers/<name>_impl.py` implementing the five protocol methods. EDGAR fan-out in `corporate_events.py` stays put regardless of provider — it's already separate from the yfinance side.
+
 ### Stock screener tool
 
 - `screen_securities(criteria)` — generic screener over the user's universe + an external data feed. Lower priority than the enrichment feeds in v4.2; needs paid market data to be genuinely useful.
@@ -609,4 +614,4 @@ Items that aren't funded yet but belong in the same direction of travel.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-04-17 (v4.4 shipped: SSE streaming chat, /brief slash command, Generate Meeting Brief button, POST /api/collections/{id}/brief endpoint)
+**Last updated:** 2026-04-29 (market_data provider protocol refactor; sector-breakdown auto-enrich fallback; v5 trigger entry for provider swap)

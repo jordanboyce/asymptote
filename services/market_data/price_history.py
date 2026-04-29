@@ -1,8 +1,8 @@
-"""Price history feed backed by yfinance with on-disk TTL caching.
+"""Price history feed with on-disk TTL caching.
 
-Used by the `get_price_history` MCP tool. The calling LLM decides when
-to use it (trend, momentum, drawdown, chart questions) — this module is
-just the data layer.
+The actual fetch is delegated to the active `MarketDataProvider`
+(see `services/market_data/provider.py`). Used by the
+`get_price_history` MCP tool.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from config import settings
+from services.market_data.provider import MarketDataFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -146,84 +147,16 @@ class PriceHistoryError(Exception):
 
 
 def _fetch_from_yfinance(symbol: str, start: str, end: str, interval: str) -> dict[str, Any]:
+    """Thin shim that delegates to the active MarketDataProvider.
+
+    Name preserved so existing tests that monkey-patch
+    `_fetch_from_yfinance` keep working.
+    """
+    from services.market_data.providers import get_provider
     try:
-        import yfinance  # type: ignore
-    except ImportError as exc:  # pragma: no cover
-        raise PriceHistoryError(
-            code="yfinance_not_installed",
-            message="yfinance is not installed. Run: pip install yfinance",
-        ) from exc
-
-    ticker = yfinance.Ticker(symbol)
-    try:
-        df = ticker.history(
-            start=start,
-            end=end,
-            interval=interval,
-            auto_adjust=False,
-            actions=False,
-        )
-    except Exception as exc:
-        raise PriceHistoryError(
-            code="yfinance_fetch_failed",
-            message=f"yfinance request failed for {symbol}: {exc}",
-        ) from exc
-
-    if df is None or df.empty:
-        raise PriceHistoryError(
-            code="symbol_not_found_or_no_data",
-            message=(
-                f"No price data returned for {symbol} between {start} and {end} "
-                f"at interval {interval}. Symbol may be invalid or outside the "
-                f"data window yfinance supports for that interval."
-            ),
-        )
-
-    currency: str | None = None
-    try:
-        currency = ticker.fast_info.get("currency") if hasattr(ticker, "fast_info") else None
-    except Exception:
-        currency = None
-
-    points: list[dict[str, Any]] = []
-    for ts, row in df.iterrows():
-        if hasattr(ts, "to_pydatetime"):
-            dt = ts.to_pydatetime()
-        else:
-            dt = ts
-        if isinstance(dt, datetime):
-            iso = dt.date().isoformat() if interval in {"1d", "5d", "1wk", "1mo", "3mo"} else dt.isoformat()
-        else:
-            iso = str(dt)
-        def _coerce(value: Any) -> float | None:
-            try:
-                if value is None:
-                    return None
-                fv = float(value)
-                if fv != fv:  # NaN
-                    return None
-                return round(fv, 4)
-            except (TypeError, ValueError):
-                return None
-        points.append({
-            "date": iso,
-            "open": _coerce(row.get("Open")),
-            "high": _coerce(row.get("High")),
-            "low": _coerce(row.get("Low")),
-            "close": _coerce(row.get("Close")),
-            "volume": int(row["Volume"]) if row.get("Volume") is not None and row.get("Volume") == row.get("Volume") else None,
-        })
-
-    return {
-        "symbol": symbol,
-        "interval": interval,
-        "start": start,
-        "end": end,
-        "currency": currency,
-        "points": points,
-        "point_count": len(points),
-        "source": "yfinance",
-    }
+        return get_provider().fetch_price_history(symbol, start, end, interval)
+    except MarketDataFetchError as exc:
+        raise PriceHistoryError(code=exc.code, message=exc.message) from exc
 
 
 def get_price_history(

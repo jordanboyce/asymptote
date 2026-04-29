@@ -257,7 +257,23 @@ def compute_financial_metric(
         if m in ('breakdown_by_sector', 'breakdown_by_asset_class',
                  'breakdown_by_region', 'breakdown_by_currency'):
             group_role = m.replace('breakdown_by_', '')
-            result = _breakdown(conn, schema, table, group_role, 'market_value')
+            if group_role in role_to_col:
+                result = _breakdown(conn, schema, table, group_role, 'market_value')
+            elif group_role in ('sector', 'asset_class') and 'ticker' in role_to_col:
+                # Source file lacks a sector/asset_class column — fall through
+                # to v4.2 classification enrichment so the metric still works.
+                # Roles outside this set (region, currency) need explicit data.
+                result = _breakdown_via_classification(
+                    conn, schema, table, group_role, role_to_col,
+                )
+            else:
+                raise ValueError(
+                    f"No column with role '{group_role}' detected in {schema['filename']}. "
+                    f"Detected roles: {sorted(role_to_col.keys()) or 'none'}. "
+                    f"Use query_table for hand-written aggregation, or call "
+                    f"get_security_classification / enrich_holdings to attach "
+                    f"sector data first."
+                )
             _sanity_check_breakdown(result.get('groups', []), warnings)
             if warnings:
                 result['warnings'] = warnings
@@ -319,6 +335,101 @@ def compute_financial_metric(
         raise ValueError(
             f"Unknown metric '{metric}'. Available: {sorted(AVAILABLE_METRICS.keys())}"
         )
+
+
+def _breakdown_via_classification(
+    conn: sqlite3.Connection,
+    schema: Dict[str, Any],
+    table: str,
+    group_role: str,  # 'sector' or 'asset_class'
+    role_to_col: Dict[str, str],
+    classify_fn: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Group market_value by sector/asset_class when the source file lacks
+    that column, by classifying each ticker via the v4.2 enrichment feed.
+
+    Result shape mirrors `_breakdown` plus an `enriched_via` marker so the
+    calling LLM (and the user) can see the sector data didn't come from the
+    file itself.
+    """
+    if classify_fn is None:
+        from services.market_data.classification import get_security_classification
+        classify_fn = get_security_classification
+
+    if 'market_value' not in role_to_col:
+        raise ValueError(
+            f"No column with role 'market_value' detected in {schema['filename']}"
+        )
+
+    ticker_col = role_to_col['ticker']
+    mv_col = role_to_col['market_value']
+
+    sql = (
+        f'SELECT TRIM("{ticker_col}") AS sym, SUM("{mv_col}") AS total '
+        f'FROM "{table}" '
+        f'WHERE TRIM(COALESCE("{ticker_col}", \'\')) != \'\' '
+        f'  AND "{mv_col}" IS NOT NULL '
+        f'GROUP BY sym'
+    )
+    rows = conn.execute(sql).fetchall()
+
+    bucket_totals: Dict[str, float] = {}
+    bucket_counts: Dict[str, int] = {}
+    unclassified_total = 0.0
+    unclassified_count = 0
+    classified_symbols = 0
+    for row in rows:
+        sym = (row[0] or '').strip().upper()
+        total = row[1]
+        if not sym or total is None:
+            continue
+        try:
+            payload = classify_fn(sym) or {}
+        except Exception:
+            payload = {}
+        bucket = payload.get(group_role) if 'error' not in payload else None
+        if not bucket:
+            unclassified_total += float(total or 0)
+            unclassified_count += 1
+            continue
+        classified_symbols += 1
+        bucket_totals[bucket] = bucket_totals.get(bucket, 0.0) + float(total)
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+    groups = [
+        {'group': name, 'total': total, 'count': bucket_counts[name]}
+        for name, total in sorted(bucket_totals.items(), key=lambda kv: -kv[1])
+    ]
+    if unclassified_count:
+        groups.append({
+            'group': 'Unclassified',
+            'total': unclassified_total,
+            'count': unclassified_count,
+        })
+
+    total_sum = sum((g['total'] or 0) for g in groups)
+    for g in groups:
+        g['pct'] = (
+            (g['total'] / total_sum * 100.0) if total_sum and g['total'] else None
+        )
+
+    return {
+        'metric': f'breakdown_by_{group_role}',
+        'filename': schema['filename'],
+        'group_column': None,  # no source-file column — derived from ticker
+        'value_column': mv_col,
+        'groups': groups,
+        'total': total_sum,
+        'enriched_via': 'classification',
+        'classified_symbols': classified_symbols,
+        'unclassified_symbols': unclassified_count,
+        'note': (
+            f"Source file has no '{group_role}' column. Each symbol was "
+            f"classified via get_security_classification (yfinance-backed) "
+            f"and aggregated. Symbols that couldn't be classified are grouped "
+            f"under 'Unclassified'."
+        ),
+    }
 
 
 def _breakdown(

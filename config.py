@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     enable_llm_schema_inference: bool = False
     llm_schema_inference_threshold: float = 0.5  # Trigger when ≥ this fraction of columns are unmapped
 
+    # Market data provider for v4.2 enrichment feeds (price/classification/
+    # corporate events/company profile/news). Add new options by implementing
+    # services.market_data.provider.MarketDataProvider in
+    # services/market_data/providers/<name>_impl.py and wiring it into
+    # services/market_data/providers/__init__.py.
+    market_data_provider: Literal["yfinance"] = "yfinance"
+
     # UI feature flags
     enable_chat_tab: bool = True  # Show/hide the Chat tab in the frontend
 

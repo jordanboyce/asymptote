@@ -1331,6 +1331,12 @@ def compute_portfolio_metric(
     Each metric requires specific column roles; if the required role isn't
     found you'll get an error listing which roles were detected — fall back
     to `query_table` with hand-written SQL in that case.
+
+    Exception: `breakdown_by_sector` and `breakdown_by_asset_class` will
+    auto-enrich via `get_security_classification` when the source file lacks
+    that column but has a `ticker` role. The result includes `enriched_via:
+    "classification"` and a per-group `Unclassified` bucket for symbols the
+    feed couldn't resolve.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)

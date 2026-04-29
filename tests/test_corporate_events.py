@@ -2,6 +2,11 @@
 
 Run with:
     pytest tests/test_corporate_events.py -v
+
+EDGAR (SEC) is fetched directly inside corporate_events.py (not through
+the MarketDataProvider) so SEC-side tests still monkey-patch
+`_resolve_cik` and `_sec_get`. Dividends / splits / earnings come from
+the provider and use the FakeProvider fixture.
 """
 
 from __future__ import annotations
@@ -14,6 +19,8 @@ from unittest.mock import patch
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from tests._fake_provider import FakeProvider, use_fake_provider  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -55,12 +62,10 @@ def test_invalid_type():
     assert result["error"] == "invalid_type"
 
 
-def test_sec_filtering_by_since_and_types():
+def test_sec_filtering_by_since_and_types(use_fake_provider):
     from services.market_data import corporate_events as ce
-
     with patch.object(ce, "_resolve_cik", return_value="0000320193"), \
-         patch.object(ce, "_sec_get", return_value=_sample_sec_submissions()), \
-         patch.object(ce, "_fetch_yfinance_events", return_value={"dividends": [], "splits": [], "earnings": []}):
+         patch.object(ce, "_sec_get", return_value=_sample_sec_submissions()):
         result = ce.get_corporate_events(
             symbol="AAPL",
             since=(date.today() - timedelta(days=30)).isoformat(),
@@ -73,12 +78,10 @@ def test_sec_filtering_by_since_and_types():
     assert result["counts"]["filings"] == 1
 
 
-def test_merger_type_includes_s4():
+def test_merger_type_includes_s4(use_fake_provider):
     from services.market_data import corporate_events as ce
-
     with patch.object(ce, "_resolve_cik", return_value="0000320193"), \
-         patch.object(ce, "_sec_get", return_value=_sample_sec_submissions()), \
-         patch.object(ce, "_fetch_yfinance_events", return_value={"dividends": [], "splits": [], "earnings": []}):
+         patch.object(ce, "_sec_get", return_value=_sample_sec_submissions()):
         result = ce.get_corporate_events(
             symbol="AAPL",
             since=(date.today() - timedelta(days=30)).isoformat(),
@@ -89,14 +92,13 @@ def test_merger_type_includes_s4():
     assert "S-4" in forms
 
 
-def test_no_cik_surfaces_warning():
+def test_no_cik_surfaces_warning(use_fake_provider):
     from services.market_data import corporate_events as ce
-
-    with patch.object(ce, "_resolve_cik", return_value=None), \
-         patch.object(ce, "_fetch_yfinance_events", return_value={
-             "dividends": [{"date": "2025-01-01", "amount": 0.25}],
-             "splits": [], "earnings": [],
-         }):
+    use_fake_provider.set_market_events("VWRL.L", {
+        "dividends": [{"date": "2025-01-01", "amount": 0.25}],
+        "splits": [], "earnings": [],
+    })
+    with patch.object(ce, "_resolve_cik", return_value=None):
         result = ce.get_corporate_events(
             symbol="VWRL.L",
             types=["filing", "dividend"],
@@ -108,11 +110,10 @@ def test_no_cik_surfaces_warning():
     assert result["counts"]["dividends"] == 1
 
 
-def test_dividends_and_splits_filtered_by_since():
+def test_dividends_and_splits_flow_through(use_fake_provider):
     from services.market_data import corporate_events as ce
-
     today = date.today()
-    yf = {
+    use_fake_provider.set_market_events("AAPL", {
         "dividends": [
             {"date": (today - timedelta(days=10)).isoformat(), "amount": 0.25},
         ],
@@ -120,9 +121,8 @@ def test_dividends_and_splits_filtered_by_since():
             {"date": (today - timedelta(days=5)).isoformat(), "ratio": 4.0},
         ],
         "earnings": [],
-    }
-    with patch.object(ce, "_resolve_cik", return_value=None), \
-         patch.object(ce, "_fetch_yfinance_events", return_value=yf):
+    })
+    with patch.object(ce, "_resolve_cik", return_value=None):
         result = ce.get_corporate_events(
             symbol="AAPL",
             since=(today - timedelta(days=30)).isoformat(),
@@ -133,12 +133,10 @@ def test_dividends_and_splits_filtered_by_since():
     assert result["counts"]["splits"] == 1
 
 
-def test_cache_hit_skips_network():
+def test_cache_hit_skips_network(use_fake_provider):
     from services.market_data import corporate_events as ce
-
     with patch.object(ce, "_resolve_cik", return_value="0000320193") as cik_fake, \
-         patch.object(ce, "_sec_get", return_value=_sample_sec_submissions()) as sec_fake, \
-         patch.object(ce, "_fetch_yfinance_events", return_value={"dividends": [], "splits": [], "earnings": []}):
+         patch.object(ce, "_sec_get", return_value=_sample_sec_submissions()) as sec_fake:
         first = ce.get_corporate_events(symbol="AAPL", types=["8-K"])
         second = ce.get_corporate_events(symbol="AAPL", types=["8-K"])
 

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from tests._fake_provider import FakeProvider, use_fake_provider  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -50,30 +51,28 @@ def test_missing_symbol():
     assert result["error"] == "missing_symbol"
 
 
-def test_symbol_normalized_uppercase():
-    from services.market_data import classification as c
-    with patch.object(c, "_fetch_from_yfinance", return_value=_sample_equity("AAPL")) as fake:
-        c.get_security_classification(symbol="aapl")
-    assert fake.call_args.args[0] == "AAPL"
+def test_symbol_normalized_uppercase(use_fake_provider):
+    use_fake_provider.set_classification("AAPL", _sample_equity("AAPL"))
+    from services.market_data.classification import get_security_classification
+    get_security_classification(symbol="aapl")
+    assert use_fake_provider.classification_calls == ["AAPL"]
 
 
-def test_cache_hit_skips_network():
-    from services.market_data import classification as c
-    with patch.object(c, "_fetch_from_yfinance", return_value=_sample_equity()) as fake:
-        first = c.get_security_classification(symbol="AAPL")
-        second = c.get_security_classification(symbol="AAPL")
-    assert fake.call_count == 1
+def test_cache_hit_skips_network(use_fake_provider):
+    use_fake_provider.set_classification("AAPL", _sample_equity())
+    from services.market_data.classification import get_security_classification
+    first = get_security_classification(symbol="AAPL")
+    second = get_security_classification(symbol="AAPL")
+    assert len(use_fake_provider.classification_calls) == 1
     assert first["cached"] is False
     assert second["cached"] is True
     assert second["sector"] == "Technology"
 
 
-def test_symbol_not_found_error():
-    from services.market_data import classification as c
-    def _raise(*a, **k):
-        raise c.ClassificationError(code="symbol_not_found", message="nope")
-    with patch.object(c, "_fetch_from_yfinance", side_effect=_raise):
-        result = c.get_security_classification(symbol="ZZZZZ")
+def test_symbol_not_found_error(use_fake_provider):
+    use_fake_provider.set_classification_error("symbol_not_found", "nope")
+    from services.market_data.classification import get_security_classification
+    result = get_security_classification(symbol="ZZZZZ")
     assert result["error"] == "symbol_not_found"
     assert result["symbol"] == "ZZZZZ"
 
@@ -99,10 +98,10 @@ def test_asset_class_mapping():
     assert _asset_class_from_quote_type(None) is None
 
 
-def test_clear_cache():
+def test_clear_cache(use_fake_provider):
+    use_fake_provider.set_classification("AAPL", _sample_equity())
     from services.market_data import classification as c
-    with patch.object(c, "_fetch_from_yfinance", return_value=_sample_equity()):
-        c.get_security_classification(symbol="AAPL")
+    c.get_security_classification(symbol="AAPL")
     assert c.clear_cache(["AAPL"]) == 1
 
 
