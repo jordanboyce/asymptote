@@ -12,6 +12,62 @@
         </div>
 
         <div class="flex items-center gap-0.5">
+          <!-- Privacy status indicator -->
+          <div class="dropdown dropdown-end mr-1">
+            <label
+              tabindex="0"
+              class="btn btn-xs btn-ghost gap-1 px-1.5 h-5 min-h-0 font-normal"
+              :class="piiRedactionEnabled ? 'text-success/80 hover:text-success' : 'text-warning hover:text-warning'"
+              :title="piiRedactionEnabled ? 'Data stays local. PII redacted before AI calls.' : 'Warning: PII redaction is currently OFF'"
+              :aria-label="piiRedactionEnabled ? 'Privacy: stored locally, PII redacted before AI calls' : 'Privacy warning: PII redaction is off'"
+              aria-haspopup="menu"
+            >
+              <ShieldCheck v-if="piiRedactionEnabled" :size="11" aria-hidden="true" />
+              <ShieldAlert v-else :size="11" aria-hidden="true" />
+              <span class="text-xs">{{ piiRedactionEnabled ? 'Local · PII redacted' : 'PII redaction off' }}</span>
+            </label>
+            <div
+              tabindex="0"
+              class="dropdown-content z-[60] card card-compact w-80 shadow-lg bg-base-100 border border-base-300"
+              role="menu"
+            >
+              <div class="card-body gap-3">
+                <div class="flex items-start gap-2">
+                  <Lock :size="14" class="text-base-content/60 flex-shrink-0 mt-0.5" aria-hidden="true" />
+                  <div class="text-xs">
+                    <div class="font-medium text-base-content/90">Stored locally</div>
+                    <div class="text-base-content/60 mt-0.5">
+                      Your documents and the derived index live on the machine running Asymptote. They are not uploaded to our servers.
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-start gap-2">
+                  <ShieldCheck v-if="piiRedactionEnabled" :size="14" class="text-success flex-shrink-0 mt-0.5" aria-hidden="true" />
+                  <ShieldAlert v-else :size="14" class="text-warning flex-shrink-0 mt-0.5" aria-hidden="true" />
+                  <div class="text-xs">
+                    <div class="font-medium text-base-content/90">
+                      {{ piiRedactionEnabled ? 'PII redacted before AI calls' : 'PII redaction is disabled' }}
+                    </div>
+                    <div class="text-base-content/60 mt-0.5">
+                      <template v-if="piiRedactionEnabled">
+                        Names, account numbers, and other identifiers are detected and replaced on-device before any prompt is sent to the AI provider.
+                      </template>
+                      <template v-else>
+                        Prompts sent to the AI provider may contain client identifiers. Enable redaction in Privacy settings.
+                      </template>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  class="btn btn-xs btn-ghost justify-start w-full text-xs font-normal"
+                  @click="$emit('switch-tab', 'settings')"
+                >
+                  Privacy settings →
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- Session switcher -->
           <div class="dropdown dropdown-end">
             <label
@@ -187,7 +243,7 @@
       </div>
 
       <!-- No data notice -->
-      <div v-if="chunkCount === 0" class="alert alert-warning flex-shrink-0 py-2">
+      <div v-if="documentCount === 0" class="alert alert-warning flex-shrink-0 py-2">
         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
         </svg>
@@ -208,7 +264,7 @@
 
         <!-- Empty state -->
         <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-base-content/50 gap-3 py-8">
-          <div v-if="hasAnyProvider && chunkCount > 0" class="flex flex-wrap gap-2 justify-center max-w-md">
+          <div v-if="hasAnyProvider && documentCount > 0" class="flex flex-wrap gap-2 justify-center max-w-md">
             <button
               v-for="suggestion in suggestions"
               :key="suggestion"
@@ -241,26 +297,17 @@
                   v-if="msg.slashCommand"
                   class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug"
                 >{{ msg.content }}</div>
-                <div v-else class="relative">
-                  <div
-                    class="prose prose-sm max-w-none text-sm chat-markdown"
-                    v-html="renderAssistantMarkdown(msg.content)"
-                  ></div>
-                  <!-- Blinking cursor while streaming -->
-                  <span
-                    v-if="msg.streaming && msg.content"
-                    class="inline-block w-0.5 h-4 bg-primary align-middle ml-0.5 animate-pulse"
-                    aria-hidden="true"
-                  ></span>
-                  <!-- Subtle spinner when streaming but no text yet -->
-                  <div v-if="msg.streaming && !msg.content && (!msg.structuredResults || msg.structuredResults.length === 0)"
-                    class="flex items-center gap-2 text-xs text-base-content/50 py-0.5">
-                    <span class="loading loading-dots loading-xs text-primary"></span>
-                    <span>Thinking…</span>
-                  </div>
+
+                <!-- Initial "Thinking…" placeholder before any content arrives -->
+                <div v-else-if="msg.streaming && !msg.content && (!msg.structuredResults || msg.structuredResults.length === 0)"
+                  class="flex items-center gap-2 text-xs text-base-content/50 py-0.5">
+                  <span class="loading loading-dots loading-xs text-primary"></span>
+                  <span>Thinking…</span>
                 </div>
 
-                <!-- Structured query / metric results -->
+                <!-- Structured query / metric results (rendered BEFORE the prose answer
+                     so the synthesized response lands at the bottom of the message,
+                     where the auto-scroll anchor keeps it in view as it streams) -->
                 <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
                   <template v-for="(sr, srIdx) in msg.structuredResults" :key="srIdx">
 
@@ -421,6 +468,51 @@
                       {{ sr.result.collections.length }} collection{{ sr.result.collections.length === 1 ? '' : 's' }}
                     </div>
 
+                    <!-- Price history summary -->
+                    <div
+                      v-else-if="sr.tool === 'get_price_history' && sr.result?.points"
+                      class="px-3 py-2 text-xs space-y-1.5"
+                    >
+                      <div class="flex flex-wrap gap-x-3 gap-y-1 text-base-content/70">
+                        <span class="font-mono">{{ sr.result.symbol }}</span>
+                        <span class="text-base-content/40">·</span>
+                        <span>{{ sr.result.interval }} bars</span>
+                        <span class="text-base-content/40">·</span>
+                        <span>{{ sr.result.start }} → {{ sr.result.end }}</span>
+                        <span class="text-base-content/40">·</span>
+                        <span>{{ sr.result.point_count }} points</span>
+                        <span v-if="sr.result.currency" class="text-base-content/40">·</span>
+                        <span v-if="sr.result.currency" class="font-mono">{{ sr.result.currency }}</span>
+                      </div>
+                      <div v-if="priceHistorySummary(sr.result)" class="flex flex-wrap gap-x-4 gap-y-1 font-mono">
+                        <span>
+                          <span class="text-base-content/50">open:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).firstClose) }}
+                        </span>
+                        <span>
+                          <span class="text-base-content/50">close:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).lastClose) }}
+                        </span>
+                        <span
+                          v-if="priceHistorySummary(sr.result).pctChange != null"
+                          :class="priceHistorySummary(sr.result).pctChange >= 0 ? 'text-success' : 'text-error'"
+                        >
+                          {{ priceHistorySummary(sr.result).pctChange >= 0 ? '+' : '' }}{{ priceHistorySummary(sr.result).pctChange.toFixed(2) }}%
+                        </span>
+                        <span>
+                          <span class="text-base-content/50">high:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).high) }}
+                        </span>
+                        <span>
+                          <span class="text-base-content/50">low:</span>
+                          {{ formatCell(priceHistorySummary(sr.result).low) }}
+                        </span>
+                      </div>
+                      <div v-if="sr.result.cached" class="text-base-content/40">
+                        cached · source: {{ sr.result.source }}
+                      </div>
+                    </div>
+
                     <!-- Generic key/value fallback -->
                     <div v-else-if="sr.result" class="px-3 py-2 text-xs font-mono space-y-0.5 max-h-48 overflow-y-auto">
                       <div v-for="(val, key) in sr.result" :key="key" class="flex gap-2">
@@ -442,19 +534,59 @@
                   </template>
                 </div>
 
-                <!-- Token + provider badge -->
-                <div v-if="msg.aiUsage" class="flex items-center gap-2 mt-2 flex-wrap">
-                  <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
-                    {{ providerDisplayName(msg.provider || selectedProvider) }}
-                  </span>
-                  <span class="text-xs text-base-content/40">
-                    {{ msg.aiUsage.total_input_tokens + msg.aiUsage.total_output_tokens }} tokens
-                  </span>
-                  <span v-if="msg.aiUsage.features_used?.includes('reranking')" class="badge badge-xs badge-outline">reranked</span>
-                  <span v-if="msg.aiUsage.features_used?.includes('structured_tools')" class="badge badge-xs badge-success gap-0.5">
-                    <Table2 :size="9" /> sql
-                  </span>
-                  <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
+                <!-- Synthesized prose answer — streams in below the tool cards so
+                     auto-scroll keeps the final response visible. -->
+                <div v-if="!msg.slashCommand && (msg.content || msg.streaming)" class="relative"
+                  :class="{ 'mt-3': msg.structuredResults && msg.structuredResults.length > 0 }">
+                  <div
+                    class="prose prose-sm max-w-none text-sm chat-markdown"
+                    v-html="renderAssistantMarkdown(msg.content)"
+                  ></div>
+                  <!-- Blinking cursor while streaming -->
+                  <span
+                    v-if="msg.streaming && msg.content"
+                    class="inline-block w-0.5 h-4 bg-primary align-middle ml-0.5 animate-pulse"
+                    aria-hidden="true"
+                  ></span>
+                  <!-- Post-tool "Synthesizing…" hint: tools finished, prose not started -->
+                  <div
+                    v-if="msg.streaming && !msg.content && msg.structuredResults?.length > 0 && !msg.structuredResults.some(sr => sr.pending)"
+                    class="flex items-center gap-2 text-xs text-base-content/50 py-0.5"
+                  >
+                    <span class="loading loading-dots loading-xs text-primary"></span>
+                    <span>Synthesizing answer…</span>
+                  </div>
+                </div>
+
+                <!-- Footer row: provider badges + copy button -->
+                <div
+                  v-if="!msg.streaming && (msg.aiUsage || msg.content)"
+                  class="flex items-center gap-2 mt-2 flex-wrap"
+                >
+                  <template v-if="msg.aiUsage">
+                    <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
+                      {{ providerDisplayName(msg.provider || selectedProvider) }}
+                    </span>
+                    <span class="text-xs text-base-content/40">
+                      {{ msg.aiUsage.total_input_tokens + msg.aiUsage.total_output_tokens }} tokens
+                    </span>
+                    <span v-if="msg.aiUsage.features_used?.includes('reranking')" class="badge badge-xs badge-outline">reranked</span>
+                    <span v-if="msg.aiUsage.features_used?.includes('structured_tools')" class="badge badge-xs badge-success gap-0.5">
+                      <Table2 :size="9" /> sql
+                    </span>
+                    <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
+                  </template>
+                  <button
+                    v-if="msg.content"
+                    class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 ml-auto text-base-content/50 hover:text-base-content gap-1"
+                    :title="copiedMessageIndex === index ? 'Copied!' : 'Copy answer'"
+                    :aria-label="copiedMessageIndex === index ? 'Copied to clipboard' : 'Copy answer to clipboard'"
+                    @click="copyMessage(msg, index)"
+                  >
+                    <Check v-if="copiedMessageIndex === index" :size="11" class="text-success" />
+                    <Copy v-else :size="11" />
+                    <span class="text-xs">{{ copiedMessageIndex === index ? 'Copied' : 'Copy' }}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -490,7 +622,7 @@
       <div class="flex-shrink-0 pt-3">
 
         <!-- Quick-action chips (only shown when chat is empty + provider configured) -->
-        <div v-if="messages.length === 0 && hasAnyProvider && props.chunkCount > 0" class="flex flex-wrap gap-1.5 mb-2">
+        <div v-if="messages.length === 0 && hasAnyProvider && props.documentCount > 0" class="flex flex-wrap gap-1.5 mb-2">
           <button
             class="btn btn-xs btn-outline btn-primary gap-1 rounded-full"
             :disabled="loading"
@@ -569,7 +701,7 @@
             </button>
           </div>
         </div>
-        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /stats, /docs, /help</p>
+        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /tools, /stats, /docs, /help</p>
       </div>
 
   </div>
@@ -593,7 +725,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -607,7 +739,12 @@ import {
 } from '../utils/aiProviders.js'
 
 const props = defineProps({
-  chunkCount: { type: Number, default: 0 }
+  chunkCount: { type: Number, default: 0 },
+  // documentCount is the real "is there anything indexed" signal — CSV/XLSX
+  // files live entirely in the structured SQL store and produce zero chunks,
+  // so chunkCount alone would falsely trigger the "no data" banner for
+  // advisors whose only sources are tabular.
+  documentCount: { type: Number, default: 0 },
 })
 const emit = defineEmits(['switch-tab'])
 
@@ -632,12 +769,24 @@ const configuredProviders = computed(() => getConfiguredProviderIds())
 const selectedProvider = ref(localStorage.getItem('chat_provider') || '')
 const hasAnyProvider = computed(() => configuredProviders.value.length > 0)
 
+// Privacy status (for the header indicator)
+const piiRedactionEnabled = ref(true)
+const loadPrivacyStatus = async () => {
+  try {
+    const response = await axios.get('/api/config')
+    piiRedactionEnabled.value = response.data.enable_pii_redaction ?? true
+  } catch {
+    // Keep optimistic default — the badge falls back to "on" if the config
+    // endpoint is unreachable, which matches the server-side default.
+  }
+}
+
 const sendDisabled = computed(() => {
   if (!inputMessage.value.trim() || loading.value) return true
   // Slash commands don't need a provider or indexed content —
   // they read collection metadata directly.
   if (isSlashCommand(inputMessage.value)) return false
-  return !hasAnyProvider.value || props.chunkCount === 0
+  return !hasAnyProvider.value || props.documentCount === 0
 })
 
 // True while an SSE streaming message is in-flight (has been added to store but not finalized)
@@ -745,8 +894,46 @@ const formatCell = (v) => {
     if (Number.isInteger(v)) return v.toLocaleString()
     return v.toLocaleString(undefined, { maximumFractionDigits: 4 })
   }
+  if (typeof v === 'boolean') return v ? 'true' : 'false'
+  if (Array.isArray(v)) return `[${v.length} item${v.length === 1 ? '' : 's'}]`
+  if (typeof v === 'object') {
+    // Avoid the default "[object Object]" by showing compact JSON, trimmed.
+    try {
+      const s = JSON.stringify(v)
+      return s.length > 200 ? s.slice(0, 200) + '…' : s
+    } catch {
+      return '[object]'
+    }
+  }
   const s = String(v)
   return s.length > 200 ? s.slice(0, 200) + '…' : s
+}
+
+const priceHistorySummary = (result) => {
+  const pts = Array.isArray(result?.points) ? result.points : []
+  if (pts.length === 0) return null
+  const first = pts[0]
+  const last = pts[pts.length - 1]
+  const firstClose = typeof first.close === 'number' ? first.close : null
+  const lastClose = typeof last.close === 'number' ? last.close : null
+  let pctChange = null
+  if (firstClose != null && lastClose != null && firstClose !== 0) {
+    pctChange = ((lastClose - firstClose) / firstClose) * 100
+  }
+  let hi = -Infinity, lo = Infinity
+  for (const p of pts) {
+    if (typeof p.high === 'number' && p.high > hi) hi = p.high
+    if (typeof p.low === 'number' && p.low < lo) lo = p.low
+  }
+  return {
+    firstDate: first.date,
+    lastDate: last.date,
+    firstClose,
+    lastClose,
+    pctChange,
+    high: isFinite(hi) ? hi : null,
+    low: isFinite(lo) ? lo : null,
+  }
 }
 
 const providerDisplayName = getProviderDisplayName
@@ -755,9 +942,10 @@ const providerBadgeClass = (provider) => ({
   'badge-primary': provider === 'anthropic',
   'badge-success': provider === 'openai',
   'badge-info': provider === 'ollama',
+  'badge-secondary': provider === 'ollama_cloud',
   'badge-warning': provider === 'grok',
   'badge-accent': provider === 'google',
-  'badge-neutral': !['anthropic','openai','ollama','grok','google'].includes(provider),
+  'badge-neutral': !['anthropic','openai','ollama','ollama_cloud','grok','google'].includes(provider),
 })
 
 const selectProvider = (provider) => {
@@ -775,6 +963,22 @@ const ensureValidProvider = () => {
 const scrollToBottom = async () => {
   await nextTick()
   messagesEnd.value?.scrollIntoView({ behavior: 'smooth' })
+}
+
+// ── Copy answer to clipboard ─────────────────────────────────────────────
+const copiedMessageIndex = ref(null)
+let copyResetTimer = null
+
+const copyMessage = async (msg, index) => {
+  if (!msg?.content) return
+  try {
+    await navigator.clipboard.writeText(msg.content)
+    copiedMessageIndex.value = index
+    if (copyResetTimer) clearTimeout(copyResetTimer)
+    copyResetTimer = setTimeout(() => { copiedMessageIndex.value = null }, 1600)
+  } catch (err) {
+    console.warn('Clipboard write failed:', err)
+  }
 }
 
 const useSuggestion = (suggestion) => {
@@ -830,6 +1034,9 @@ const runInlineSlashCommand = async (input) => {
   const result = await runSlashCommand(input, {
     collectionId: collectionStore.currentCollectionId,
     collection: collectionStore.currentCollection,
+    groupId: collectionStore.currentGroupId,
+    messages: messages.value,
+    providerHeaders: buildProviderHeaders(selectedProvider.value),
   })
 
   chatStore.addAssistantMessage(
@@ -889,7 +1096,7 @@ const sendMessage = async () => {
           provider: selectedProvider.value,
           top_k: topK.value,
           mode: searchMode.value,
-          scope: scope.value,
+          scope: collectionStore.currentGroupId ? `group:${collectionStore.currentGroupId}` : scope.value,
           rerank: rerank.value,
         }),
       }
@@ -985,7 +1192,11 @@ watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
 watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
 
-watch(messages, async () => { await scrollToBottom() }, { deep: true })
+// Scroll-on-new-message only. Streaming events (text_delta/thinking/tool_start)
+// already call scrollToBottom() inline as content arrives, so a deep watch on
+// messages would just duplicate work — and on a long conversation it walks the
+// full array on every token.
+watch(() => messages.value.length, async () => { await scrollToBottom() })
 
 const handlePrefill = (e) => {
   const prompt = e?.detail?.prompt
@@ -1000,10 +1211,12 @@ const handlePrefill = (e) => {
 onMounted(() => {
   ensureValidProvider()
   scrollToBottom()
+  loadPrivacyStatus()
   window.addEventListener('asymptote:prefill-chat', handlePrefill)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('asymptote:prefill-chat', handlePrefill)
+  if (copyResetTimer) clearTimeout(copyResetTimer)
 })
 </script>
