@@ -1235,9 +1235,18 @@ async def chat_with_documents(
         }
 
         base_system_parts = [
-            f"You are a helpful assistant with access to a private document knowledge base ({scope_note}).",
-            "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED TABLES "
-            "(when provided), and RETRIEVED CONTEXT below.",
+            f"You are an analytical assistant for a financial advisor. The person "
+            f"chatting with you is the advisor — not the client. The documents, "
+            f"holdings, accounts, and portfolio data in {scope_note} belong to "
+            f"one of the advisor's clients.",
+            "Always refer to the portfolio in the third person: \"the client's "
+            "holdings\", \"the client's cash position\", \"this account\" — never "
+            "\"your holdings\" or \"your portfolio\". Frame recommendations as "
+            "observations and options the advisor can weigh, raise with the client, "
+            "or act on in a professional capacity; do not address the advisor as if "
+            "they were the investor.",
+            "Answer the advisor's question using the COLLECTION OVERVIEW, STRUCTURED "
+            "TABLES (when provided), and RETRIEVED CONTEXT below.",
             "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
             "(file counts, available documents, date ranges).",
         ]
@@ -1685,9 +1694,18 @@ async def chat_stream_endpoint(
             tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
 
             # ---------- system prompt --------------------------------------------
+            _scope_note = 'all collections' if chat_request.scope == 'all' else 'the current collection'
             base_system_parts = [
-                f"You are a helpful assistant with access to a private document knowledge base ({'all collections' if chat_request.scope == 'all' else 'the current collection'}).",
-                "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED TABLES (when provided), and RETRIEVED CONTEXT below.",
+                f"You are an analytical assistant for a financial advisor. The person "
+                f"chatting with you is the advisor — not the client. The documents, "
+                f"holdings, accounts, and portfolio data in {_scope_note} belong to "
+                f"one of the advisor's clients.",
+                "Always refer to the portfolio in the third person: \"the client's holdings\", "
+                "\"the client's cash position\", \"this account\" — never \"your holdings\" or "
+                "\"your portfolio\". Frame recommendations as observations and options the "
+                "advisor can weigh, raise with the client, or act on in a professional "
+                "capacity; do not address the advisor as if they were the investor.",
+                "Answer the advisor's question using the COLLECTION OVERVIEW, STRUCTURED TABLES (when provided), and RETRIEVED CONTEXT below.",
                 "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself (file counts, available documents, date ranges).",
             ]
             if inline_block:
