@@ -35,6 +35,7 @@ class DocumentIndexer:
         embedding_service: EmbeddingService,
         document_extractor: DocumentExtractor,
         text_chunker: TextChunker,
+        collection_id: Optional[str] = None,
     ):
         """
         Initialize the document indexer.
@@ -44,11 +45,14 @@ class DocumentIndexer:
             embedding_service: Embedding service instance
             document_extractor: Document extractor instance (supports PDF, TXT, DOCX, CSV)
             text_chunker: Text chunker instance
+            collection_id: Owning collection — used at ingest time to look up
+                the per-collection PII blacklist for tabular sanitization.
         """
         self.vector_store = vector_store
         self.embedding_service = embedding_service
         self.document_extractor = document_extractor
         self.text_chunker = text_chunker
+        self.collection_id = collection_id
 
     def index_document(self, document_path: Path, filename: str) -> DocumentMetadata:
         """
@@ -260,6 +264,25 @@ class DocumentIndexer:
         sheets = self.document_extractor.extract_tabular_sheets(document_path)
         if not sheets:
             raise ValueError(f"Could not extract any rows from {filename}")
+
+        # Apply the PII pre-flight plan that the user confirmed in the modal:
+        # drop / hash PII columns and strip blacklisted terms before the rows
+        # land in either the structured SQL store or the embedded chunk text.
+        # Gated by the same setting that controls Presidio redaction so the
+        # whole privacy layer is one toggle.
+        if getattr(settings, "enable_pii_redaction", False):
+            try:
+                from services.privacy.column_sanitizer import sanitize_tabular_sheet
+                from services.privacy.collection_blacklist import get_blacklist
+                blacklist = get_blacklist(self.collection_id)
+                for sheet in sheets:
+                    sanitize_tabular_sheet(sheet, blacklist=blacklist)
+            except Exception as e:
+                logger.warning(
+                    f"Tabular PII sanitization failed for {filename}: {e}. "
+                    "Aborting ingest to avoid persisting unredacted PII."
+                )
+                raise
 
         total_rows = sum(len(s['rows']) for s in sheets)
         report("extracting", 100,

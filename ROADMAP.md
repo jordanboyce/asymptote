@@ -457,11 +457,22 @@ The full Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) run
 
 The first feature that turns Asymptote from "data layer" into "advisor workflow tool." Built on top of v4.1 + v4.2 — meeting prep is only useful if the portfolio drift it surfaces is correct.
 
-### Audio → transcript → structured notes
+### Audio ingest — ✅ Shipped (transcript layer)
 
-- [services/audio_transcriber.py](services/audio_transcriber.py) is already started. Wire it into the upload pipeline as a first-class doctype.
-- Transcription (Whisper or similar, local or API) → LLM pass that extracts: client concerns, decisions made, action items (with assignee + due date), follow-up questions, sentiment notes.
-- Notes stored as a structured row in a per-client collection alongside the original audio + transcript.
+The transcription path is live and works against **any** audio file from any source:
+
+- **In-app live recording** via the Record button in [frontend/src/components/SourcesSidebar.vue](frontend/src/components/SourcesSidebar.vue) (browser MediaRecorder → `/documents/upload`).
+- **Uploads from external devices.** Zoom (`.m4a` / `.mp4`), Teams (`.mp4`), Otter / Fireflies exports (`.mp3`), iPhone Voice Memos (`.m4a`), Android recorders, desktop screen recorders (`.wav`), etc. — drop them via the Files button or a folder scan; [services/document_extractor.py](services/document_extractor.py) detects audio by extension and routes any file matching `AUDIO_EXTENSIONS` ([services/audio_transcriber.py:17](services/audio_transcriber.py#L17): `.mp3 .wav .m4a .webm .ogg .flac .mp4 .mpeg .mpga`) to faster-whisper, chunks the transcript into ~4-minute pages, and indexes through the normal pipeline.
+- Same pipeline serves both surfaces — in-app chat and external MCP clients can search transcripts the same way they search any other document.
+- UI hint copy in the Sources sidebar tells advisors that past recordings are welcome (was previously invisible).
+
+### Audio → structured notes — ❌ Open
+
+Transcription gives us text. The remaining work is the LLM pass that turns that text into typed, queryable structure:
+
+- LLM extraction pass over the transcript producing: client concerns, decisions made, action items (with assignee + due date), follow-up questions, sentiment notes.
+- Structured notes stored as a row in a per-client collection alongside the original audio + transcript, so action items become a first-class queryable thing rather than free-text inside a transcript chunk.
+- Until this lands, advisors can find a transcript by content (it's just a document) but can't ask *"show me every open action item across all my Henderson meetings"* and get a deterministic answer.
 
 ### Meeting as a first-class doctype
 

@@ -82,8 +82,8 @@
         </button>
       </template>
 
-      <!-- Tools dropdown (hidden on collections overview) -->
-      <div v-if="!isCollectionsView" class="dropdown dropdown-bottom">
+      <!-- Tools dropdown (hidden on collections overview, hidden in basic mode) -->
+      <div v-if="!isCollectionsView && isExpertMode" class="dropdown dropdown-bottom">
         <label
           tabindex="0"
           class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
@@ -118,9 +118,9 @@
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
 
-      <!-- Analysis sidebar toggle (hidden on collections overview) -->
+      <!-- Analysis sidebar toggle (hidden on collections overview, hidden in basic mode) -->
       <button
-        v-if="!isCollectionsView"
+        v-if="!isCollectionsView && isExpertMode"
         class="btn btn-ghost btn-circle btn-sm"
         :class="{ 'bg-base-300': analysisSidebarOpen }"
         @click="analysisSidebarOpen = !analysisSidebarOpen"
@@ -130,6 +130,19 @@
       >
         <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
       </button>
+
+      <!-- Basic / Expert toggle in header -->
+      <label class="flex items-center gap-1.5 cursor-pointer select-none px-1" :title="isExpertMode ? 'Switch to Basic mode' : 'Switch to Expert mode'">
+        <span class="text-xs font-medium" :class="!isExpertMode ? 'text-base-content' : 'text-base-content/40'">Basic</span>
+        <input
+          type="checkbox"
+          class="toggle toggle-xs toggle-primary"
+          :checked="isExpertMode"
+          @change="toggleExpertMode"
+          aria-label="Toggle expert mode"
+        />
+        <span class="text-xs font-medium" :class="isExpertMode ? 'text-base-content' : 'text-base-content/40'">Expert</span>
+      </label>
 
       <!-- Settings button -->
       <button
@@ -534,9 +547,9 @@
 
       </main>
 
-      <!-- Right sidebar: analysis (resizable, hidden on collections overview) -->
+      <!-- Right sidebar: analysis (resizable, hidden on collections overview, hidden in basic mode) -->
       <aside
-        v-show="!isCollectionsView"
+        v-show="!isCollectionsView && isExpertMode"
         class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative border-l border-base-300"
         :class="isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out'"
         :style="{ width: analysisSidebarOpen ? analysisWidth + 'px' : '0px' }"
@@ -1054,6 +1067,7 @@
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
 import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen } from 'lucide-vue-next'
+import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
 
 const chatTabEnabled = ref(true)
 
@@ -1061,7 +1075,7 @@ const tabs = computed(() => {
   const t = []
   if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
   t.push({ id: 'search', label: 'Search', icon: Search })
-  t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
+  if (isExpertMode.value) t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   return t
 })
 
@@ -1094,6 +1108,15 @@ const userStore = useUserStore()
 
 const activeTab = ref('chat')
 const currentTheme = ref('light')
+
+// In basic mode, expertise/MCP/OCR/tokenizer are hidden — bounce back to chat
+// if the user toggles to basic while one of those tabs is active.
+const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'ocr', 'tokenizer']
+watch(isExpertMode, (expert) => {
+  if (!expert && BASIC_HIDDEN_TABS.includes(activeTab.value)) {
+    activeTab.value = 'chat'
+  }
+})
 
 // Resizable sidebar
 const SIDEBAR_MIN = 220

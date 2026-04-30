@@ -169,31 +169,33 @@
 
         <!-- Bottom toolbar -->
         <div class="flex items-center justify-between px-3 pb-2">
-          <!-- Left: inline controls -->
+          <!-- Left: inline controls (expert-only) -->
           <div class="flex items-center gap-1.5">
-            <button
-              class="btn btn-ghost btn-xs btn-circle"
-              @click="searchSettingsOpen = !searchSettingsOpen"
-              title="Search settings"
-              aria-label="Open search settings"
-              :aria-expanded="searchSettingsOpen"
-            >
-              <SlidersHorizontal :size="14" />
-            </button>
-            <button
-              class="btn btn-ghost btn-xs btn-circle font-mono"
-              @mousedown.prevent="toggleSlashPicker"
-              title="Slash commands"
-              aria-label="Show slash commands"
-              :aria-expanded="slashPickerOpen"
-            >
-              /
-            </button>
-            <span class="badge badge-xs badge-ghost">{{ searchModeLabel }}</span>
-            <span class="badge badge-xs badge-ghost">Top {{ searchStore.topK }}</span>
-            <template v-if="hasAnyProvider">
-              <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
-              <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary">Synth</span>
+            <template v-if="isExpertMode">
+              <button
+                class="btn btn-ghost btn-xs btn-circle"
+                @click="searchSettingsOpen = !searchSettingsOpen"
+                title="Search settings"
+                aria-label="Open search settings"
+                :aria-expanded="searchSettingsOpen"
+              >
+                <SlidersHorizontal :size="14" />
+              </button>
+              <button
+                class="btn btn-ghost btn-xs btn-circle font-mono"
+                @mousedown.prevent="toggleSlashPicker"
+                title="Slash commands"
+                aria-label="Show slash commands"
+                :aria-expanded="slashPickerOpen"
+              >
+                /
+              </button>
+              <span class="badge badge-xs badge-ghost">{{ searchModeLabel }}</span>
+              <span class="badge badge-xs badge-ghost">Top {{ searchStore.topK }}</span>
+              <template v-if="hasAnyProvider">
+                <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
+                <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary">Synth</span>
+              </template>
             </template>
           </div>
 
@@ -592,6 +594,7 @@ import {
   getAISettings,
   migrateLegacySettings,
 } from '../utils/aiProviders.js'
+import { isExpertMode } from '../utils/expertMode.js'
 
 const props = defineProps({
   chunkCount: {
@@ -634,6 +637,11 @@ const toggleSlashPicker = () => {
 }
 
 const onInputChange = () => {
+  // Basic mode hides the slash-command surface entirely.
+  if (!isExpertMode.value) {
+    slashPickerOpen.value = false
+    return
+  }
   slashPickerOpen.value = (searchStore.query || '').trimStart().startsWith('/')
 }
 

@@ -663,28 +663,30 @@
 
           <!-- Bottom toolbar -->
           <div class="flex items-center justify-between px-3 pb-2">
-            <!-- Left: inline controls -->
+            <!-- Left: inline controls (expert-only) -->
             <div class="flex items-center gap-1.5">
-              <button
-                class="btn btn-ghost btn-xs btn-circle"
-                @click="settingsDrawerOpen = !settingsDrawerOpen"
-                title="Chat settings"
-                aria-label="Open chat settings"
-                :aria-expanded="settingsDrawerOpen"
-              >
-                <SlidersHorizontal :size="14" />
-              </button>
-              <button
-                class="btn btn-ghost btn-xs btn-circle font-mono"
-                @mousedown.prevent="toggleSlashPicker"
-                title="Slash commands"
-                aria-label="Show slash commands"
-                :aria-expanded="slashPickerOpen"
-              >
-                /
-              </button>
-              <span v-if="selectedProvider" class="badge badge-xs" :class="providerBadgeClass(selectedProvider)">{{ providerDisplayName(selectedProvider) }}</span>
-              <span v-if="rerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
+              <template v-if="isExpertMode">
+                <button
+                  class="btn btn-ghost btn-xs btn-circle"
+                  @click="settingsDrawerOpen = !settingsDrawerOpen"
+                  title="Chat settings"
+                  aria-label="Open chat settings"
+                  :aria-expanded="settingsDrawerOpen"
+                >
+                  <SlidersHorizontal :size="14" />
+                </button>
+                <button
+                  class="btn btn-ghost btn-xs btn-circle font-mono"
+                  @mousedown.prevent="toggleSlashPicker"
+                  title="Slash commands"
+                  aria-label="Show slash commands"
+                  :aria-expanded="slashPickerOpen"
+                >
+                  /
+                </button>
+                <span v-if="selectedProvider" class="badge badge-xs" :class="providerBadgeClass(selectedProvider)">{{ providerDisplayName(selectedProvider) }}</span>
+                <span v-if="rerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
+              </template>
             </div>
 
             <!-- Right: send button -->
@@ -701,7 +703,8 @@
             </button>
           </div>
         </div>
-        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /tools, /stats, /docs, /help</p>
+        <p v-if="isExpertMode" class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /tools, /stats, /docs, /help</p>
+        <p v-else class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line</p>
       </div>
 
   </div>
@@ -737,6 +740,7 @@ import {
   getProviderDisplayName,
   isLocalProvider,
 } from '../utils/aiProviders.js'
+import { isExpertMode } from '../utils/expertMode.js'
 
 const props = defineProps({
   chunkCount: { type: Number, default: 0 },
@@ -1000,6 +1004,11 @@ const toggleSlashPicker = () => {
 const onInputChange = () => {
   // Open the picker as soon as the input starts with "/" so suggestions
   // appear while the user is typing; close it again if they erase the slash.
+  // Basic mode hides the slash-command surface entirely.
+  if (!isExpertMode.value) {
+    slashPickerOpen.value = false
+    return
+  }
   slashPickerOpen.value = inputMessage.value.trimStart().startsWith('/')
 }
 

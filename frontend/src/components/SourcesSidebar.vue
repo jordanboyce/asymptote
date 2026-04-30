@@ -38,7 +38,12 @@
         <div v-show="addSectionOpen" class="px-3 pb-3 space-y-2">
           <!-- File/folder/record buttons -->
           <div class="flex gap-1.5">
-            <button @click="openFilePicker" class="btn btn-primary btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
+            <button
+              @click="openFilePicker"
+              class="btn btn-primary btn-xs flex-1 gap-1"
+              :disabled="indexing || isRecording"
+              title="Add files: PDFs, Word, spreadsheets, transcripts — and meeting recordings (Zoom, Teams, voice memos, etc.)"
+            >
               <FileText :size="12" />
               Files
             </button>
@@ -58,6 +63,11 @@
               {{ isRecording ? 'Stop' : 'Record' }}
             </button>
           </div>
+
+          <!-- Hint: external recordings are welcome via the Files button -->
+          <p class="text-[11px] text-base-content/50 leading-snug -mt-0.5">
+            Past meeting recordings work too — use Files to upload Zoom, Teams, or phone voice memos. Whisper transcribes them locally.
+          </p>
 
           <!-- Recording / transcription panel -->
           <div
@@ -240,8 +250,11 @@
       </div>
 
       <!-- Empty state -->
-      <div v-else-if="documents.length === 0" class="py-8 px-4 text-center">
+      <div v-else-if="documents.length === 0" class="py-8 px-4 text-center space-y-2">
         <p class="text-xs text-base-content/50">No sources yet. Use Add Sources above to get started.</p>
+        <p class="text-[11px] text-base-content/40 leading-snug">
+          Statements, transcripts, notes — and meeting recordings from Zoom, Teams, or your phone all work.
+        </p>
       </div>
 
       <!-- Document list -->
@@ -864,7 +877,10 @@ const openFolderPicker = async () => {
         const scanResponse = await axios.post('/api/scan-folder', {
           path: folderPath,
           recursive: true,
-          file_extensions: ['.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl']
+          file_extensions: [
+            '.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl',
+            '.mp3', '.wav', '.m4a', '.webm', '.ogg', '.flac', '.mp4', '.mpeg', '.mpga'
+          ]
         })
 
         if (scanResponse.data.files && scanResponse.data.files.length > 0) {
@@ -878,7 +894,7 @@ const openFolderPicker = async () => {
             }
           }
         } else {
-          indexError.value = 'No supported files found (.pdf, .txt, .docx, .csv, .xlsx, .xls, .md, .json)'
+          indexError.value = 'No supported files found (.pdf, .txt, .docx, .csv, .xlsx, .xls, .md, .json, audio recordings)'
         }
       }
     }

@@ -163,6 +163,7 @@ class IndexerManager:
             embedding_service=embedding_service,
             document_extractor=self._document_extractor,
             text_chunker=text_chunker,
+            collection_id=collection_id,
         )
 
     def reload_indexer(self, collection_id: str = "default"):
