@@ -1,8 +1,8 @@
 """Portfolio metric computation for financial tabular data.
 
-Provides compute_financial_metric() which operates on top of a StructuredStore
+Provides compute_financial_metric() which operates on top of a HoldingsStore
 instance using only its public API (get_schema, execute_query).  All metric
-logic is contained here — the StructuredStore has no knowledge of these.
+logic is contained here — the HoldingsStore has no knowledge of these.
 
 P0.6 — Numeric sanity guards
 ------------------------------
@@ -83,19 +83,19 @@ def _sanity_check_breakdown(groups: List[Dict[str, Any]], warnings: List[str]) -
 
 
 def compute_financial_metric(
-    store: Any,  # StructuredStore — typed as Any to avoid circular import
+    store: Any,  # HoldingsStore — typed as Any to avoid circular import
     identifier: str,
     metric: str,
     limit: int = 10,
     group_by_symbol: bool = True,
     identifier_type: str | None = None,
 ) -> Dict[str, Any]:
-    """Compute a canned portfolio metric against an ingested structured table.
+    """Compute a canned portfolio metric against an ingested Holdings table.
 
     Parameters
     ----------
     store:
-        A ``StructuredStore`` instance.
+        A ``HoldingsStore`` instance.
     identifier:
         A table_name, filename, or document_id recognised by the store.
     metric:

@@ -19,7 +19,6 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import services.financial  # registers currency/percent types and financial role detector
 from config import settings
 from services.document_extractor import DocumentExtractor, is_code_file
 from services.code_extractor import SUPPORTED_CODE_EXTENSIONS
@@ -4215,7 +4214,7 @@ async def generate_brief_endpoint(
         raise HTTPException(status_code=404, detail=str(e))
 
     try:
-        store = indexer.vector_store.structured_store
+        store = indexer.vector_store.holdings_store
     except AttributeError:
         raise HTTPException(status_code=422, detail="No structured store found for this collection.")
 
@@ -4280,7 +4279,7 @@ def _get_brief_text(collection_id: str) -> str:
     try:
         from services.brief_generator import generate_meeting_brief as _gen_brief
         indexer = get_indexer(collection_id)
-        store = indexer.vector_store.structured_store
+        store = indexer.vector_store.holdings_store
         brief = _gen_brief(store, collection_id=collection_id)
         hs = brief.get("household_summary", {})
         lines = [
@@ -4367,6 +4366,7 @@ Be concise and professional. Use bullet points where appropriate.
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
 
+    from services.privacy.redaction_middleware import redact_text_for_ai
     redacted = redact_text_for_ai(raw_note, collection_id=collection_id, source_label="notes_output")
     return NoteResponse(content=redacted)
 
@@ -4442,6 +4442,7 @@ Write [CLIENT NAME] and [ADVISOR NAME] as placeholders.
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
 
+    from services.privacy.redaction_middleware import redact_text_for_ai
     redacted = redact_text_for_ai(raw_email, collection_id=collection_id, source_label="followup_output")
     return NoteResponse(content=redacted)
 
@@ -4536,7 +4537,7 @@ async def generate_group_brief(
     for col_id in group["collection_ids"]:
         try:
             indexer = get_indexer(col_id)
-            store = indexer.vector_store.structured_store
+            store = indexer.vector_store.holdings_store
             b = _gen_brief(store, collection_id=col_id, thresholds=thresholds)
             briefs.append(b)
         except Exception as e:

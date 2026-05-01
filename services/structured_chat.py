@@ -3,7 +3,7 @@
 The chat endpoint uses a provider-agnostic ReAct-style tool-use loop: we
 inject table schemas + tool-use instructions into the prompt, parse
 `<tool_call>{...}</tool_call>` blocks out of the model's response, execute
-them against the per-collection StructuredStore, and feed the results back
+them against the per-Collection HoldingsStore, and feed the results back
 on a subsequent pass.
 
 This approach works across every AI provider the app supports (Anthropic,
@@ -19,7 +19,8 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
-from services.structured_store import SQLValidationError, StructuredStore
+from services.financial.holdings_store import HoldingsStore
+from services.tabular.sql_validation import SQLValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -210,9 +211,9 @@ def parse_tool_calls(response_text: str) -> List[Dict[str, Any]]:
 
 def _resolve_store_for_identifier(
     identifier: Optional[str],
-    stores: Dict[str, StructuredStore],
+    stores: Dict[str, HoldingsStore],
     tables: List[Dict[str, Any]],
-) -> Optional[StructuredStore]:
+) -> Optional[HoldingsStore]:
     """Look up the store whose tables contain the given identifier."""
     if not stores:
         return None
@@ -227,9 +228,9 @@ def _resolve_store_for_identifier(
 
 def _resolve_store_for_sql(
     sql: str,
-    stores: Dict[str, StructuredStore],
+    stores: Dict[str, HoldingsStore],
     tables: List[Dict[str, Any]],
-) -> Optional[StructuredStore]:
+) -> Optional[HoldingsStore]:
     """Scan SQL text for a known table name and route to the owning store."""
     if not stores:
         return None
@@ -550,7 +551,7 @@ _CELL_CHAR_LIMIT = 240
 
 
 def render_table_as_jsonl(
-    store: StructuredStore,
+    store: HoldingsStore,
     table_info: Dict[str, Any],
     max_rows: int = _DEFAULT_INLINE_ROW_LIMIT,
 ) -> Optional[str]:
@@ -572,7 +573,7 @@ def render_table_as_jsonl(
 
 
 def render_table_as_rows(
-    store: StructuredStore,
+    store: HoldingsStore,
     table_info: Dict[str, Any],
     max_rows: int = _DEFAULT_INLINE_ROW_LIMIT,
 ) -> Optional[Dict[str, Any]]:
@@ -627,7 +628,7 @@ def render_table_as_rows(
 
 def build_structured_context(
     tables: List[Dict[str, Any]],
-    stores: Dict[str, StructuredStore],
+    stores: Dict[str, HoldingsStore],
     inline_row_threshold: int = _DEFAULT_INLINE_ROW_LIMIT,
     total_char_budget: int = _DEFAULT_INLINE_CHAR_BUDGET,
 ) -> Dict[str, Any]:
@@ -710,7 +711,7 @@ def build_structured_context(
     }
 
 
-def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, StructuredStore]]:
+def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, HoldingsStore]]:
     """Gather structured tables from every collection in scope.
 
     Returns (tables, stores_by_collection).
@@ -718,14 +719,14 @@ def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str,
     from services.indexer_manager import indexer_manager
 
     all_tables: List[Dict[str, Any]] = []
-    stores: Dict[str, StructuredStore] = {}
+    stores: Dict[str, HoldingsStore] = {}
     for cid in collection_ids:
         try:
             indexer = indexer_manager.get_indexer(cid)
         except Exception as e:
             logger.warning(f"collect_structured_tables: cannot load indexer '{cid}': {e}")
             continue
-        store = indexer.vector_store.structured_store
+        store = indexer.vector_store.holdings_store
         stores[cid] = store
         try:
             tables = store.list_tables()

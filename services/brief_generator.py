@@ -1,19 +1,19 @@
 """Meeting Brief generator for Asymptote.
 
-Given a StructuredStore instance, scans every table with detected financial
+Given a HoldingsStore instance, scans every table with detected financial
 roles and computes a multi-section pre-meeting brief:
 
   household_summary     — total market value, cost basis, unrealized P&L
   accounts              — breakdown by account column (when present)
-  top_positions         — top N holdings by market value
-  tax_loss_candidates   — underwater positions above the loss threshold
-  concentration_alerts  — any single position above X% of the portfolio
-  cash_drag_alerts      — cash / money-market positions above threshold
+  top_positions         — top N Positions by market value
+  tax_loss_candidates   — underwater Positions above the loss threshold
+  concentration_alerts  — any single Position above X% of the portfolio
+  cash_drag_alerts      — cash / money-market Positions above threshold
   sector_allocation     — market value by sector (when sector role present)
   generated_at          — ISO timestamp
 
 The function is intentionally synchronous and store-agnostic — it works on
-any StructuredStore regardless of the collection it came from.
+any HoldingsStore regardless of the Collection it came from.
 """
 
 from __future__ import annotations
@@ -272,12 +272,12 @@ def generate_meeting_brief(
     collection_id: Optional[str] = None,
     thresholds: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Generate a pre-meeting portfolio brief from a StructuredStore.
+    """Generate a pre-meeting portfolio brief from a HoldingsStore.
 
     Parameters
     ----------
     store:
-        A ``StructuredStore`` instance whose tables will be scanned.
+        A ``HoldingsStore`` instance whose tables will be scanned.
     collection_id:
         Optional identifier included in the output metadata.  Does not
         affect which tables are scanned — the store already targets one

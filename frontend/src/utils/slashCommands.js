@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { getActiveProvider, getAPIProviderName } from './aiProviders'
 
 // Shared slash commands used by both Chat and Search. Each command reads
 // collection metadata directly and returns a plain-text block — zero tokens,
@@ -396,7 +397,7 @@ export const runSlashCommand = async (input, { collectionId, collection, groupId
         .map(m => ({ role: m.role, content: m.content }))
       const response = await axios.post(
         `/api/collections/${collectionId}/notes`,
-        { messages: apiMessages, provider: _inferProvider(providerHeaders) },
+        { messages: apiMessages, provider: getAPIProviderName(getActiveProvider()) },
         { headers: providerHeaders || {} },
       )
       return { cmd, content: response.data.content }
@@ -409,7 +410,7 @@ export const runSlashCommand = async (input, { collectionId, collection, groupId
         .map(m => ({ role: m.role, content: m.content }))
       const response = await axios.post(
         `/api/collections/${collectionId}/followup`,
-        { messages: apiMessages, provider: _inferProvider(providerHeaders) },
+        { messages: apiMessages, provider: getAPIProviderName(getActiveProvider()) },
         { headers: providerHeaders || {} },
       )
       return { cmd, content: response.data.content }
@@ -430,11 +431,4 @@ export const runSlashCommand = async (input, { collectionId, collection, groupId
   }
 
   return { cmd, content: `Command ${cmd} is not implemented`, error: true }
-}
-
-function _inferProvider(headers) {
-  if (!headers) return 'anthropic'
-  if (headers['x-ollama-model'] || headers['x-ai-model']?.includes('llama') || headers['x-ai-model']?.includes('mistral')) return 'ollama'
-  if (headers['x-openai-model']) return 'openai'
-  return 'anthropic'
 }

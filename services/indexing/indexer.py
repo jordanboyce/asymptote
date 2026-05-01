@@ -299,7 +299,7 @@ class DocumentIndexer:
 
             # Structured table (typed SQL)
             try:
-                self.vector_store.structured_store.create_table(
+                self.vector_store.holdings_store.create_table(
                     document_id=document_id,
                     filename=filename,
                     columns=columns,

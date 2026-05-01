@@ -24,7 +24,8 @@ from services.structured_chat import (
     render_table_as_rows,
 )
 from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
-from services.structured_store import SQLValidationError, StructuredStore
+from services.financial.holdings_store import HoldingsStore
+from services.tabular.sql_validation import SQLValidationError
 from services.privacy.redaction_middleware import redact_mcp_response
 from services.brief_generator import generate_meeting_brief as _generate_brief
 
@@ -1010,19 +1011,23 @@ def find_in_documents(
     }, "find_in_documents")
 
 
-def _get_structured_store(collection_id: str) -> StructuredStore:
+def _get_structured_store(collection_id: str) -> HoldingsStore:
     indexer = indexer_manager.get_indexer(collection_id)
-    return indexer.vector_store.structured_store
+    return indexer.vector_store.holdings_store
 
 
 def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     """Trim a full schema payload down to what an LLM needs to write a query."""
     columns = []
     detected_roles: dict[str, str] = {}
+    role_sources: dict[str, str] = {}
     for c in schema["columns"]:
         role = c.get("role")
+        role_source = c.get("role_source")
         if role:
             detected_roles[c["sql_name"]] = role
+            if role_source:
+                role_sources[c["sql_name"]] = role_source
         raw_stats = c.get("stats") or {}
         col_stats = (
             {k: v for k, v in raw_stats.items()
@@ -1034,6 +1039,7 @@ def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
             "original_name": c["name"],
             "type": c["type"],
             "role": role,
+            "role_source": role_source,
             "raw_sql_name": c.get("raw_sql_name"),
             "samples": c.get("samples", [])[:3],
             "stats": col_stats,
@@ -1049,6 +1055,8 @@ def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     }
     if detected_roles:
         result["financial_roles"] = detected_roles
+    if role_sources:
+        result["financial_role_sources"] = role_sources
     return result
 
 
@@ -1126,6 +1134,15 @@ def get_table_schema(
     `compute_portfolio_metric` will work for this table; if the field is
     absent the table has no recognized financial structure and you should use
     `aggregate_table` or `query_table` instead.
+
+    Each role also carries a `role_source` — `"profile"` (matched a known
+    vendor like Pershing/Schwab), `"heuristic"` (regex match on the column
+    name), or `"llm"` (inferred by an LLM when too many columns were
+    unmapped). A parallel top-level `financial_role_sources` map mirrors
+    this. Treat `profile` as authoritative, `heuristic` as reliable for
+    common cases, and `llm` as best-effort — when an LLM-inferred role
+    drives a critical aggregation, prefer `aggregate_table` or `query_table`
+    on the raw column instead.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)

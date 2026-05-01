@@ -9,7 +9,7 @@ import faiss
 from models.schemas import ChunkMetadata, SearchResult
 from services.metadata_store import MetadataStore
 from services.bm25_service import BM25Index
-from services.structured_store import StructuredStore
+from services.financial.holdings_store import HoldingsStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +50,10 @@ class VectorStore:
         # SQLite metadata store
         self.metadata_store = MetadataStore(self.metadata_db_path)
 
-        # Structured table store (lives in the same sqlite db as metadata)
-        # Used to answer numeric/aggregation questions over CSV/XLSX sources.
-        self.structured_store = StructuredStore(self.metadata_db_path)
+        # Per-Collection Holdings store (lives in the same sqlite db as
+        # metadata). Used to answer numeric/aggregation questions over
+        # ingested brokerage CSV/XLSX sources.
+        self.holdings_store = HoldingsStore(self.metadata_db_path)
 
         # BM25 keyword search index
         self.bm25_index = BM25Index(self.bm25_db_path)
@@ -347,7 +348,7 @@ class VectorStore:
 
         # Drop any structured tables (CSV/XLSX) created for this document
         try:
-            self.structured_store.delete_document(document_id)
+            self.holdings_store.delete_document(document_id)
         except Exception as e:
             logger.warning(f"Failed to drop structured tables for {document_id}: {e}")
 
@@ -415,7 +416,7 @@ class VectorStore:
 
         # Clear structured tables
         try:
-            self.structured_store.clear_all()
+            self.holdings_store.clear_all()
         except Exception as e:
             logger.warning(f"Failed to clear structured tables: {e}")
 

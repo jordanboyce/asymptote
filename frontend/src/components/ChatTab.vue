@@ -1037,24 +1037,37 @@ const onSlashSelect = (cmd) => {
 }
 
 const runInlineSlashCommand = async (input) => {
-  chatStore.addMessage(collectionStore.currentCollectionId, { role: 'user', content: input })
+  const collectionId = collectionStore.currentCollectionId
+  chatStore.addMessage(collectionId, { role: 'user', content: input })
   await scrollToBottom()
 
-  const result = await runSlashCommand(input, {
-    collectionId: collectionStore.currentCollectionId,
-    collection: collectionStore.currentCollection,
-    groupId: collectionStore.currentGroupId,
-    messages: messages.value,
-    providerHeaders: buildProviderHeaders(selectedProvider.value),
-  })
-
-  chatStore.addAssistantMessage(
-    collectionStore.currentCollectionId,
-    { role: 'assistant', content: result.content, slashCommand: result.cmd },
-    [],
-    null,
-  )
+  // Show the same "Thinking…" indicator the streaming chat path uses, and
+  // disable the send button via loading.value. /notes and /followup do a
+  // ~30s LLM round-trip; without this the UI looks frozen.
+  loading.value = true
+  chatStore.addStreamingMessage(collectionId)
   await scrollToBottom()
+
+  try {
+    const result = await runSlashCommand(input, {
+      collectionId,
+      collection: collectionStore.currentCollection,
+      groupId: collectionStore.currentGroupId,
+      messages: messages.value,
+      providerHeaders: buildProviderHeaders(selectedProvider.value),
+    })
+
+    chatStore.removeLastStreamingMessage(collectionId)
+    chatStore.addAssistantMessage(
+      collectionId,
+      { role: 'assistant', content: result.content, slashCommand: result.cmd },
+      [],
+      null,
+    )
+    await scrollToBottom()
+  } finally {
+    loading.value = false
+  }
 }
 
 const sendMessage = async () => {

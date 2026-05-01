@@ -126,6 +126,53 @@ def set_session_id(session_id: str) -> None:
     _current_session_id.set(session_id)
 
 
+def redact_text_for_ai(
+    text: str,
+    collection_id: str | None = None,
+    source_label: str | None = None,
+) -> str:
+    """Redact PII from a single AI-generated string before it leaves Asymptote.
+
+    Used by endpoints that draft client-facing prose (compliance Note of
+    Record, follow-up email) — the LLM sees a redacted prompt, but its
+    *output* may still echo PII patterns that slipped through, so we scrub
+    the result on the way out.
+
+    ``source_label`` is recorded in the audit log under the same column the
+    MCP path uses for ``tool_name`` (e.g. ``"notes_output"``,
+    ``"followup_output"``) so compliance can distinguish where each
+    redaction happened.
+    """
+    if not text or not text.strip():
+        return text
+
+    if not getattr(settings, "enable_pii_redaction", False):
+        return text
+
+    from services.privacy.redaction_engine import redaction_engine
+    from services.privacy.redaction_log import redaction_log
+
+    if not redaction_engine.available:
+        return text
+
+    result = redaction_engine.redact_text(text, collection_id=collection_id)
+
+    if result.details:
+        redaction_log.log_redactions(
+            details=result.details,
+            session_id=get_or_create_session_id(),
+            collection_id=collection_id,
+            tool_name=source_label,
+        )
+        logger.info(
+            f"Redacted {len(result.details)} PII entit"
+            f"{'y' if len(result.details) == 1 else 'ies'} from "
+            f"{source_label or 'ai_output'}"
+        )
+
+    return result.redacted_text
+
+
 def redact_mcp_response(
     response: dict[str, Any],
     tool_name: str,

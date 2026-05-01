@@ -2,9 +2,8 @@
 
 import pytest
 
-import services.financial  # noqa: F401 — registers structured-store plugins
 from services.brief_generator import generate_meeting_brief
-from services.structured_store import StructuredStore
+from services.financial.holdings_store import HoldingsStore
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +58,7 @@ _COLUMNS = ["Ticker", "Name", "Market Value", "Cost Basis", "Sector", "Account"]
 
 @pytest.fixture
 def store(tmp_path):
-    s = StructuredStore(tmp_path / "metadata.db")
+    s = HoldingsStore(tmp_path / "metadata.db")
     s.create_table(
         document_id="doc-holdings",
         filename="portfolio.csv",
@@ -264,7 +263,7 @@ def test_sector_pcts_sum_to_100(brief):
 
 
 def test_empty_store_returns_valid_brief(tmp_path):
-    store = StructuredStore(tmp_path / "empty.db")
+    store = HoldingsStore(tmp_path / "empty.db")
     brief = generate_meeting_brief(store)
     assert brief["tables_scanned"] == 0
     assert brief["household_summary"]["total_market_value"] == 0.0
@@ -280,7 +279,7 @@ def test_empty_store_returns_valid_brief(tmp_path):
 
 
 def test_multi_table_household_merge(tmp_path):
-    store = StructuredStore(tmp_path / "multi.db")
+    store = HoldingsStore(tmp_path / "multi.db")
 
     store.create_table(
         document_id="doc-a",
