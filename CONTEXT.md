@@ -30,6 +30,20 @@ The semantic meaning of a column in a Holdings table — e.g. `ticker`, `cusip`,
 **Type extension**
 A custom column type recognised during inference (e.g. `currency`, `percent`) that needs format-aware detection and coercion beyond the generic numeric/date/boolean/text types in `services.tabular.inference`. Currency and percent are built into HoldingsStore.
 
+## Chat orchestration
+
+**ChatTurn**
+The frozen, prepared input for one engine run: provider, system text, message history (with the latest user message), agent context, model + token caps. Endpoints assemble it; the engine consumes it. No FastAPI knowledge inside.
+
+**AgenticEngine**
+Drives the tool-use loop. Calls the provider with `complete_with_tools`, executes any returned tool calls via `services.structured_chat.execute_tool_calls`, appends results to messages, repeats until the model produces a turn with no tool calls or `max_iterations` is hit. Async generator emitting `thinking` / `tool_start` / `tool_end` / `text_delta` / `done` / `error` events. Lives in `services.chat.engine`.
+
+**OneShotEngine**
+Drives a single completion. Used by document-drafting endpoints (`/notes`, `/followup`, `/ask`) that don't need agentic tool-use. Same event shape as AgenticEngine — emits `text_delta` and `done` only — so callers can treat both engines uniformly. Lives in `services.chat.engine`.
+
+**ChatContext** (the builder, not the data)
+The chat-specific substrate that turns a `ChatRequest` into the inputs an engine needs: resolves scope (current/all/group), runs query reformulation, dispatches multi-collection search, collects structured Holdings tables for inlining, assembles the system prompt with Expertise pack + Collection overview. Lives in `services.chat.context`. `/notes`, `/followup`, `/ask` skip it — they build their own prompts.
+
 ## Output
 
 **Meeting Brief**

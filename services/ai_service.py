@@ -12,7 +12,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict
+from typing import Iterator, List, Optional, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,49 @@ class AIProvider(ABC):
           }
         """
         raise NotImplementedError(f"{self.__class__.__name__} does not support native tool calling")
+
+    def stream_chat(
+        self,
+        messages: list,
+        max_tokens: int,
+        model: str,
+        system: str | None = None,
+    ) -> Iterator[dict]:
+        """Stream a chat completion (no tools), yielding event dicts.
+
+        Used by AgenticEngine for the final-answer pass after the tool loop
+        terminates. Yields events of two shapes:
+          {"delta": str}              — one fragment of the assistant text
+          {"done": True, "usage": {"input_tokens": int, "output_tokens": int, "model": str}}
+
+        Default implementation falls back to ``complete_with_tools`` with no
+        tools and emits the entire text as a single delta — providers should
+        override for real per-token streaming.
+        """
+        result = self.complete_with_tools(messages, [], max_tokens, model, system)
+        text = (result.get("text") or "").strip()
+        if text:
+            yield {"delta": text}
+        yield {"done": True, "usage": result.get("usage") or {"input_tokens": 0, "output_tokens": 0, "model": model}}
+
+    def stream(
+        self,
+        prompt: str,
+        max_tokens: int,
+        model: str,
+    ) -> Iterator[dict]:
+        """Stream a single-prompt completion, yielding event dicts.
+
+        Used by OneShotEngine (/notes, /followup, /ask). Same event shape as
+        ``stream_chat``. Default falls back to ``complete`` and emits the
+        result as a single delta — providers should override for real
+        per-token streaming.
+        """
+        result = self.complete(prompt, max_tokens, model)
+        text = (result.get("text") or "").strip()
+        if text:
+            yield {"delta": text}
+        yield {"done": True, "usage": result.get("usage") or {"input_tokens": 0, "output_tokens": 0, "model": model}}
 
 
 class AnthropicProvider(AIProvider):
@@ -219,6 +262,38 @@ class AnthropicProvider(AIProvider):
                 "model": model,
             },
         }
+
+    def stream_chat(self, messages, max_tokens, model, system=None):
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if system:
+            kwargs["system"] = system
+
+        usage = {"input_tokens": 0, "output_tokens": 0, "model": model}
+        with self.client.messages.stream(**kwargs) as stream:
+            for text_delta in stream.text_stream:
+                if text_delta:
+                    yield {"delta": text_delta}
+            try:
+                final = stream.get_final_message()
+                usage = {
+                    "input_tokens": final.usage.input_tokens,
+                    "output_tokens": final.usage.output_tokens,
+                    "model": model,
+                }
+            except Exception as e:
+                logger.warning("Anthropic stream final-message read failed: %s", e)
+        yield {"done": True, "usage": usage}
+
+    def stream(self, prompt, max_tokens, model):
+        yield from self.stream_chat(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            model=model,
+        )
 
     def validate(self) -> bool:
         import anthropic
@@ -356,6 +431,50 @@ class OpenAIProvider(AIProvider):
             },
         }
 
+    def stream_chat(self, messages, max_tokens, model, system=None):
+        payload_messages = list(messages)
+        if system and (not payload_messages or payload_messages[0].get("role") != "system"):
+            payload_messages = [{"role": "system", "content": system}] + payload_messages
+
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": payload_messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # Some OpenAI-compatible providers reject stream_options. Retry without it.
+            logger.warning("Streaming with usage failed (%s); retrying without stream_options", e)
+            kwargs.pop("stream_options", None)
+            stream = self.client.chat.completions.create(**kwargs)
+
+        usage = {"input_tokens": 0, "output_tokens": 0, "model": model}
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if choices:
+                delta_obj = getattr(choices[0], "delta", None)
+                delta = getattr(delta_obj, "content", None) if delta_obj else None
+                if delta:
+                    yield {"delta": delta}
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = {
+                    "input_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
+                    "model": model,
+                }
+        yield {"done": True, "usage": usage}
+
+    def stream(self, prompt, max_tokens, model):
+        yield from self.stream_chat(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            model=model,
+        )
+
     def validate(self) -> bool:
         from openai import AuthenticationError, RateLimitError
         try:
@@ -484,6 +603,49 @@ class OllamaProvider(AIProvider):
                 "model": model,
             },
         }
+
+    def stream(self, prompt, max_tokens, model):
+        """Stream a single-prompt completion from Ollama's native /api/chat."""
+        import httpx
+
+        usage = {"input_tokens": 0, "output_tokens": 0, "model": model}
+        try:
+            with httpx.Client(timeout=300.0) as client:
+                with client.stream(
+                    "POST",
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": True,
+                        "options": {"num_predict": max_tokens},
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = (data.get("message") or {}).get("content") or ""
+                        if delta:
+                            yield {"delta": delta}
+                        if data.get("done"):
+                            usage = {
+                                "input_tokens": data.get("prompt_eval_count", 0),
+                                "output_tokens": data.get("eval_count", 0),
+                                "model": model,
+                            }
+        except Exception as e:
+            logger.warning("Ollama streaming failed (%s); falling back to non-streaming", e)
+            result = self.complete(prompt=prompt, max_tokens=max_tokens, model=model)
+            text = (result.get("text") or "").strip()
+            if text:
+                yield {"delta": text}
+            usage = result.get("usage") or usage
+        yield {"done": True, "usage": usage}
 
     def validate(self) -> bool:
         """Check if Ollama is running and model is available."""

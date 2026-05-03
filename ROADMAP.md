@@ -453,6 +453,67 @@ The full Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) run
 
 ---
 
+## v4.4.1 — Chat orchestration deepening (in progress)
+
+The orchestration loop that drives `/api/chat/stream` was extracted from `main.py` (where it had been duplicated across a streaming and non-streaming endpoint, ~920 LOC of god-endpoint) into a focused [services/chat/](services/chat/) package. The remaining work is the Phase 2 follow-ups that the deepening unlocks. Use this section as the cold-pickup point for chat-engine work.
+
+### Status snapshot
+
+| Item | Status | Notes |
+|---|---|---|
+| Engine + context extraction | ✅ Shipped | `services/chat/engine.py` (`AgenticEngine`, `OneShotEngine`, `ChatTurn`, `collect`, `complete_one_shot`) + `services/chat/context.py` (`build_chat_turn`). `/api/chat` (non-streaming) deleted; `/api/chat/stream` rewritten as 113-LOC shell; `/api/ask`, `/api/notes`, `/api/followup` all route through `complete_one_shot`. CONTEXT.md gained the chat orchestration glossary. |
+| Real provider token streaming | ✅ Shipped | `AIProvider.stream_chat` / `AIProvider.stream` with real implementations on Anthropic (`messages.stream`), OpenAI (`stream=True` + `include_usage`), and Ollama (`/api/chat stream=true`). All other providers inherit OpenAI's. Engine re-issues the final-answer turn through `stream_chat` so tokens arrive at the model's actual generation rate; thinking-text fallback when streaming fails mid-flight. |
+| Engine unit tests | ✅ Shipped | `tests/_fake_ai_provider.py` + `tests/test_chat_engine.py` (15 tests). Cover natural termination, iteration cap → forced streaming pass, forced-pass failure fallback, thinking fallback when streaming dies, provider error propagation, usage accumulation, ReAct path, one-shot streaming, collect() drainage, and the AIProvider non-streaming default. |
+| SSE for slash commands | ❌ Open | `/notes` and `/followup` return buffered JSON via `complete_one_shot`. Now that `run_one_shot` streams under the hood, these endpoints can become SSE so the UI shows drafts streaming in. See below. |
+| Whole-loop streaming | ❌ Phase 3 — deferred | Model emits `tool_calls` and `text` mid-stream so long tool sequences feel alive, not just the final answer. Only meaningful once users complain about long tool sequences feeling frozen — until then the real per-token streaming on the final answer is enough. |
+
+### Real provider token streaming — ✅ Shipped
+
+[services/chat/engine.py](services/chat/engine.py) now consumes real provider streaming via `AIProvider.stream_chat` (chat-history, no tools) and `AIProvider.stream` (single-prompt). Implementations:
+
+- `AnthropicProvider.stream_chat` — `client.messages.stream`; `text_stream` for deltas, `get_final_message().usage` for token counts.
+- `OpenAIProvider.stream_chat` — `chat.completions.create(stream=True, stream_options={"include_usage": True})`; tolerates compat providers that reject `stream_options` by retrying without it. All sub-providers (Grok, Google, GitHub Models, Ollama Cloud, OpenAICompatible) inherit it.
+- `OllamaProvider.stream` — native `/api/chat stream=true` over chunked JSON.
+- The base `AIProvider.stream_chat` / `stream` ship a non-streaming default that emits one full-text delta + `done`, so any provider that hasn't been upgraded still works (no per-token feedback, but the call doesn't break).
+
+**Decision point resolved:** the agentic loop keeps `complete_with_tools` for tool-call iterations and re-issues a single streaming `stream_chat` call for the final-answer turn — one extra LLM call per chat turn (the non-streaming detection call from the loop is the safety net if streaming fails mid-flight). Whole-loop streaming stays Phase 3.
+
+**Acceptance test:** advisor sees tokens arrive at the model's actual generation rate. Engine unit tests in [tests/test_chat_engine.py](tests/test_chat_engine.py) cover the streaming path against a `FakeAIProvider`; the Henderson walkthrough is the manual smoke test.
+
+### SSE for slash commands — ❌ Open
+
+`/notes` and `/followup` use `complete_one_shot` and return `NoteResponse` JSON. The frontend's `runInlineSlashCommand` ([frontend/src/components/ChatTab.vue](frontend/src/components/ChatTab.vue)) shows a "Thinking…" placeholder until the JSON lands. Now that `run_one_shot` already drives real streaming under the hood, exposing it over SSE is a straight wiring exercise — the engine work is done.
+
+**Work:**
+
+1. Add streaming variants `POST /api/collections/{id}/notes/stream` and `POST /api/collections/{id}/followup/stream` that forward `run_one_shot` events as SSE (same `text_delta` / `done` / `error` vocabulary the main chat path uses).
+2. Generalize `runInlineSlashCommand` in ChatTab.vue to consume SSE the same way the main chat path does — likely extract the SSE consumer from `sendMessage` into a shared helper.
+3. Keep the JSON variants for non-UI callers (e.g. external scripts that hit the API directly).
+
+### Whole-loop streaming — ❌ Phase 3 (deferred)
+
+Drive the entire agentic loop on streaming primitives so `tool_calls` and `text` flow as the model produces them — lets the UI render "calling `query_table`…" before the model even finishes deciding. Largest change in the engine; the OpenAI/Anthropic streaming SDKs both expose mid-stream tool-call accumulation but the wiring is non-trivial.
+
+**Defer until users feel pain.** With real per-token streaming on the final answer (above) the slow path is already addressed. The remaining gap — slight delay before tool-call cards appear during multi-tool turns — is only worth fixing if advisors complain about long tool sequences feeling frozen. Until then, the extra complexity isn't earned.
+
+### Engine unit tests — ✅ Shipped
+
+[tests/test_chat_engine.py](tests/test_chat_engine.py) drives the engine against [tests/_fake_ai_provider.py](tests/_fake_ai_provider.py), a scriptable `AIProvider` that queues responses for `complete_with_tools` / `complete` / `stream_chat` / `stream`. 15 tests covering:
+
+- Native-tools loop terminating on a no-tool turn (with streaming final answer).
+- Thinking events emitted alongside tool calls.
+- Iteration cap hit → forced streaming final-answer pass with the "Do not call any more tools" suffix.
+- Forced pass failure → deterministic "couldn't settle on a final answer" fallback.
+- Streaming failure mid-natural-termination → falls back to the non-streaming detection call's text.
+- Provider error during the loop → `error` event propagated cleanly.
+- Usage accumulation across iterations + the streaming pass.
+- ReAct fallback for non-native-tool providers.
+- One-shot streaming + error propagation.
+- `collect()` drainage of all event types into the legacy response shape.
+- The `AIProvider` non-streaming default (one delta + done) for `stream_chat` and `stream`.
+
+---
+
 ## v4.5 — Meeting capture wedge
 
 The first feature that turns Asymptote from "data layer" into "advisor workflow tool." Built on top of v4.1 + v4.2 — meeting prep is only useful if the portfolio drift it surfaces is correct.
@@ -620,9 +681,10 @@ Items that aren't funded yet but belong in the same direction of travel.
 - **v4.1 is the only thing that matters right now.** Don't start anything below it until P0.1–P0.7 are done. The advisor demo bugs above are the acceptance test: re-run those three questions against the same Schwab file and they should produce correct numbers without manual workaround SQL.
 - **v4.2 and v4.3 shipped** — enrichment feeds and MCP surface polish.
 - **v4.4 shipped** — streaming in-app chat with live tool indicators, `/brief` command, one-click "Generate Meeting Brief" button. The primary demo surface is now self-contained.
+- **v4.4.1 in progress** — chat orchestration extracted into `services/chat/`; real per-token streaming and engine unit tests have shipped; SSE for slash commands is the next open item; whole-loop streaming stays Phase 3 until users feel pain.
 - **v4.5 / v4.6** are the advisor-workflow wedge (meeting capture + client profile) that turns this into a product, not a query layer.
 - **v4.7 / v4.8** wait until there's daily usage at one firm.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-04-29 (market_data provider protocol refactor; sector-breakdown auto-enrich fallback; v5 trigger entry for provider swap)
+**Last updated:** 2026-05-03 (v4.4.1 — real provider token streaming + engine unit tests shipped; SSE for slash commands now the next open item)
