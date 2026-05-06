@@ -1,4 +1,4 @@
-# Asymptote API Dockerfile
+# Finn API Dockerfile
 # Standard deployment without custom SSL certificates
 
 FROM python:3.13-slim as base

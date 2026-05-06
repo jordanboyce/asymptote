@@ -10,10 +10,10 @@
         :class="{ 'bg-base-200': activeTab === 'collections' }"
         @click="activeTab = 'collections'"
         title="View all collections"
-        aria-label="Asymptote — view all collections"
+        aria-label="Finn — view all collections"
       >
         <img src="/icon_black.svg" alt="" class="logo-header h-5 w-5 flex-shrink-0">
-        <span class="font-bold text-sm tracking-tight hidden sm:inline">Asymptote</span>
+        <span class="font-bold text-sm tracking-tight hidden sm:inline">Finn</span>
       </button>
 
       <!-- Current collection indicator -->

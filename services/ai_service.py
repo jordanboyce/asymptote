@@ -12,9 +12,91 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Iterator, List, Optional, Dict
 
 logger = logging.getLogger(__name__)
+
+
+# Known-model capability hints. Keys are model ids as advisors will see them
+# in settings. Anything not in this map surfaces as "unknown" rather than
+# claiming a capability we can't back up — see ProviderCapabilities.
+#
+# Sources: provider docs as of 2026-04. Add entries when shipping support for
+# a new model; do NOT guess. An unknown model quietly degrades to ReAct or to
+# a clear "this model can't do tool calling" error in the UI.
+KNOWN_MODELS: Dict[str, Dict[str, object]] = {
+    # Anthropic
+    "claude-haiku-4-5-20251001":   {"tools": True,  "vision": True,  "context_window": 200_000},
+    "claude-sonnet-4-5-20250929":  {"tools": True,  "vision": True,  "context_window": 200_000},
+    "claude-opus-4-7":             {"tools": True,  "vision": True,  "context_window": 1_000_000},
+    "claude-sonnet-4-6":           {"tools": True,  "vision": True,  "context_window": 200_000},
+    # OpenAI
+    "gpt-4o":                      {"tools": True,  "vision": True,  "context_window": 128_000},
+    "gpt-4o-mini":                 {"tools": True,  "vision": True,  "context_window": 128_000},
+    "gpt-4-turbo":                 {"tools": True,  "vision": True,  "context_window": 128_000},
+    "gpt-3.5-turbo":               {"tools": True,  "vision": False, "context_window": 16_385},
+    # Grok
+    "grok-3":                      {"tools": True,  "vision": False, "context_window": 131_072},
+    "grok-3-mini":                 {"tools": True,  "vision": False, "context_window": 131_072},
+    # Google Gemini (via OpenAI-compatible endpoint)
+    "gemini-2.0-flash":            {"tools": True,  "vision": True,  "context_window": 1_048_576},
+    "gemini-2.5-pro-preview-03-25":{"tools": True,  "vision": True,  "context_window": 1_048_576},
+    # GitHub Models (namespaced)
+    "openai/gpt-4o":               {"tools": True,  "vision": True,  "context_window": 128_000},
+    "openai/gpt-4o-mini":          {"tools": True,  "vision": True,  "context_window": 128_000},
+    "meta/Llama-3.3-70B-Instruct": {"tools": True,  "vision": False, "context_window": 128_000},
+    # Ollama Cloud (gpt-oss family supports tool calling)
+    "gpt-oss:20b":                 {"tools": True,  "vision": False, "context_window": 128_000},
+    "gpt-oss:120b":                {"tools": True,  "vision": False, "context_window": 128_000},
+    # Ollama Cloud — Gemma 4 (Google open weights). 31b is free-tier-eligible
+    # at the time of writing; per the model page, text+image only (audio is
+    # advertised at the family level but not on the 31b variant).
+    "gemma4:31b":                  {"tools": True,  "vision": True,  "context_window": 256_000},
+    # Ollama local (default — the LocalOllamaProvider uses ReAct, not native tools)
+    "llama3.2":                    {"tools": False, "vision": False, "context_window": 128_000},
+    "llama3.1":                    {"tools": False, "vision": False, "context_window": 128_000},
+}
+
+
+@dataclass
+class ProviderCapabilities:
+    """What an `(provider, model)` pair can actually do.
+
+    Any field set to ``None`` means *unknown* — the engine should treat that
+    as "don't claim this works." A known-False is stronger: route around it
+    or refuse upfront with a clear error. ``probed=True`` means ``validate()``
+    actually exercised the capability against the live endpoint, not just
+    looked it up in ``KNOWN_MODELS``.
+    """
+
+    provider: str
+    model: str
+    tools: Optional[bool] = None
+    vision: Optional[bool] = None
+    streaming: bool = True
+    context_window: Optional[int] = None
+    notes: List[str] = field(default_factory=list)
+    probed: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "tools": self.tools,
+            "vision": self.vision,
+            "streaming": self.streaming,
+            "context_window": self.context_window,
+            "notes": list(self.notes),
+            "probed": self.probed,
+        }
+
+
+def _lookup_known_model(model: str) -> Dict[str, object]:
+    """Return the KNOWN_MODELS entry for ``model``, or an empty dict."""
+    if not model:
+        return {}
+    return KNOWN_MODELS.get(model, {})
 
 
 def detect_ollama(base_url: str = "http://localhost:11434") -> Dict:
@@ -83,6 +165,36 @@ class AIProvider(ABC):
     def supports_native_tools(self) -> bool:
         """Whether this provider implements `complete_with_tools`."""
         return False
+
+    def capabilities(self) -> ProviderCapabilities:
+        """What this (provider, model) pair can do.
+
+        Default is conservative: tools/vision unknown, streaming True (because
+        the base class ships a non-streaming fallback that emits one delta).
+        Each concrete provider should override to declare what its endpoint
+        actually supports, ideally consulting :data:`KNOWN_MODELS` for the
+        currently-configured model.
+        """
+        model = getattr(self, "QUALITY_MODEL", "") or ""
+        provider_name = self.__class__.__name__.replace("Provider", "").lower()
+        return ProviderCapabilities(
+            provider=provider_name,
+            model=model,
+            tools=None,
+            vision=None,
+            streaming=True,
+        )
+
+    def probe_capabilities(self) -> ProviderCapabilities:
+        """Exercise the live endpoint to confirm declared capabilities.
+
+        Default returns ``capabilities()`` with ``probed=False`` — providers
+        that can do a cheap tool-call ping (Anthropic, OpenAI, OpenAI-compat)
+        should override and set ``probed=True`` after a successful probe.
+        Used by ``/api/ai/validate-key`` so the settings UI can show real
+        green/red indicators instead of guesses.
+        """
+        return self.capabilities()
 
     def complete_with_tools(
         self,
@@ -209,6 +321,47 @@ class AnthropicProvider(AIProvider):
 
     def supports_native_tools(self) -> bool:
         return True
+
+    def capabilities(self) -> ProviderCapabilities:
+        info = _lookup_known_model(self.QUALITY_MODEL)
+        notes: list[str] = []
+        if not info:
+            notes.append(
+                f"Model '{self.QUALITY_MODEL}' is not in KNOWN_MODELS; "
+                "Anthropic models generally support tools + vision, but "
+                "context_window is unknown."
+            )
+        return ProviderCapabilities(
+            provider="anthropic",
+            model=self.QUALITY_MODEL,
+            tools=bool(info.get("tools", True)),
+            vision=bool(info.get("vision", True)),
+            streaming=True,
+            context_window=info.get("context_window"),
+            notes=notes,
+        )
+
+    def probe_capabilities(self) -> ProviderCapabilities:
+        caps = self.capabilities()
+        try:
+            self.client.messages.create(
+                model=self.QUALITY_MODEL,
+                max_tokens=64,
+                tools=[{
+                    "name": "ping",
+                    "description": "Reply by calling this tool with no args.",
+                    "input_schema": {"type": "object", "properties": {}, "required": []},
+                }],
+                messages=[{"role": "user", "content": "Call the ping tool."}],
+            )
+            caps.tools = True
+            caps.probed = True
+        except Exception as e:
+            logger.warning("Anthropic tool probe failed for %s: %s", self.QUALITY_MODEL, e)
+            caps.tools = False
+            caps.probed = True
+            caps.notes.append(f"Tool probe failed: {e}")
+        return caps
 
     def complete_with_tools(self, messages, tools, max_tokens, model, system=None):
         kwargs = {
@@ -381,6 +534,54 @@ class OpenAIProvider(AIProvider):
     def supports_native_tools(self) -> bool:
         return True
 
+    def capabilities(self) -> ProviderCapabilities:
+        info = _lookup_known_model(self.QUALITY_MODEL)
+        provider_name = self.__class__.__name__.replace("Provider", "").lower()
+        notes: list[str] = []
+        if not info:
+            notes.append(
+                f"Model '{self.QUALITY_MODEL}' is not in KNOWN_MODELS; "
+                "tool calling and vision support assumed but unverified. "
+                "Run validation to probe."
+            )
+        return ProviderCapabilities(
+            provider=provider_name,
+            model=self.QUALITY_MODEL,
+            # Default to True for known OpenAI-compat endpoints with tool calling;
+            # subclasses (e.g. OpenAICompatible) override when the model is
+            # genuinely unknown.
+            tools=bool(info["tools"]) if "tools" in info else True,
+            vision=bool(info["vision"]) if "vision" in info else None,
+            streaming=True,
+            context_window=info.get("context_window"),
+            notes=notes,
+        )
+
+    def probe_capabilities(self) -> ProviderCapabilities:
+        caps = self.capabilities()
+        try:
+            self.client.chat.completions.create(
+                model=self.QUALITY_MODEL,
+                max_tokens=64,
+                messages=[{"role": "user", "content": "Call the ping tool."}],
+                tools=[{
+                    "type": "function",
+                    "function": {
+                        "name": "ping",
+                        "description": "Reply by calling this tool with no args.",
+                        "parameters": {"type": "object", "properties": {}, "required": []},
+                    },
+                }],
+            )
+            caps.tools = True
+            caps.probed = True
+        except Exception as e:
+            logger.warning("OpenAI-compat tool probe failed for %s: %s", self.QUALITY_MODEL, e)
+            caps.tools = False
+            caps.probed = True
+            caps.notes.append(f"Tool probe failed: {e}")
+        return caps
+
     def complete_with_tools(self, messages, tools, max_tokens, model, system=None):
         import json as _json
         payload_messages = list(messages)
@@ -526,6 +727,27 @@ class OllamaProvider(AIProvider):
             base_url=f"{self.base_url}/v1",
             api_key="ollama",  # Ollama ignores the key but the client requires a non-empty value
             timeout=300.0,
+        )
+
+    def capabilities(self) -> ProviderCapabilities:
+        info = _lookup_known_model(self.model)
+        # Local Ollama drops to the ReAct text loop in services/chat/engine.py
+        # (see _run_react_fallback). Native tool calling is not wired in for
+        # this provider — declare it explicitly so the UI can warn the user
+        # that chat will be slower and less reliable than Anthropic/OpenAI.
+        vision_likely = any(tag in self.model.lower() for tag in ("llava", "vision", "bakllava", "moondream"))
+        return ProviderCapabilities(
+            provider="ollama",
+            model=self.model,
+            tools=False,
+            vision=vision_likely or bool(info.get("vision", False)),
+            streaming=True,
+            context_window=info.get("context_window"),
+            notes=[
+                "Finn uses ReAct fallback for local Ollama — tool calls "
+                "happen inside a prose loop, not the model's native tool schema. "
+                "Use Anthropic, OpenAI, or Ollama Cloud for richer tool use."
+            ],
         )
 
     def complete(self, prompt: str, max_tokens: int, model: str) -> dict:
@@ -830,6 +1052,24 @@ class OpenAICompatibleProvider(OpenAIProvider):
         super().__init__(api_key or "none", model=model, base_url=base_url)
         self.FAST_MODEL = model
         self.QUALITY_MODEL = model
+
+    def capabilities(self) -> ProviderCapabilities:
+        # Caller pointed us at an unknown URL with an unknown model. Don't
+        # claim anything we can't back up — let validate() probe.
+        info = _lookup_known_model(self.QUALITY_MODEL)
+        return ProviderCapabilities(
+            provider="openai_compatible",
+            model=self.QUALITY_MODEL,
+            tools=bool(info["tools"]) if "tools" in info else None,
+            vision=bool(info["vision"]) if "vision" in info else None,
+            streaming=True,
+            context_window=info.get("context_window"),
+            notes=[
+                f"Custom endpoint at {self._base_url}. Capabilities are "
+                "unknown until validation probes them — small/older models "
+                "behind OpenAI-compatible APIs often reject tool calls."
+            ],
+        )
 
     def validate(self) -> bool:
         try:

@@ -1,5 +1,5 @@
 """
-Asymptote Desktop Application
+Finn Desktop Application
 Runs the FastAPI server and opens the UI in the default browser.
 Can run in system tray mode.
 """
@@ -40,7 +40,7 @@ if getattr(sys, 'frozen', False):
                     pass
 
     if _cert_pieces:
-        _fd, _ca_bundle_path = tempfile.mkstemp(suffix='.pem', prefix='asymptote_ca_')
+        _fd, _ca_bundle_path = tempfile.mkstemp(suffix='.pem', prefix='finn_ca_')
         with os.fdopen(_fd, 'wb') as _f:
             for _piece in _cert_pieces:
                 _f.write(_piece)
@@ -131,8 +131,8 @@ def create_tray_icon():
     return image
 
 
-class AsymptoteApp:
-    """Desktop application wrapper for Asymptote."""
+class FinnApp:
+    """Desktop application wrapper for Finn."""
 
     def __init__(self):
         self.server_thread = None
@@ -175,7 +175,7 @@ class AsymptoteApp:
             print("Warning: Server did not start in time")
             return
 
-        print(f"Opening Asymptote at {self.base_url}")
+        print(f"Opening Finn at {self.base_url}")
         webbrowser.open(self.base_url)
 
     def run(self, use_tray=True):
@@ -198,7 +198,7 @@ class AsymptoteApp:
     def run_console(self):
         """Run without system tray (console mode)."""
         print(f"\n{'='*60}")
-        print("Asymptote Desktop Application")
+        print("Finn Desktop Application")
         print(f"{'='*60}")
         print(f"\nServer running at: {self.base_url}")
         print("\nPress Ctrl+C to quit")
@@ -229,14 +229,14 @@ class AsymptoteApp:
             icon.stop()
 
         menu = Menu(
-            MenuItem("Open Asymptote", on_open, default=True),
+            MenuItem("Open Finn", on_open, default=True),
             MenuItem("Quit", on_quit)
         )
 
-        icon = Icon("Asymptote", icon_image, "Asymptote Search", menu)
+        icon = Icon("Finn", icon_image, "Finn", menu)
 
         print(f"\n{'='*60}")
-        print("Asymptote is running in the system tray")
+        print("Finn is running in the system tray")
         print(f"Server: {self.base_url}")
         print("Right-click the tray icon to open or quit")
         print(f"{'='*60}\n")
@@ -248,7 +248,7 @@ def main():
     """Main entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Asymptote Desktop Application")
+    parser = argparse.ArgumentParser(description="Finn Desktop Application")
     parser.add_argument(
         "--no-tray",
         action="store_true",
@@ -262,7 +262,7 @@ def main():
 
     args = parser.parse_args()
 
-    app = AsymptoteApp()
+    app = FinnApp()
 
     if args.no_browser:
         # Don't auto-open browser, just start server

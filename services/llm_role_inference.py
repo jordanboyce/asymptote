@@ -5,7 +5,7 @@ this module sends column names + redacted sample values to a small LLM and
 asks it to propose semantic role assignments from the canonical taxonomy.
 
 Sample values are always redacted through the Presidio pipeline (P0.0) before
-leaving Asymptote.  The feature is gated behind ``enable_llm_schema_inference``
+leaving Finn.  The feature is gated behind ``enable_llm_schema_inference``
 in config and requires a configured AI provider (``mcp_ai_provider``).
 """
 

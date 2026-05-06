@@ -1,4 +1,4 @@
-"""MarketDataProvider protocol — the seam between Asymptote's market_data
+"""MarketDataProvider protocol — the seam between Finn's market_data
 modules and the upstream financial data source.
 
 Each method returns a raw payload dict shaped by the provider; caching,

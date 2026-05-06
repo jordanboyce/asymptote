@@ -160,7 +160,7 @@
             <ul class="text-sm text-base-content/70 mt-1 space-y-1 list-disc list-inside">
               <li>English prose averages ~4 characters per token — code, URLs, and numbers use more tokens per character.</li>
               <li>System prompts are re-sent every turn — keep them concise.</li>
-              <li>Use retrieval (like Asymptote's search) instead of pasting entire documents into context.</li>
+              <li>Use retrieval (like Finn's search) instead of pasting entire documents into context.</li>
               <li>For long sessions, start a new conversation with a brief summary rather than letting context fill up.</li>
             </ul>
           </div>

@@ -7,7 +7,7 @@
 
 ## The idea in one paragraph
 
-Financial advisors have firm-wide knowledge that should shape every client analysis: investment policies, valuation frameworks, screening criteria, house views. Today Asymptote has no home for this — it all has to be retyped into every chat. The **Expertise Library** is a separate top-level area where advisors create reusable "expertise packs" (name + description + markdown body). On any client collection, the advisor ticks which packs apply, and those packs' text is injected into the chat system prompt so the AI automatically follows them when analyzing that client's portfolio.
+Financial advisors have firm-wide knowledge that should shape every client analysis: investment policies, valuation frameworks, screening criteria, house views. Today Finn has no home for this — it all has to be retyped into every chat. The **Expertise Library** is a separate top-level area where advisors create reusable "expertise packs" (name + description + markdown body). On any client collection, the advisor ticks which packs apply, and those packs' text is injected into the chat system prompt so the AI automatically follows them when analyzing that client's portfolio.
 
 Write a pack once. Apply it to many clients. Edit it in one place and every client benefits.
 

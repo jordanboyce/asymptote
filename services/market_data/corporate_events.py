@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 _TTL_SECONDS = 12 * 60 * 60
 
-_SEC_USER_AGENT = "Asymptote Research asymptote@example.com"
+_SEC_USER_AGENT = "Finn Research finn@example.com"
 _SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 

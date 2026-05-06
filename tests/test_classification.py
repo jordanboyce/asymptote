@@ -106,8 +106,8 @@ def test_clear_cache(use_fake_provider):
 
 
 @pytest.mark.skipif(
-    not os.environ.get("ASYMPTOTE_NETWORK_TESTS"),
-    reason="Network test — set ASYMPTOTE_NETWORK_TESTS=1 to run",
+    not os.environ.get("FINN_NETWORK_TESTS"),
+    reason="Network test — set FINN_NETWORK_TESTS=1 to run",
 )
 def test_end_to_end_yfinance_fetch():
     from services.market_data.classification import get_security_classification

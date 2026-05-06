@@ -65,6 +65,15 @@ def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 2
         "accurate than reading row text snippets.",
         "",
     ]
+    lines.append(
+        "CRITICAL: every line below shows two distinct names. The quoted "
+        "value after `TABLE` is the SQL identifier — use it verbatim in "
+        "FROM clauses. The value after `source:` is the human-readable "
+        "filename — pass it to `identifier=` on schema/rows/aggregate/metric "
+        "tools, but NEVER use it as a SQL table name. Confusing the two "
+        "produces \"no such table\" errors."
+    )
+    lines.append("")
     for t in tables[:max_tables]:
         sheet_suffix = f" (sheet: {t['sheet_name']})" if t.get('sheet_name') else ""
         lines.append(
@@ -133,7 +142,11 @@ def build_tool_use_instructions() -> str:
         '  - query_table — read-only SQL SELECT for ad-hoc analytics.\n'
         '    <tool_call>{"tool": "query_table", "sql": "SELECT \\"sector\\", SUM(\\"market_value\\") FROM \\"csv_data_abc\\" GROUP BY \\"sector\\""}</tool_call>\n'
         '    Rules: SELECT/WITH only, single statement, double-quote every '
-        'identifier, column names are case-sensitive (use the exact sql_name).\n'
+        'identifier, column names are case-sensitive (use the exact sql_name). '
+        'The FROM target MUST be the quoted SQL `table_name` from the schema '
+        'block above (looks like `csv_data_*`) — never the source filename '
+        '(`portfolio.csv`, `HBIL*.csv`, etc.). Filenames go to `identifier=` '
+        'on the other tools, not into SQL.\n'
         '  - compute_portfolio_metric — canned financial metric. Only valid '
         'when get_table_schema reports financial_roles.\n'
         '    <tool_call>{"tool": "compute_portfolio_metric", "identifier": "portfolio.csv", "metric": "top_holdings", "limit": 5}</tool_call>\n'

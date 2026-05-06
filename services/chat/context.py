@@ -145,6 +145,7 @@ def build_chat_turn(
         system_text=system_text,
         messages=messages,
         agent_context={"collection_id": collection_id, "scope": chat_request.scope},
+        model=provider.QUALITY_MODEL,
         max_tokens=max_tokens,
         max_iterations=max_iterations,
     )

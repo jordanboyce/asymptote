@@ -190,7 +190,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults } = {}) => {
+  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults, content, slashCommand } = {}) => {
     const msg = _lastAssistantMsg(collectionId)
     if (!msg) return
     msg.streaming = false
@@ -198,6 +198,10 @@ export const useChatStore = defineStore('chat', () => {
     if (usage) msg.aiUsage = { synthesis: { ...usage }, total_input_tokens: usage.input_tokens || 0, total_output_tokens: usage.output_tokens || 0 }
     // Replace structuredResults with the server's authoritative list if provided
     if (structuredResults && structuredResults.length > 0) msg.structuredResults = structuredResults
+    // Optional content overwrite — used by /notes and /followup so the saved
+    // message is the redacted final, not the raw streamed preview.
+    if (typeof content === 'string') msg.content = content
+    if (slashCommand) msg.slashCommand = slashCommand
     const session = getActiveSession(collectionId)
     if (session) session.updatedAt = Date.now()
     saveToStorage()

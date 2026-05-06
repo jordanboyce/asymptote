@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# Asymptote Enterprise — One-command deployment script
+# Finn Enterprise — One-command deployment script
 # ============================================================
 # Usage:
 #   ./deploy-enterprise.sh              # API + Nginx (default)
@@ -99,7 +99,7 @@ deploy() {
 
     echo ""
     info "============================================"
-    info " Asymptote Enterprise is starting up!"
+    info " Finn Enterprise is starting up!"
     info "============================================"
     echo ""
     info "  HTTPS:  https://localhost:${NGINX_HTTPS_PORT:-443}"
@@ -114,9 +114,9 @@ deploy() {
 
     if [[ "${1:-}" == "--ollama" ]]; then
         echo ""
-        info "  Ollama is available at http://asymptote-ollama:11434"
+        info "  Ollama is available at http://finn-ollama:11434"
         info "  (internal network only — not exposed to host)"
-        info "  Pull a model:  docker exec asymptote-ollama ollama pull llama3.2"
+        info "  Pull a model:  docker exec finn-ollama ollama pull llama3.2"
         echo ""
     fi
 }
@@ -143,7 +143,7 @@ show_logs() {
 main() {
     echo ""
     echo "  ╔═══════════════════════════════════════╗"
-    echo "  ║   Asymptote Enterprise Deployment     ║"
+    echo "  ║   Finn Enterprise Deployment     ║"
     echo "  ╚═══════════════════════════════════════╝"
     echo ""
 

@@ -1,5 +1,5 @@
 # ============================================================
-# Asymptote Enterprise — Docker Compose
+# Finn Enterprise — Docker Compose
 # Turnkey deployment with TLS reverse proxy, optional Ollama,
 # named volumes, resource limits, and network isolation.
 # ============================================================
@@ -11,34 +11,34 @@
 #   4. docker compose -f docker-compose.enterprise.yml up -d
 #
 # Profiles:
-#   Default  — Asymptote API + Nginx reverse proxy
+#   Default  — Finn API + Nginx reverse proxy
 #   ollama   — adds a local Ollama container for AI features
 #              docker compose -f docker-compose.enterprise.yml --profile ollama up -d
 # ============================================================
 
-name: asymptote-enterprise
+name: finn-enterprise
 
 # ── Named volumes ────────────────────────────────────────────
 volumes:
-  asymptote-data:
+  finn-data:
     driver: local
-    name: asymptote-data
-  asymptote-models:
+    name: finn-data
+  finn-models:
     driver: local
-    name: asymptote-models
-  asymptote-pgdata:
+    name: finn-models
+  finn-pgdata:
     driver: local
-    name: asymptote-pgdata
+    name: finn-pgdata
   ollama-data:
     driver: local
-    name: asymptote-ollama-data
+    name: finn-ollama-data
 
 # ── Networks ─────────────────────────────────────────────────
 networks:
   frontend:
-    name: asymptote-frontend
+    name: finn-frontend
   backend:
-    name: asymptote-backend
+    name: finn-backend
     internal: true            # no direct internet access for app ↔ db traffic
 
 # ── Services ─────────────────────────────────────────────────
@@ -47,7 +47,7 @@ services:
   # ── Nginx reverse proxy ──────────────────────────────────
   nginx:
     image: nginx:1.27-alpine
-    container_name: asymptote-nginx
+    container_name: finn-nginx
     restart: unless-stopped
     ports:
       - "${NGINX_HTTP_PORT:-8080}:80"
@@ -61,7 +61,7 @@ services:
       - frontend
       - backend
     depends_on:
-      asymptote-api:
+      finn-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/health"]
@@ -77,19 +77,19 @@ services:
         reservations:
           memory: 64M
 
-  # ── Asymptote API ────────────────────────────────────────
-  asymptote-api:
+  # ── Finn API ────────────────────────────────────────
+  finn-api:
     build:
       context: .
       dockerfile: Dockerfile.enterprise
-    image: asymptote-enterprise:latest
-    container_name: asymptote-api
+    image: finn-enterprise:latest
+    container_name: finn-api
     restart: unless-stopped
     expose:
       - "8000"                # only reachable via nginx on the backend network
     volumes:
-      - asymptote-data:/app/data
-      - asymptote-models:/home/asymptote/.cache    # embedding model cache
+      - finn-data:/app/data
+      - finn-models:/home/finn/.cache    # embedding model cache
     env_file:
       - .env
     environment:
@@ -97,7 +97,7 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - DB_BACKEND=${DB_BACKEND:-sqlite}
-      - POSTGRES_URL=${POSTGRES_URL:-postgresql://asymptote:asymptote@postgres:5432/asymptote}
+      - POSTGRES_URL=${POSTGRES_URL:-postgresql://finn:finn@postgres:5432/finn}
       - ENABLE_MULTI_USER=${ENABLE_MULTI_USER:-false}
       - DEFAULT_USER_ID=${DEFAULT_USER_ID:-default}
     networks:
@@ -125,22 +125,22 @@ services:
   # ── PostgreSQL (optional — activate with --profile postgres) ─
   postgres:
     image: postgres:16-alpine
-    container_name: asymptote-postgres
+    container_name: finn-postgres
     profiles:
       - postgres
     restart: unless-stopped
     expose:
       - "5432"
     volumes:
-      - asymptote-pgdata:/var/lib/postgresql/data
+      - finn-pgdata:/var/lib/postgresql/data
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-asymptote}
-      POSTGRES_USER: ${POSTGRES_USER:-asymptote}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-asymptote}
+      POSTGRES_DB: ${POSTGRES_DB:-finn}
+      POSTGRES_USER: ${POSTGRES_USER:-finn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finn}
     networks:
       - backend
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U asymptote"]
+      test: ["CMD-SHELL", "pg_isready -U finn"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -161,7 +161,7 @@ services:
   # ── Ollama (optional — activate with --profile ollama) ───
   ollama:
     image: ollama/ollama:latest
-    container_name: asymptote-ollama
+    container_name: finn-ollama
     profiles:
       - ollama
     restart: unless-stopped

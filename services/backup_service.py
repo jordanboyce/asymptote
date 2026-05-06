@@ -1,4 +1,4 @@
-"""Backup and restore service for Asymptote indexes (v3.0 feature)."""
+"""Backup and restore service for Finn indexes (v3.0 feature)."""
 
 import json
 import shutil
@@ -49,7 +49,7 @@ class BackupService:
             Path to the created backup file
         """
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"asymptote_backup_{collection_id}_{timestamp}.zip"
+        backup_name = f"finn_backup_{collection_id}_{timestamp}.zip"
         backup_path = self.backup_dir / backup_name
 
         logger.info(f"Creating backup: {backup_name}")
@@ -272,7 +272,7 @@ class BackupService:
         """
         backups = []
 
-        for backup_file in self.backup_dir.glob("asymptote_backup_*.zip"):
+        for backup_file in self.backup_dir.glob("finn_backup_*.zip"):
             try:
                 with zipfile.ZipFile(backup_file, 'r') as zf:
                     metadata_content = zf.read("backup_metadata.json")
@@ -318,7 +318,7 @@ class BackupService:
         if not backup_path.exists():
             return False
 
-        if not backup_path.name.startswith("asymptote_backup_"):
+        if not backup_path.name.startswith("finn_backup_"):
             raise ValueError("Invalid backup filename")
 
         backup_path.unlink()

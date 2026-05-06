@@ -1,4 +1,4 @@
-"""Meeting Brief generator for Asymptote.
+"""Meeting Brief generator for Finn.
 
 Given a HoldingsStore instance, scans every table with detected financial
 roles and computes a multi-section pre-meeting brief:

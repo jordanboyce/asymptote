@@ -1,4 +1,4 @@
-"""Configuration management for Asymptote API."""
+"""Configuration management for Finn API."""
 
 from pathlib import Path
 from typing import Literal, Optional
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # MCP configuration
     enable_mcp: bool = True
-    mcp_server_id: str = "asymptote"
+    mcp_server_id: str = "finn"
     mcp_default_collection: str = "default"
     mcp_top_k: int = 5
     mcp_mode: Literal["semantic", "keyword", "hybrid"] = "semantic"
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # Database backend: "sqlite" for single-user/simple, "postgresql" for multi-user/enterprise
     db_backend: Literal["sqlite", "postgresql"] = "sqlite"
-    postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/asymptote
+    postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/finn
 
     # Multi-user mode (user isolation via X-User-ID header from auth proxy)
     enable_multi_user: bool = False  # Set to True for per-user data isolation

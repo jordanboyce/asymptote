@@ -18,7 +18,7 @@ numeric coercion silently failed upstream:
   weight does not sum to ~100% the lot-rollup or coercion likely lost data.
 
 Warnings are returned as a ``warnings`` list on the result dict.  The result
-is always returned — Asymptote never suppresses data, but it never ships
+is always returned — Finn never suppresses data, but it never ships
 silently wrong numbers either.
 """
 

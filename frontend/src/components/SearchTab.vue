@@ -169,8 +169,20 @@
 
         <!-- Bottom toolbar -->
         <div class="flex items-center justify-between px-3 pb-2">
-          <!-- Left: inline controls (expert-only) -->
+          <!-- Left: inline controls -->
           <div class="flex items-center gap-1.5">
+            <button
+              v-if="speechSupported"
+              class="btn btn-ghost btn-xs btn-circle"
+              :class="{ 'text-error animate-pulse': speechListening }"
+              @click="toggleDictation"
+              :title="speechListening ? 'Stop dictation' : 'Dictate (uses your browser\'s speech recognition)'"
+              :aria-label="speechListening ? 'Stop dictation' : 'Start dictation'"
+              :aria-pressed="speechListening"
+              :disabled="loading"
+            >
+              <Mic :size="14" />
+            </button>
             <template v-if="isExpertMode">
               <button
                 class="btn btn-ghost btn-xs btn-circle"
@@ -577,7 +589,8 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
-import { Plus, History, SlidersHorizontal, X, Search as SearchIcon } from 'lucide-vue-next'
+import { Plus, History, SlidersHorizontal, X, Search as SearchIcon, Mic } from 'lucide-vue-next'
+import { useSpeechRecognition } from '../composables/useSpeechRecognition.js'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -643,6 +656,23 @@ const onInputChange = () => {
     return
   }
   slashPickerOpen.value = (searchStore.query || '').trimStart().startsWith('/')
+}
+
+const { supported: speechSupported, listening: speechListening, toggle: toggleSpeech } = useSpeechRecognition()
+
+const onSpeechTranscript = (text) => {
+  const trimmed = (text || '').trim()
+  if (!trimmed) return
+  const current = searchStore.query || ''
+  searchStore.query = current
+    ? `${current.replace(/\s+$/, '')} ${trimmed}`
+    : trimmed
+  onInputChange()
+}
+
+const toggleDictation = () => {
+  if (loading.value) return
+  toggleSpeech(onSpeechTranscript)
 }
 
 const onInputBlur = () => {

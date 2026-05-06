@@ -1,6 +1,6 @@
-"""PII redaction layer for Asymptote.
+"""PII redaction layer for Finn.
 
-Intercepts all MCP tool output before it exits Asymptote to redact
+Intercepts all MCP tool output before it exits Finn to redact
 personally identifiable information using Microsoft Presidio (runs
 100% locally, no cloud dependency).
 

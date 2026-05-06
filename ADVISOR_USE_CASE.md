@@ -1,4 +1,4 @@
-# Asymptote — Your 30-Second Meeting Brief
+# Finn — Your 30-Second Meeting Brief
 
 **How one button replaces 45 minutes of meeting prep**
 
@@ -16,9 +16,9 @@ And it's where errors creep in. A transposed number. A negative that Excel read 
 
 ## The Solution: One Button, One Brief
 
-Asymptote replaces that entire process with a **single button press**.
+Finn replaces that entire process with a **single button press**.
 
-Upload your client's brokerage exports — Pershing, Schwab, Fidelity, Vanguard, NetX360. Asymptote detects the format, strips the preamble rows, fixes the accounting negatives, rolls up multi-lot positions, and builds a structured data layer underneath.
+Upload your client's brokerage exports — Pershing, Schwab, Fidelity, Vanguard, NetX360. Finn detects the format, strips the preamble rows, fixes the accounting negatives, rolls up multi-lot positions, and builds a structured data layer underneath.
 
 Then hit **"Generate Meeting Brief."** In 30 seconds, you get a one-page summary that would have taken your assistant an hour to assemble:
 
@@ -40,7 +40,7 @@ The brief isn't a chat response. It's a **document** — structured, printable, 
 
 ### 9:00 AM — Generate the Brief
 
-You uploaded the Henderson Pershing exports last week. You open Asymptote, select the Henderson collection, and hit Generate Meeting Brief.
+You uploaded the Henderson Pershing exports last week. You open Finn, select the Henderson collection, and hit Generate Meeting Brief.
 
 30 seconds later, you're looking at:
 
@@ -51,17 +51,17 @@ You uploaded the Henderson Pershing exports last week. You open Asymptote, selec
 - **Cash drag:** $62,000 uninvested in the joint account
 - **New position:** 200 shares of VTI added to the IRA since last meeting
 
-That's the same work your assistant does in Excel. Except Asymptote doesn't miss the PKST loss, doesn't transpose a number from NetX360, and doesn't forget to check the variable annuity.
+That's the same work your assistant does in Excel. Except Finn doesn't miss the PKST loss, doesn't transpose a number from NetX360, and doesn't forget to check the variable annuity.
 
 ### 10:00 AM — During the Meeting
 
-Before the conversation starts, you hit the **microphone button** in Asymptote. With the Hendersons' permission, the tool records the meeting and transcribes it in real time using Whisper — all running locally on your machine.
+Before the conversation starts, you hit the **microphone button** in Finn. With the Hendersons' permission, the tool records the meeting and transcribes it in real time using Whisper — all running locally on your machine.
 
 The brief covers 90% of what you need. But Bob asks: *"What's happening with that biotech stock we bought last year?"*
 
 This is where the **chat** comes in — not as the primary tool, but as the safety net for questions the brief didn't anticipate. You type the question, get the position details and P&L in seconds, and keep the conversation moving.
 
-Linda asks about sector allocation. One question. Asymptote breaks it down, shows tech at 34% versus the 25% target, and lists the positions driving the overweight.
+Linda asks about sector allocation. One question. Finn breaks it down, shows tech at 34% versus the 25% target, and lists the positions driving the overweight.
 
 Meanwhile, the transcript is being saved to the Henderson collection. When the meeting ends, you have a complete, searchable record of the conversation — ready for compliance review or to inform the next meeting's brief.
 
@@ -71,19 +71,19 @@ Meanwhile, the transcript is being saved to the Henderson collection. When the m
 
 The meeting is over. Now comes the part everyone dreads: documentation.
 
-But you have something your assistant never had: a **full transcript** of the conversation, already saved to the Henderson collection, plus every data point that was pulled up during the meeting. Asymptote combines both to draft a **Note of Record**:
+But you have something your assistant never had: a **full transcript** of the conversation, already saved to the Henderson collection, plus every data point that was pulled up during the meeting. Finn combines both to draft a **Note of Record**:
 
 > *"Discussed the PKST downtrend with the Hendersons; client agreed to rebalance into sector-equivalent ETFs. Flagged concentration risk in AAPL at 11.2% vs. 10% IPS limit. Redaction audit logs attached to confirm PII handling."*
 
 You review it, edit if needed, and file it. Instead of spending 20 minutes writing it from scratch.
 
-Then: *"Draft a follow-up email to Bob and Linda."* Asymptote writes a personalized summary of the discussion points and next steps, PII-safe, ready for you to review and send.
+Then: *"Draft a follow-up email to Bob and Linda."* Finn writes a personalized summary of the discussion points and next steps, PII-safe, ready for you to review and send.
 
 ---
 
 ## The Bottom Line
 
-| Task | Today | With Asymptote |
+| Task | Today | With Finn |
 |------|-------|----------------|
 | Pull and flatten brokerage reports | 30–45 min | Automatic on upload |
 | Assemble meeting prep | 15–20 min | One button, 30 seconds |
@@ -93,13 +93,13 @@ Then: *"Draft a follow-up email to Bob and Linda."* Asymptote writes a personali
 | Draft follow-up email | 10–15 min | One command (coming soon) |
 | **Total per client** | **75–110 minutes** | **Under 5 minutes** |
 
-That's **practice leverage**. Your assistant gets 5 hours back per week. A junior team member using Asymptote can surface insights — tax-loss candidates, concentration violations, 8-K impacts — that typically require a senior analyst. The tool doesn't replace your judgment. It eliminates the grunt work that prevents you from exercising it.
+That's **practice leverage**. Your assistant gets 5 hours back per week. A junior team member using Finn can surface insights — tax-loss candidates, concentration violations, 8-K impacts — that typically require a senior analyst. The tool doesn't replace your judgment. It eliminates the grunt work that prevents you from exercising it.
 
 ---
 
 ## Privacy: Nothing Leaves Your Machine Unprotected
 
-We built Asymptote with one non-negotiable rule: nothing identifiable reaches any AI model without being scrubbed first.
+We built Finn with one non-negotiable rule: nothing identifiable reaches any AI model without being scrubbed first.
 
 - **Your data stays local.** The AI only sees redacted versions of your documents.
 - **31+ entity types detected.** SSNs, account numbers, names, addresses, emails, phone numbers, financial identifiers — all caught and replaced.
@@ -129,7 +129,7 @@ We built Asymptote with one non-negotiable rule: nothing identifiable reaches an
 
 ## Your Feedback Shapes What We Build Next
 
-This document shows where Asymptote is headed. Your input directly determines what ships first. Please be candid — the more specific, the better.
+This document shows where Finn is headed. Your input directly determines what ships first. Please be candid — the more specific, the better.
 
 1. **The meeting brief is our top priority.** If you could only have one output from this tool, is that the right one? Or would you rather start with something else — the compliance notes, the opportunity flags, the chat?
 
@@ -141,7 +141,7 @@ This document shows where Asymptote is headed. Your input directly determines wh
 
 5. **How many clients per week get a deep review?** This helps us understand the scale of time savings. If the answer is 15 clients at 45 minutes each, that's 11+ hours of prep your team does every week.
 
-6. **The big question:** If Asymptote could give your assistant 5 hours of their week back by automating the report-flattening and meeting-brief process, *where would you have them focus that extra time to grow your AUM?*
+6. **The big question:** If Finn could give your assistant 5 hours of their week back by automating the report-flattening and meeting-brief process, *where would you have them focus that extra time to grow your AUM?*
 
 ---
 

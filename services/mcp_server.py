@@ -1,4 +1,4 @@
-"""Embedded MCP server for Asymptote."""
+"""Embedded MCP server for Finn."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ MCP_PROFILE_FIELDS = (
     "inline_row_threshold",
 )
 
-_request_mcp_profile: ContextVar[dict[str, Any]] = ContextVar("asymptote_request_mcp_profile", default={})
+_request_mcp_profile: ContextVar[dict[str, Any]] = ContextVar("finn_request_mcp_profile", default={})
 
 MCP_CONFIG_FIELDS = (
     "enable_mcp",
@@ -56,8 +56,8 @@ MCP_CONFIG_FIELDS = (
     "mcp_max_source_length",
 )
 
-_asymptote_mcp = FastMCP(
-    "Asymptote",
+_finn_mcp = FastMCP(
+    "Finn",
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
@@ -66,7 +66,7 @@ _asymptote_mcp = FastMCP(
 
 def _ensure_enabled() -> None:
     if not settings.enable_mcp:
-        raise RuntimeError("Asymptote MCP is disabled in Settings.")
+        raise RuntimeError("Finn MCP is disabled in Settings.")
 
 
 def _redact(response: dict[str, Any], tool_name: str) -> dict[str, Any]:
@@ -155,11 +155,11 @@ def get_request_mcp_profile() -> dict[str, Any]:
 
 def _sanitize_server_id(value: str) -> str:
     cleaned = ''.join(ch if ch.isalnum() or ch in {'-', '_'} else '-' for ch in value.strip().lower())
-    return cleaned.strip('-_') or 'asymptote'
+    return cleaned.strip('-_') or 'finn'
 
 
 def build_mcp_export_payload(base_url: str, profile: dict[str, Any] | None = None) -> dict[str, str]:
-    base_server_id = (settings.mcp_server_id or "asymptote").strip() or "asymptote"
+    base_server_id = (settings.mcp_server_id or "finn").strip() or "finn"
     normalized_profile = _normalize_profile(profile or {"collection_id": settings.mcp_default_collection})
     collection_id = normalized_profile["collection_id"]
     server_id = _sanitize_server_id(f"{base_server_id}-{collection_id}")
@@ -332,7 +332,7 @@ def _serialize_result(result: Any, rank: int, max_source_length: int) -> dict[st
     return payload
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def list_collections() -> dict[str, Any]:
     """List every document collection available on this MCP server.
 
@@ -380,7 +380,7 @@ def list_collections() -> dict[str, Any]:
     }, "list_collections")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def generate_meeting_brief(
     collection_id: str | None = None,
     tax_loss_min: float = 500.0,
@@ -459,7 +459,7 @@ def generate_meeting_brief(
     return _redact(brief, "generate_meeting_brief")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_collection_info(
     collection_id: str | None = None,
     detail: Literal["counts", "with_documents"] = "with_documents",
@@ -535,7 +535,7 @@ def get_collection_info(
     return _redact(payload, "get_collection_info")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def search_collection(
     query: str,
     collection_id: str | None = None,
@@ -769,7 +769,7 @@ _DOC_CONTEXT_MAX_CHARS_DEFAULT = 12000
 _DOC_CONTEXT_MAX_CHARS_CAP = 40000
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_document_context(
     document_id: str,
     page_number: int | None = None,
@@ -925,7 +925,7 @@ def _find_literal_excerpt(text: str, pattern: str, case_insensitive: bool) -> tu
     return idx, excerpt
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def find_in_documents(
     pattern: str,
     literal: bool = True,
@@ -1060,7 +1060,7 @@ def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def list_tables(collection_id: str | None = None) -> dict[str, Any]:
     """List every CSV / Excel sheet ingested as a typed SQL table.
 
@@ -1105,7 +1105,7 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
     }, "list_tables")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_table_schema(
     identifier: str,
     collection_id: str | None = None,
@@ -1156,7 +1156,7 @@ def get_table_schema(
     return _redact(_format_schema_summary(schema), "get_table_schema")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_table_rows(
     identifier: str,
     limit: int = 200,
@@ -1233,7 +1233,7 @@ def get_table_rows(
     }, "get_table_rows")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def query_table(
     sql: str,
     max_rows: int = 500,
@@ -1265,15 +1265,81 @@ def query_table(
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
     capped_rows = max(1, min(int(max_rows), 2000))
+    warnings: list[str] = []
+    effective_sql = sql
     try:
-        result = store.execute_query(sql, max_rows=capped_rows)
+        result = store.execute_query(effective_sql, max_rows=capped_rows)
     except SQLValidationError as e:
-        raise ValueError(str(e))
-    return _redact({
+        rewrite = _maybe_rewrite_unknown_table(sql, str(e), store)
+        if rewrite is None:
+            raise ValueError(str(e))
+        effective_sql, missing, replacement = rewrite
+        warnings.append(
+            f"Auto-rewrote FROM clause: '{missing}' is the source filename, "
+            f"not a SQL table. Used '{replacement}' instead. Issue future "
+            f"queries against the quoted table_name shown in the schema block."
+        )
+        try:
+            result = store.execute_query(effective_sql, max_rows=capped_rows)
+        except SQLValidationError as e2:
+            raise ValueError(str(e2))
+    payload = {
         "collection_id": resolved_collection,
-        "sql": sql,
+        "sql": effective_sql,
         **result,
-    }, "query_table")
+    }
+    if effective_sql != sql:
+        payload["original_sql"] = sql
+    if warnings:
+        payload["warnings"] = warnings
+    return _redact(payload, "query_table")
+
+
+def _maybe_rewrite_unknown_table(
+    sql: str,
+    error_message: str,
+    store: Any,
+) -> tuple[str, str, str] | None:
+    """If the SQL error is a 'no such table' caused by an agent passing a
+    filename / document_id where a table_name belongs, return the rewritten
+    SQL plus (missing_identifier, replacement_table_name). Otherwise None.
+
+    Conservative on purpose: we only rewrite when the missing identifier
+    appears verbatim in the SQL (quoted or unquoted) and maps unambiguously
+    to one ingested table via filename or document_id. Ambiguous matches
+    fall through and the original error surfaces — never silently wrong.
+    """
+    import re
+
+    match = re.search(r"no such table:\s*(.+?)(?:\s*$|\n)", error_message, flags=re.IGNORECASE)
+    if not match:
+        return None
+    missing = match.group(1).strip().strip('"').strip("'")
+    if not missing:
+        return None
+
+    try:
+        tables = store.list_tables()
+    except Exception:
+        return None
+
+    candidates = [
+        t for t in tables
+        if missing == t.get("filename") or missing == t.get("document_id")
+    ]
+    if len(candidates) != 1:
+        return None
+    replacement = candidates[0].get("table_name")
+    if not replacement:
+        return None
+
+    pattern = re.compile(
+        r'(?:"' + re.escape(missing) + r'"|\b' + re.escape(missing) + r'\b)'
+    )
+    new_sql, count = pattern.subn(f'"{replacement}"', sql)
+    if count == 0:
+        return None
+    return new_sql, missing, replacement
 
 
 PortfolioMetric = Literal[
@@ -1295,7 +1361,7 @@ PortfolioMetric = Literal[
 ]
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def compute_portfolio_metric(
     identifier: str,
     metric: PortfolioMetric,
@@ -1378,7 +1444,7 @@ _AGG_FN_SQL = {
 }
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def aggregate_table(
     identifier: str,
     aggregate_col: str,
@@ -1474,7 +1540,7 @@ def aggregate_table(
     }, "aggregate_table")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_document_metadata(
     document_id: str,
     collection_id: str | None = None,
@@ -1536,7 +1602,7 @@ def get_document_metadata(
 # ---------------------------------------------------------------------------
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_recent_redactions(
     session_id: str | None = None,
     collection_id: str | None = None,
@@ -1601,7 +1667,7 @@ def get_recent_redactions(
     return result
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_price_history(
     symbol: str,
     start: str | None = None,
@@ -1645,7 +1711,7 @@ def get_price_history(
     return _redact(response, tool_name="get_price_history")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_security_classification(symbol: str) -> dict[str, Any]:
     """Return sector, industry, market cap bucket, asset class for a security.
 
@@ -1676,7 +1742,7 @@ def get_security_classification(symbol: str) -> dict[str, Any]:
     return _redact(response, tool_name="get_security_classification")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_company_profile(symbol: str) -> dict[str, Any]:
     """Return company-level metadata for a ticker: current officers, CEO,
     business summary, sector, industry, website, headcount, market cap.
@@ -1705,7 +1771,7 @@ def get_company_profile(symbol: str) -> dict[str, Any]:
     return _redact(response, tool_name="get_company_profile")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_company_news(symbol: str, limit: int = 10) -> dict[str, Any]:
     """Return recent news headlines for a ticker from yfinance.
 
@@ -1732,7 +1798,7 @@ def get_company_news(symbol: str, limit: int = 10) -> dict[str, Any]:
     return _redact(response, tool_name="get_company_news")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_corporate_events(
     symbol: str,
     since: str | None = None,
@@ -1773,7 +1839,7 @@ def get_corporate_events(
     return _redact(response, tool_name="get_corporate_events")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def enrich_holdings(
     collection_id: str | None = None,
     identifier: str | None = None,
@@ -1825,7 +1891,7 @@ def enrich_holdings(
     return _redact(response, tool_name="enrich_holdings")
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def get_redaction_config(
     collection_id: str | None = None,
 ) -> dict[str, Any]:
@@ -1850,7 +1916,7 @@ def get_redaction_config(
     return payload
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def redaction_preview(
     text: str,
     collection_id: str | None = None,
@@ -1892,7 +1958,7 @@ def redaction_preview(
     }
 
 
-@_asymptote_mcp.tool()
+@_finn_mcp.tool()
 def set_redaction_policy(
     collection_id: str | None = None,
     redaction_style: str | None = None,
@@ -1952,7 +2018,7 @@ def set_redaction_policy(
 # ---------------------------------------------------------------------------
 
 
-@_asymptote_mcp.resource("collection://{id}")
+@_finn_mcp.resource("collection://{id}")
 def resource_collection(id: str) -> dict[str, Any]:
     """Collection metadata and document inventory.
 
@@ -1997,7 +2063,7 @@ def resource_collection(id: str) -> dict[str, Any]:
     }, "resource_collection")
 
 
-@_asymptote_mcp.resource("collection://{id}/schema")
+@_finn_mcp.resource("collection://{id}/schema")
 def resource_collection_schema(id: str) -> dict[str, Any]:
     """All table schemas in a collection.
 
@@ -2025,7 +2091,7 @@ def resource_collection_schema(id: str) -> dict[str, Any]:
     }, "resource_collection_schema")
 
 
-@_asymptote_mcp.resource("document://{id}")
+@_finn_mcp.resource("document://{id}")
 def resource_document(id: str) -> dict[str, Any]:
     """Full document metadata record.
 
@@ -2068,7 +2134,7 @@ def resource_document(id: str) -> dict[str, Any]:
     }, "resource_document")
 
 
-@_asymptote_mcp.resource("table://{id}")
+@_finn_mcp.resource("table://{id}")
 def resource_table(id: str) -> dict[str, Any]:
     """Table schema and sample rows in one fetch.
 
@@ -2143,7 +2209,7 @@ class ToggleableMCPApp:
 
         if scope["type"] == "http" and not settings.enable_mcp:
             response = JSONResponse(
-                {"detail": "Asymptote MCP is disabled in Settings."},
+                {"detail": "Finn MCP is disabled in Settings."},
                 status_code=503,
             )
             await response(scope, receive, send)
@@ -2167,10 +2233,10 @@ class ToggleableMCPApp:
             _request_mcp_profile.reset(token)
 
 
-embedded_mcp_app = ToggleableMCPApp(_asymptote_mcp.streamable_http_app())
+embedded_mcp_app = ToggleableMCPApp(_finn_mcp.streamable_http_app())
 
 
 @asynccontextmanager
 async def mcp_server_lifespan():
-    async with _asymptote_mcp.session_manager.run():
+    async with _finn_mcp.session_manager.run():
         yield

@@ -56,6 +56,7 @@ from typing import Any, AsyncIterator
 
 from services.agent_tools import anthropic_tools, openai_tools
 from services.ai_service import AIProvider, AnthropicProvider
+from services.chat.think_tags import StreamingThinkStripper, strip_think_tags
 from services.structured_chat import (
     build_tool_use_instructions,
     execute_tool_calls,
@@ -90,6 +91,38 @@ class ChatTurn:
 async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
     """Drive the agentic tool-use loop, yielding events as they happen."""
 
+    # Refuse upfront when the (provider, model) pair plainly can't run the
+    # tool-use loop. Catches three failure modes that previously surfaced as
+    # opaque mid-stream provider errors:
+    #   1. model="" (empty string) → 404 from OpenAI-compatible endpoints
+    #   2. capabilities().tools is False → known-incapable model picked
+    #   3. provider.supports_native_tools() False → routes to ReAct fallback
+    if not turn.model:
+        provider_name = turn.provider.__class__.__name__
+        yield {
+            "type": "error",
+            "message": (
+                f"No model selected for {provider_name}. Open Settings, "
+                "validate the API key, and pick a model before starting chat."
+            ),
+        }
+        return
+
+    capabilities = turn.provider.capabilities()
+    if capabilities.tools is False and turn.provider.supports_native_tools():
+        # Provider claims native tool calling, but capabilities() declares the
+        # current model can't actually do it. Refuse with a clear message
+        # instead of letting the API call return tool-shaped errors.
+        yield {
+            "type": "error",
+            "message": (
+                f"Model '{capabilities.model}' on {capabilities.provider} doesn't "
+                "support tool calling. Pick a tool-capable model in Settings — "
+                "Anthropic Claude, OpenAI gpt-4o family, or Ollama Cloud gpt-oss."
+            ),
+        }
+        return
+
     if not turn.provider.supports_native_tools():
         async for ev in _run_react_fallback(turn):
             yield ev
@@ -119,7 +152,9 @@ async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
         totals.add(result.get("usage"))
 
         tool_calls = result.get("tool_calls") or []
-        thinking = result.get("text") or ""
+        # Strip `<think>...</think>` reasoning blocks so they don't surface
+        # as a thinking-event bullet or as a streaming-failure fallback.
+        thinking = strip_think_tags(result.get("text") or "")
 
         logger.info(
             "[engine] iter=%d stop=%s tool_calls=%d",
@@ -397,14 +432,21 @@ async def _drive_provider_stream(
     """
     text_parts: list[str] = []
     usage: dict[str, Any] | None = None
+    stripper = StreamingThinkStripper()
     for sev in stream_iter:
         delta = sev.get("delta") if isinstance(sev, dict) else None
         if delta:
-            text_parts.append(delta)
-            yield {"type": "text_delta", "delta": delta}
-            await asyncio.sleep(0)
+            visible = stripper.feed(delta)
+            if visible:
+                text_parts.append(visible)
+                yield {"type": "text_delta", "delta": visible}
+                await asyncio.sleep(0)
         elif isinstance(sev, dict) and sev.get("done"):
             usage = sev.get("usage")
+    tail = stripper.flush()
+    if tail:
+        text_parts.append(tail)
+        yield {"type": "text_delta", "delta": tail}
     yield {"type": "_done", "text": "".join(text_parts), "usage": usage}
 
 

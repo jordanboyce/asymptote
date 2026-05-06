@@ -1,5 +1,5 @@
 """
-Asymptote — Self-hosted document search API.
+Finn — Self-hosted document search API.
 
 Supports PDF, TXT, DOCX, and CSV files.
 """
@@ -118,7 +118,7 @@ async def lifespan(app: FastAPI):
     global _initialized
 
     async with mcp_server_lifespan():
-        logger.info("Initializing Asymptote API...")
+        logger.info("Initializing Finn API...")
 
         # Initialize default collection's indexer to pre-load embedding model
         logger.info("Loading default collection indexer...")
@@ -150,21 +150,21 @@ async def lifespan(app: FastAPI):
 
         _initialized = True
 
-        logger.info("Asymptote API ready")
+        logger.info("Finn API ready")
         logger.info(f"Data directory: {settings.data_dir}")
         logger.info(f"Embedded MCP server: {'enabled' if settings.enable_mcp else 'disabled'}")
 
         yield
 
         # Cleanup on shutdown
-        logger.info("Shutting down Asymptote API...")
+        logger.info("Shutting down Finn API...")
         indexer_manager.save_all()
         logger.info("Shutdown complete")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="Asymptote API",
+    title="Finn API",
     description="Self-hosted semantic search for documents (PDF, TXT, DOCX, CSV)",
     version="0.1.0",
     lifespan=lifespan,
@@ -194,7 +194,7 @@ async def web_interface():
         return HTMLResponse(content=index_path.read_text(encoding="utf-8"), status_code=200)
     else:
         return HTMLResponse(
-            content="<h1>Asymptote API</h1><p>Web interface not found. Visit <a href='/docs'>/docs</a> for API documentation.</p>",
+            content="<h1>Finn API</h1><p>Web interface not found. Visit <a href='/docs'>/docs</a> for API documentation.</p>",
             status_code=200
         )
 
@@ -460,7 +460,7 @@ async def upload_documents_async(
             )
 
     # Create temp directory for staging files
-    temp_dir = Path(tempfile.mkdtemp(prefix="asymptote_upload_"))
+    temp_dir = Path(tempfile.mkdtemp(prefix="finn_upload_"))
 
     staged_files = []
     try:
@@ -1882,7 +1882,21 @@ async def validate_api_key(
             provider = create_provider(x_ai_provider, x_ai_key, **extra)
 
         valid = provider.validate()
-        return {"valid": valid, "error": None}
+        capabilities: dict | None = None
+        if valid:
+            try:
+                capabilities = provider.probe_capabilities().to_dict()
+            except Exception as cap_err:
+                logger.warning(
+                    "Capability probe failed for %s: %s", x_ai_provider, cap_err,
+                )
+                # Fall back to declared (unprobed) capabilities so the UI
+                # still has something useful to show.
+                try:
+                    capabilities = provider.capabilities().to_dict()
+                except Exception:
+                    capabilities = None
+        return {"valid": valid, "error": None, "capabilities": capabilities}
     except Exception as e:
         error_str = str(e)
         logger.error(f"API key validation error for {x_ai_provider}: {e}")
@@ -2229,7 +2243,7 @@ async def set_agent_config(
         api_key: The API key to store
 
     Note: Keys are stored server-side. For security, ensure your
-    Asymptote instance is properly secured.
+    Finn instance is properly secured.
     """
     from services.app_database import app_db
 
@@ -2394,7 +2408,7 @@ async def list_mcp_resources(request: Request):
     tags=["mcp"],
 )
 async def create_mcp_resource(request: Request, body: dict):
-    """Create a named mapping from a project to an Asymptote collection."""
+    """Create a named mapping from a project to a Finn collection."""
     from services.app_database import app_db
     import uuid
     name = (body.get("name") or "").strip()
@@ -3491,6 +3505,84 @@ def _get_brief_text(collection_id: str) -> str:
         return ""
 
 
+def _format_chat_context(messages) -> str:
+    chat_lines = []
+    for m in (messages or [])[-30:]:
+        if m.content and not m.content.startswith("/"):
+            chat_lines.append(f"{m.role.upper()}: {m.content[:500]}")
+    return "\n".join(chat_lines)
+
+
+def _build_notes_prompt(collection_id: str, messages) -> str:
+    transcript = _find_recent_transcript(collection_id)
+    portfolio_summary = _get_brief_text(collection_id)
+    chat_context = _format_chat_context(messages)
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+
+    return f"""You are a compliance assistant for a registered investment advisor.
+Generate a structured Note of Record for today's client meeting ({today}).
+Use the transcript excerpt, advisor chat, and portfolio summary below.
+If information is missing, use reasonable placeholders marked [UNKNOWN].
+
+## TRANSCRIPT EXCERPT
+{transcript or "(No transcript found — summarize from chat context)"}
+
+## ADVISOR CHAT CONTEXT
+{chat_context or "(No chat history provided)"}
+
+## PORTFOLIO SUMMARY
+{portfolio_summary or "(No portfolio data available)"}
+
+---
+Draft the Note of Record with these sections:
+1. **Date & Attendees** — infer names from transcript if possible
+2. **Topics Discussed** — bullet list from transcript
+3. **Recommendations Made** — from advisor chat/tool calls
+4. **Action Items** — concrete follow-ups with owner and due date
+5. **Redaction Confirmation** — state that PII was reviewed per firm policy
+
+Be concise and professional. Use bullet points where appropriate.
+"""
+
+
+def _build_followup_prompt(collection_id: str, messages) -> str:
+    transcript = _find_recent_transcript(collection_id)
+    portfolio_summary = _get_brief_text(collection_id)
+    chat_context = _format_chat_context(messages)
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%B %d, %Y")
+
+    return f"""You are a compliance-aware assistant for a registered investment advisor.
+Draft a professional follow-up email to the client after today's meeting ({today}).
+The email must be client-safe — do NOT include internal compliance notes or sensitive portfolio numbers unless rounded.
+Use the information below to make it specific and actionable.
+
+## TRANSCRIPT EXCERPT
+{transcript or "(No transcript found — use chat context)"}
+
+## ADVISOR CHAT CONTEXT
+{chat_context or "(No chat history provided)"}
+
+## PORTFOLIO SUMMARY
+{portfolio_summary or "(No portfolio data available)"}
+
+---
+Draft the follow-up email with:
+- Subject line
+- Professional greeting
+- Brief recap of topics discussed
+- Action items agreed upon (with any deadlines)
+- Next steps / next meeting mention
+- Professional sign-off
+
+Keep it under 250 words. Do not include specific dollar amounts or account numbers.
+Write [CLIENT NAME] and [ADVISOR NAME] as placeholders.
+"""
+
+
 @app.post(
     "/api/collections/{collection_id}/notes",
     response_model=NoteResponse,
@@ -3517,42 +3609,7 @@ async def generate_compliance_note(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
 
-    transcript = _find_recent_transcript(collection_id)
-    portfolio_summary = _get_brief_text(collection_id)
-
-    chat_lines = []
-    for m in (body.messages or [])[-30:]:
-        if m.content and not m.content.startswith("/"):
-            chat_lines.append(f"{m.role.upper()}: {m.content[:500]}")
-    chat_context = "\n".join(chat_lines)
-
-    from datetime import datetime as _dt
-    today = _dt.now().strftime("%Y-%m-%d")
-
-    prompt = f"""You are a compliance assistant for a registered investment advisor.
-Generate a structured Note of Record for today's client meeting ({today}).
-Use the transcript excerpt, advisor chat, and portfolio summary below.
-If information is missing, use reasonable placeholders marked [UNKNOWN].
-
-## TRANSCRIPT EXCERPT
-{transcript or "(No transcript found — summarize from chat context)"}
-
-## ADVISOR CHAT CONTEXT
-{chat_context or "(No chat history provided)"}
-
-## PORTFOLIO SUMMARY
-{portfolio_summary or "(No portfolio data available)"}
-
----
-Draft the Note of Record with these sections:
-1. **Date & Attendees** — infer names from transcript if possible
-2. **Topics Discussed** — bullet list from transcript
-3. **Recommendations Made** — from advisor chat/tool calls
-4. **Action Items** — concrete follow-ups with owner and due date
-5. **Redaction Confirmation** — state that PII was reviewed per firm policy
-
-Be concise and professional. Use bullet points where appropriate.
-"""
+    prompt = _build_notes_prompt(collection_id, body.messages)
 
     from services.chat.engine import complete_one_shot
     try:
@@ -3595,44 +3652,7 @@ async def generate_followup_email(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
 
-    transcript = _find_recent_transcript(collection_id)
-    portfolio_summary = _get_brief_text(collection_id)
-
-    chat_lines = []
-    for m in (body.messages or [])[-30:]:
-        if m.content and not m.content.startswith("/"):
-            chat_lines.append(f"{m.role.upper()}: {m.content[:500]}")
-    chat_context = "\n".join(chat_lines)
-
-    from datetime import datetime as _dt
-    today = _dt.now().strftime("%B %d, %Y")
-
-    prompt = f"""You are a compliance-aware assistant for a registered investment advisor.
-Draft a professional follow-up email to the client after today's meeting ({today}).
-The email must be client-safe — do NOT include internal compliance notes or sensitive portfolio numbers unless rounded.
-Use the information below to make it specific and actionable.
-
-## TRANSCRIPT EXCERPT
-{transcript or "(No transcript found — use chat context)"}
-
-## ADVISOR CHAT CONTEXT
-{chat_context or "(No chat history provided)"}
-
-## PORTFOLIO SUMMARY
-{portfolio_summary or "(No portfolio data available)"}
-
----
-Draft the follow-up email with:
-- Subject line
-- Professional greeting
-- Brief recap of topics discussed
-- Action items agreed upon (with any deadlines)
-- Next steps / next meeting mention
-- Professional sign-off
-
-Keep it under 250 words. Do not include specific dollar amounts or account numbers.
-Write [CLIENT NAME] and [ADVISOR NAME] as placeholders.
-"""
+    prompt = _build_followup_prompt(collection_id, body.messages)
 
     from services.chat.engine import complete_one_shot
     try:
@@ -3647,6 +3667,151 @@ Write [CLIENT NAME] and [ADVISOR NAME] as placeholders.
     from services.privacy.redaction_middleware import redact_text_for_ai
     redacted = redact_text_for_ai(raw_email, collection_id=collection_id, source_label="followup_output")
     return NoteResponse(content=redacted)
+
+
+async def _stream_one_shot_with_redaction(
+    *,
+    provider,
+    prompt: str,
+    max_tokens: int,
+    collection_id: str,
+    source_label: str,
+):
+    """SSE generator for one-shot drafting endpoints (/notes/stream, /followup/stream).
+
+    Streams raw deltas during generation so the advisor sees progress, then on
+    `done` emits the redacted final text. The frontend swaps the streamed
+    content for the redacted version — guaranteeing the saved note is scrubbed
+    of PII even if the LLM echoed something the prompt-side redaction missed.
+    """
+    import json as _json
+    from services.chat.engine import ChatTurn, run_one_shot
+    from services.privacy.redaction_middleware import redact_text_for_ai
+
+    turn = ChatTurn(
+        provider=provider,
+        system_text="",
+        messages=[{"role": "user", "content": prompt}],
+        model=provider.QUALITY_MODEL,
+        max_tokens=max_tokens,
+    )
+
+    text_parts: list[str] = []
+    try:
+        async for ev in run_one_shot(turn):
+            t = ev.get("type")
+            if t == "text_delta":
+                delta = ev.get("delta", "")
+                text_parts.append(delta)
+                yield f"data: {_json.dumps({'type': 'text_delta', 'delta': delta})}\n\n"
+            elif t == "error":
+                yield f"data: {_json.dumps({'type': 'error', 'message': ev.get('message', 'Unknown error')})}\n\n"
+                return
+            elif t == "done":
+                raw_text = ev.get("response_text") or "".join(text_parts)
+                redacted = redact_text_for_ai(
+                    raw_text, collection_id=collection_id, source_label=source_label
+                )
+                yield f"data: {_json.dumps({'type': 'done', 'content': redacted, 'usage': ev.get('usage', {})})}\n\n"
+    except Exception as e:
+        logger.exception(f"Streaming {source_label} failed")
+        yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+
+@app.post(
+    "/api/collections/{collection_id}/notes/stream",
+    tags=["chat"],
+    summary="Stream a compliance Note of Record (SSE)",
+)
+async def stream_compliance_note(
+    collection_id: str,
+    body: NotesRequest,
+    x_ai_key: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """SSE variant of /notes — streams text_delta events as the LLM generates,
+    then emits a `done` event carrying the redacted final content."""
+    import json as _json
+
+    async def generate():
+        try:
+            provider = _build_ai_provider_from_headers(
+                body.provider, x_ai_key,
+                x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
+                x_ai_base_url,
+            )
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'AI provider error: {e}'})}\n\n"
+            return
+
+        prompt = _build_notes_prompt(collection_id, body.messages)
+        async for chunk in _stream_one_shot_with_redaction(
+            provider=provider, prompt=prompt, max_tokens=1500,
+            collection_id=collection_id, source_label="notes_output",
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@app.post(
+    "/api/collections/{collection_id}/followup/stream",
+    tags=["chat"],
+    summary="Stream a client-safe follow-up email (SSE)",
+)
+async def stream_followup_email(
+    collection_id: str,
+    body: FollowupRequest,
+    x_ai_key: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """SSE variant of /followup — streams text_delta events as the LLM generates,
+    then emits a `done` event carrying the redacted final content."""
+    import json as _json
+
+    async def generate():
+        try:
+            provider = _build_ai_provider_from_headers(
+                body.provider, x_ai_key,
+                x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
+                x_ai_base_url,
+            )
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'AI provider error: {e}'})}\n\n"
+            return
+
+        prompt = _build_followup_prompt(collection_id, body.messages)
+        async for chunk in _stream_one_shot_with_redaction(
+            provider=provider, prompt=prompt, max_tokens=800,
+            collection_id=collection_id, source_label="followup_output",
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 # ── Collection Group endpoints (v4.5) ─────────────────────────────────────────

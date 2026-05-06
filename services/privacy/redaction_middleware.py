@@ -1,4 +1,4 @@
-"""Middleware that redacts PII from all MCP tool output before it exits Asymptote.
+"""Middleware that redacts PII from all MCP tool output before it exits Finn.
 
 The middleware walks the return value of every MCP tool response (dicts,
 lists, strings) and applies Presidio-based redaction to every string value.
@@ -131,7 +131,7 @@ def redact_text_for_ai(
     collection_id: str | None = None,
     source_label: str | None = None,
 ) -> str:
-    """Redact PII from a single AI-generated string before it leaves Asymptote.
+    """Redact PII from a single AI-generated string before it leaves Finn.
 
     Used by endpoints that draft client-facing prose (compliance Note of
     Record, follow-up email) — the LLM sees a redacted prompt, but its

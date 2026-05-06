@@ -229,6 +229,35 @@
                   <span v-else-if="editBuffer.keyStatus === 'saved'" class="text-success text-sm font-semibold">Saved</span>
                   <span v-if="editBuffer.keyError" class="text-error text-xs">{{ editBuffer.keyError }}</span>
                 </div>
+
+                <div v-if="editBuffer.capabilities" class="mt-2 rounded border border-base-300 bg-base-100 px-3 py-2 text-xs space-y-1">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-semibold">Model capabilities:</span>
+                    <span class="text-base-content/60">{{ editBuffer.capabilities.model || '(none)' }}</span>
+                    <span v-if="editBuffer.capabilities.probed" class="badge badge-xs badge-success">probed</span>
+                    <span v-else class="badge badge-xs badge-ghost">declared</span>
+                  </div>
+                  <div class="flex items-center gap-3 flex-wrap">
+                    <span :class="capabilityClass(editBuffer.capabilities.tools)">
+                      {{ capabilityIcon(editBuffer.capabilities.tools) }} Tool calling
+                    </span>
+                    <span :class="capabilityClass(editBuffer.capabilities.vision)">
+                      {{ capabilityIcon(editBuffer.capabilities.vision) }} Vision
+                    </span>
+                    <span :class="capabilityClass(editBuffer.capabilities.streaming)">
+                      {{ capabilityIcon(editBuffer.capabilities.streaming) }} Streaming
+                    </span>
+                    <span v-if="editBuffer.capabilities.context_window" class="text-base-content/60">
+                      ctx {{ Math.round(editBuffer.capabilities.context_window / 1000) }}k
+                    </span>
+                  </div>
+                  <div v-if="editBuffer.capabilities.tools === false" class="text-warning">
+                    Chat will fall back to a text-based ReAct loop. Slower and less reliable than native tool calls — pick a tool-capable model for the best experience.
+                  </div>
+                  <div v-for="(note, i) in (editBuffer.capabilities.notes || [])" :key="i" class="text-base-content/50">
+                    {{ note }}
+                  </div>
+                </div>
               </template>
             </div>
           </div>
@@ -623,7 +652,7 @@
             <div class="min-w-0">
               <span class="label-text font-medium">Enable PII Redaction</span>
               <p class="text-xs text-base-content/60">
-                All data leaving Asymptote through MCP is scanned and redacted. Original data remains intact in local storage.
+                All data leaving Finn through MCP is scanned and redacted. Original data remains intact in local storage.
               </p>
             </div>
           </label>
@@ -1282,6 +1311,7 @@ const toggleExpand = (id) => {
     keyDirty: false,
     keyStatus: cfg.apiKey ? 'saved' : '',
     keyError: '',
+    capabilities: null,
   }
   if (id === 'ollama' && ollamaCheckStatus.value === null) {
     detectOllama()
@@ -1316,16 +1346,31 @@ const validateAndSave = async (id) => {
       })
       editBuffer.value.keyStatus = 'valid'
       editBuffer.value.keyDirty = false
+      editBuffer.value.capabilities = response.data.capabilities || null
     } else {
       editBuffer.value.keyStatus = 'invalid'
       editBuffer.value.keyError = response.data.error || ''
+      editBuffer.value.capabilities = null
     }
   } catch {
     editBuffer.value.keyStatus = 'invalid'
     editBuffer.value.keyError = 'Request failed'
+    editBuffer.value.capabilities = null
   } finally {
     validatingProvider.value = null
   }
+}
+
+const capabilityIcon = (value) => {
+  if (value === true) return '✓'
+  if (value === false) return '✗'
+  return '?'
+}
+
+const capabilityClass = (value) => {
+  if (value === true) return 'text-success font-semibold'
+  if (value === false) return 'text-error font-semibold'
+  return 'text-base-content/50'
 }
 
 const removeProvider = (id) => {

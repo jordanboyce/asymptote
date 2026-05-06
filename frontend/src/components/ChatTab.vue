@@ -37,7 +37,7 @@
                   <div class="text-xs">
                     <div class="font-medium text-base-content/90">Stored locally</div>
                     <div class="text-base-content/60 mt-0.5">
-                      Your documents and the derived index live on the machine running Asymptote. They are not uploaded to our servers.
+                      Your documents and the derived index live on the machine running Finn. They are not uploaded to our servers.
                     </div>
                   </div>
                 </div>
@@ -263,7 +263,14 @@
       <div ref="messagesContainer" class="flex-1 overflow-y-auto space-y-4 min-h-0 pr-1">
 
         <!-- Empty state -->
-        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-base-content/50 gap-3 py-8">
+        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-base-content/50 gap-4 py-8 px-4">
+          <div class="w-12 h-12 rounded-full bg-base-200 border border-base-300 flex items-center justify-center" aria-hidden="true">
+            <Sparkles :size="20" class="text-primary/70" />
+          </div>
+          <div class="text-center max-w-sm">
+            <p class="text-sm font-medium text-base-content/80">{{ emptyStateHeading }}</p>
+            <p class="text-xs text-base-content/50 mt-1">{{ emptyStateSubtext }}</p>
+          </div>
           <div v-if="hasAnyProvider && documentCount > 0" class="flex flex-wrap gap-2 justify-center max-w-md">
             <button
               v-for="suggestion in suggestions"
@@ -280,22 +287,22 @@
         <template v-for="(msg, index) in messages" :key="index">
 
           <!-- User message -->
-          <div v-if="msg.role === 'user'" class="flex justify-end">
-            <div class="max-w-[80%] rounded-2xl rounded-tr-sm bg-primary text-primary-content px-4 py-3 shadow-sm">
-              <p class="text-sm whitespace-pre-wrap">{{ msg.content }}</p>
+          <div v-if="msg.role === 'user'" class="flex justify-end min-w-0">
+            <div class="max-w-[80%] min-w-0 rounded-2xl rounded-tr-sm bg-primary text-primary-content px-4 py-3 shadow-sm">
+              <p class="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{{ msg.content }}</p>
             </div>
           </div>
 
           <!-- Assistant message -->
-          <div v-else class="flex flex-col gap-1">
-            <div class="flex items-start gap-2 max-w-[90%]">
+          <div v-else class="flex flex-col gap-1 min-w-0">
+            <div class="flex items-start gap-2 max-w-[90%] min-w-0">
               <div class="flex-shrink-0 w-7 h-7 rounded-full bg-base-300 flex items-center justify-center mt-1">
                 <Bot :size="14" class="text-base-content/60" />
               </div>
-              <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-4 py-3 shadow-sm flex-1">
+              <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-4 py-3 shadow-sm flex-1 min-w-0">
                 <div
                   v-if="msg.slashCommand"
-                  class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug"
+                  class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug break-words [overflow-wrap:anywhere]"
                 >{{ msg.content }}</div>
 
                 <!-- Initial "Thinking…" placeholder before any content arrives -->
@@ -539,7 +546,7 @@
                 <div v-if="!msg.slashCommand && (msg.content || msg.streaming)" class="relative"
                   :class="{ 'mt-3': msg.structuredResults && msg.structuredResults.length > 0 }">
                   <div
-                    class="prose prose-sm max-w-none text-sm chat-markdown"
+                    class="prose prose-sm max-w-none text-sm chat-markdown break-words [overflow-wrap:anywhere]"
                     v-html="renderAssistantMarkdown(msg.content)"
                   ></div>
                   <!-- Blinking cursor while streaming -->
@@ -663,8 +670,20 @@
 
           <!-- Bottom toolbar -->
           <div class="flex items-center justify-between px-3 pb-2">
-            <!-- Left: inline controls (expert-only) -->
+            <!-- Left: inline controls -->
             <div class="flex items-center gap-1.5">
+              <button
+                v-if="speechSupported"
+                class="btn btn-ghost btn-xs btn-circle"
+                :class="{ 'text-error animate-pulse': speechListening }"
+                @click="toggleDictation"
+                :title="speechListening ? 'Stop dictation' : 'Dictate (uses your browser\'s speech recognition)'"
+                :aria-label="speechListening ? 'Stop dictation' : 'Start dictation'"
+                :aria-pressed="speechListening"
+                :disabled="loading"
+              >
+                <Mic :size="14" />
+              </button>
               <template v-if="isExpertMode">
                 <button
                   class="btn btn-ghost btn-xs btn-circle"
@@ -728,11 +747,12 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic } from 'lucide-vue-next'
+import { useSpeechRecognition } from '../composables/useSpeechRecognition.js'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
-import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
+import { runSlashCommand, isSlashCommand, isStreamingSlashCommand, streamSlashCommand } from '../utils/slashCommands'
 import {
   getConfiguredProviderIds,
   buildProviderHeaders,
@@ -839,10 +859,23 @@ const deleteSession = (sessionId) => {
 
 const suggestions = [
   'Top 10 holdings by market value',
-  'Portfolio concentration — top 5 positions',
-  'Allocation breakdown by sector',
+  'Top 5 positions by concentration',
+  'Sector allocation breakdown',
   'Largest unrealized gains and losses',
 ]
+
+const emptyStateHeading = computed(() => {
+  if (!hasAnyProvider.value) return 'Set up an AI provider to start'
+  if (props.documentCount === 0) return 'Upload portfolio files to begin'
+  const name = collectionStore.currentCollection?.name
+  return name ? `Ready to analyze ${name}` : 'Ready when you are'
+})
+
+const emptyStateSubtext = computed(() => {
+  if (!hasAnyProvider.value) return 'Add an Anthropic, OpenAI, or Ollama key in Settings.'
+  if (props.documentCount === 0) return 'Drag a CSV, PDF, or transcript into Sources to index it.'
+  return 'Try a question, or pick a suggestion below.'
+})
 
 // Expanded-details state for structured result cards: Set of "msgIdx:srIdx"
 const openStructuredDetails = ref(new Set())
@@ -1001,6 +1034,23 @@ const toggleSlashPicker = () => {
   }
 }
 
+const { supported: speechSupported, listening: speechListening, toggle: toggleSpeech } = useSpeechRecognition()
+
+const onSpeechTranscript = (text) => {
+  const trimmed = (text || '').trim()
+  if (!trimmed) return
+  const current = inputMessage.value || ''
+  inputMessage.value = current
+    ? `${current.replace(/\s+$/, '')} ${trimmed}`
+    : trimmed
+  onInputChange()
+}
+
+const toggleDictation = () => {
+  if (loading.value) return
+  toggleSpeech(onSpeechTranscript)
+}
+
 const onInputChange = () => {
   // Open the picker as soon as the input starts with "/" so suggestions
   // appear while the user is typing; close it again if they erase the slash.
@@ -1042,13 +1092,46 @@ const runInlineSlashCommand = async (input) => {
   await scrollToBottom()
 
   // Show the same "Thinking…" indicator the streaming chat path uses, and
-  // disable the send button via loading.value. /notes and /followup do a
-  // ~30s LLM round-trip; without this the UI looks frozen.
+  // disable the send button via loading.value.
   loading.value = true
   chatStore.addStreamingMessage(collectionId)
   await scrollToBottom()
 
   try {
+    if (isStreamingSlashCommand(input)) {
+      // /notes and /followup — stream tokens as they arrive, then swap the
+      // accumulated preview for the redacted final on `done`.
+      const cmdName = input.trim().split(/\s+/)[0].toLowerCase()
+      let finalized = false
+      await streamSlashCommand(
+        input,
+        {
+          collectionId,
+          messages: messages.value,
+          providerHeaders: buildProviderHeaders(selectedProvider.value),
+        },
+        {
+          onDelta: async (delta) => {
+            chatStore.appendStreamingText(collectionId, delta)
+            await scrollToBottom()
+          },
+          onDone: async ({ content }) => {
+            chatStore.finalizeStreamingMessage(collectionId, { content, slashCommand: cmdName })
+            finalized = true
+            await scrollToBottom()
+          },
+          onError: (message) => {
+            chatStore.removeLastStreamingMessage(collectionId)
+            error.value = message || 'Streaming failed'
+            finalized = true
+          },
+        },
+      )
+      // Server closed early without emitting `done` — drop the half-rendered bubble.
+      if (!finalized) chatStore.removeLastStreamingMessage(collectionId)
+      return
+    }
+
     const result = await runSlashCommand(input, {
       collectionId,
       collection: collectionStore.currentCollection,

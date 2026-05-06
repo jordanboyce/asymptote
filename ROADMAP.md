@@ -1,20 +1,20 @@
-# Asymptote Roadmap
+# Finn Roadmap
 
-Forward-looking work for Asymptote. Items that have already shipped are not listed here — check the git log for history.
+Forward-looking work for Finn. Items that have already shipped are not listed here — check the git log for history.
 
 ---
 
 ## Strategic frame
 
-Asymptote's primary product surface is the **in-app chat** inside the Vue frontend. An advisor installs Asymptote, pastes an Anthropic or OpenAI API key into settings, uploads their files, and starts asking questions — no Claude Desktop, no Cursor, no MCP configuration. The MCP endpoint ([services/mcp_server.py](services/mcp_server.py)) stays supported as a secondary surface for power users who already live in an external MCP client.
+Finn's primary product surface is the **in-app chat** inside the Vue frontend. An advisor installs Finn, pastes an Anthropic or OpenAI API key into settings, uploads their files, and starts asking questions — no Claude Desktop, no Cursor, no MCP configuration. The MCP endpoint ([services/mcp_server.py](services/mcp_server.py)) stays supported as a secondary surface for power users who already live in an external MCP client.
 
-**We do not rebuild the chat app.** The in-app chat is a thin adapter on top of the Anthropic Messages API (native tool use) and OpenAI Responses API (function calling). We reuse their SDKs for streaming, conversation state, and tool-call orchestration. Our job is to translate the existing tool registry into the provider's tool schema, run the standard tool-use loop on the backend, and stream tokens to the frontend. Every hour spent building chat primitives is an hour not spent on what Asymptote actually owns.
+**We do not rebuild the chat app.** The in-app chat is a thin adapter on top of the Anthropic Messages API (native tool use) and OpenAI Responses API (function calling). We reuse their SDKs for streaming, conversation state, and tool-call orchestration. Our job is to translate the existing tool registry into the provider's tool schema, run the standard tool-use loop on the backend, and stream tokens to the frontend. Every hour spent building chat primitives is an hour not spent on what Finn actually owns.
 
-**What Asymptote is:** the trustworthy, privacy-preserving data layer that makes a user's own documents usable by whatever LLM they already trust — reached through Asymptote's own chat UI by default, or through an external MCP client when the user prefers one. The intelligence layer lives upstream in Anthropic / OpenAI. Asymptote owns:
+**What Finn is:** the trustworthy, privacy-preserving data layer that makes a user's own documents usable by whatever LLM they already trust — reached through Finn's own chat UI by default, or through an external MCP client when the user prefers one. The intelligence layer lives upstream in Anthropic / OpenAI. Finn owns:
 
 1. **Ingest arbitrary tabular and document data** from arbitrary tools (brokerages, banks, CRMs, planning software, internal systems) and make every file faithfully agent-queryable, regardless of vendor or column naming convention.
 2. **Return PII-free and CUI-free context.** Every tool response — whether served to the in-app chat or to an external MCP client — is redacted before it leaves the process (see P0.0). No personal identifier, no account number, no Controlled Unclassified Information element reaches an external LLM. This is the feature — without it, regulated users (financial advisors, federal contractors, healthcare, legal) cannot use any external LLM against their data at all.
-3. **Pass raw data through by default; only abstract when we must.** Column headers, row values, document text are returned as-is (modulo redaction) so the calling LLM does its own semantic translation. Role mapping and other semantic layers exist only where *Asymptote itself* has to act deterministically — aggregations, metric computation, routing — not as a translation step for the LLM.
+3. **Pass raw data through by default; only abstract when we must.** Column headers, row values, document text are returned as-is (modulo redaction) so the calling LLM does its own semantic translation. Role mapping and other semantic layers exist only where *Finn itself* has to act deterministically — aggregations, metric computation, routing — not as a translation step for the LLM.
 4. **Expose analytical and enrichment primitives as a single tool registry** callable from both surfaces — the in-app chat (via the provider tool-use loop) and external MCP clients. One set of primitives; two delivery surfaces; no feature drift between them.
 5. **Never be silently wrong.** A data-layer tool that returns confidently incorrect numbers is worse than no tool. Aggregations, type coercions, and unit conversions must surface uncertainty rather than collapse it. When role detection fails, degrade to raw-data tools and let the LLM handle semantics — never guess and pretend.
 
@@ -30,7 +30,7 @@ Three advisor sessions against a real Schwab unrealized-gain/loss CSV surfaced b
 - **Numeric values came in as strings with commas.** `"1,591.20"` stored as TEXT, then `CAST(... AS DOUBLE)` silently coerces to a small integer. The agent's lot-rollup query reported market values like `1`, `2`, `14` for positions worth thousands of dollars — and showed those numbers to the advisor with no warning.
 - **`REPLACE` was in `_FORBIDDEN_KEYWORDS`** (a SQLite string function) so the agent couldn't strip commas as a workaround. **Fixed** in [services/structured_store.py:224](services/structured_store.py#L224).
 - **No lot rollup primitive.** PKST appeared 16 times because every tax lot is a row. The agent had to GROUP BY by hand and produced wrong sums (see above).
-- **Questions like "what's in a downtrend?" and "growth vs value?"** can't be answered correctly from the file alone — they require external data feeds Asymptote doesn't expose. The agent fell back to "loss vs cost basis" and "guess from ticker name." Both gave the right shape of answer but neither was actually right.
+- **Questions like "what's in a downtrend?" and "growth vs value?"** can't be answered correctly from the file alone — they require external data feeds Finn doesn't expose. The agent fell back to "loss vs cost basis" and "guess from ticker name." Both gave the right shape of answer but neither was actually right.
 
 Conclusion: ingestion fidelity and enrichment feeds are the only thing that matters until the demo above can be re-run and produce correct numbers without manual workaround SQL. Meeting capture, client profiles, and analytics are still on the roadmap, but they sit on top of this foundation.
 
@@ -58,7 +58,7 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 
 ### P0.0 — PII Redaction Layer (Presidio) — ✅ Shipped
 
-**Priority:** Highest — this is a prerequisite for shipping anything to production. No identifiable data can leave Asymptote when content is sent to external LLM providers (Claude, ChatGPT, Google, or any other). This is especially critical for financial data, which routinely contains account numbers, Social Security numbers, names, and other highly sensitive identifiers.
+**Priority:** Highest — this is a prerequisite for shipping anything to production. No identifiable data can leave Finn when content is sent to external LLM providers (Claude, ChatGPT, Google, or any other). This is especially critical for financial data, which routinely contains account numbers, Social Security numbers, names, and other highly sensitive identifiers.
 
 **Why this is P0.0 and not later:**
 - Every MCP tool response, every search result, and every chunk of context that reaches the calling LLM is a potential PII leak.
@@ -67,7 +67,7 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 
 **What counts as PII — be exhaustive, not approximate:**
 
-Asymptote must redact (at minimum) all of the following before any content leaves to an LLM:
+Finn must redact (at minimum) all of the following before any content leaves to an LLM:
 
 | Category | Examples |
 |---|---|
@@ -91,7 +91,7 @@ When in doubt, redact. False positives (redacting something that wasn't PII) are
 services/privacy/
   __init__.py
   redaction_engine.py     # Core Presidio wrapper — analyze + anonymize
-  redaction_middleware.py # Wraps all MCP tool output before it exits Asymptote
+  redaction_middleware.py # Wraps all MCP tool output before it exits Finn
   redaction_config.py     # Per-collection profiles, allow-lists, custom recognizers
   redaction_log.py        # Audit log writer and reader
   custom_recognizers/
@@ -150,7 +150,7 @@ redaction_log
 
 **Redaction preview mode:**
 
-Before sending any tool response to the LLM, Asymptote can surface a preview of what will be redacted. This is exposed as:
+Before sending any tool response to the LLM, Finn can surface a preview of what will be redacted. This is exposed as:
 
 1. A "review before sending" flag in the collection settings — when enabled, the MCP tool response is held and the redaction summary is surfaced in the frontend (collection settings panel) before the response is released to the calling agent.
 2. An MCP tool/resource `get_recent_redactions(session_id, limit=50)` that returns the redaction log for the current session in human-readable form — entity types found, replacements applied, which tool and document they came from. The calling agent (or the user reviewing the agent session) can inspect this at any time.
@@ -276,13 +276,13 @@ Two distinct export formats analyzed from real advisor files:
 
 ### P0.5 — LLM-assisted column role inference (narrow, for deterministic aggregation only) — 🟡 Partial
 
-> **Blocked on P0.0.** This feature sends column names and sample cell values to an external LLM. Sample values may contain PII/CUI (account numbers embedded in column headers, names in the first data row, etc.). P0.0's redaction layer must be applied to the sample values before they leave Asymptote. Do not ship P0.5 until P0.0 is verified end-to-end.
+> **Blocked on P0.0.** This feature sends column names and sample cell values to an external LLM. Sample values may contain PII/CUI (account numbers embedded in column headers, names in the first data row, etc.). P0.0's redaction layer must be applied to the sample values before they leave Finn. Do not ship P0.5 until P0.0 is verified end-to-end.
 
 > **Scope reframed:** Original plan called for an upload UI where the user accepts/edits/rejects LLM-proposed role mappings. That's been **cut** — see reasoning below.
 
 **What this is for and what it isn't:**
 
-The calling LLM (Claude, ChatGPT) will translate cryptic column headers on its own when it sees the data. `Hldg_USD` → "market value in USD" is trivial for a frontier model; we don't need to pre-solve that for it. Role inference earns its keep in exactly one narrow place: when an MCP tool in Asymptote has to act on column semantics deterministically without an LLM in the loop — specifically `compute_portfolio_metric` and any future aggregation primitives that take a metric name (`top_holdings`, `breakdown_by_sector`, etc.) rather than raw SQL.
+The calling LLM (Claude, ChatGPT) will translate cryptic column headers on its own when it sees the data. `Hldg_USD` → "market value in USD" is trivial for a frontier model; we don't need to pre-solve that for it. Role inference earns its keep in exactly one narrow place: when an MCP tool in Finn has to act on column semantics deterministically without an LLM in the loop — specifically `compute_portfolio_metric` and any future aggregation primitives that take a metric name (`top_holdings`, `breakdown_by_sector`, etc.) rather than raw SQL.
 
 For every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `search_collection`), raw column headers go through untouched and the calling LLM handles semantics. That surface is already role-agnostic — [mcp_server.py:803-809](services/mcp_server.py#L803-L809) already instructs the LLM to fall back to `aggregate_table`/`query_table` when `financial_roles` is absent.
 
@@ -339,7 +339,7 @@ The collection-guide / `find_in_documents` / `rows_jsonl` / `identifier` disambi
 
 ## v4.2 — Enrichment data feeds as MCP tools — ✅ Shipped
 
-Most advisor questions ("what's in a downtrend?", "growth vs value?", "any CEO changes?") fundamentally need data Asymptote doesn't have. Each missing feed becomes a small, contained MCP tool.
+Most advisor questions ("what's in a downtrend?", "growth vs value?", "any CEO changes?") fundamentally need data Finn doesn't have. Each missing feed becomes a small, contained MCP tool.
 
 ### `get_price_history(symbol, start, end, interval='1d')`
 
@@ -379,7 +379,7 @@ All five items below shipped together — small, contained improvements to the c
 
 User-editable markdown blob per collection. Stored on the `collections` table in a new `guide TEXT` column (migration in both SQLite and Postgres backends). Full text returned by `get_collection_info()`; a ≤500-char summary is inlined into every `search_collection` response as `collection_summary.guide_summary` so it travels with retrieval. Frontend textarea wired into the existing Edit Collection modal in [frontend/src/App.vue](frontend/src/App.vue).
 
-**Why it paid off:** agents using Claude Desktop lose context between sessions. A guide that travels with every tool response is the cheapest way to give Asymptote durable memory. Next improvement (deferred): default-template seeding on collection creation.
+**Why it paid off:** agents using Claude Desktop lose context between sessions. A guide that travels with every tool response is the cheapest way to give Finn durable memory. Next improvement (deferred): default-template seeding on collection creation.
 
 **Cross-link with v4.6:** the client profile object below is the structured cousin of this. The guide is freeform markdown ("how to think about this collection"); the profile is typed fields ("risk_tolerance: moderate"). They coexist — the guide is for narrative, the profile is for primitives.
 
@@ -403,9 +403,9 @@ New MCP tool at [services/mcp_server.py](services/mcp_server.py). Does a literal
 
 ## v4.4 — In-app chat surface (primary product surface) — ✅ Shipped
 
-The wedge that turns Asymptote from "data layer behind an MCP endpoint" into "the tool advisors actually open every morning." Until this shipped, every demo required Claude Desktop or Cursor — a setup step that killed trial-to-usage conversion more than once.
+The wedge that turns Finn from "data layer behind an MCP endpoint" into "the tool advisors actually open every morning." Until this shipped, every demo required Claude Desktop or Cursor — a setup step that killed trial-to-usage conversion more than once.
 
-**Non-goal: build a chat app.** We do not compete with Claude Desktop or ChatGPT on branching, regeneration, artifact rendering, image analysis, or any other chat-UX surface. We build the smallest possible chat that lets an advisor point at their collection and get the Asymptote tool set through a frontier model.
+**Non-goal: build a chat app.** We do not compete with Claude Desktop or ChatGPT on branching, regeneration, artifact rendering, image analysis, or any other chat-UX surface. We build the smallest possible chat that lets an advisor point at their collection and get the Finn tool set through a frontier model.
 
 ### Architecture
 
@@ -444,7 +444,7 @@ The wedge that turns Asymptote from "data layer behind an MCP endpoint" into "th
 
 ### Acceptance test
 
-The full Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) runs end-to-end entirely inside Asymptote's chat tab, no Claude Desktop required. Live tool-call indicators visible during every query. /brief produces the one-page meeting brief in under 30 seconds.
+The full Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) runs end-to-end entirely inside Finn's chat tab, no Claude Desktop required. Live tool-call indicators visible during every query. /brief produces the one-page meeting brief in under 30 seconds.
 
 ### Out of scope (stays in the MCP endpoint path)
 
@@ -464,7 +464,7 @@ The orchestration loop that drives `/api/chat/stream` was extracted from `main.p
 | Engine + context extraction | ✅ Shipped | `services/chat/engine.py` (`AgenticEngine`, `OneShotEngine`, `ChatTurn`, `collect`, `complete_one_shot`) + `services/chat/context.py` (`build_chat_turn`). `/api/chat` (non-streaming) deleted; `/api/chat/stream` rewritten as 113-LOC shell; `/api/ask`, `/api/notes`, `/api/followup` all route through `complete_one_shot`. CONTEXT.md gained the chat orchestration glossary. |
 | Real provider token streaming | ✅ Shipped | `AIProvider.stream_chat` / `AIProvider.stream` with real implementations on Anthropic (`messages.stream`), OpenAI (`stream=True` + `include_usage`), and Ollama (`/api/chat stream=true`). All other providers inherit OpenAI's. Engine re-issues the final-answer turn through `stream_chat` so tokens arrive at the model's actual generation rate; thinking-text fallback when streaming fails mid-flight. |
 | Engine unit tests | ✅ Shipped | `tests/_fake_ai_provider.py` + `tests/test_chat_engine.py` (15 tests). Cover natural termination, iteration cap → forced streaming pass, forced-pass failure fallback, thinking fallback when streaming dies, provider error propagation, usage accumulation, ReAct path, one-shot streaming, collect() drainage, and the AIProvider non-streaming default. |
-| SSE for slash commands | ❌ Open | `/notes` and `/followup` return buffered JSON via `complete_one_shot`. Now that `run_one_shot` streams under the hood, these endpoints can become SSE so the UI shows drafts streaming in. See below. |
+| SSE for slash commands | ✅ Shipped | `/api/collections/{id}/notes/stream` and `/api/collections/{id}/followup/stream` forward `run_one_shot` events as SSE. ChatTab swaps the streamed preview for the redacted final on `done`. JSON variants kept for non-UI callers (SearchTab, external scripts). |
 | Whole-loop streaming | ❌ Phase 3 — deferred | Model emits `tool_calls` and `text` mid-stream so long tool sequences feel alive, not just the final answer. Only meaningful once users complain about long tool sequences feeling frozen — until then the real per-token streaming on the final answer is enough. |
 
 ### Real provider token streaming — ✅ Shipped
@@ -480,15 +480,13 @@ The orchestration loop that drives `/api/chat/stream` was extracted from `main.p
 
 **Acceptance test:** advisor sees tokens arrive at the model's actual generation rate. Engine unit tests in [tests/test_chat_engine.py](tests/test_chat_engine.py) cover the streaming path against a `FakeAIProvider`; the Henderson walkthrough is the manual smoke test.
 
-### SSE for slash commands — ❌ Open
+### SSE for slash commands — ✅ Shipped
 
-`/notes` and `/followup` use `complete_one_shot` and return `NoteResponse` JSON. The frontend's `runInlineSlashCommand` ([frontend/src/components/ChatTab.vue](frontend/src/components/ChatTab.vue)) shows a "Thinking…" placeholder until the JSON lands. Now that `run_one_shot` already drives real streaming under the hood, exposing it over SSE is a straight wiring exercise — the engine work is done.
+Backend: [main.py](main.py) exposes `POST /api/collections/{id}/notes/stream` and `POST /api/collections/{id}/followup/stream` alongside the JSON variants. Both call shared prompt helpers (`_build_notes_prompt`, `_build_followup_prompt`) and a shared SSE generator (`_stream_one_shot_with_redaction`) that drives `run_one_shot`. The wire vocabulary matches `/api/chat/stream` — `text_delta`, `done`, `error` — and the `done` event carries the redacted final text under `content` so PII scrubbing still happens at the output boundary even though raw deltas streamed through.
 
-**Work:**
+Frontend: [frontend/src/utils/slashCommands.js](frontend/src/utils/slashCommands.js) gained `isStreamingSlashCommand` + `streamSlashCommand` (callback-shaped: `onDelta`, `onDone`, `onError`). `runInlineSlashCommand` in [frontend/src/components/ChatTab.vue](frontend/src/components/ChatTab.vue) routes `/notes` and `/followup` through the streaming path; other commands stay on the existing JSON path. `chatStore.finalizeStreamingMessage` accepts an optional `content` overwrite so the saved bubble swaps from the raw stream to the redacted final.
 
-1. Add streaming variants `POST /api/collections/{id}/notes/stream` and `POST /api/collections/{id}/followup/stream` that forward `run_one_shot` events as SSE (same `text_delta` / `done` / `error` vocabulary the main chat path uses).
-2. Generalize `runInlineSlashCommand` in ChatTab.vue to consume SSE the same way the main chat path does — likely extract the SSE consumer from `sendMessage` into a shared helper.
-3. Keep the JSON variants for non-UI callers (e.g. external scripts that hit the API directly).
+JSON variants are retained for non-UI callers (SearchTab keeps using them, as do external scripts hitting the API directly).
 
 ### Whole-loop streaming — ❌ Phase 3 (deferred)
 
@@ -514,9 +512,39 @@ Drive the entire agentic loop on streaming primitives so `tool_calls` and `text`
 
 ---
 
+## v4.4.2 — Provider capability clarity (urgent — test users this week)
+
+The provider abstraction had one capability bit (`supports_native_tools()`) and three implicit ones (vision via `try/except`, streaming via fallback, context window not modeled). Failures surfaced as opaque mid-chat 404s and `model "" not found` errors instead of clear, upfront refusals — see the empty-model bug fixed in [services/chat/context.py:148](services/chat/context.py#L148) for the worst case. With Bank of America visibly building the same shape of product internally, the time to land a clean BYO-key experience for outside test users is now, not after v4.5.
+
+### Status snapshot
+
+| Item | Status | Notes |
+|---|---|---|
+| `ProviderCapabilities` dataclass + `KNOWN_MODELS` map | ✅ Shipped | Central source of truth at [services/ai_service.py](services/ai_service.py) — tools/vision/streaming/context_window per model id. Unknown models surface as `null` rather than guessed `True`. |
+| `capabilities()` on every provider | ✅ Shipped | Anthropic / OpenAI / Grok / Google / GitHub / OllamaCloud → tools=True (looked up). Ollama local → tools=False (ReAct fallback). OpenAICompatible → tools=`null` until probed. |
+| `probe_capabilities()` — live tool-call ping | ✅ Shipped | Anthropic + OpenAI providers fire a one-shot `ping` tool call against the configured model during validate. Sets `probed=True` + `tools=true/false` based on the actual response. Catches the "claims OpenAI-compat, can't actually do tools" trap. |
+| Engine refuses unsupported configurations | ✅ Shipped | [services/chat/engine.py](services/chat/engine.py) `run_agentic` checks `turn.model` and `capabilities().tools` upfront; emits a clear `error` event before the first provider call instead of letting it 404 mid-loop. |
+| Capability surfacing in settings UI | ✅ Shipped | [frontend/src/components/SettingsTab.vue](frontend/src/components/SettingsTab.vue) shows a per-provider capability strip after validate: ✓/✗/? for tools, vision, streaming, plus context window and notes. Tool-incapable models get an inline warning that chat falls back to ReAct. |
+| Empty-model bug | ✅ Fixed | [services/chat/context.py:148](services/chat/context.py#L148) sets `model=provider.QUALITY_MODEL` on `ChatTurn`. Prior to fix, `/api/chat/stream` against any OpenAI-compatible provider hit `model "" not found` 404s. |
+| Smoke test against tool-incapable + capable models | 🟡 In progress | Verifying upfront refusal vs successful chat against (a) a known-good Anthropic key, (b) a deliberately-capable openai_compatible model, (c) Ollama local (ReAct path). |
+
+### What this gives test users
+
+1. **Plug a key, see what you get.** Settings panel shows ✓ tool calling / ✓ vision / ✓ streaming / ctx 200k *as soon as the key validates* — not after a chat fails three minutes later.
+2. **Clear refusal up front.** A model that can't do tool calling is rejected with a sentence the advisor can act on, not a stack trace.
+3. **Honest unknowns.** OpenAI-compatible custom endpoints surface `?` for unprobed capabilities and a note explaining what validation will discover.
+
+### Future work (not blocking test users)
+
+- **Streaming probe.** Currently we only probe `tools`. A streaming probe would catch endpoints that return 200 on `stream=True` but never send a delta. Defer until we see one in the wild.
+- **Per-tool capability gating.** Right now we have one `tools: bool`. Some models support function calling but not parallel tool calls; `compute_portfolio_metric` works fine on either, but a future composite tool might not. Add `parallel_tools: bool` only when a tool needs it.
+- **Model presets registry.** A small JSON file mapping known model ids → recommended role (chat-with-tools, rerank-fast, vision). The settings UI could offer curated picks. Worth doing once `KNOWN_MODELS` outgrows the dict in `ai_service.py` (~30 entries).
+
+---
+
 ## v4.5 — Meeting capture wedge
 
-The first feature that turns Asymptote from "data layer" into "advisor workflow tool." Built on top of v4.1 + v4.2 — meeting prep is only useful if the portfolio drift it surfaces is correct.
+The first feature that turns Finn from "data layer" into "advisor workflow tool." Built on top of v4.1 + v4.2 — meeting prep is only useful if the portfolio drift it surfaces is correct.
 
 ### Audio ingest — ✅ Shipped (transcript layer)
 
@@ -589,7 +617,7 @@ With ingestion fidelity solid, enrichment feeds available, and meetings captured
 
 ## v4.7 — Distribution (deferred from old v4.2)
 
-Getting Asymptote into the places agents already live. **Deferred until at least one advisor firm is using the v4.1–v4.6 stack daily.** Distribution doesn't matter without product-market fit at one customer first.
+Getting Finn into the places agents already live. **Deferred until at least one advisor firm is using the v4.1–v4.6 stack daily.** Distribution doesn't matter without product-market fit at one customer first.
 
 When it's time:
 
@@ -598,7 +626,7 @@ When it's time:
 - **OpenClaw:** minimal skill wrapping the MCP client, dropped into [openclaw/clawhub](https://github.com/openclaw/clawhub).
 - **ChatGPT:** once OpenAI's connector API for custom tools stabilizes, add an export profile.
 - **Hosted demo collection:** read-only public MCP endpoint pointed at SEC filings / arxiv. Marketing + docs in one.
-- **Installer improvements:** single-binary Windows build, Homebrew formula, `pipx install asymptote`.
+- **Installer improvements:** single-binary Windows build, Homebrew formula, `pipx install finn`.
 
 ---
 
@@ -645,7 +673,7 @@ Items that aren't funded yet but belong in the same direction of travel.
 
 ### Multi-hop retrieval
 
-- `search_multi_hop(question, max_hops=3)` chaining searches internally. Saves round-trips and gives Asymptote control over join logic.
+- `search_multi_hop(question, max_hops=3)` chaining searches internally. Saves round-trips and gives Finn control over join logic.
 
 ### Multi-user mode
 
@@ -681,10 +709,10 @@ Items that aren't funded yet but belong in the same direction of travel.
 - **v4.1 is the only thing that matters right now.** Don't start anything below it until P0.1–P0.7 are done. The advisor demo bugs above are the acceptance test: re-run those three questions against the same Schwab file and they should produce correct numbers without manual workaround SQL.
 - **v4.2 and v4.3 shipped** — enrichment feeds and MCP surface polish.
 - **v4.4 shipped** — streaming in-app chat with live tool indicators, `/brief` command, one-click "Generate Meeting Brief" button. The primary demo surface is now self-contained.
-- **v4.4.1 in progress** — chat orchestration extracted into `services/chat/`; real per-token streaming and engine unit tests have shipped; SSE for slash commands is the next open item; whole-loop streaming stays Phase 3 until users feel pain.
+- **v4.4.1 in progress** — chat orchestration extracted into `services/chat/`; real per-token streaming, engine unit tests, and SSE for slash commands have all shipped; only whole-loop streaming (Phase 3, deferred) remains.
 - **v4.5 / v4.6** are the advisor-workflow wedge (meeting capture + client profile) that turns this into a product, not a query layer.
 - **v4.7 / v4.8** wait until there's daily usage at one firm.
 - **v5** is "don't build yet, but if someone asks, this is the shape."
 - **Technical debt** is background tax — chip away whenever touching adjacent code.
 
-**Last updated:** 2026-05-03 (v4.4.1 — real provider token streaming + engine unit tests shipped; SSE for slash commands now the next open item)
+**Last updated:** 2026-05-04 (v4.4.2 — Provider capability clarity: capabilities() + probe_capabilities() + engine refusals + settings UI; bumped ahead of v4.5 to unblock test users this week)
