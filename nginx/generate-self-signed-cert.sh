@@ -30,12 +30,12 @@ x509_extensions    = v3_ext
 C  = US
 ST = Local
 L  = Local
-O  = Asymptote
+O  = Finn
 OU = Enterprise
 CN = localhost
 
 [v3_ext]
-subjectAltName = DNS:localhost,DNS:asymptote,IP:127.0.0.1
+subjectAltName = DNS:localhost,DNS:finn,IP:127.0.0.1
 SSLCONF
 
 openssl req -x509 -nodes -days 365 \

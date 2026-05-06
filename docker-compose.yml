@@ -1,9 +1,9 @@
 services:
-  asymptote:
+  finn:
     build:
       context: .
       dockerfile: Dockerfile.corporate
-    container_name: asymptote-api
+    container_name: finn-api
     ports:
       - "8000:8000"
     volumes:

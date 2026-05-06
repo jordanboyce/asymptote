@@ -1,4 +1,4 @@
-"""Data models for Asymptote API."""
+"""Data models for Finn API."""
 
 from .schemas import (
     DocumentMetadata,

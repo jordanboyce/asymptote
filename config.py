@@ -1,4 +1,4 @@
-"""Configuration management for Asymptote API."""
+"""Configuration management for Finn API."""
 
 from pathlib import Path
 from typing import Literal, Optional
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # MCP configuration
     enable_mcp: bool = True
-    mcp_server_id: str = "asymptote"
+    mcp_server_id: str = "finn"
     mcp_default_collection: str = "default"
     mcp_top_k: int = 5
     mcp_mode: Literal["semantic", "keyword", "hybrid"] = "semantic"
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # Database backend: "sqlite" for single-user/simple, "postgresql" for multi-user/enterprise
     db_backend: Literal["sqlite", "postgresql"] = "sqlite"
-    postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/asymptote
+    postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/finn
 
     # Multi-user mode (user isolation via X-User-ID header from auth proxy)
     enable_multi_user: bool = False  # Set to True for per-user data isolation
@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # for role assignment.  Requires mcp_ai_provider != "none" and a valid key.
     enable_llm_schema_inference: bool = False
     llm_schema_inference_threshold: float = 0.5  # Trigger when ≥ this fraction of columns are unmapped
+
+    # Market data provider for v4.2 enrichment feeds (price/classification/
+    # corporate events/company profile/news). Add new options by implementing
+    # services.market_data.provider.MarketDataProvider in
+    # services/market_data/providers/<name>_impl.py and wiring it into
+    # services/market_data/providers/__init__.py.
+    market_data_provider: Literal["yfinance"] = "yfinance"
 
     # UI feature flags
     enable_chat_tab: bool = True  # Show/hide the Chat tab in the frontend

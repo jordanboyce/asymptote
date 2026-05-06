@@ -172,28 +172,42 @@
           <!-- Left: inline controls -->
           <div class="flex items-center gap-1.5">
             <button
+              v-if="speechSupported"
               class="btn btn-ghost btn-xs btn-circle"
-              @click="searchSettingsOpen = !searchSettingsOpen"
-              title="Search settings"
-              aria-label="Open search settings"
-              :aria-expanded="searchSettingsOpen"
+              :class="{ 'text-error animate-pulse': speechListening }"
+              @click="toggleDictation"
+              :title="speechListening ? 'Stop dictation' : 'Dictate (uses your browser\'s speech recognition)'"
+              :aria-label="speechListening ? 'Stop dictation' : 'Start dictation'"
+              :aria-pressed="speechListening"
+              :disabled="loading"
             >
-              <SlidersHorizontal :size="14" />
+              <Mic :size="14" />
             </button>
-            <button
-              class="btn btn-ghost btn-xs btn-circle font-mono"
-              @mousedown.prevent="toggleSlashPicker"
-              title="Slash commands"
-              aria-label="Show slash commands"
-              :aria-expanded="slashPickerOpen"
-            >
-              /
-            </button>
-            <span class="badge badge-xs badge-ghost">{{ searchModeLabel }}</span>
-            <span class="badge badge-xs badge-ghost">Top {{ searchStore.topK }}</span>
-            <template v-if="hasAnyProvider">
-              <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
-              <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary">Synth</span>
+            <template v-if="isExpertMode">
+              <button
+                class="btn btn-ghost btn-xs btn-circle"
+                @click="searchSettingsOpen = !searchSettingsOpen"
+                title="Search settings"
+                aria-label="Open search settings"
+                :aria-expanded="searchSettingsOpen"
+              >
+                <SlidersHorizontal :size="14" />
+              </button>
+              <button
+                class="btn btn-ghost btn-xs btn-circle font-mono"
+                @mousedown.prevent="toggleSlashPicker"
+                title="Slash commands"
+                aria-label="Show slash commands"
+                :aria-expanded="slashPickerOpen"
+              >
+                /
+              </button>
+              <span class="badge badge-xs badge-ghost">{{ searchModeLabel }}</span>
+              <span class="badge badge-xs badge-ghost">Top {{ searchStore.topK }}</span>
+              <template v-if="hasAnyProvider">
+                <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
+                <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary">Synth</span>
+              </template>
             </template>
           </div>
 
@@ -575,7 +589,8 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
-import { Plus, History, SlidersHorizontal, X, Search as SearchIcon } from 'lucide-vue-next'
+import { Plus, History, SlidersHorizontal, X, Search as SearchIcon, Mic } from 'lucide-vue-next'
+import { useSpeechRecognition } from '../composables/useSpeechRecognition.js'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -592,6 +607,7 @@ import {
   getAISettings,
   migrateLegacySettings,
 } from '../utils/aiProviders.js'
+import { isExpertMode } from '../utils/expertMode.js'
 
 const props = defineProps({
   chunkCount: {
@@ -634,7 +650,29 @@ const toggleSlashPicker = () => {
 }
 
 const onInputChange = () => {
+  // Basic mode hides the slash-command surface entirely.
+  if (!isExpertMode.value) {
+    slashPickerOpen.value = false
+    return
+  }
   slashPickerOpen.value = (searchStore.query || '').trimStart().startsWith('/')
+}
+
+const { supported: speechSupported, listening: speechListening, toggle: toggleSpeech } = useSpeechRecognition()
+
+const onSpeechTranscript = (text) => {
+  const trimmed = (text || '').trim()
+  if (!trimmed) return
+  const current = searchStore.query || ''
+  searchStore.query = current
+    ? `${current.replace(/\s+$/, '')} ${trimmed}`
+    : trimmed
+  onInputChange()
+}
+
+const toggleDictation = () => {
+  if (loading.value) return
+  toggleSpeech(onSpeechTranscript)
 }
 
 const onInputBlur = () => {

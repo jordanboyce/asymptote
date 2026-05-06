@@ -1,8 +1,9 @@
-"""Financial column role detection.
+"""Financial column-role detection.
 
-Maps column names to semantic financial roles (ticker, market_value, pnl,
-etc.) using regex patterns.  Registers detect_financial_role() with the
-generic StructuredStore via register_role_detector().
+Maps a column name to a semantic role (``ticker``, ``market_value``, ``pnl``,
+…) using regex patterns. Used directly by
+:class:`~services.financial.holdings_store.HoldingsStore` during ingest, and
+by the privacy preflight code that decides whether a column is sensitive.
 """
 
 from __future__ import annotations
@@ -46,9 +47,3 @@ def detect_financial_role(col_name: str, col_type: str) -> Optional[str]:
         if re.match(pattern, normalized):
             return role
     return None
-
-
-def register() -> None:
-    """Register financial role detection with the structured store."""
-    from services.structured_store import register_role_detector
-    register_role_detector(detect_financial_role)

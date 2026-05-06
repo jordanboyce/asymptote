@@ -15,7 +15,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 import importlib, csv as _csv, re as _re, io as _io
 import pandas as _pd
 from services.ingest_profiles import detect_profile, apply_profile
-from services.structured_store import StructuredStore
+from services.financial.holdings_store import HoldingsStore
 
 _NUM_RE = _re.compile(r'^[\s$€£¥₹(]?-?[\d,]+\.?\d*\s*[%KMBkmb]?\s*[)%]?$')
 
@@ -78,7 +78,7 @@ def _ingest(csv_path):
     sheets = _extract(csv_path)
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = Path(f.name)
-    store = StructuredStore(db_path)
+    store = HoldingsStore(db_path)
     for sh in sheets:
         store.create_table("test_doc", csv_path.name, sh["columns"], sh["rows"],
                            sh["sheet_name"], sh.get("role_overrides") or {}, sh.get("type_overrides") or {})

@@ -1,4 +1,4 @@
-# Asymptote API — Enterprise Production Dockerfile
+# Finn API — Enterprise Production Dockerfile
 # Multi-stage build with security hardening, OCR support, and corporate SSL
 
 # ============================================================
@@ -26,8 +26,8 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ============================================================
 FROM python:3.13-slim AS runtime
 
-LABEL maintainer="Asymptote Enterprise"
-LABEL description="Asymptote — self-hosted semantic search for enterprise documents"
+LABEL maintainer="Finn Enterprise"
+LABEL description="Finn — self-hosted semantic search for enterprise documents"
 
 # ---- System dependencies (runtime only) --------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -70,14 +70,14 @@ WORKDIR /app
 COPY . .
 
 # ---- Non-root user -----------------------------------------
-RUN groupadd -r asymptote && useradd -r -g asymptote -d /app -s /sbin/nologin asymptote
+RUN groupadd -r finn && useradd -r -g finn -d /app -s /sbin/nologin finn
 
 # ---- Data directories (volume mount points) ----------------
 RUN mkdir -p /app/data/documents /app/data/indexes /app/data/collections /app/data/backups \
-    && chown -R asymptote:asymptote /app
+    && chown -R finn:finn /app
 
 # ---- Embedding model cache (writable by app) ---------------
-RUN mkdir -p /home/asymptote/.cache && chown -R asymptote:asymptote /home/asymptote
+RUN mkdir -p /home/finn/.cache && chown -R finn:finn /home/finn
 
 # ---- Environment defaults ----------------------------------
 ENV PYTHONUNBUFFERED=1
@@ -94,7 +94,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 EXPOSE 8000
 
 # ---- Drop to non-root -------------------------------------
-USER asymptote
+USER finn
 
 # ---- Entrypoint --------------------------------------------
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--limit-concurrency", "100", "--timeout-keep-alive", "65"]

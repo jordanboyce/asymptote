@@ -98,8 +98,11 @@ _PII_NAME_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         r"\b(client.?name|account.?holder|holder.?name|owner.?name|rep.?name|advisor.?name)\b",
         re.IGNORECASE,
     ), "drop"),
-    # Account numbers — hash these to preserve grouping
-    (re.compile(r"\b(account.?num|acct.?num|account.?no|acct.?no|account.?id|client.?id)\b", re.IGNORECASE), "hash"),
+    # Account numbers — hash these to preserve grouping. Pattern covers
+    # the long form ("Account Number"), short form ("Acct Num"), camelCase
+    # ("AccountNumber"), snake/kebab ("account_no", "client-id"), and the
+    # variants seen in real custodian exports.
+    (re.compile(r"\b(?:account|acct|client)[\s_\-]*(?:number|num|no|id)\b", re.IGNORECASE), "hash"),
 ]
 
 # Financial roles that are explicitly *safe* — never sanitized even if their

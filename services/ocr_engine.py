@@ -25,7 +25,7 @@ def _find_poppler_path() -> Optional[str]:
     """Find poppler binaries for pdf2image, checking bundled/portable locations first."""
     candidates = []
 
-    # 1. Folder next to the exe (portable: drop poppler\bin beside Asymptote.exe)
+    # 1. Folder next to the exe (portable: drop poppler\bin beside Finn.exe)
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(sys.executable)
         candidates.append(os.path.join(exe_dir, 'poppler', 'bin'))
@@ -81,7 +81,7 @@ def _find_tesseract_cmd() -> Optional[str]:
     if env_cmd:
         candidates.append(env_cmd)
 
-    # 1. Folder next to the exe (portable: drop tesseract beside Asymptote.exe)
+    # 1. Folder next to the exe (portable: drop tesseract beside Finn.exe)
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(sys.executable)
         candidates.append(os.path.join(exe_dir, "tesseract", "tesseract.exe"))
@@ -427,7 +427,7 @@ class LegacyOCREngine(OCREngine):
         if not _has_poppler_binaries():
             raise RuntimeError(
                 "Poppler binaries not found. Install Poppler and add it to PATH, "
-                "or place poppler/bin next to Asymptote.exe."
+                "or place poppler/bin next to Finn.exe."
             )
         if self._engine == "pytesseract" and not _configure_pytesseract_binary():
             raise RuntimeError(
@@ -641,7 +641,7 @@ class VisionOCREngine(OCREngine):
         if not _has_poppler_binaries():
             raise RuntimeError(
                 "Poppler binaries not found. Install Poppler and add it to PATH, "
-                "or place poppler/bin next to Asymptote.exe."
+                "or place poppler/bin next to Finn.exe."
             )
 
         poppler_path = _find_poppler_path()

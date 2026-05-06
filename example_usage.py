@@ -1,7 +1,7 @@
 """
-Example usage of Asymptote API
+Example usage of Finn API
 
-This script demonstrates how to interact with the Asymptote API programmatically.
+This script demonstrates how to interact with the Finn API programmatically.
 Make sure the server is running before executing this script.
 """
 
@@ -14,7 +14,7 @@ BASE_URL = "http://localhost:8000"
 
 
 def upload_document(pdf_path: Path):
-    """Upload a PDF document to Asymptote."""
+    """Upload a PDF document to Finn."""
     url = f"{BASE_URL}/documents/upload"
 
     with open(pdf_path, "rb") as f:
@@ -103,7 +103,7 @@ def delete_document(document_id: str):
 def main():
     """Example usage workflow."""
     print("=" * 60)
-    print("Asymptote API - Example Usage")
+    print("Finn API - Example Usage")
     print("=" * 60)
 
     # 1. Upload a document (replace with your PDF path)

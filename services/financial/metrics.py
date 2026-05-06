@@ -1,8 +1,8 @@
 """Portfolio metric computation for financial tabular data.
 
-Provides compute_financial_metric() which operates on top of a StructuredStore
+Provides compute_financial_metric() which operates on top of a HoldingsStore
 instance using only its public API (get_schema, execute_query).  All metric
-logic is contained here — the StructuredStore has no knowledge of these.
+logic is contained here — the HoldingsStore has no knowledge of these.
 
 P0.6 — Numeric sanity guards
 ------------------------------
@@ -18,7 +18,7 @@ numeric coercion silently failed upstream:
   weight does not sum to ~100% the lot-rollup or coercion likely lost data.
 
 Warnings are returned as a ``warnings`` list on the result dict.  The result
-is always returned — Asymptote never suppresses data, but it never ships
+is always returned — Finn never suppresses data, but it never ships
 silently wrong numbers either.
 """
 
@@ -83,19 +83,19 @@ def _sanity_check_breakdown(groups: List[Dict[str, Any]], warnings: List[str]) -
 
 
 def compute_financial_metric(
-    store: Any,  # StructuredStore — typed as Any to avoid circular import
+    store: Any,  # HoldingsStore — typed as Any to avoid circular import
     identifier: str,
     metric: str,
     limit: int = 10,
     group_by_symbol: bool = True,
     identifier_type: str | None = None,
 ) -> Dict[str, Any]:
-    """Compute a canned portfolio metric against an ingested structured table.
+    """Compute a canned portfolio metric against an ingested Holdings table.
 
     Parameters
     ----------
     store:
-        A ``StructuredStore`` instance.
+        A ``HoldingsStore`` instance.
     identifier:
         A table_name, filename, or document_id recognised by the store.
     metric:
@@ -114,19 +114,7 @@ def compute_financial_metric(
     """
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
-        msg = f"No structured table found for '{identifier}'."
-        try:
-            suggestions = store.suggest_identifiers(identifier, limit=3)
-        except Exception:
-            suggestions = []
-        if suggestions:
-            hint = "; ".join(
-                f"'{s['table_name']}' (source: {s['filename']})"
-                for s in suggestions if s.get('table_name')
-            )
-            if hint:
-                msg += f" Did you mean: {hint}?"
-        raise ValueError(msg)
+        raise ValueError(f"No structured table found for '{identifier}'")
 
     role_to_col: Dict[str, str] = {}
     for c in schema['columns']:
@@ -269,35 +257,23 @@ def compute_financial_metric(
         if m in ('breakdown_by_sector', 'breakdown_by_asset_class',
                  'breakdown_by_region', 'breakdown_by_currency'):
             group_role = m.replace('breakdown_by_', '')
-            # Soft-fail when the required role isn't present instead of raising.
-            # A raise bubbles up as a red "tool error" in the chat UI and wastes
-            # a turn; a structured not-applicable payload lets the model see
-            # what breakdowns *are* runnable on this table and pick one.
-            missing: List[str] = []
-            if group_role not in role_to_col:
-                missing.append(group_role)
-            if 'market_value' not in role_to_col:
-                missing.append('market_value')
-            if missing:
-                runnable = [
-                    f'breakdown_by_{role}'
-                    for role in ('sector', 'asset_class', 'region', 'currency')
-                    if role in role_to_col and 'market_value' in role_to_col
-                ]
-                return {
-                    'metric': metric,
-                    'filename': schema['filename'],
-                    'table_used': table,
-                    'applicable': False,
-                    'reason': (
-                        f"{schema['filename']} has no column with role "
-                        f"{', '.join(repr(r) for r in missing)} — this breakdown "
-                        f"isn't available for this table."
-                    ),
-                    'detected_roles': sorted(role_to_col.keys()),
-                    'runnable_breakdowns': runnable,
-                }
-            result = _breakdown(conn, schema, table, group_role, 'market_value')
+            if group_role in role_to_col:
+                result = _breakdown(conn, schema, table, group_role, 'market_value')
+            elif group_role in ('sector', 'asset_class') and 'ticker' in role_to_col:
+                # Source file lacks a sector/asset_class column — fall through
+                # to v4.2 classification enrichment so the metric still works.
+                # Roles outside this set (region, currency) need explicit data.
+                result = _breakdown_via_classification(
+                    conn, schema, table, group_role, role_to_col,
+                )
+            else:
+                raise ValueError(
+                    f"No column with role '{group_role}' detected in {schema['filename']}. "
+                    f"Detected roles: {sorted(role_to_col.keys()) or 'none'}. "
+                    f"Use query_table for hand-written aggregation, or call "
+                    f"get_security_classification / enrich_holdings to attach "
+                    f"sector data first."
+                )
             _sanity_check_breakdown(result.get('groups', []), warnings)
             if warnings:
                 result['warnings'] = warnings
@@ -359,6 +335,101 @@ def compute_financial_metric(
         raise ValueError(
             f"Unknown metric '{metric}'. Available: {sorted(AVAILABLE_METRICS.keys())}"
         )
+
+
+def _breakdown_via_classification(
+    conn: sqlite3.Connection,
+    schema: Dict[str, Any],
+    table: str,
+    group_role: str,  # 'sector' or 'asset_class'
+    role_to_col: Dict[str, str],
+    classify_fn: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Group market_value by sector/asset_class when the source file lacks
+    that column, by classifying each ticker via the v4.2 enrichment feed.
+
+    Result shape mirrors `_breakdown` plus an `enriched_via` marker so the
+    calling LLM (and the user) can see the sector data didn't come from the
+    file itself.
+    """
+    if classify_fn is None:
+        from services.market_data.classification import get_security_classification
+        classify_fn = get_security_classification
+
+    if 'market_value' not in role_to_col:
+        raise ValueError(
+            f"No column with role 'market_value' detected in {schema['filename']}"
+        )
+
+    ticker_col = role_to_col['ticker']
+    mv_col = role_to_col['market_value']
+
+    sql = (
+        f'SELECT TRIM("{ticker_col}") AS sym, SUM("{mv_col}") AS total '
+        f'FROM "{table}" '
+        f'WHERE TRIM(COALESCE("{ticker_col}", \'\')) != \'\' '
+        f'  AND "{mv_col}" IS NOT NULL '
+        f'GROUP BY sym'
+    )
+    rows = conn.execute(sql).fetchall()
+
+    bucket_totals: Dict[str, float] = {}
+    bucket_counts: Dict[str, int] = {}
+    unclassified_total = 0.0
+    unclassified_count = 0
+    classified_symbols = 0
+    for row in rows:
+        sym = (row[0] or '').strip().upper()
+        total = row[1]
+        if not sym or total is None:
+            continue
+        try:
+            payload = classify_fn(sym) or {}
+        except Exception:
+            payload = {}
+        bucket = payload.get(group_role) if 'error' not in payload else None
+        if not bucket:
+            unclassified_total += float(total or 0)
+            unclassified_count += 1
+            continue
+        classified_symbols += 1
+        bucket_totals[bucket] = bucket_totals.get(bucket, 0.0) + float(total)
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+    groups = [
+        {'group': name, 'total': total, 'count': bucket_counts[name]}
+        for name, total in sorted(bucket_totals.items(), key=lambda kv: -kv[1])
+    ]
+    if unclassified_count:
+        groups.append({
+            'group': 'Unclassified',
+            'total': unclassified_total,
+            'count': unclassified_count,
+        })
+
+    total_sum = sum((g['total'] or 0) for g in groups)
+    for g in groups:
+        g['pct'] = (
+            (g['total'] / total_sum * 100.0) if total_sum and g['total'] else None
+        )
+
+    return {
+        'metric': f'breakdown_by_{group_role}',
+        'filename': schema['filename'],
+        'group_column': None,  # no source-file column — derived from ticker
+        'value_column': mv_col,
+        'groups': groups,
+        'total': total_sum,
+        'enriched_via': 'classification',
+        'classified_symbols': classified_symbols,
+        'unclassified_symbols': unclassified_count,
+        'note': (
+            f"Source file has no '{group_role}' column. Each symbol was "
+            f"classified via get_security_classification (yfinance-backed) "
+            f"and aggregated. Symbols that couldn't be classified are grouped "
+            f"under 'Unclassified'."
+        ),
+    }
 
 
 def _breakdown(

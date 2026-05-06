@@ -3,7 +3,7 @@
 The chat endpoint uses a provider-agnostic ReAct-style tool-use loop: we
 inject table schemas + tool-use instructions into the prompt, parse
 `<tool_call>{...}</tool_call>` blocks out of the model's response, execute
-them against the per-collection StructuredStore, and feed the results back
+them against the per-Collection HoldingsStore, and feed the results back
 on a subsequent pass.
 
 This approach works across every AI provider the app supports (Anthropic,
@@ -19,7 +19,8 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
-from services.structured_store import SQLValidationError, StructuredStore
+from services.financial.holdings_store import HoldingsStore
+from services.tabular.sql_validation import SQLValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,7 @@ SUPPORTED_TOOLS = {
 
 
 def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 20) -> str:
-    """Render table schemas into an unambiguous block for the prompt.
-
-    The `sql_table_name` field is the EXACT string the model should use as
-    the SQL identifier and as the `identifier` argument on table tool calls.
-    Every other field on each entry is metadata — do not concatenate fields
-    to form an identifier.
-    """
+    """Render table schemas into a compact human-readable block for the prompt."""
     if not tables:
         return ""
 
@@ -69,31 +64,29 @@ def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 2
         "ranking question — raw SQL over these tables is dramatically more "
         "accurate than reading row text snippets.",
         "",
-        "IDENTIFIER RULE: For every table below, the `sql_table_name` field is "
-        "the EXACT string to use in SQL FROM clauses and as the `identifier` "
-        "argument to table tools. Never modify it, never combine it with the "
-        "`source_file`, never use the filename as the SQL identifier.",
-        "",
     ]
+    lines.append(
+        "CRITICAL: every line below shows two distinct names. The quoted "
+        "value after `TABLE` is the SQL identifier — use it verbatim in "
+        "FROM clauses. The value after `source:` is the human-readable "
+        "filename — pass it to `identifier=` on schema/rows/aggregate/metric "
+        "tools, but NEVER use it as a SQL table name. Confusing the two "
+        "produces \"no such table\" errors."
+    )
+    lines.append("")
     for t in tables[:max_tables]:
-        lines.append(f"- sql_table_name: {t['table_name']}")
-        lines.append(f"  source_file: {t['filename']}")
-        if t.get('sheet_name'):
-            lines.append(f"  sheet_name: {t['sheet_name']}")
+        sheet_suffix = f" (sheet: {t['sheet_name']})" if t.get('sheet_name') else ""
+        lines.append(
+            f"TABLE \"{t['table_name']}\"  — source: {t['filename']}{sheet_suffix}"
+        )
         lines.append(f"  rows: {t['row_count']}, columns: {t['column_count']}")
         cols = t.get('columns', [])[:_MAX_SCHEMA_PROMPT_COLS]
-        if cols:
-            lines.append("  columns:")
-            for c in cols:
-                role = f" [role: {c['role']}]" if c.get('role') else ""
-                original = (
-                    f"  original: {c['name']}"
-                    if c.get('name') and c['name'] != c['sql_name']
-                    else ""
-                )
-                lines.append(
-                    f"    - \"{c['sql_name']}\" ({c['type']}){role}{original}"
-                )
+        for c in cols:
+            role = f" [role: {c['role']}]" if c.get('role') else ""
+            lines.append(
+                f"    - \"{c['sql_name']}\" ({c['type']}){role}"
+                + (f"  original: {c['name']}" if c['name'] != c['sql_name'] else "")
+            )
         if len(t.get('columns', [])) > _MAX_SCHEMA_PROMPT_COLS:
             lines.append(f"    ... ({len(t['columns']) - _MAX_SCHEMA_PROMPT_COLS} more columns)")
         lines.append("")
@@ -149,7 +142,11 @@ def build_tool_use_instructions() -> str:
         '  - query_table — read-only SQL SELECT for ad-hoc analytics.\n'
         '    <tool_call>{"tool": "query_table", "sql": "SELECT \\"sector\\", SUM(\\"market_value\\") FROM \\"csv_data_abc\\" GROUP BY \\"sector\\""}</tool_call>\n'
         '    Rules: SELECT/WITH only, single statement, double-quote every '
-        'identifier, column names are case-sensitive (use the exact sql_name).\n'
+        'identifier, column names are case-sensitive (use the exact sql_name). '
+        'The FROM target MUST be the quoted SQL `table_name` from the schema '
+        'block above (looks like `csv_data_*`) — never the source filename '
+        '(`portfolio.csv`, `HBIL*.csv`, etc.). Filenames go to `identifier=` '
+        'on the other tools, not into SQL.\n'
         '  - compute_portfolio_metric — canned financial metric. Only valid '
         'when get_table_schema reports financial_roles.\n'
         '    <tool_call>{"tool": "compute_portfolio_metric", "identifier": "portfolio.csv", "metric": "top_holdings", "limit": 5}</tool_call>\n'
@@ -227,9 +224,9 @@ def parse_tool_calls(response_text: str) -> List[Dict[str, Any]]:
 
 def _resolve_store_for_identifier(
     identifier: Optional[str],
-    stores: Dict[str, StructuredStore],
+    stores: Dict[str, HoldingsStore],
     tables: List[Dict[str, Any]],
-) -> Optional[StructuredStore]:
+) -> Optional[HoldingsStore]:
     """Look up the store whose tables contain the given identifier."""
     if not stores:
         return None
@@ -244,9 +241,9 @@ def _resolve_store_for_identifier(
 
 def _resolve_store_for_sql(
     sql: str,
-    stores: Dict[str, StructuredStore],
+    stores: Dict[str, HoldingsStore],
     tables: List[Dict[str, Any]],
-) -> Optional[StructuredStore]:
+) -> Optional[HoldingsStore]:
     """Scan SQL text for a known table name and route to the owning store."""
     if not stores:
         return None
@@ -567,7 +564,7 @@ _CELL_CHAR_LIMIT = 240
 
 
 def render_table_as_jsonl(
-    store: StructuredStore,
+    store: HoldingsStore,
     table_info: Dict[str, Any],
     max_rows: int = _DEFAULT_INLINE_ROW_LIMIT,
 ) -> Optional[str]:
@@ -589,7 +586,7 @@ def render_table_as_jsonl(
 
 
 def render_table_as_rows(
-    store: StructuredStore,
+    store: HoldingsStore,
     table_info: Dict[str, Any],
     max_rows: int = _DEFAULT_INLINE_ROW_LIMIT,
 ) -> Optional[Dict[str, Any]]:
@@ -644,7 +641,7 @@ def render_table_as_rows(
 
 def build_structured_context(
     tables: List[Dict[str, Any]],
-    stores: Dict[str, StructuredStore],
+    stores: Dict[str, HoldingsStore],
     inline_row_threshold: int = _DEFAULT_INLINE_ROW_LIMIT,
     total_char_budget: int = _DEFAULT_INLINE_CHAR_BUDGET,
 ) -> Dict[str, Any]:
@@ -687,16 +684,9 @@ def build_structured_context(
             if c.get("role")
         ]
         roles_line = f"  detected roles: {', '.join(role_cols)}\n" if role_cols else ""
-        sql_line = (
-            f'  sql_table_name: {t["table_name"]}  '
-            f'(use this exact string if you need to run SQL against this file)\n'
-            if t.get("table_name")
-            else ""
-        )
         header = (
-            f'--- CSV FILE: {t["filename"]}{sheet_suffix} '
+            f'--- TABLE: {t["filename"]}{sheet_suffix} '
             f'({row_count} rows, {t.get("column_count", 0)} cols) ---\n'
-            f'{sql_line}'
             f'{roles_line}'
         )
         block = header + jsonl
@@ -734,7 +724,7 @@ def build_structured_context(
     }
 
 
-def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, StructuredStore]]:
+def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, HoldingsStore]]:
     """Gather structured tables from every collection in scope.
 
     Returns (tables, stores_by_collection).
@@ -742,14 +732,14 @@ def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str,
     from services.indexer_manager import indexer_manager
 
     all_tables: List[Dict[str, Any]] = []
-    stores: Dict[str, StructuredStore] = {}
+    stores: Dict[str, HoldingsStore] = {}
     for cid in collection_ids:
         try:
             indexer = indexer_manager.get_indexer(cid)
         except Exception as e:
             logger.warning(f"collect_structured_tables: cannot load indexer '{cid}': {e}")
             continue
-        store = indexer.vector_store.structured_store
+        store = indexer.vector_store.holdings_store
         stores[cid] = store
         try:
             tables = store.list_tables()

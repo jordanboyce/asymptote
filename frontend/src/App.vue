@@ -10,10 +10,10 @@
         :class="{ 'bg-base-200': activeTab === 'collections' }"
         @click="activeTab = 'collections'"
         title="View all collections"
-        aria-label="Asymptote — view all collections"
+        aria-label="Finn — view all collections"
       >
         <img src="/icon_black.svg" alt="" class="logo-header h-5 w-5 flex-shrink-0">
-        <span class="font-bold text-sm tracking-tight hidden sm:inline">Asymptote</span>
+        <span class="font-bold text-sm tracking-tight hidden sm:inline">Finn</span>
       </button>
 
       <!-- Current collection indicator -->
@@ -28,6 +28,26 @@
           :style="{ backgroundColor: collectionStore.currentCollection?.color || '#3b82f6' }"
         ></div>
         <span class="max-w-32 truncate text-xs">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
+      </button>
+
+      <!-- Active group indicator -->
+      <button
+        v-if="collectionStore.currentGroupId"
+        class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-7 min-h-0 text-primary"
+        @click="activeTab = 'collections'"
+        :title="`Group active: ${collectionStore.currentGroup?.name}. Chat queries across all member collections.`"
+      >
+        <div
+          class="w-2 h-2 rounded-full flex-shrink-0"
+          :style="{ backgroundColor: collectionStore.currentGroup?.color || '#8b5cf6' }"
+        ></div>
+        <Users :size="10" class="opacity-70" />
+        <span class="max-w-28 truncate text-xs">{{ collectionStore.currentGroup?.name }}</span>
+        <button
+          class="ml-0.5 hover:text-error transition-colors text-base-content/50"
+          title="Clear group selection"
+          @click.stop="collectionStore.setCurrentGroup(null)"
+        >×</button>
       </button>
 
       <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
@@ -62,8 +82,8 @@
         </button>
       </template>
 
-      <!-- Tools dropdown (hidden on collections overview) -->
-      <div v-if="!isCollectionsView" class="dropdown dropdown-bottom">
+      <!-- Tools dropdown (hidden on collections overview, hidden in basic mode) -->
+      <div v-if="!isCollectionsView && isExpertMode" class="dropdown dropdown-bottom">
         <label
           tabindex="0"
           class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
@@ -98,9 +118,9 @@
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
 
-      <!-- Analysis sidebar toggle (hidden on collections overview) -->
+      <!-- Analysis sidebar toggle (hidden on collections overview, hidden in basic mode) -->
       <button
-        v-if="!isCollectionsView"
+        v-if="!isCollectionsView && isExpertMode"
         class="btn btn-ghost btn-circle btn-sm"
         :class="{ 'bg-base-300': analysisSidebarOpen }"
         @click="analysisSidebarOpen = !analysisSidebarOpen"
@@ -110,6 +130,19 @@
       >
         <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
       </button>
+
+      <!-- Basic / Expert toggle in header -->
+      <label class="flex items-center gap-1.5 cursor-pointer select-none px-1" :title="isExpertMode ? 'Switch to Basic mode' : 'Switch to Expert mode'">
+        <span class="text-xs font-medium" :class="!isExpertMode ? 'text-base-content' : 'text-base-content/40'">Basic</span>
+        <input
+          type="checkbox"
+          class="toggle toggle-xs toggle-primary"
+          :checked="isExpertMode"
+          @change="toggleExpertMode"
+          aria-label="Toggle expert mode"
+        />
+        <span class="text-xs font-medium" :class="isExpertMode ? 'text-base-content' : 'text-base-content/40'">Expert</span>
+      </label>
 
       <!-- Settings button -->
       <button
@@ -259,6 +292,13 @@
                   <div class="w-px h-5 bg-base-300/70 mx-0.5"></div>
 
                   <!-- CTA -->
+                  <button
+                    class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
+                    @click="openCreateGroupModal"
+                  >
+                    <Users :size="14" />
+                    New group
+                  </button>
                   <button
                     class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
                     @click="openCreateCollectionModal"
@@ -422,6 +462,78 @@
                   </div>
                 </div>
               </div>
+
+              <!-- ── Household Groups ── -->
+              <div v-if="collectionStore.groups.length > 0 || showGroupSection" class="mt-10">
+                <div class="flex items-center justify-between mb-4">
+                  <h2 class="text-sm font-semibold uppercase tracking-[0.1em] text-base-content/50">Household Groups</h2>
+                </div>
+                <div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));">
+                  <div
+                    v-for="group in collectionStore.groups"
+                    :key="group.id"
+                    class="group/grpcard relative flex flex-col gap-2 p-4 rounded-lg border transition-all cursor-pointer"
+                    :class="collectionStore.currentGroupId === group.id
+                      ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/20'
+                      : 'border-base-300/60 bg-base-100 hover:border-base-content/25'"
+                    @click="toggleGroupSelection(group.id)"
+                    :title="collectionStore.currentGroupId === group.id ? 'Deselect group' : 'Select group for cross-account queries'"
+                  >
+                    <div class="flex items-center gap-2 min-w-0">
+                      <div class="w-3 h-3 rounded-full flex-shrink-0" :style="{ backgroundColor: group.color }"></div>
+                      <span class="font-medium text-sm truncate">{{ group.name }}</span>
+                      <span v-if="collectionStore.currentGroupId === group.id" class="ml-auto text-[10px] uppercase tracking-wider font-semibold text-primary flex-shrink-0">Active</span>
+                    </div>
+                    <div class="text-xs text-base-content/50">
+                      {{ group.collection_ids.length }} collection{{ group.collection_ids.length !== 1 ? 's' : '' }}
+                    </div>
+                    <!-- Member chips -->
+                    <div class="flex flex-wrap gap-1 mt-1">
+                      <span
+                        v-for="colId in group.collection_ids"
+                        :key="colId"
+                        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-base-200 text-base-content/70"
+                      >
+                        <div
+                          class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                          :style="{ backgroundColor: collectionById(colId)?.color || '#888' }"
+                        ></div>
+                        {{ collectionById(colId)?.name || colId }}
+                        <button
+                          class="ml-0.5 hover:text-error transition-colors"
+                          title="Remove from group"
+                          @click.stop="collectionStore.removeCollectionFromGroup(group.id, colId)"
+                        >×</button>
+                      </span>
+                    </div>
+                    <!-- Add collection dropdown -->
+                    <div class="dropdown" @click.stop>
+                      <label tabindex="0" class="btn btn-xs btn-ghost gap-1 w-full justify-start mt-1 text-base-content/50 hover:text-base-content">
+                        <Plus :size="11" />Add collection
+                      </label>
+                      <ul tabindex="0" class="dropdown-content z-50 menu p-1 shadow bg-base-100 border border-base-300 rounded-box w-48 max-h-48 overflow-y-auto">
+                        <li v-for="col in collectionsNotInGroup(group)" :key="col.id">
+                          <a class="text-sm" @click="collectionStore.addCollectionToGroup(group.id, col.id)">
+                            <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: col.color }"></div>
+                            {{ col.name }}
+                          </a>
+                        </li>
+                        <li v-if="collectionsNotInGroup(group).length === 0">
+                          <span class="text-xs text-base-content/40 px-2">All collections added</span>
+                        </li>
+                      </ul>
+                    </div>
+                    <!-- Delete group button -->
+                    <button
+                      class="absolute top-2 right-2 btn btn-ghost btn-xs btn-square opacity-0 group-hover/grpcard:opacity-100 hover:text-error transition-all"
+                      title="Delete group"
+                      @click.stop="confirmDeleteGroup(group)"
+                    >
+                      <Trash2 :size="12" />
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
@@ -435,9 +547,9 @@
 
       </main>
 
-      <!-- Right sidebar: analysis (resizable, hidden on collections overview) -->
+      <!-- Right sidebar: analysis (resizable, hidden on collections overview, hidden in basic mode) -->
       <aside
-        v-show="!isCollectionsView"
+        v-show="!isCollectionsView && isExpertMode"
         class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative border-l border-base-300"
         :class="isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out'"
         :style="{ width: analysisSidebarOpen ? analysisWidth + 'px' : '0px' }"
@@ -764,6 +876,50 @@
       </form>
     </dialog>
 
+    <!-- Create Group Modal -->
+    <dialog class="modal" :class="{ 'modal-open': showGroupModal }" aria-labelledby="create-group-title">
+      <div class="modal-box">
+        <h3 id="create-group-title" class="font-bold text-lg mb-4">Create Household Group</h3>
+        <p class="text-sm text-base-content/60 mb-4">Groups let you query across multiple collections at once — e.g. all accounts for a household.</p>
+        <div class="form-control mb-3">
+          <label class="label"><span class="label-text">Group name</span></label>
+          <input
+            v-model="newGroupName"
+            type="text"
+            class="input input-bordered"
+            placeholder="e.g. Henderson Household"
+            @keyup.enter="createGroup"
+            autofocus
+          />
+        </div>
+        <div class="form-control mb-4">
+          <label class="label"><span class="label-text">Color</span></label>
+          <input v-model="newGroupColor" type="color" class="input input-bordered h-10 w-24 p-1 cursor-pointer" />
+        </div>
+        <div class="modal-action">
+          <button class="btn btn-ghost" @click="showGroupModal = false" :disabled="creatingGroup">Cancel</button>
+          <button class="btn btn-primary" @click="createGroup" :disabled="creatingGroup || !newGroupName.trim()">
+            <span v-if="creatingGroup" class="loading loading-spinner loading-sm"></span>
+            Create Group
+          </button>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button @click="showGroupModal = false">close</button></form>
+    </dialog>
+
+    <!-- Delete Group Confirmation Modal -->
+    <dialog class="modal" :class="{ 'modal-open': !!groupToDelete }">
+      <div class="modal-box">
+        <h3 class="font-bold text-lg text-error mb-2">Delete Group</h3>
+        <p class="mb-4">Delete group <strong>{{ groupToDelete?.name }}</strong>? This only removes the grouping — the collections themselves are not affected.</p>
+        <div class="modal-action">
+          <button class="btn btn-ghost" @click="groupToDelete = null">Cancel</button>
+          <button class="btn btn-error" @click="deleteGroupConfirmed">Delete Group</button>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button @click="groupToDelete = null">close</button></form>
+    </dialog>
+
     <!-- Share Modal -->
     <ShareModal
       :visible="showShareModal"
@@ -911,6 +1067,7 @@
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
 import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen } from 'lucide-vue-next'
+import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
 
 const chatTabEnabled = ref(true)
 
@@ -918,7 +1075,7 @@ const tabs = computed(() => {
   const t = []
   if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
   t.push({ id: 'search', label: 'Search', icon: Search })
-  t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
+  if (isExpertMode.value) t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   return t
 })
 
@@ -951,6 +1108,15 @@ const userStore = useUserStore()
 
 const activeTab = ref('chat')
 const currentTheme = ref('light')
+
+// In basic mode, expertise/MCP/OCR/tokenizer are hidden — bounce back to chat
+// if the user toggles to basic while one of those tabs is active.
+const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'ocr', 'tokenizer']
+watch(isExpertMode, (expert) => {
+  if (!expert && BASIC_HIDDEN_TABS.includes(activeTab.value)) {
+    activeTab.value = 'chat'
+  }
+})
 
 // Resizable sidebar
 const SIDEBAR_MIN = 220
@@ -1151,6 +1317,53 @@ const filteredCollections = computed(() => {
 
   return list
 })
+
+// ── Group helpers ───────────────────────────────────────────────────────────
+
+const showGroupSection = computed(() => collectionStore.groups.length > 0)
+
+const collectionById = (id) => collectionStore.collections.find(c => c.id === id) || null
+
+const collectionsNotInGroup = (group) =>
+  collectionStore.collections.filter(c => !group.collection_ids.includes(c.id))
+
+const toggleGroupSelection = (groupId) => {
+  collectionStore.setCurrentGroup(collectionStore.currentGroupId === groupId ? null : groupId)
+}
+
+// Create group modal
+const showGroupModal = ref(false)
+const newGroupName = ref('')
+const newGroupColor = ref('#8b5cf6')
+const creatingGroup = ref(false)
+
+const openCreateGroupModal = () => {
+  newGroupName.value = ''
+  newGroupColor.value = '#8b5cf6'
+  showGroupModal.value = true
+}
+
+const createGroup = async () => {
+  if (!newGroupName.value.trim()) return
+  creatingGroup.value = true
+  try {
+    await collectionStore.createGroup(newGroupName.value.trim(), newGroupColor.value)
+    showGroupModal.value = false
+  } catch (err) {
+    console.error('Failed to create group:', err)
+  } finally {
+    creatingGroup.value = false
+  }
+}
+
+// Delete group confirmation
+const groupToDelete = ref(null)
+const confirmDeleteGroup = (group) => { groupToDelete.value = group }
+const deleteGroupConfirmed = async () => {
+  if (!groupToDelete.value) return
+  await collectionStore.deleteGroup(groupToDelete.value.id)
+  groupToDelete.value = null
+}
 
 const updateThemeFromStorage = () => {
   const savedTheme = localStorage.getItem('theme')
@@ -1359,17 +1572,6 @@ const cancelJob = async (jobId) => {
   }
 }
 
-// Theme change handlers — referenced by add/removeEventListener so they must
-// be the same function identity on both sides.
-const onThemeChanged = () => updateThemeFromStorage()
-const onStorageThemeChanged = (e) => {
-  if (e.key === 'theme') updateThemeFromStorage()
-}
-const onSystemThemeChanged = () => {
-  if (!localStorage.getItem('theme')) updateThemeFromStorage()
-}
-let prefersDarkMedia = null
-
 onMounted(async () => {
   // Check whether we need the first-run onboarding takeover. Done first so
   // the screen paints immediately — the rest of the boot continues behind it.
@@ -1387,8 +1589,9 @@ onMounted(async () => {
   // Load user info
   await userStore.loadCurrentUser()
 
-  // Load collections first
+  // Load collections and groups
   await collectionStore.loadCollections()
+  collectionStore.loadGroups()
 
   // Then load stats for current collection
   loadStats()
@@ -1399,17 +1602,27 @@ onMounted(async () => {
   // Initialize theme
   updateThemeFromStorage()
 
-  // Theme listeners — named so onBeforeUnmount can detach them
-  window.addEventListener('theme-changed', onThemeChanged)
-  window.addEventListener('storage', onStorageThemeChanged)
-  prefersDarkMedia = window.matchMedia('(prefers-color-scheme: dark)')
-  prefersDarkMedia.addEventListener('change', onSystemThemeChanged)
+  // Listen for theme changes (from Settings tab via custom event)
+  window.addEventListener('theme-changed', () => {
+    updateThemeFromStorage()
+  })
+
+  // Listen for storage changes (theme changed in another tab)
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'theme') {
+      updateThemeFromStorage()
+    }
+  })
+
+  // Listen for system theme changes (only if user hasn't set a preference)
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (!localStorage.getItem('theme')) {
+      updateThemeFromStorage()
+    }
+  })
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('theme-changed', onThemeChanged)
-  window.removeEventListener('storage', onStorageThemeChanged)
-  prefersDarkMedia?.removeEventListener('change', onSystemThemeChanged)
   backgroundJobsStore.cleanup()
 })
 </script>

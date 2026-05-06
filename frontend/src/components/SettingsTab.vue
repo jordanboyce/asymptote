@@ -1,8 +1,35 @@
 <template>
   <div class="space-y-6">
 
-    <!-- System Info -->
-    <div class="card bg-base-200">
+    <!-- Basic / Expert Mode Toggle -->
+    <div class="card bg-base-100 border border-base-300">
+      <div class="card-body py-4 px-5">
+        <div class="flex items-center justify-between gap-4 flex-wrap">
+          <div class="min-w-0">
+            <h3 class="font-semibold text-sm">Interface Mode</h3>
+            <p class="text-xs text-base-content/55 mt-0.5">
+              {{ isExpertMode
+                ? 'Expert mode — all settings and tools are visible.'
+                : 'Basic mode — showing only the essentials. Switch to Expert for advanced configuration.' }}
+            </p>
+          </div>
+          <label class="flex items-center gap-3 flex-shrink-0 cursor-pointer select-none">
+            <span class="text-sm font-medium" :class="!isExpertMode ? 'text-base-content' : 'text-base-content/40'">Basic</span>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              :checked="isExpertMode"
+              @change="toggleExpertMode"
+              aria-label="Toggle expert mode"
+            />
+            <span class="text-sm font-medium" :class="isExpertMode ? 'text-base-content' : 'text-base-content/40'">Expert</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- System Info (expert only) -->
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base">System</h3>
@@ -36,8 +63,8 @@
       </div>
     </div>
 
-    <!-- UI Feature Flags -->
-    <div class="card bg-base-200">
+    <!-- UI Feature Flags (expert only) -->
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base">UI Features</h3>
@@ -202,60 +229,91 @@
                   <span v-else-if="editBuffer.keyStatus === 'saved'" class="text-success text-sm font-semibold">Saved</span>
                   <span v-if="editBuffer.keyError" class="text-error text-xs">{{ editBuffer.keyError }}</span>
                 </div>
+
+                <div v-if="editBuffer.capabilities" class="mt-2 rounded border border-base-300 bg-base-100 px-3 py-2 text-xs space-y-1">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-semibold">Model capabilities:</span>
+                    <span class="text-base-content/60">{{ editBuffer.capabilities.model || '(none)' }}</span>
+                    <span v-if="editBuffer.capabilities.probed" class="badge badge-xs badge-success">probed</span>
+                    <span v-else class="badge badge-xs badge-ghost">declared</span>
+                  </div>
+                  <div class="flex items-center gap-3 flex-wrap">
+                    <span :class="capabilityClass(editBuffer.capabilities.tools)">
+                      {{ capabilityIcon(editBuffer.capabilities.tools) }} Tool calling
+                    </span>
+                    <span :class="capabilityClass(editBuffer.capabilities.vision)">
+                      {{ capabilityIcon(editBuffer.capabilities.vision) }} Vision
+                    </span>
+                    <span :class="capabilityClass(editBuffer.capabilities.streaming)">
+                      {{ capabilityIcon(editBuffer.capabilities.streaming) }} Streaming
+                    </span>
+                    <span v-if="editBuffer.capabilities.context_window" class="text-base-content/60">
+                      ctx {{ Math.round(editBuffer.capabilities.context_window / 1000) }}k
+                    </span>
+                  </div>
+                  <div v-if="editBuffer.capabilities.tools === false" class="text-warning">
+                    Chat will fall back to a text-based ReAct loop. Slower and less reliable than native tool calls — pick a tool-capable model for the best experience.
+                  </div>
+                  <div v-for="(note, i) in (editBuffer.capabilities.notes || [])" :key="i" class="text-base-content/50">
+                    {{ note }}
+                  </div>
+                </div>
               </template>
             </div>
           </div>
 
-          <!-- Custom Provider Rows -->
-          <div v-for="cp in customProvidersConfig" :key="cp.id">
-            <div
-              class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
-              @click="toggleExpand(cp.id)"
-            >
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-medium text-sm">{{ cp.name }}</span>
-                  <span class="badge badge-neutral badge-xs badge-outline">custom</span>
+          <!-- Custom Provider Rows (expert only) -->
+          <template v-if="isExpertMode">
+            <div v-for="cp in customProvidersConfig" :key="cp.id">
+              <div
+                class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
+                @click="toggleExpand(cp.id)"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-medium text-sm">{{ cp.name }}</span>
+                    <span class="badge badge-neutral badge-xs badge-outline">custom</span>
+                  </div>
+                  <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
                 </div>
-                <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <span class="badge badge-success badge-xs">Configured</span>
+                  <span class="text-base-content/35 text-xs">{{ expandedProvider === cp.id ? '▲' : '▼' }}</span>
+                </div>
               </div>
-              <div class="flex items-center gap-2 flex-shrink-0">
-                <span class="badge badge-success badge-xs">Configured</span>
-                <span class="text-base-content/35 text-xs">{{ expandedProvider === cp.id ? '▲' : '▼' }}</span>
+
+              <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="form-control">
+                    <label class="label p-0 pb-1" :for="`custom-name-${cp.id}`"><span class="label-text font-medium">Name</span></label>
+                    <input :id="`custom-name-${cp.id}`" v-model="editBuffer.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+                  </div>
+                  <div class="form-control">
+                    <label class="label p-0 pb-1" :for="`custom-model-${cp.id}`"><span class="label-text font-medium">Model</span></label>
+                    <input :id="`custom-model-${cp.id}`" v-model="editBuffer.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
+                  </div>
+                </div>
+                <div class="form-control">
+                  <label class="label p-0 pb-1" :for="`custom-baseurl-${cp.id}`"><span class="label-text font-medium">Base URL</span></label>
+                  <input :id="`custom-baseurl-${cp.id}`" v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+                  <p class="text-xs text-base-content/50 mt-1">Must be an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter).</p>
+                </div>
+                <div class="form-control">
+                  <label class="label p-0 pb-1" :for="`custom-apikey-${cp.id}`">
+                    <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
+                  </label>
+                  <input :id="`custom-apikey-${cp.id}`" v-model="editBuffer.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
+                </div>
+                <div class="flex gap-2">
+                  <button class="btn btn-sm btn-primary" @click="saveCustomProvider(cp.id)" :disabled="!editBuffer.baseUrl?.trim() || !editBuffer.name?.trim()">Save</button>
+                  <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
+                </div>
               </div>
             </div>
+          </template>
 
-            <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
-              <div class="grid gap-3 sm:grid-cols-2">
-                <div class="form-control">
-                  <label class="label p-0 pb-1" :for="`custom-name-${cp.id}`"><span class="label-text font-medium">Name</span></label>
-                  <input :id="`custom-name-${cp.id}`" v-model="editBuffer.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1" :for="`custom-model-${cp.id}`"><span class="label-text font-medium">Model</span></label>
-                  <input :id="`custom-model-${cp.id}`" v-model="editBuffer.model" type="text" placeholder="model-name" class="input input-bordered input-sm w-full" />
-                </div>
-              </div>
-              <div class="form-control">
-                <label class="label p-0 pb-1" :for="`custom-baseurl-${cp.id}`"><span class="label-text font-medium">Base URL</span></label>
-                <input :id="`custom-baseurl-${cp.id}`" v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
-                <p class="text-xs text-base-content/50 mt-1">Must be an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter).</p>
-              </div>
-              <div class="form-control">
-                <label class="label p-0 pb-1" :for="`custom-apikey-${cp.id}`">
-                  <span class="label-text font-medium">API Key <span class="font-normal opacity-50">(optional)</span></span>
-                </label>
-                <input :id="`custom-apikey-${cp.id}`" v-model="editBuffer.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
-              </div>
-              <div class="flex gap-2">
-                <button class="btn btn-sm btn-primary" @click="saveCustomProvider(cp.id)" :disabled="!editBuffer.baseUrl?.trim() || !editBuffer.name?.trim()">Save</button>
-                <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Add Custom Provider row -->
-          <div v-if="showAddCustomForm" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+          <!-- Add Custom Provider row (expert only) -->
+          <div v-if="showAddCustomForm && isExpertMode" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
             <p class="text-sm font-medium">New Custom Endpoint</p>
             <div class="grid gap-3 sm:grid-cols-2">
               <div class="form-control">
@@ -285,7 +343,7 @@
           </div>
         </div>
 
-        <button v-if="!showAddCustomForm" class="btn btn-ghost btn-sm self-start gap-1" @click="showAddCustomForm = true">
+        <button v-if="!showAddCustomForm && isExpertMode" class="btn btn-ghost btn-sm self-start gap-1" @click="showAddCustomForm = true">
           + Add Custom Endpoint
         </button>
 
@@ -320,8 +378,8 @@
     </div>
 
 
-    <!-- OCR Settings -->
-    <div class="card bg-base-200">
+    <!-- OCR Settings (expert only) -->
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">OCR Settings</h3>
@@ -594,13 +652,13 @@
             <div class="min-w-0">
               <span class="label-text font-medium">Enable PII Redaction</span>
               <p class="text-xs text-base-content/60">
-                All data leaving Asymptote through MCP is scanned and redacted. Original data remains intact in local storage.
+                All data leaving Finn through MCP is scanned and redacted. Original data remains intact in local storage.
               </p>
             </div>
           </label>
         </div>
 
-        <div v-if="piiRedactionEnabled" class="space-y-4">
+        <div v-if="piiRedactionEnabled && isExpertMode" class="space-y-4">
           <section class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
             <div class="mb-4">
               <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Redaction Style</h4>
@@ -654,8 +712,8 @@
       </div>
     </div>
 
-    <!-- LLM Schema Inference -->
-    <div class="card bg-base-200">
+    <!-- LLM Schema Inference (expert only) -->
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">LLM Column Role Inference</h3>
@@ -718,55 +776,57 @@
           </p>
         </div>
 
-        <!-- Chunk settings -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-sm font-medium">Chunk size</span>
-              <span class="label-text-alt text-xs text-base-content/50">characters</span>
-            </label>
-            <input
-              type="number"
-              min="100"
-              max="4000"
-              step="50"
-              class="input input-sm input-bordered"
-              v-model.number="chunkSize"
-              @change="saveChunkSettings"
-            />
-            <p class="text-xs text-base-content/50 mt-1">
-              Smaller = more precise matches. Larger = more context per chunk.
-            </p>
+        <!-- Chunk settings (expert only) -->
+        <template v-if="isExpertMode">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div class="form-control">
+              <label class="label py-1">
+                <span class="label-text text-sm font-medium">Chunk size</span>
+                <span class="label-text-alt text-xs text-base-content/50">characters</span>
+              </label>
+              <input
+                type="number"
+                min="100"
+                max="4000"
+                step="50"
+                class="input input-sm input-bordered"
+                v-model.number="chunkSize"
+                @change="saveChunkSettings"
+              />
+              <p class="text-xs text-base-content/50 mt-1">
+                Smaller = more precise matches. Larger = more context per chunk.
+              </p>
+            </div>
+            <div class="form-control">
+              <label class="label py-1">
+                <span class="label-text text-sm font-medium">Chunk overlap</span>
+                <span class="label-text-alt text-xs text-base-content/50">characters</span>
+              </label>
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                step="25"
+                class="input input-sm input-bordered"
+                v-model.number="chunkOverlap"
+                @change="saveChunkSettings"
+              />
+              <p class="text-xs text-base-content/50 mt-1">
+                Overlap between adjacent chunks to preserve context across boundaries.
+              </p>
+            </div>
           </div>
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-sm font-medium">Chunk overlap</span>
-              <span class="label-text-alt text-xs text-base-content/50">characters</span>
-            </label>
-            <input
-              type="number"
-              min="0"
-              max="1000"
-              step="25"
-              class="input input-sm input-bordered"
-              v-model.number="chunkOverlap"
-              @change="saveChunkSettings"
-            />
-            <p class="text-xs text-base-content/50 mt-1">
-              Overlap between adjacent chunks to preserve context across boundaries.
-            </p>
-          </div>
-        </div>
-        <p class="text-xs text-base-content/60">
-          Changes take effect on the next re-index.
-        </p>
+          <p class="text-xs text-base-content/60">
+            Changes take effect on the next re-index.
+          </p>
 
-        <div v-if="chunkSettingsSaved" class="alert alert-success py-2 text-sm">
-          <span>Chunk settings saved. Re-index to apply.</span>
-        </div>
-        <div v-if="chunkSettingsError" class="alert alert-error py-2 text-sm">
-          <span>{{ chunkSettingsError }}</span>
-        </div>
+          <div v-if="chunkSettingsSaved" class="alert alert-success py-2 text-sm">
+            <span>Chunk settings saved. Re-index to apply.</span>
+          </div>
+          <div v-if="chunkSettingsError" class="alert alert-error py-2 text-sm">
+            <span>{{ chunkSettingsError }}</span>
+          </div>
+        </template>
 
         <div v-if="reindexSuccess" class="alert alert-success">
           <span>Re-indexing started. Progress is shown in the status bar.</span>
@@ -844,6 +904,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
+import { isExpertMode, toggleExpertMode } from '../utils/expertMode.js'
 import {
   PROVIDER_DEFS,
   getProvidersConfig,
@@ -1250,6 +1311,7 @@ const toggleExpand = (id) => {
     keyDirty: false,
     keyStatus: cfg.apiKey ? 'saved' : '',
     keyError: '',
+    capabilities: null,
   }
   if (id === 'ollama' && ollamaCheckStatus.value === null) {
     detectOllama()
@@ -1284,16 +1346,31 @@ const validateAndSave = async (id) => {
       })
       editBuffer.value.keyStatus = 'valid'
       editBuffer.value.keyDirty = false
+      editBuffer.value.capabilities = response.data.capabilities || null
     } else {
       editBuffer.value.keyStatus = 'invalid'
       editBuffer.value.keyError = response.data.error || ''
+      editBuffer.value.capabilities = null
     }
   } catch {
     editBuffer.value.keyStatus = 'invalid'
     editBuffer.value.keyError = 'Request failed'
+    editBuffer.value.capabilities = null
   } finally {
     validatingProvider.value = null
   }
+}
+
+const capabilityIcon = (value) => {
+  if (value === true) return '✓'
+  if (value === false) return '✗'
+  return '?'
+}
+
+const capabilityClass = (value) => {
+  if (value === true) return 'text-success font-semibold'
+  if (value === false) return 'text-error font-semibold'
+  return 'text-base-content/50'
 }
 
 const removeProvider = (id) => {

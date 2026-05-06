@@ -1,6 +1,6 @@
-# Asymptote Desktop Application
+# Finn Desktop Application
 
-This directory contains files for building Asymptote as a standalone Windows desktop application.
+This directory contains files for building Finn as a standalone Windows desktop application.
 
 ## Quick Start
 
@@ -11,11 +11,11 @@ cd desktop
 build_windows.bat
 ```
 
-This creates a standalone executable at `dist/Asymptote/Asymptote.exe`
+This creates a standalone executable at `dist/Finn/Finn.exe`
 
 ## Files in This Directory
 
-- **asymptote_desktop.py** - Main desktop application wrapper
+- **finn_desktop.py** - Main desktop application wrapper
 - **build_desktop.spec** - PyInstaller configuration
 - **requirements_desktop.txt** - Desktop-specific dependencies
 - **build_windows.bat** - Automated build script for Windows
@@ -42,7 +42,7 @@ See [DESKTOP_BUILD.md](DESKTOP_BUILD.md) for complete instructions on:
 
 After building, you'll have:
 
-- `dist/Asymptote/` - Folder containing the executable and dependencies
+- `dist/Finn/` - Folder containing the executable and dependencies
 - `installer_output/` - Windows installer (if built)
 
 ## Notes

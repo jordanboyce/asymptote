@@ -1,10 +1,10 @@
-# Asymptote API
+# Finn API
 
 **Privacy-focused, self-hosted advanced search using hybrid semantic + keyword retrieval**
 
-Upload documents (PDF, TXT, DOCX, CSV), run advanced hybrid semantic + keyword retrieval, and get relevant passages with direct source links. Asymptote is privacy-focused by design: core search runs locally, and external AI is optional.
+Upload documents (PDF, TXT, DOCX, CSV), run advanced hybrid semantic + keyword retrieval, and get relevant passages with direct source links. Finn is privacy-focused by design: core search runs locally, and external AI is optional.
 
-> **Why "Asymptote"?** In mathematics, an asymptote is a line that a curve approaches but never quite reaches. Like semantic search continuously approaching perfect understanding of your documents - getting closer with every query, but always refining, always learning. We're forever approaching the answer, never claiming to have reached it completely.
+> **Why "Finn"?** Short, friendly, and easy to say across a desk — Finn is the assistant that sits next to you while you work through your own documents.
 
 ---
 
@@ -58,7 +58,7 @@ cd desktop
 build_windows.bat
 
 # Run the desktop app
-dist\AsymptoteDesktop.exe
+dist\FinnDesktop.exe
 
 # Create installer (requires Inno Setup)
 build_installer.bat
@@ -85,7 +85,7 @@ build_installer.bat
 
 ## What It Does
 
-Asymptote lets you:
+Finn lets you:
 
 1. **Upload Documents** - Drop in PDF, TXT, DOCX, or CSV files (books, papers, manuals, data)
 2. **Hybrid Search** - Combine semantic understanding with keyword precision in one retrieval workflow
@@ -222,7 +222,7 @@ python main.py
 ```
 INFO - Loading embedding model: all-MiniLM-L6-v2
 INFO - Initializing vector store (metadata: json)
-INFO - Asymptote API ready
+INFO - Finn API ready
 INFO - Uvicorn running on http://0.0.0.0:8000
 ```
 
@@ -232,7 +232,7 @@ INFO - Uvicorn running on http://0.0.0.0:8000
 
 ### MCP Integration
 
-Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8000/mcp` when `ENABLE_MCP=true` (default).
+Finn now exposes an embedded HTTP MCP endpoint at `http://localhost:8000/mcp` when `ENABLE_MCP=true` (default).
 
 Use the **Settings** tab in the UI to:
 - Enable or disable the MCP server without restarting
@@ -329,7 +329,7 @@ PORT=8000
 
 ### AI Features (Optional)
 
-Asymptote supports optional AI integration for enhanced search results:
+Finn supports optional AI integration for enhanced search results:
 
 **Features:**
 - **Result Reranking**: AI re-orders search results by semantic relevance
@@ -350,7 +350,7 @@ Asymptote supports optional AI integration for enhanced search results:
 - Compare responses side-by-side from both models
 - Selection preference persists between searches
 
-**Security Note:** API keys are stored only in your browser's localStorage and are sent directly to the AI providers. The Asymptote server never sees or stores your API keys.
+**Security Note:** API keys are stored only in your browser's localStorage and are sent directly to the AI providers. The Finn server never sees or stores your API keys.
 
 **Get API Keys:**
 - **Anthropic**: https://console.anthropic.com/
@@ -377,8 +377,8 @@ Build and run with the corporate Dockerfile:
 
 ```bash
 # Option A: Direct docker build
-docker build -f Dockerfile.corporate -t asymptote-corporate .
-docker run -d -p 8000:8000 -v $(pwd)/data:/app/data asymptote-corporate
+docker build -f Dockerfile.corporate -t finn-corporate .
+docker run -d -p 8000:8000 -v $(pwd)/data:/app/data finn-corporate
 
 # Option B: Edit docker-compose.yml to use Dockerfile.corporate
 # Change the dockerfile line under build:
@@ -688,7 +688,7 @@ For Windows desktop/exe builds:
 2. If using `pytesseract`, install both:
    - **Tesseract OCR** (`tesseract.exe`)
    - **Poppler** (`pdfinfo.exe`, `pdftoppm.exe`)
-3. Either add both to `PATH`, or place portable folders next to `Asymptote.exe`:
+3. Either add both to `PATH`, or place portable folders next to `Finn.exe`:
    - `poppler/bin/...`
    - `tesseract/tesseract.exe`
 4. Re-index the PDF after changing OCR settings/dependencies
@@ -720,11 +720,11 @@ echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env
 **Solution:**
 ```bash
 # Check logs
-docker-compose logs asymptote
+docker-compose logs finn
 
 # Increase memory limit in docker-compose.yml
 services:
-  asymptote:
+  finn:
     mem_limit: 4g
 ```
 
@@ -749,7 +749,7 @@ chmod -R 777 ./data
 
 ```bash
 # Check what's wrong
-docker-compose logs -f asymptote
+docker-compose logs -f finn
 
 # Common fix: Remove old containers
 docker-compose down
@@ -859,12 +859,12 @@ data/indexes/sqlite/metadata.db
 **Backup script:**
 ```bash
 #!/bin/bash
-tar -czf asymptote-backup-$(date +%Y%m%d).tar.gz data/
+tar -czf finn-backup-$(date +%Y%m%d).tar.gz data/
 ```
 
 **Restore:**
 ```bash
-tar -xzf asymptote-backup-20240203.tar.gz
+tar -xzf finn-backup-20240203.tar.gz
 python main.py
 ```
 
@@ -873,7 +873,7 @@ python main.py
 ## Project Structure
 
 ```
-asymptote/
+finn/
 ├── main.py                    # FastAPI app entry point
 ├── config.py                  # Settings from .env
 ├── requirements.txt           # Python dependencies
@@ -912,7 +912,7 @@ asymptote/
 │   └── assets/               # JS/CSS bundles
 │
 ├── desktop/                   # Windows desktop application
-│   ├── asymptote_desktop.py  # Desktop wrapper with system tray
+│   ├── finn_desktop.py  # Desktop wrapper with system tray
 │   ├── icon.ico              # Application icon
 │   ├── installer.iss         # Inno Setup installer script
 │   ├── build_windows.bat     # Build executable script
@@ -1022,5 +1022,5 @@ This is a reference implementation. Feel free to fork and adapt for your needs.
 
 ---
 
-**Asymptote** - Always approaching understanding, never quite reaching it.
+**Finn** - Always approaching understanding, never quite reaching it.
 

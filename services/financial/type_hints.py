@@ -1,15 +1,19 @@
-"""Financial type detection and number parsing.
+"""Financial-format type detection and number parsing.
 
-Handles currency symbols, accounting-negative notation, percent formatting,
-ISO currency code suffixes, and K/M/B multiplier suffixes.  Registers
-'currency' and 'percent' as typed extensions with the generic StructuredStore
-via register_type_extension().
+Recognises currency- and percent-formatted cells in brokerage exports
+(``$1,234.56``, ``(408.80)``, ``12.5%``, ``100 USD``, ``2.3M``). Exposed as
+two :class:`~services.tabular.inference.TypeExtension` instances that
+:class:`~services.financial.holdings_store.HoldingsStore` layers onto the
+generic tabular inference.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Any, Optional
+
+from services.tabular.inference import NULL_MARKERS, TypeExtension
+
 
 _CURRENCY_RE = re.compile(
     r'^\s*[$€£¥₹]\s*-?[\d,]*\.?\d+\s*$'
@@ -21,13 +25,6 @@ _CURRENCY_RE = re.compile(
 _PERCENT_RE = re.compile(r'^\s*-?[\d,]*\.?\d+\s*%\s*$')
 
 _KMB_RE = re.compile(r'^(-?[\d,]*\.?\d+)\s*([kmb])$', re.IGNORECASE)
-
-# Null-marker strings treated as missing (not parse failures)
-_NULL_MARKERS = frozenset({
-    '', '--', '-', 'n/a', 'na', 'nan', 'null', 'none', 'nil', '—', '–',
-    'n.a.', 'n.a', '#n/a', '#na', '#null', '#value!', '#ref!', '#div/0!',
-    'provide', 'missing', 'unknown', 'tbd', 'tba', 'undefined',
-})
 
 
 def _parse_number(val: Any) -> Optional[float]:
@@ -45,7 +42,7 @@ def _parse_number(val: Any) -> Optional[float]:
     if val is None:
         return None
     s = str(val).strip()
-    if not s or s.lower() in _NULL_MARKERS:
+    if not s or s.lower() in NULL_MARKERS:
         return None
 
     # Detect accounting negative BEFORE stripping parens
@@ -54,16 +51,12 @@ def _parse_number(val: Any) -> Optional[float]:
         negative = True
         s = s[1:-1].strip()
 
-    # Strip currency symbols and commas
     s = re.sub(r'[$€£¥₹,\s]', '', s)
-    # Strip ISO currency code suffix (e.g. "100 USD" → "100")
     s = re.sub(r'(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|HKD|SGD)$', '', s, flags=re.IGNORECASE).strip()
 
-    # Trailing percent sign — strip it (value is returned as-is, not /100)
     if s.endswith('%'):
         s = s[:-1].strip()
 
-    # K/M/B multiplier suffix
     kmb = _KMB_RE.match(s)
     if kmb:
         base_str = kmb.group(1).replace(',', '')
@@ -93,19 +86,18 @@ def _detect_percent(s: str) -> bool:
     return bool(_PERCENT_RE.match(s))
 
 
-def register() -> None:
-    """Register currency and percent type extensions with the structured store."""
-    from services.structured_store import TypeExtension, register_type_extension
+CURRENCY_EXTENSION = TypeExtension(
+    name='currency',
+    sqlite_type='REAL',
+    detector=_detect_currency,
+    coerce=_parse_number,
+)
 
-    register_type_extension(TypeExtension(
-        name='currency',
-        sqlite_type='REAL',
-        detector=_detect_currency,
-        coerce=_parse_number,
-    ))
-    register_type_extension(TypeExtension(
-        name='percent',
-        sqlite_type='REAL',
-        detector=_detect_percent,
-        coerce=_parse_number,
-    ))
+PERCENT_EXTENSION = TypeExtension(
+    name='percent',
+    sqlite_type='REAL',
+    detector=_detect_percent,
+    coerce=_parse_number,
+)
+
+FINANCIAL_TYPE_EXTENSIONS = (CURRENCY_EXTENSION, PERCENT_EXTENSION)

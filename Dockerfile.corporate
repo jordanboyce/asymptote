@@ -1,4 +1,4 @@
-# Asymptote API Dockerfile (Corporate)
+# Finn API Dockerfile (Corporate)
 # For environments requiring custom SSL certificates (corporate proxies, internal CAs)
 
 FROM python:3.13-slim as base

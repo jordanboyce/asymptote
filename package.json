@@ -1,0 +1,16 @@
+{
+  "name": "finn-dev",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend,electron -c blue,green,yellow \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:backend": "venv/Scripts/python.exe main.py",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:electron": "wait-on http://localhost:5173 http://localhost:8000/health && cross-env ELECTRON_DEV=true electron electron/."
+  },
+  "devDependencies": {
+    "concurrently": "^8.0.0",
+    "cross-env": "^7.0.0",
+    "electron": "^31.0.0",
+    "wait-on": "^7.0.0"
+  }
+}

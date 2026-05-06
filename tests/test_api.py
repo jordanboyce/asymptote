@@ -1,4 +1,4 @@
-"""Basic API tests for Asymptote."""
+"""Basic API tests for Finn."""
 
 import pytest
 from fastapi.testclient import TestClient

@@ -44,6 +44,10 @@ export default defineConfig({
         target: apiTarget,
         changeOrigin: true,
       },
+      '/mcp': {
+        target: apiTarget,
+        changeOrigin: true,
+      },
     },
   },
 })

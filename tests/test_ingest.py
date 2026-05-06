@@ -1,7 +1,7 @@
 """Regression tests for the ingestion-fidelity pipeline (v4.1 P0.x).
 
 Each test loads a real-shaped anonymized fixture through the same path used
-in production (DocumentExtractor → StructuredStore) and asserts:
+in production (DocumentExtractor → HoldingsStore) and asserts:
 
   - Header detection: correct column names, expected column count
   - Type inference:   numeric columns land as REAL/currency, not TEXT
@@ -22,8 +22,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
-
-import services.financial  # noqa: F401 - registers currency/percent type extensions
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 
@@ -139,9 +137,9 @@ def _extract_tabular_sheets(csv_path: Path) -> List[Dict[str, Any]]:
         }]
 
 
-def _ingest_csv(csv_path: Path) -> "StructuredStore":
-    """Run the full extract → structured-store pipeline and return the store."""
-    from services.structured_store import StructuredStore
+def _ingest_csv(csv_path: Path) -> "HoldingsStore":
+    """Run the full extract → Holdings-store pipeline and return the store."""
+    from services.financial.holdings_store import HoldingsStore
 
     sheets = _extract_tabular_sheets(csv_path)
     assert sheets, f"No sheets extracted from {csv_path.name}"
@@ -149,7 +147,7 @@ def _ingest_csv(csv_path: Path) -> "StructuredStore":
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = Path(f.name)
 
-    store = StructuredStore(db_path)
+    store = HoldingsStore(db_path)
     for sheet in sheets:
         store.create_table(
             document_id="test_doc",
@@ -163,7 +161,7 @@ def _ingest_csv(csv_path: Path) -> "StructuredStore":
     return store
 
 
-def _get_schema(store: "StructuredStore", filename: str) -> Dict[str, Any]:
+def _get_schema(store: "HoldingsStore", filename: str) -> Dict[str, Any]:
     schema = store.get_schema(filename)
     assert schema is not None, f"No schema found for {filename}"
     return schema
@@ -183,7 +181,7 @@ def _col_type(schema: Dict[str, Any], sql_name: str) -> str | None:
     return None
 
 
-def _view_exists(store: "StructuredStore", view_name: str) -> bool:
+def _view_exists(store: "HoldingsStore", view_name: str) -> bool:
     with sqlite3.connect(store.db_path) as conn:
         row = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='view' AND name=?",
@@ -623,8 +621,12 @@ class TestInferColumnType:
 
     @pytest.fixture(autouse=True)
     def import_fn(self):
-        from services.structured_store import infer_column_type
-        self.infer = infer_column_type
+        from services.tabular.inference import infer_column_type
+        from services.financial.type_hints import FINANCIAL_TYPE_EXTENSIONS
+
+        def _infer(vals):
+            return infer_column_type(vals, type_extensions=FINANCIAL_TYPE_EXTENSIONS)
+        self.infer = _infer
 
     def test_pure_numeric_is_real(self):
         vals = ["1591.20", "2340.50", "875.00", "12045.60"]

@@ -1,8 +1,8 @@
-"""Price history feed backed by yfinance with on-disk TTL caching.
+"""Price history feed with on-disk TTL caching.
 
-Used by the `get_price_history` MCP tool. The calling LLM decides when
-to use it (trend, momentum, drawdown, chart questions) — this module is
-just the data layer.
+The actual fetch is delegated to the active `MarketDataProvider`
+(see `services/market_data/provider.py`). Used by the
+`get_price_history` MCP tool.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from config import settings
+from services.market_data.provider import MarketDataFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -136,45 +137,6 @@ def _default_start_for_interval(interval: str, end: str) -> str:
     return (end_dt - timedelta(days=delta_days)).isoformat()
 
 
-# Yahoo-Finance-style period strings → lookback days from `end`. "max" and
-# "ytd" get special-cased by the caller.
-_PERIOD_TO_DAYS: dict[str, int] = {
-    "1d": 1,
-    "5d": 5,
-    "7d": 7,
-    "1mo": 30,
-    "3mo": 91,
-    "6mo": 182,
-    "1y": 365,
-    "2y": 365 * 2,
-    "5y": 365 * 5,
-    "10y": 365 * 10,
-}
-
-
-def _start_from_period(period: str, end: str) -> str | None:
-    """Resolve a Yahoo-style period string to an ISO start date.
-
-    Returns None for unsupported strings so the caller can surface a
-    clear invalid_period error instead of silently using a default.
-    """
-    from datetime import timedelta
-
-    p = period.strip().lower()
-    end_dt = datetime.fromisoformat(end).date()
-
-    if p == "max":
-        # yfinance treats "max" as "whatever is available"; we approximate
-        # with a 20-year window so the cache key stays deterministic.
-        return (end_dt - timedelta(days=365 * 20)).isoformat()
-    if p == "ytd":
-        return date(end_dt.year, 1, 1).isoformat()
-    days = _PERIOD_TO_DAYS.get(p)
-    if days is None:
-        return None
-    return (end_dt - timedelta(days=days)).isoformat()
-
-
 @dataclass
 class PriceHistoryError(Exception):
     code: str
@@ -185,84 +147,16 @@ class PriceHistoryError(Exception):
 
 
 def _fetch_from_yfinance(symbol: str, start: str, end: str, interval: str) -> dict[str, Any]:
+    """Thin shim that delegates to the active MarketDataProvider.
+
+    Name preserved so existing tests that monkey-patch
+    `_fetch_from_yfinance` keep working.
+    """
+    from services.market_data.providers import get_provider
     try:
-        import yfinance  # type: ignore
-    except ImportError as exc:  # pragma: no cover
-        raise PriceHistoryError(
-            code="yfinance_not_installed",
-            message="yfinance is not installed. Run: pip install yfinance",
-        ) from exc
-
-    ticker = yfinance.Ticker(symbol)
-    try:
-        df = ticker.history(
-            start=start,
-            end=end,
-            interval=interval,
-            auto_adjust=False,
-            actions=False,
-        )
-    except Exception as exc:
-        raise PriceHistoryError(
-            code="yfinance_fetch_failed",
-            message=f"yfinance request failed for {symbol}: {exc}",
-        ) from exc
-
-    if df is None or df.empty:
-        raise PriceHistoryError(
-            code="symbol_not_found_or_no_data",
-            message=(
-                f"No price data returned for {symbol} between {start} and {end} "
-                f"at interval {interval}. Symbol may be invalid or outside the "
-                f"data window yfinance supports for that interval."
-            ),
-        )
-
-    currency: str | None = None
-    try:
-        currency = ticker.fast_info.get("currency") if hasattr(ticker, "fast_info") else None
-    except Exception:
-        currency = None
-
-    points: list[dict[str, Any]] = []
-    for ts, row in df.iterrows():
-        if hasattr(ts, "to_pydatetime"):
-            dt = ts.to_pydatetime()
-        else:
-            dt = ts
-        if isinstance(dt, datetime):
-            iso = dt.date().isoformat() if interval in {"1d", "5d", "1wk", "1mo", "3mo"} else dt.isoformat()
-        else:
-            iso = str(dt)
-        def _coerce(value: Any) -> float | None:
-            try:
-                if value is None:
-                    return None
-                fv = float(value)
-                if fv != fv:  # NaN
-                    return None
-                return round(fv, 4)
-            except (TypeError, ValueError):
-                return None
-        points.append({
-            "date": iso,
-            "open": _coerce(row.get("Open")),
-            "high": _coerce(row.get("High")),
-            "low": _coerce(row.get("Low")),
-            "close": _coerce(row.get("Close")),
-            "volume": int(row["Volume"]) if row.get("Volume") is not None and row.get("Volume") == row.get("Volume") else None,
-        })
-
-    return {
-        "symbol": symbol,
-        "interval": interval,
-        "start": start,
-        "end": end,
-        "currency": currency,
-        "points": points,
-        "point_count": len(points),
-        "source": "yfinance",
-    }
+        return get_provider().fetch_price_history(symbol, start, end, interval)
+    except MarketDataFetchError as exc:
+        raise PriceHistoryError(code=exc.code, message=exc.message) from exc
 
 
 def get_price_history(
@@ -270,13 +164,8 @@ def get_price_history(
     start: str | date | datetime | None = None,
     end: str | date | datetime | None = None,
     interval: str = "1d",
-    period: str | None = None,
 ) -> dict[str, Any]:
-    """Return OHLCV price history for `symbol`.
-
-    Callers can specify the window either as a `period` (Yahoo-Finance-style
-    shorthand like "1y", "6mo", "ytd", "max") or an explicit `start`/`end`
-    pair. If both are given, explicit `start`/`end` wins.
+    """Return OHLCV price history for `symbol` between `start` and `end`.
 
     Results are cached on disk keyed by (symbol, start, end, interval)
     with a TTL that depends on the interval.
@@ -298,20 +187,7 @@ def get_price_history(
     sym = _normalize_symbol(symbol)
     today = datetime.now(tz=timezone.utc).date().isoformat()
     end_norm = _normalize_date(end, fallback=today)
-
-    if start is None and period:
-        derived = _start_from_period(period, end_norm)
-        if derived is None:
-            return {
-                "error": "invalid_period",
-                "message": (
-                    f"period must be one of {sorted(_PERIOD_TO_DAYS)} "
-                    "or 'ytd'/'max'"
-                ),
-            }
-        start_norm = derived
-    else:
-        start_norm = _normalize_date(start, fallback=_default_start_for_interval(interval, end_norm))
+    start_norm = _normalize_date(start, fallback=_default_start_for_interval(interval, end_norm))
 
     key = _cache_key(sym, start_norm, end_norm, interval)
     ttl = _ttl_for_interval(interval)

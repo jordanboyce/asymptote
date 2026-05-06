@@ -1,13 +1,13 @@
-"""Company profile + recent news feeds backed by yfinance.
+"""Company profile + recent news feeds.
 
 Two complementary tools for answering advisor questions like
 "who's the CEO of X?", "any recent news on Y?", or "did Z just have a
-leadership change?" — data yfinance already exposes but we weren't
-surfacing.
+leadership change?". Both fetches delegate to the active
+`MarketDataProvider` (see `services/market_data/provider.py`).
 
 Profiles cache for 24h (officers / sector / business summary turn over
 slowly). News caches for 30 minutes so fresh headlines show up without
-hammering yfinance on every call.
+hammering the provider on every call.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from config import settings
+from services.market_data.provider import MarketDataFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -74,32 +75,6 @@ def _cache_store(conn: sqlite3.Connection, key: str, payload: dict[str, Any]) ->
     conn.commit()
 
 
-def _truncate(text: str | None, limit: int) -> str | None:
-    if not text:
-        return text
-    s = str(text)
-    if len(s) <= limit:
-        return s
-    return s[: limit - 1].rstrip() + "…"
-
-
-def _extract_officers(info: dict[str, Any]) -> list[dict[str, Any]]:
-    """Pull a clean list of current company officers from yfinance info."""
-    raw = info.get("companyOfficers") or []
-    out: list[dict[str, Any]] = []
-    for o in raw:
-        if not isinstance(o, dict):
-            continue
-        out.append({
-            "name": o.get("name"),
-            "title": o.get("title"),
-            "age": o.get("age"),
-            "year_born": o.get("yearBorn"),
-            "total_pay": o.get("totalPay"),
-        })
-    return out
-
-
 def get_company_profile(symbol: str) -> dict[str, Any]:
     """Company-level metadata for a ticker: current officers, business summary, key stats.
 
@@ -117,40 +92,13 @@ def get_company_profile(symbol: str) -> dict[str, Any]:
         if cached is not None:
             return cached
 
+        from services.market_data.providers import get_provider
         try:
-            import yfinance  # type: ignore
-        except ImportError:
-            return {"error": "yfinance_not_installed", "message": "yfinance is not installed."}
+            payload = get_provider().fetch_company_profile(sym)
+        except MarketDataFetchError as exc:
+            logger.warning(f"profile fetch failed for {sym}: {exc.message}")
+            return {"error": exc.code, "message": exc.message, "symbol": sym}
 
-        try:
-            ticker = yfinance.Ticker(sym)
-            info = ticker.info or {}
-        except Exception as exc:
-            logger.warning(f"yfinance profile fetch failed for {sym}: {exc}")
-            return {"error": "yfinance_fetch_failed", "message": str(exc), "symbol": sym}
-
-        if not info or not any(info.get(k) for k in ("symbol", "shortName", "longName", "quoteType")):
-            return {"error": "symbol_not_found", "message": f"No profile data for {sym}.", "symbol": sym}
-
-        officers = _extract_officers(info)
-        ceo = next((o for o in officers if o.get("title") and "CEO" in o["title"].upper()), None)
-
-        payload = {
-            "symbol": sym,
-            "name": info.get("longName") or info.get("shortName"),
-            "quote_type": info.get("quoteType"),
-            "sector": info.get("sector"),
-            "industry": info.get("industry"),
-            "country": info.get("country"),
-            "website": info.get("website"),
-            "ir_website": info.get("irWebsite"),
-            "employees": info.get("fullTimeEmployees"),
-            "business_summary": _truncate(info.get("longBusinessSummary"), 2000),
-            "ceo": ceo,
-            "officers": officers,
-            "market_cap": info.get("marketCap"),
-            "source": "yfinance",
-        }
         _cache_store(conn, f"profile:{sym}", payload)
         payload["cached"] = False
         return payload
@@ -159,7 +107,7 @@ def get_company_profile(symbol: str) -> dict[str, Any]:
 
 
 def get_company_news(symbol: str, limit: int = 10) -> dict[str, Any]:
-    """Recent news headlines for a ticker from yfinance.
+    """Recent news headlines for a ticker.
 
     Returns a list of items with title, publisher, publish time, link, and
     a short summary when available. Surfaces press releases like CEO
@@ -177,48 +125,13 @@ def get_company_news(symbol: str, limit: int = 10) -> dict[str, Any]:
         if cached is not None:
             return cached
 
+        from services.market_data.providers import get_provider
         try:
-            import yfinance  # type: ignore
-        except ImportError:
-            return {"error": "yfinance_not_installed", "message": "yfinance is not installed."}
+            payload = get_provider().fetch_company_news(sym, limit)
+        except MarketDataFetchError as exc:
+            logger.warning(f"news fetch failed for {sym}: {exc.message}")
+            return {"error": exc.code, "message": exc.message, "symbol": sym}
 
-        try:
-            ticker = yfinance.Ticker(sym)
-            raw_news = ticker.news or []
-        except Exception as exc:
-            logger.warning(f"yfinance news fetch failed for {sym}: {exc}")
-            return {"error": "yfinance_fetch_failed", "message": str(exc), "symbol": sym}
-
-        items: list[dict[str, Any]] = []
-        for entry in raw_news[:limit]:
-            # yfinance wraps each item under `content` in newer versions.
-            c = entry.get("content") if isinstance(entry, dict) else None
-            if c:
-                provider = c.get("provider") or {}
-                items.append({
-                    "title": c.get("title"),
-                    "summary": _truncate(c.get("summary") or c.get("description"), 600),
-                    "publisher": provider.get("displayName") if isinstance(provider, dict) else None,
-                    "published_at": c.get("pubDate") or c.get("displayTime"),
-                    "url": (c.get("canonicalUrl") or {}).get("url") if isinstance(c.get("canonicalUrl"), dict) else c.get("link"),
-                    "content_type": c.get("contentType"),
-                })
-            elif isinstance(entry, dict):
-                items.append({
-                    "title": entry.get("title"),
-                    "summary": _truncate(entry.get("summary"), 600),
-                    "publisher": entry.get("publisher"),
-                    "published_at": entry.get("providerPublishTime"),
-                    "url": entry.get("link"),
-                    "content_type": entry.get("type"),
-                })
-
-        payload = {
-            "symbol": sym,
-            "count": len(items),
-            "news": items,
-            "source": "yfinance",
-        }
         _cache_store(conn, cache_key, payload)
         payload["cached"] = False
         return payload

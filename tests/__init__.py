@@ -1,1 +1,1 @@
-"""Tests for Asymptote API."""
+"""Tests for Finn API."""

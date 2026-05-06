@@ -4,7 +4,7 @@ Covers:
   - Per-collection guide memory (DB column + helper truncation)
   - find_in_documents literal-excerpt matcher
   - Structured rows renderer (render_table_as_rows)
-  - identifier_type parameter on StructuredStore.get_schema
+  - identifier_type parameter on HoldingsStore.get_schema
   - Numeric / exact-match intent detection in search_collection
 """
 
@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-import services.financial  # noqa: F401 — registers structured-store plugins
 from services.app_database import SQLiteBackend
+from services.financial.holdings_store import HoldingsStore
 from services.mcp_server import (
     _detect_exact_match_intent,
     _detect_numeric_intent,
@@ -23,7 +23,6 @@ from services.mcp_server import (
     _guide_summary,
 )
 from services.structured_chat import render_table_as_rows
-from services.structured_store import StructuredStore
 
 
 def test_guide_column_roundtrip(tmp_path: Path):
@@ -70,7 +69,7 @@ def test_find_literal_excerpt_case_handling():
 
 
 def test_render_table_as_rows_returns_structured_output(tmp_path: Path):
-    store = StructuredStore(tmp_path / "structured.db")
+    store = HoldingsStore(tmp_path / "structured.db")
     store.create_table(
         document_id="doc1",
         filename="portfolio.csv",
@@ -93,7 +92,7 @@ def test_render_table_as_rows_returns_structured_output(tmp_path: Path):
 
 
 def test_identifier_type_restricts_lookup(tmp_path: Path):
-    store = StructuredStore(tmp_path / "structured.db")
+    store = HoldingsStore(tmp_path / "structured.db")
     store.create_table(
         document_id="doc-abc",
         filename="portfolio.csv",

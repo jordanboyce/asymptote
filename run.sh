@@ -1,7 +1,7 @@
 #!/bin/bash
-# Asymptote API startup script
+# Finn API startup script
 
-echo "Starting Asymptote API..."
+echo "Starting Finn API..."
 echo ""
 
 # Check if virtual environment exists

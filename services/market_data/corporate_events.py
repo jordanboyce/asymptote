@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 _TTL_SECONDS = 12 * 60 * 60
 
-_SEC_USER_AGENT = "Asymptote Research asymptote@example.com"
+_SEC_USER_AGENT = "Finn Research finn@example.com"
 _SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 
@@ -201,65 +201,24 @@ def _fetch_sec_filings(
 
 
 def _fetch_yfinance_events(symbol: str, since: date) -> dict[str, Any]:
-    """Return dividends, splits, and upcoming earnings from yfinance."""
+    """Return dividends, splits, and earnings via the active MarketDataProvider.
+
+    Name preserved (rather than `_fetch_provider_events`) so tests that
+    monkey-patch this function continue to work. SEC EDGAR filings are
+    fetched separately in `_fetch_sec_filings` — they are not part of
+    the provider protocol.
+    """
+    from services.market_data.provider import MarketDataFetchError
+    from services.market_data.providers import get_provider
     try:
-        import yfinance  # type: ignore
-    except ImportError:
+        return get_provider().fetch_market_events(symbol, since)
+    except MarketDataFetchError as exc:
         return {
             "dividends": [],
             "splits": [],
             "earnings": [],
-            "warning": "yfinance not installed — dividend/split/earnings data unavailable.",
+            "warning": exc.message,
         }
-
-    try:
-        ticker = yfinance.Ticker(symbol)
-    except Exception as exc:
-        logger.warning(f"yfinance ticker init failed for {symbol}: {exc}")
-        return {"dividends": [], "splits": [], "earnings": [],
-                "warning": f"yfinance init failed: {exc}"}
-
-    dividends: list[dict[str, Any]] = []
-    splits: list[dict[str, Any]] = []
-    earnings: list[dict[str, Any]] = []
-
-    try:
-        for ts, amount in (ticker.dividends or {}).items():
-            try:
-                d = ts.date() if hasattr(ts, "date") else ts
-            except Exception:
-                continue
-            if d >= since:
-                dividends.append({"date": d.isoformat(), "amount": float(amount)})
-    except Exception as exc:
-        logger.debug(f"dividends fetch failed for {symbol}: {exc}")
-
-    try:
-        for ts, ratio in (ticker.splits or {}).items():
-            try:
-                d = ts.date() if hasattr(ts, "date") else ts
-            except Exception:
-                continue
-            if d >= since:
-                splits.append({"date": d.isoformat(), "ratio": float(ratio)})
-    except Exception as exc:
-        logger.debug(f"splits fetch failed for {symbol}: {exc}")
-
-    try:
-        cal = ticker.calendar
-        if cal is not None:
-            if isinstance(cal, dict):
-                earn_date = cal.get("Earnings Date")
-                if earn_date:
-                    if isinstance(earn_date, list):
-                        for d in earn_date:
-                            earnings.append({"date": str(d), "type": "earnings"})
-                    else:
-                        earnings.append({"date": str(earn_date), "type": "earnings"})
-    except Exception as exc:
-        logger.debug(f"calendar fetch failed for {symbol}: {exc}")
-
-    return {"dividends": dividends, "splits": splits, "earnings": earnings}
 
 
 def _default_since(years: int = 1) -> date:

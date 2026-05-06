@@ -35,6 +35,7 @@ class DocumentIndexer:
         embedding_service: EmbeddingService,
         document_extractor: DocumentExtractor,
         text_chunker: TextChunker,
+        collection_id: Optional[str] = None,
     ):
         """
         Initialize the document indexer.
@@ -44,41 +45,34 @@ class DocumentIndexer:
             embedding_service: Embedding service instance
             document_extractor: Document extractor instance (supports PDF, TXT, DOCX, CSV)
             text_chunker: Text chunker instance
+            collection_id: Owning collection — used at ingest time to look up
+                the per-collection PII blacklist for tabular sanitization.
         """
         self.vector_store = vector_store
         self.embedding_service = embedding_service
         self.document_extractor = document_extractor
         self.text_chunker = text_chunker
+        self.collection_id = collection_id
 
-    def index_document(
-        self,
-        document_path: Path,
-        filename: str,
-        collection_id: str | None = None,
-    ) -> DocumentMetadata:
+    def index_document(self, document_path: Path, filename: str) -> DocumentMetadata:
         """
         Index a single document (PDF, TXT, DOCX, CSV, MD, or JSON).
 
         Args:
             document_path: Path to the document file
             filename: Original filename
-            collection_id: Collection being indexed into (used for PII blacklist lookup)
 
         Returns:
             DocumentMetadata object
         """
-        return self.index_document_with_progress(
-            document_path, filename,
-            progress_callback=None,
-            collection_id=collection_id,
-        )
+        # Delegate to progress-aware version with no-op callback
+        return self.index_document_with_progress(document_path, filename, progress_callback=None)
 
     def index_document_with_progress(
         self,
         document_path: Path,
         filename: str,
         progress_callback: Optional[ProgressCallback] = None,
-        collection_id: str | None = None,
     ) -> DocumentMetadata:
         """
         Index a single document with granular progress reporting (v4.0).
@@ -117,7 +111,6 @@ class DocumentIndexer:
             return self._index_tabular_document(
                 document_path, filename, document_id, source_format=source_format,
                 progress_callback=progress_callback,
-                collection_id=collection_id,
             )
 
         # Handle code files with symbol-aware chunking
@@ -210,7 +203,7 @@ class DocumentIndexer:
             upload_timestamp=indexed_at,
             source_format=source_format,
             extraction_method=extraction_method,
-            embedding_model=self.embedding_service.model_name,
+            embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             injection_warnings=injection_warnings,
@@ -226,7 +219,7 @@ class DocumentIndexer:
             indexed_at=indexed_at,
             source_format=source_format,
             extraction_method=extraction_method,
-            embedding_model=self.embedding_service.model_name,
+            embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
@@ -244,19 +237,18 @@ class DocumentIndexer:
         document_id: str,
         source_format: str = "csv",
         progress_callback: Optional[ProgressCallback] = None,
-        collection_id: str | None = None,
     ) -> DocumentMetadata:
-        """Index a CSV or Excel workbook into the structured SQL store only.
+        """
+        Index a CSV or Excel workbook.
 
-        Tabular data doesn't go through the chunk/embed pipeline — every real
-        question against it ("top positions", "sector concentration",
-        "unrealized G/L by account") is SQL, which the chat path already runs
-        against the typed tables built here. Skipping embedding saves a
-        network round-trip per upload and avoids false-positive "missing from
-        semantic search" confusion for numeric data.
+        Builds two indexes in one pass:
+          1. Row-level semantic chunks (embedded for free-text search).
+          2. A typed SQL table in the structured store (for aggregation,
+             filtering, and canned portfolio metrics).
 
         Every sheet in a multi-sheet workbook gets its own structured table.
         """
+        from models.schemas import ChunkMetadata
 
         def report(phase: str, progress: int, detail: str = None,
                    chunks_done: int = 0, chunks_total: int = 0):
@@ -273,42 +265,41 @@ class DocumentIndexer:
         if not sheets:
             raise ValueError(f"Could not extract any rows from {filename}")
 
-        # ── Index-time PII sanitization ────────────────────────────────────
-        # Strip client identity columns (account holder names, account numbers,
-        # addresses, phone numbers, etc.) before anything is written to disk.
-        # The advisor already has this data in their source system; the AI only
-        # needs the investment/financial data.
-        try:
-            from services.privacy.column_sanitizer import sanitize_tabular_sheet
-            from services.privacy.collection_blacklist import get_blacklist
-            _blacklist = get_blacklist(collection_id) if collection_id else []
-            for sheet in sheets:
-                sanitize_tabular_sheet(sheet, blacklist=_blacklist or None)
-        except Exception as _san_err:
-            # Sanitization failure is non-fatal but we log loudly — we'd rather
-            # refuse to index than store raw PII silently.
-            logger.error(
-                "PII column sanitization failed for %s — aborting index to prevent "
-                "raw PII from being stored: %s",
-                filename, _san_err, exc_info=True,
-            )
-            raise ValueError(
-                f"PII sanitization failed for {filename}: {_san_err}"
-            ) from _san_err
+        # Apply the PII pre-flight plan that the user confirmed in the modal:
+        # drop / hash PII columns and strip blacklisted terms before the rows
+        # land in either the structured SQL store or the embedded chunk text.
+        # Gated by the same setting that controls Presidio redaction so the
+        # whole privacy layer is one toggle.
+        if getattr(settings, "enable_pii_redaction", False):
+            try:
+                from services.privacy.column_sanitizer import sanitize_tabular_sheet
+                from services.privacy.collection_blacklist import get_blacklist
+                blacklist = get_blacklist(self.collection_id)
+                for sheet in sheets:
+                    sanitize_tabular_sheet(sheet, blacklist=blacklist)
+            except Exception as e:
+                logger.warning(
+                    f"Tabular PII sanitization failed for {filename}: {e}. "
+                    "Aborting ingest to avoid persisting unredacted PII."
+                )
+                raise
 
         total_rows = sum(len(s['rows']) for s in sheets)
         report("extracting", 100,
                f"Extracted {total_rows} rows across {len(sheets)} sheet(s)")
 
-        # Populate the structured store for every sheet. No chunks, no
-        # embeddings — the chat path queries this via SQL.
+        # Build row-level chunks and populate the structured store in one pass
+        chunks: List = []
+        chunk_index = 0
         for sheet_num, sheet in enumerate(sheets, start=1):
             sheet_name = sheet['sheet_name']
             columns = sheet['columns']
             rows = sheet['rows']
+            row_texts = sheet['row_texts']
 
+            # Structured table (typed SQL)
             try:
-                self.vector_store.structured_store.create_table(
+                self.vector_store.holdings_store.create_table(
                     document_id=document_id,
                     filename=filename,
                     columns=columns,
@@ -323,38 +314,84 @@ class DocumentIndexer:
                     f"(sheet='{sheet_name}'): {e}"
                 )
 
-        report("saving", 0, f"Recording {total_rows} rows")
+            # Semantic row chunks — still needed so chat can cite rows verbatim
+            for row_idx, (row_dict, row_text) in enumerate(zip(rows, row_texts), start=1):
+                chunk_id = f"{document_id}_s{sheet_num}_r{row_idx}"
+                # Use sheet number as "page_number" for multi-sheet workbooks;
+                # single-sheet CSVs keep page_number = row number (legacy behavior).
+                page_number = sheet_num if len(sheets) > 1 else row_idx
+                chunks.append(ChunkMetadata(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename=filename,
+                    page_number=page_number,
+                    chunk_index=chunk_index,
+                    text=row_text,
+                    source_format=source_format,
+                    extraction_method="text",
+                    csv_row_number=row_idx,
+                    csv_columns=columns,
+                    csv_values={k: ("" if v is None else str(v)) for k, v in row_dict.items()},
+                ))
+                chunk_index += 1
+
+        num_chunks = len(chunks)
+        report("chunking", 100, f"Prepared {num_chunks} row chunks", 0, num_chunks)
+
+        if num_chunks == 0:
+            raise ValueError(f"Could not create any chunks from {filename}")
+
+        report("embedding", 0, f"Embedding {num_chunks} rows", 0, num_chunks)
+        chunk_texts = [chunk.text for chunk in chunks]
+        batch_size = 32
+        if num_chunks > batch_size and progress_callback:
+            embeddings = []
+            for i in range(0, num_chunks, batch_size):
+                batch = chunk_texts[i:i + batch_size]
+                batch_embeddings = self.embedding_service.embed_texts(batch)
+                embeddings.extend(batch_embeddings)
+                progress = min(100, int((i + len(batch)) / num_chunks * 100))
+                report("embedding", progress,
+                       f"Embedded {min(i + len(batch), num_chunks)}/{num_chunks} rows",
+                       min(i + len(batch), num_chunks), num_chunks)
+        else:
+            embeddings = self.embedding_service.embed_texts(chunk_texts)
+            report("embedding", 100, f"Embedded {num_chunks} rows", num_chunks, num_chunks)
+
+        report("saving", 0, f"Saving {num_chunks} rows to index")
+        self.vector_store.add_chunks(chunks, embeddings)
+
         indexed_at = datetime.utcnow().isoformat()
         self.vector_store.metadata_store.add_document(
             document_id=document_id,
             filename=filename,
             num_pages=total_rows,
-            num_chunks=0,
+            num_chunks=num_chunks,
             upload_timestamp=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=self.embedding_service.model_name,
+            embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
-        report("saving", 100, f"Recorded {total_rows} rows")
+        report("saving", 100, f"Saved {num_chunks} rows")
 
         metadata = DocumentMetadata(
             document_id=document_id,
             filename=filename,
             total_pages=total_rows,
-            total_chunks=0,
+            total_chunks=num_chunks,
             indexed_at=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=self.embedding_service.model_name,
+            embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
 
         logger.info(
             f"Successfully indexed {source_format.upper()} {filename}: "
-            f"{total_rows} rows across {len(sheets)} sheet(s) (structured-only)"
+            f"{total_rows} rows across {len(sheets)} sheet(s), {num_chunks} chunks"
         )
         return metadata
 
@@ -449,7 +486,7 @@ class DocumentIndexer:
             upload_timestamp=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=self.embedding_service.model_name,
+            embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
@@ -463,7 +500,7 @@ class DocumentIndexer:
             indexed_at=indexed_at,
             source_format=source_format,
             extraction_method="text",
-            embedding_model=self.embedding_service.model_name,
+            embedding_model=settings.embedding_model,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
@@ -535,15 +572,11 @@ class DocumentIndexer:
         # Step 3: Optionally rerank results
         if ai_active and ai_options.rerank and len(results) > 0:
             try:
-                from services.privacy.redaction_middleware import redact_text_for_ai
                 rerank_input = [
                     {
                         "index": i,
                         "filename": r.filename,
-                        # Redact PII from snippets sent to the AI reranker.
-                        "text_snippet": redact_text_for_ai(
-                            r.text_snippet, source_label="search_rerank"
-                        ),
+                        "text_snippet": r.text_snippet,
                         "similarity_score": r.similarity_score,
                     }
                     for i, r in enumerate(results)
@@ -574,28 +607,19 @@ class DocumentIndexer:
             len(results) > 0 or collection_overview or structured_context
         ):
             try:
-                from services.privacy.redaction_middleware import redact_text_for_ai
-                # Redact PII from snippets and structured table data before synthesis.
                 synth_input = [
                     {
                         "filename": r.filename,
                         "page_number": r.page_number,
-                        "text_snippet": redact_text_for_ai(
-                            r.text_snippet, source_label="search_synthesis"
-                        ),
+                        "text_snippet": r.text_snippet,
                     }
                     for r in results
                 ]
-                safe_structured_context = (
-                    redact_text_for_ai(structured_context, source_label="search_synthesis_tables")
-                    if structured_context
-                    else structured_context
-                )
                 synth_result = ai_service.synthesize_results(
                     query,
                     synth_input,
                     collection_overview=collection_overview,
-                    structured_context=safe_structured_context,
+                    structured_context=structured_context,
                 )
                 synthesis = synth_result["synthesis"]
                 usage = synth_result["usage"]

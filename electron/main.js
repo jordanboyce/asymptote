@@ -9,6 +9,8 @@ const http = require('http')
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
+const isDev = process.env.ELECTRON_DEV === 'true' || process.env.NODE_ENV === 'development'
+
 let mainWindow = null
 let tray = null
 let backendProcess = null
@@ -65,6 +67,13 @@ function getRendererPath() {
 }
 
 // ─── Backend ──────────────────────────────────────────────────────────────────
+
+async function connectToDevServer() {
+  serverPort = 8000
+  console.log('[electron] Dev mode: waiting for backend on port 8000')
+  await waitForServer(serverPort)
+  console.log('[electron] Dev mode: backend ready on port 8000')
+}
 
 async function startBackend() {
   serverPort = await findFreePort()
@@ -129,8 +138,13 @@ function createWindow() {
     },
   })
 
-  // Load the Vue app directly from the filesystem — no HTTP server needed
-  mainWindow.loadFile(getRendererPath())
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:5173')
+    mainWindow.webContents.openDevTools()
+  } else {
+    // Load the Vue app directly from the filesystem — no HTTP server needed
+    mainWindow.loadFile(getRendererPath())
+  }
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
@@ -238,7 +252,11 @@ function getTrayIcon() {
 
 app.whenReady().then(async () => {
   try {
-    await startBackend()
+    if (isDev) {
+      await connectToDevServer()
+    } else {
+      await startBackend()
+    }
     createWindow()
     createTray()
   } catch (err) {

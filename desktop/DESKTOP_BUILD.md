@@ -1,6 +1,6 @@
-# Building Asymptote Desktop for Windows
+# Building Finn Desktop for Windows
 
-This guide explains how to build Asymptote as a standalone Windows desktop application.
+This guide explains how to build Finn as a standalone Windows desktop application.
 
 ## Overview
 
@@ -43,13 +43,13 @@ This will:
 3. Build the Vue frontend
 4. Package everything with PyInstaller
 
-**Output**: `dist/Asymptote/Asymptote.exe`
+**Output**: `dist/Finn/Finn.exe`
 
 ### 2. Test the Application
 
 ```bash
-cd dist\Asymptote
-Asymptote.exe
+cd dist\Finn
+Finn.exe
 ```
 
 The application will:
@@ -65,7 +65,7 @@ To create a professional Windows installer:
 build_installer.bat
 ```
 
-**Output**: `installer_output/Asymptote-Setup-1.0.0.exe`
+**Output**: `installer_output/Finn-Setup-1.0.0.exe`
 
 ## Manual Build Steps
 
@@ -101,21 +101,21 @@ pyinstaller build_desktop.spec --clean
 
 ### Desktop Application Options
 
-The `asymptote_desktop.py` script supports command-line options:
+The `finn_desktop.py` script supports command-line options:
 
 ```bash
 # Run without system tray (console mode)
-Asymptote.exe --no-tray
+Finn.exe --no-tray
 
 # Run without auto-opening browser
-Asymptote.exe --no-browser
+Finn.exe --no-browser
 ```
 
 ### Customizing the Build
 
 Edit `build_desktop.spec` to customize:
 
-- **Application name**: Change `name='Asymptote'`
+- **Application name**: Change `name='Finn'`
 - **Icon**: Set `icon='your_icon.ico'`
 - **Console visibility**: Set `console=False` to hide console window
 - **Additional files**: Add to `datas` list
@@ -139,7 +139,7 @@ magick convert icon.png -define icon:auto-resize=256,128,64,48,32,16 icon.ico
 
 ### Folder Distribution
 
-The simplest method - share the entire `dist/Asymptote/` folder:
+The simplest method - share the entire `dist/Finn/` folder:
 
 **Pros**:
 - No installation required
@@ -177,7 +177,7 @@ exe = EXE(
     a.zipfiles,  # Add this
     a.datas,     # Add this
     [],
-    name='Asymptote',
+    name='Finn',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -235,7 +235,7 @@ Then rebuild. Without pystray, the app runs in console mode.
 
 ### Custom Port
 
-Edit `asymptote_desktop.py`:
+Edit `finn_desktop.py`:
 
 ```python
 self.port = find_free_port(8080)  # Start from port 8080
@@ -243,13 +243,13 @@ self.port = find_free_port(8080)  # Start from port 8080
 
 ### Auto-Start with Windows
 
-To make Asymptote start automatically:
+To make Finn start automatically:
 
 1. **Via Installer**: Add to Inno Setup script:
 
 ```iss
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Asymptote"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Finn"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue
 ```
 
 2. **Manual**: Create shortcut in:
@@ -259,7 +259,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 ### Environment Variables
 
-Desktop mode binds to `127.0.0.1` only. To allow network access, edit `asymptote_desktop.py`:
+Desktop mode binds to `127.0.0.1` only. To allow network access, edit `finn_desktop.py`:
 
 ```python
 config = uvicorn.Config(
@@ -275,8 +275,8 @@ config = uvicorn.Config(
 After building, the dist folder contains:
 
 ```
-dist/Asymptote/
-├── Asymptote.exe          # Main executable
+dist/Finn/
+├── Finn.exe          # Main executable
 ├── _internal/             # Dependencies
 │   ├── Python DLLs
 │   ├── Libraries
@@ -327,7 +327,7 @@ excludes=[
 
 ### Desktop vs Server Mode
 
-**Desktop Mode** (asymptote_desktop.py):
+**Desktop Mode** (finn_desktop.py):
 - Binds to `127.0.0.1` only
 - No CORS restrictions needed
 - Safer for untrusted networks
@@ -345,7 +345,7 @@ For professional distribution, consider code signing:
 2. Sign the executable:
 
 ```bash
-signtool sign /f certificate.pfx /p password /t http://timestamp.digicert.com Asymptote.exe
+signtool sign /f certificate.pfx /p password /t http://timestamp.digicert.com Finn.exe
 ```
 
 Benefits:

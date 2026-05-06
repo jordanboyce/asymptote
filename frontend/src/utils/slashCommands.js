@@ -1,11 +1,14 @@
 import axios from 'axios'
+import { getActiveProvider, getAPIProviderName } from './aiProviders'
 
 // Shared slash commands used by both Chat and Search. Each command reads
 // collection metadata directly and returns a plain-text block — zero tokens,
 // instant, deterministic.
 
 export const SLASH_COMMANDS = {
-  '/brief': 'Generate meeting brief for this collection',
+  '/brief': 'Generate meeting brief for this collection (or household if a group is selected)',
+  '/notes': 'Draft compliance Note of Record from the last meeting transcript',
+  '/followup': 'Draft a client-safe follow-up email from the last meeting',
   '/stats': 'Show collection statistics',
   '/docs': 'List indexed documents',
   '/tools': 'Show what the assistant can do',
@@ -349,10 +352,113 @@ const formatBrief = (brief) => {
   return lines.join('\n')
 }
 
+// True if a slash command's draft is best streamed over SSE — currently the
+// LLM-backed drafting commands (/notes, /followup). Other commands return
+// instantly from REST/local data and gain nothing from streaming.
+export const isStreamingSlashCommand = (input) => {
+  const cmd = (input || '').trim().split(/\s+/)[0].toLowerCase()
+  return cmd === '/notes' || cmd === '/followup'
+}
+
+// Stream a /notes or /followup draft over SSE, invoking callbacks as events
+// arrive. The server emits raw text deltas during generation, then a final
+// `done` event carrying the redacted text — callers should swap any streamed
+// preview for `done.content` so saved/copied output is the scrubbed version.
+//
+// callbacks:
+//   onDelta(delta: string)
+//   onDone({ content: string, usage: object })
+//   onError(message: string)
+//
+// Returns { cmd } on completion (success or error already surfaced via callbacks).
+export const streamSlashCommand = async (
+  input,
+  { collectionId, messages, providerHeaders },
+  { onDelta, onDone, onError } = {},
+) => {
+  const cmd = input.trim().split(/\s+/)[0].toLowerCase()
+  if (cmd !== '/notes' && cmd !== '/followup') {
+    onError?.(`streamSlashCommand: ${cmd} is not a streaming command`)
+    return { cmd }
+  }
+
+  const apiMessages = (messages || [])
+    .filter((m) => !m.streaming && m.content && !m.slashCommand)
+    .slice(-30)
+    .map((m) => ({ role: m.role, content: m.content }))
+
+  const path = cmd === '/notes'
+    ? `/api/collections/${collectionId}/notes/stream`
+    : `/api/collections/${collectionId}/followup/stream`
+
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(providerHeaders || {}),
+      },
+      body: JSON.stringify({
+        messages: apiMessages,
+        provider: getAPIProviderName(getActiveProvider()),
+      }),
+    })
+
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}))
+      onError?.(errBody.detail || `HTTP ${response.status}`)
+      return { cmd }
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop()
+
+      for (const part of parts) {
+        const line = part.trim()
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (!raw || raw === '[DONE]') continue
+
+        let event
+        try { event = JSON.parse(raw) } catch { continue }
+
+        if (event.type === 'text_delta') {
+          onDelta?.(event.delta || '')
+        } else if (event.type === 'done') {
+          onDone?.({ content: event.content || '', usage: event.usage || {} })
+        } else if (event.type === 'error') {
+          onError?.(event.message || 'Streaming failed')
+          return { cmd }
+        }
+      }
+    }
+  } catch (err) {
+    onError?.(err.message || 'Streaming failed')
+  }
+
+  return { cmd }
+}
+
 // Parses, validates, and executes a slash command. Returns { cmd, content } on
 // success or { cmd, content, error: true } on failure. Callers decide how to
 // render the result.
-export const runSlashCommand = async (input, { collectionId, collection }) => {
+//
+// options:
+//   collectionId      — active collection ID
+//   collection        — active collection object
+//   groupId           — active group ID (or null) for group-aware commands
+//   messages          — recent chat messages array (for /notes and /followup)
+//   providerHeaders   — AI provider headers { 'x-ai-key': ..., etc. }
+export const runSlashCommand = async (input, { collectionId, collection, groupId, messages, providerHeaders }) => {
   const cmd = input.trim().split(/\s+/)[0].toLowerCase()
   if (!SLASH_COMMANDS[cmd]) {
     return { cmd, content: `Unknown command: ${cmd}`, error: true }
@@ -368,8 +474,42 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
     }
 
     if (cmd === '/brief') {
+      if (groupId) {
+        const response = await axios.post(`/api/groups/${groupId}/brief`)
+        const brief = response.data
+        const header = brief.group_name
+          ? `HOUSEHOLD BRIEF — ${brief.group_name} (${brief.collection_count} account${brief.collection_count !== 1 ? 's' : ''})`
+          : 'HOUSEHOLD BRIEF'
+        return { cmd, content: header + '\n' + '═'.repeat(Math.min(header.length, 48)) + '\n\n' + formatBrief(brief) }
+      }
       const response = await axios.post(`/api/collections/${collectionId}/brief`)
       return { cmd, content: formatBrief(response.data) }
+    }
+
+    if (cmd === '/notes') {
+      const apiMessages = (messages || [])
+        .filter(m => !m.streaming && m.content && !m.slashCommand)
+        .slice(-30)
+        .map(m => ({ role: m.role, content: m.content }))
+      const response = await axios.post(
+        `/api/collections/${collectionId}/notes`,
+        { messages: apiMessages, provider: getAPIProviderName(getActiveProvider()) },
+        { headers: providerHeaders || {} },
+      )
+      return { cmd, content: response.data.content }
+    }
+
+    if (cmd === '/followup') {
+      const apiMessages = (messages || [])
+        .filter(m => !m.streaming && m.content && !m.slashCommand)
+        .slice(-30)
+        .map(m => ({ role: m.role, content: m.content }))
+      const response = await axios.post(
+        `/api/collections/${collectionId}/followup`,
+        { messages: apiMessages, provider: getAPIProviderName(getActiveProvider()) },
+        { headers: providerHeaders || {} },
+      )
+      return { cmd, content: response.data.content }
     }
 
     const response = await axios.get(`/documents?collection_id=${collectionId}`)

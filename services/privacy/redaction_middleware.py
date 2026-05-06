@@ -1,4 +1,4 @@
-"""Middleware that redacts PII from all MCP tool output before it exits Asymptote.
+"""Middleware that redacts PII from all MCP tool output before it exits Finn.
 
 The middleware walks the return value of every MCP tool response (dicts,
 lists, strings) and applies Presidio-based redaction to every string value.
@@ -129,22 +129,23 @@ def set_session_id(session_id: str) -> None:
 def redact_text_for_ai(
     text: str,
     collection_id: str | None = None,
-    source_label: str = "ai_context",
+    source_label: str | None = None,
 ) -> str:
-    """Redact PII from a plain text string before it is injected into an AI prompt.
+    """Redact PII from a single AI-generated string before it leaves Finn.
 
-    This covers paths that the MCP response middleware does NOT protect:
-      - Document text_snippets used to seed the chat system prompt
-      - Inlined JSONL table blocks (inline_block / structured_context_str)
-      - Reranking input snippets
+    Used by endpoints that draft client-facing prose (compliance Note of
+    Record, follow-up email) — the LLM sees a redacted prompt, but its
+    *output* may still echo PII patterns that slipped through, so we scrub
+    the result on the way out.
 
-    Returns the redacted text. If Presidio is unavailable or redaction is
-    disabled, the original text is returned unchanged.
-
-    Unlike redact_mcp_response (which mutates dict structures), this function
-    operates on a single string so callers can apply it per-snippet for
-    fine-grained audit logging.
+    ``source_label`` is recorded in the audit log under the same column the
+    MCP path uses for ``tool_name`` (e.g. ``"notes_output"``,
+    ``"followup_output"``) so compliance can distinguish where each
+    redaction happened.
     """
+    if not text or not text.strip():
+        return text
+
     if not getattr(settings, "enable_pii_redaction", False):
         return text
 
@@ -154,21 +155,21 @@ def redact_text_for_ai(
     if not redaction_engine.available:
         return text
 
-    result = redaction_engine.redact_text(text, collection_id)
-    if result.had_pii:
-        session_id = get_or_create_session_id()
+    result = redaction_engine.redact_text(text, collection_id=collection_id)
+
+    if result.details:
         redaction_log.log_redactions(
             details=result.details,
-            session_id=session_id,
+            session_id=get_or_create_session_id(),
             collection_id=collection_id,
             tool_name=source_label,
         )
         logger.info(
-            "redact_text_for_ai: removed %d PII entities from %s (session=%s...)",
-            len(result.details),
-            source_label,
-            session_id[:8],
+            f"Redacted {len(result.details)} PII entit"
+            f"{'y' if len(result.details) == 1 else 'ies'} from "
+            f"{source_label or 'ai_output'}"
         )
+
     return result.redacted_text
 
 
