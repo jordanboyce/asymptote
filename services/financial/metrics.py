@@ -266,6 +266,27 @@ def compute_financial_metric(
                 result = _breakdown_via_classification(
                     conn, schema, table, group_role, role_to_col,
                 )
+                # Classification can come back empty (yfinance offline, all
+                # symbols are munis/UITs/cash without a profile) — the
+                # "Unclassified" lump is useless to the advisor. If the file
+                # already carries asset_class data, retry the breakdown
+                # against that column so the user sees a real distribution.
+                if (
+                    group_role == 'sector'
+                    and 'asset_class' in role_to_col
+                    and result.get('classified_symbols', 0) == 0
+                ):
+                    fallback = _breakdown(
+                        conn, schema, table, 'asset_class', 'market_value',
+                    )
+                    fallback['fallback_from'] = group_role
+                    fallback['note'] = (
+                        f"Source file has no '{group_role}' column and "
+                        f"automatic classification returned no matches. "
+                        f"Falling back to the file's 'asset_class' column "
+                        f"(coarser than sector but accurate)."
+                    )
+                    result = fallback
             else:
                 raise ValueError(
                     f"No column with role '{group_role}' detected in {schema['filename']}. "
@@ -283,12 +304,21 @@ def compute_financial_metric(
         if m == 'weighted_return':
             ret = require('return')
             mv = require('market_value')
+            # The __by_symbol rollup view's SELECT only carries SUMMABLE_ROLES
+            # + FIRST_ROLES — `return` is in neither, so the column is dropped
+            # from the view. SQLite's compatibility quirk then treats the
+            # missing identifier as the literal string 'Current_Yield' which
+            # casts to 0 in multiplication, silently yielding weighted_return=0.
+            # Force the base table for this metric so we always read the real
+            # per-row return values. Holdings ingested after the FIRST_ROLES
+            # update below will also expose `return` on the view.
+            table_for_metric = base_table
             total_mv = scalar(
-                f'SELECT SUM("{mv}") FROM "{table}" '
+                f'SELECT SUM("{mv}") FROM "{table_for_metric}" '
                 f'WHERE "{ret}" IS NOT NULL AND "{mv}" IS NOT NULL'
             )
             weighted = scalar(
-                f'SELECT SUM("{ret}" * "{mv}") FROM "{table}" '
+                f'SELECT SUM("{ret}" * "{mv}") FROM "{table_for_metric}" '
                 f'WHERE "{ret}" IS NOT NULL AND "{mv}" IS NOT NULL'
             )
             value = (weighted / total_mv) if total_mv else None
@@ -299,7 +329,7 @@ def compute_financial_metric(
                 'return_column': ret,
                 'weight_column': mv,
                 'weighted_return': value,
-                'table_used': table,
+                'table_used': table_for_metric,
             }
             if warnings:
                 result['warnings'] = warnings

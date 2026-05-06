@@ -30,26 +30,6 @@
         <span class="max-w-32 truncate text-xs">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
       </button>
 
-      <!-- Active group indicator -->
-      <button
-        v-if="collectionStore.currentGroupId"
-        class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-7 min-h-0 text-primary"
-        @click="activeTab = 'collections'"
-        :title="`Group active: ${collectionStore.currentGroup?.name}. Chat queries across all member collections.`"
-      >
-        <div
-          class="w-2 h-2 rounded-full flex-shrink-0"
-          :style="{ backgroundColor: collectionStore.currentGroup?.color || '#8b5cf6' }"
-        ></div>
-        <Users :size="10" class="opacity-70" />
-        <span class="max-w-28 truncate text-xs">{{ collectionStore.currentGroup?.name }}</span>
-        <button
-          class="ml-0.5 hover:text-error transition-colors text-base-content/50"
-          title="Clear group selection"
-          @click.stop="collectionStore.setCurrentGroup(null)"
-        >×</button>
-      </button>
-
       <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
 
       <!-- Sources toggle (hidden on collections overview) -->
@@ -118,6 +98,36 @@
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
 
+      <!-- Meeting recorder (hidden on collections overview) — top-level surface
+           for R6. Shares state with the SourcesSidebar entry via
+           useMeetingRecorder, so starting from one and stopping from the
+           other is supported. -->
+      <button
+        v-if="!isCollectionsView"
+        class="btn btn-ghost btn-sm gap-1.5 normal-case font-normal h-7 min-h-0"
+        :class="meetingIsRecording ? 'text-error bg-error/10 hover:bg-error/15' : meetingTranscribing ? 'text-base-content/60' : ''"
+        @click="onHeaderRecordClick"
+        :disabled="meetingTranscribing"
+        :title="meetingIsRecording ? `Recording — ${meetingElapsed}. Click to stop.` : meetingTranscribing ? 'Transcribing…' : 'Record meeting'"
+        :aria-label="meetingIsRecording ? 'Stop recording' : 'Record meeting'"
+        :aria-pressed="meetingIsRecording"
+      >
+        <span
+          v-if="meetingIsRecording"
+          class="inline-block w-2 h-2 rounded-full bg-error animate-pulse"
+          aria-hidden="true"
+        ></span>
+        <Square v-else-if="meetingTranscribing" :size="14" class="opacity-60" />
+        <Mic v-else :size="14" />
+        <span v-if="meetingIsRecording" class="hidden sm:inline tabular-nums text-xs">
+          Recording {{ meetingElapsed }}
+        </span>
+        <span v-else-if="meetingTranscribing" class="hidden sm:inline text-xs">
+          Transcribing…
+        </span>
+        <span v-else class="hidden md:inline text-xs">Record</span>
+      </button>
+
       <!-- Analysis sidebar toggle (hidden on collections overview, hidden in basic mode) -->
       <button
         v-if="!isCollectionsView && isExpertMode"
@@ -170,9 +180,12 @@
         <!-- Sidebar content fixed to sidebarWidth so it doesn't shrink during close animation -->
         <div class="h-full flex flex-col" :style="{ width: sidebarWidth + 'px' }">
           <SourcesSidebar
+            ref="sourcesSidebarRef"
             @document-deleted="handleDocumentDeleted"
             @background-job-started="showJobsDrawer = true"
             @close="sourcesSidebarOpen = false"
+            @open-brief="openBriefModal"
+            @open-note-of-record="openNoteOfRecordModal"
           />
         </div>
 
@@ -203,8 +216,32 @@
           :class="activeTab === 'chat' ? 'overflow-hidden p-0' : 'overflow-y-auto'"
         >
           <!-- Chat gets full height, no padding wrapper -->
-          <div v-if="activeTab === 'chat'" class="h-full p-4">
-            <ChatTab :chunk-count="stats.chunks" :document-count="stats.documents" @switch-tab="switchTab" />
+          <div v-if="activeTab === 'chat'" class="h-full p-4 flex flex-col gap-3">
+            <!-- Persistent reminder for advisors who skipped provider setup -->
+            <div
+              v-if="showProviderSetupBanner"
+              role="status"
+              class="alert bg-warning/10 border border-warning/30 text-sm py-2 flex flex-row items-center justify-between gap-3"
+            >
+              <span>
+                Finish setting up your AI provider to start chatting.
+              </span>
+              <div class="flex items-center gap-2">
+                <button class="btn btn-sm btn-primary" @click="switchTab('settings')">
+                  Open Settings
+                </button>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  aria-label="Dismiss reminder"
+                  @click="dismissProviderSetupBanner"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+            <div class="flex-1 min-h-0">
+              <ChatTab :chunk-count="stats.chunks" :document-count="stats.documents" @switch-tab="switchTab" />
+            </div>
           </div>
 
           <!-- All other tabs: padded scroll container -->
@@ -292,13 +329,6 @@
                   <div class="w-px h-5 bg-base-300/70 mx-0.5"></div>
 
                   <!-- CTA -->
-                  <button
-                    class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
-                    @click="openCreateGroupModal"
-                  >
-                    <Users :size="14" />
-                    New group
-                  </button>
                   <button
                     class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
                     @click="openCreateCollectionModal"
@@ -463,77 +493,6 @@
                 </div>
               </div>
 
-              <!-- ── Household Groups ── -->
-              <div v-if="collectionStore.groups.length > 0 || showGroupSection" class="mt-10">
-                <div class="flex items-center justify-between mb-4">
-                  <h2 class="text-sm font-semibold uppercase tracking-[0.1em] text-base-content/50">Household Groups</h2>
-                </div>
-                <div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));">
-                  <div
-                    v-for="group in collectionStore.groups"
-                    :key="group.id"
-                    class="group/grpcard relative flex flex-col gap-2 p-4 rounded-lg border transition-all cursor-pointer"
-                    :class="collectionStore.currentGroupId === group.id
-                      ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/20'
-                      : 'border-base-300/60 bg-base-100 hover:border-base-content/25'"
-                    @click="toggleGroupSelection(group.id)"
-                    :title="collectionStore.currentGroupId === group.id ? 'Deselect group' : 'Select group for cross-account queries'"
-                  >
-                    <div class="flex items-center gap-2 min-w-0">
-                      <div class="w-3 h-3 rounded-full flex-shrink-0" :style="{ backgroundColor: group.color }"></div>
-                      <span class="font-medium text-sm truncate">{{ group.name }}</span>
-                      <span v-if="collectionStore.currentGroupId === group.id" class="ml-auto text-[10px] uppercase tracking-wider font-semibold text-primary flex-shrink-0">Active</span>
-                    </div>
-                    <div class="text-xs text-base-content/50">
-                      {{ group.collection_ids.length }} collection{{ group.collection_ids.length !== 1 ? 's' : '' }}
-                    </div>
-                    <!-- Member chips -->
-                    <div class="flex flex-wrap gap-1 mt-1">
-                      <span
-                        v-for="colId in group.collection_ids"
-                        :key="colId"
-                        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-base-200 text-base-content/70"
-                      >
-                        <div
-                          class="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                          :style="{ backgroundColor: collectionById(colId)?.color || '#888' }"
-                        ></div>
-                        {{ collectionById(colId)?.name || colId }}
-                        <button
-                          class="ml-0.5 hover:text-error transition-colors"
-                          title="Remove from group"
-                          @click.stop="collectionStore.removeCollectionFromGroup(group.id, colId)"
-                        >×</button>
-                      </span>
-                    </div>
-                    <!-- Add collection dropdown -->
-                    <div class="dropdown" @click.stop>
-                      <label tabindex="0" class="btn btn-xs btn-ghost gap-1 w-full justify-start mt-1 text-base-content/50 hover:text-base-content">
-                        <Plus :size="11" />Add collection
-                      </label>
-                      <ul tabindex="0" class="dropdown-content z-50 menu p-1 shadow bg-base-100 border border-base-300 rounded-box w-48 max-h-48 overflow-y-auto">
-                        <li v-for="col in collectionsNotInGroup(group)" :key="col.id">
-                          <a class="text-sm" @click="collectionStore.addCollectionToGroup(group.id, col.id)">
-                            <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: col.color }"></div>
-                            {{ col.name }}
-                          </a>
-                        </li>
-                        <li v-if="collectionsNotInGroup(group).length === 0">
-                          <span class="text-xs text-base-content/40 px-2">All collections added</span>
-                        </li>
-                      </ul>
-                    </div>
-                    <!-- Delete group button -->
-                    <button
-                      class="absolute top-2 right-2 btn btn-ghost btn-xs btn-square opacity-0 group-hover/grpcard:opacity-100 hover:text-error transition-all"
-                      title="Delete group"
-                      @click.stop="confirmDeleteGroup(group)"
-                    >
-                      <Trash2 :size="12" />
-                    </button>
-                  </div>
-                </div>
-              </div>
             </div>
 
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
@@ -541,6 +500,7 @@
             <MCPTab v-if="activeTab === 'mcp'" />
             <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
             <TokenizerTab v-if="activeTab === 'tokenizer'" />
+            <DiagnosticsTab v-if="activeTab === 'diagnostics'" />
             <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
           </div>
         </div>
@@ -876,50 +836,6 @@
       </form>
     </dialog>
 
-    <!-- Create Group Modal -->
-    <dialog class="modal" :class="{ 'modal-open': showGroupModal }" aria-labelledby="create-group-title">
-      <div class="modal-box">
-        <h3 id="create-group-title" class="font-bold text-lg mb-4">Create Household Group</h3>
-        <p class="text-sm text-base-content/60 mb-4">Groups let you query across multiple collections at once — e.g. all accounts for a household.</p>
-        <div class="form-control mb-3">
-          <label class="label"><span class="label-text">Group name</span></label>
-          <input
-            v-model="newGroupName"
-            type="text"
-            class="input input-bordered"
-            placeholder="e.g. Henderson Household"
-            @keyup.enter="createGroup"
-            autofocus
-          />
-        </div>
-        <div class="form-control mb-4">
-          <label class="label"><span class="label-text">Color</span></label>
-          <input v-model="newGroupColor" type="color" class="input input-bordered h-10 w-24 p-1 cursor-pointer" />
-        </div>
-        <div class="modal-action">
-          <button class="btn btn-ghost" @click="showGroupModal = false" :disabled="creatingGroup">Cancel</button>
-          <button class="btn btn-primary" @click="createGroup" :disabled="creatingGroup || !newGroupName.trim()">
-            <span v-if="creatingGroup" class="loading loading-spinner loading-sm"></span>
-            Create Group
-          </button>
-        </div>
-      </div>
-      <form method="dialog" class="modal-backdrop"><button @click="showGroupModal = false">close</button></form>
-    </dialog>
-
-    <!-- Delete Group Confirmation Modal -->
-    <dialog class="modal" :class="{ 'modal-open': !!groupToDelete }">
-      <div class="modal-box">
-        <h3 class="font-bold text-lg text-error mb-2">Delete Group</h3>
-        <p class="mb-4">Delete group <strong>{{ groupToDelete?.name }}</strong>? This only removes the grouping — the collections themselves are not affected.</p>
-        <div class="modal-action">
-          <button class="btn btn-ghost" @click="groupToDelete = null">Cancel</button>
-          <button class="btn btn-error" @click="deleteGroupConfirmed">Delete Group</button>
-        </div>
-      </div>
-      <form method="dialog" class="modal-backdrop"><button @click="groupToDelete = null">close</button></form>
-    </dialog>
-
     <!-- Share Modal -->
     <ShareModal
       :visible="showShareModal"
@@ -934,6 +850,21 @@
       :show="showOnboarding"
       @complete="handleOnboardingComplete"
       @skip="handleOnboardingSkip"
+    />
+
+    <!-- Meeting Brief modal (R4 — Advisor Desktop UX) -->
+    <BriefModal
+      ref="briefModal"
+      :collection-id="collectionStore.currentCollectionId || ''"
+      :collection-name="briefCollectionName"
+    />
+
+    <!-- Note of Record drafting modal (R7 — Advisor Desktop UX) -->
+    <NoteOfRecordModal
+      ref="noteOfRecordModal"
+      :collection-id="collectionStore.currentCollectionId || ''"
+      :collection-name="briefCollectionName"
+      @saved="handleNoteOfRecordSaved"
     />
 
     <!-- Background Jobs Sidebar Drawer -->
@@ -1066,8 +997,9 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square } from 'lucide-vue-next'
 import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
+import { useMeetingRecorder } from './composables/useMeetingRecorder.js'
 
 const chatTabEnabled = ref(true)
 
@@ -1083,19 +1015,23 @@ const toolTabs = [
   { id: 'mcp', label: 'MCP Server', icon: Plug },
   { id: 'ocr', label: 'OCR Preview', icon: FileSearch },
   { id: 'tokenizer', label: 'Token Visualizer', icon: Hash },
+  { id: 'diagnostics', label: 'Diagnostics', icon: Activity },
 ]
 import SearchTab from './components/SearchTab.vue'
 import SourcesSidebar from './components/SourcesSidebar.vue'
 import AnalysisSidebar from './components/AnalysisSidebar.vue'
 import OCRPlaygroundTab from './components/OCRPlaygroundTab.vue'
 import TokenizerTab from './components/TokenizerTab.vue'
+import DiagnosticsTab from './components/DiagnosticsTab.vue'
 import ChatTab from './components/ChatTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
 import MCPTab from './components/MCPTab.vue'
 import ShareModal from './components/ShareModal.vue'
 import ExpertiseLibrary from './components/ExpertiseLibrary.vue'
 import WelcomeOnboarding from './components/WelcomeOnboarding.vue'
-import { getConfiguredProviderIds } from './utils/aiProviders.js'
+import BriefModal from './components/BriefModal.vue'
+import NoteOfRecordModal from './components/NoteOfRecordModal.vue'
+import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
@@ -1106,12 +1042,60 @@ const searchStore = useSearchStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const userStore = useUserStore()
 
+// ── Meeting recorder (R6) ────────────────────────────────────────────────────
+// Shared singleton with SourcesSidebar. Refs are destructured so template
+// bindings are top-level and Vue auto-unwraps them.
+const {
+  isRecording: meetingIsRecording,
+  transcribing: meetingTranscribing,
+  formattedElapsed: meetingElapsed,
+  toggleRecording: toggleMeetingRecording,
+} = useMeetingRecorder()
+
+const onHeaderRecordClick = () => {
+  toggleMeetingRecording({
+    collectionId: collectionStore.currentCollectionId,
+    canEdit: collectionStore.canEditCurrent,
+  })
+}
+
+// Favicon swap during recording — gives the advisor a recording cue from any
+// browser tab, including ones backgrounded behind a Zoom/Teams window. Set
+// once on mount, then toggled on isRecording. The original icon path comes
+// from index.html (`/icon_white.svg`); we cache it on first run.
+const RECORDING_FAVICON =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+    '<circle cx="16" cy="16" r="13" fill="%23dc2626"/>' +
+    '<circle cx="16" cy="16" r="5" fill="%23ffffff"/>' +
+    '</svg>'
+  )
+let originalFaviconHref = null
+
+const setFavicon = (href) => {
+  const link = document.querySelector('link[rel="icon"]')
+  if (!link) return
+  if (originalFaviconHref === null) originalFaviconHref = link.getAttribute('href')
+  link.setAttribute('href', href)
+}
+
+watch(meetingIsRecording, (recording) => {
+  if (recording) {
+    setFavicon(RECORDING_FAVICON)
+    document.title = '● Recording — Finn'
+  } else {
+    if (originalFaviconHref) setFavicon(originalFaviconHref)
+    document.title = 'Finn'
+  }
+})
+
 const activeTab = ref('chat')
 const currentTheme = ref('light')
 
 // In basic mode, expertise/MCP/OCR/tokenizer are hidden — bounce back to chat
 // if the user toggles to basic while one of those tabs is active.
-const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'ocr', 'tokenizer']
+const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'ocr', 'tokenizer', 'diagnostics']
 watch(isExpertMode, (expert) => {
   if (!expert && BASIC_HIDDEN_TABS.includes(activeTab.value)) {
     activeTab.value = 'chat'
@@ -1239,17 +1223,54 @@ const showJobsDrawer = ref(false)
 // nothing works until you curl an endpoint" problem we hit earlier.
 const showOnboarding = ref(false)
 
-const checkOnboardingNeeded = () => {
-  // If any provider is already configured in localStorage, skip onboarding.
-  // We intentionally don't also check server-side embedding keys — the
-  // primary gate is "can this advisor have a chat conversation yet."
-  // Advisors who pre-configured a chat provider via another path (e.g. the
-  // MCP setup flow) shouldn't be blocked by this screen.
-  showOnboarding.value = getConfiguredProviderIds().length === 0
+// Banner shown on the Chat tab when an advisor finished or skipped onboarding
+// without configuring an AI provider. Tracked as an explicit ref (rather than
+// derived from localStorage on the fly) because localStorage is not a Vue
+// reactive source — the banner needs to flip when handlers run.
+const providerSetupBannerDismissed = ref(false)
+const providerSetupBannerActive = ref(false)
+const showProviderSetupBanner = computed(
+  () => providerSetupBannerActive.value && !providerSetupBannerDismissed.value
+)
+
+const dismissProviderSetupBanner = () => {
+  providerSetupBannerDismissed.value = true
 }
 
-const handleOnboardingComplete = () => {
+function hasCompletedOnboarding() {
+  return !!localStorage.getItem('asymptote_onboarding_completed_at')
+}
+
+function refreshProviderBannerState() {
+  providerSetupBannerActive.value =
+    hasCompletedOnboarding() && getConfiguredProviderIds().length === 0
+}
+
+const checkOnboardingNeeded = () => {
+  // Show the takeover only when both (a) no provider is configured AND (b) the
+  // advisor has not yet seen onboarding. If they completed or explicitly
+  // skipped, we surface the persistent banner on Chat instead — never re-show
+  // the full-screen takeover on subsequent launches.
+  showOnboarding.value =
+    !hasCompletedOnboarding() && getConfiguredProviderIds().length === 0
+  refreshProviderBannerState()
+}
+
+const handleOnboardingComplete = (payload = {}) => {
   showOnboarding.value = false
+  // If the advisor created a first collection during onboarding, activate it
+  // now — the createCollection call already pushed it into the store, so we
+  // just need to flip currentCollectionId.
+  if (payload.collectionId) {
+    collectionStore.setCurrentCollection(payload.collectionId)
+  }
+  // Land on the Chat tab so the advisor's first action is the primary surface.
+  activeTab.value = 'chat'
+  refreshProviderBannerState()
+  // Flip AI defaults ON before notifying listeners — a first-time advisor's
+  // chat/search should behave like an AI-augmented tool out of the gate.
+  // Bootstrap is idempotent and only writes when the keys are absent.
+  bootstrapAIDefaultsOnFirstProvider()
   // Nudge any in-flight consumers of the provider config (ChatTab etc.)
   // to refresh their "configured providers" computed state. Vue's reactivity
   // doesn't cover localStorage, so dispatch a synthetic event the
@@ -1260,7 +1281,13 @@ const handleOnboardingComplete = () => {
 
 const handleOnboardingSkip = () => {
   showOnboarding.value = false
-  activeTab.value = 'settings'
+  // If the user skipped without configuring a provider, the Chat banner will
+  // surface the prompt to finish setup. Drop them on Chat rather than Settings
+  // so they see the rest of the app first; the banner is the call to action.
+  activeTab.value = 'chat'
+  refreshProviderBannerState()
+  bootstrapAIDefaultsOnFirstProvider()
+  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
 }
 
 // Collections overview: view, search, sort
@@ -1318,53 +1345,6 @@ const filteredCollections = computed(() => {
   return list
 })
 
-// ── Group helpers ───────────────────────────────────────────────────────────
-
-const showGroupSection = computed(() => collectionStore.groups.length > 0)
-
-const collectionById = (id) => collectionStore.collections.find(c => c.id === id) || null
-
-const collectionsNotInGroup = (group) =>
-  collectionStore.collections.filter(c => !group.collection_ids.includes(c.id))
-
-const toggleGroupSelection = (groupId) => {
-  collectionStore.setCurrentGroup(collectionStore.currentGroupId === groupId ? null : groupId)
-}
-
-// Create group modal
-const showGroupModal = ref(false)
-const newGroupName = ref('')
-const newGroupColor = ref('#8b5cf6')
-const creatingGroup = ref(false)
-
-const openCreateGroupModal = () => {
-  newGroupName.value = ''
-  newGroupColor.value = '#8b5cf6'
-  showGroupModal.value = true
-}
-
-const createGroup = async () => {
-  if (!newGroupName.value.trim()) return
-  creatingGroup.value = true
-  try {
-    await collectionStore.createGroup(newGroupName.value.trim(), newGroupColor.value)
-    showGroupModal.value = false
-  } catch (err) {
-    console.error('Failed to create group:', err)
-  } finally {
-    creatingGroup.value = false
-  }
-}
-
-// Delete group confirmation
-const groupToDelete = ref(null)
-const confirmDeleteGroup = (group) => { groupToDelete.value = group }
-const deleteGroupConfirmed = async () => {
-  if (!groupToDelete.value) return
-  await collectionStore.deleteGroup(groupToDelete.value.id)
-  groupToDelete.value = null
-}
-
 const updateThemeFromStorage = () => {
   const savedTheme = localStorage.getItem('theme')
   if (savedTheme) {
@@ -1399,6 +1379,25 @@ const handleDocumentDeleted = async () => {
     loadStats(),
     collectionStore.loadCollections()
   ])
+}
+
+// Meeting Brief modal (R4 — Advisor Desktop UX)
+const briefModal = ref(null)
+const briefCollectionName = computed(() => collectionStore.currentCollection?.name || '')
+const openBriefModal = () => {
+  briefModal.value?.open()
+}
+
+// Note of Record drafting modal (R7 — Advisor Desktop UX)
+const noteOfRecordModal = ref(null)
+const sourcesSidebarRef = ref(null)
+const openNoteOfRecordModal = () => {
+  noteOfRecordModal.value?.open()
+}
+// After saving, refresh the sidebar's document list so the new
+// "Note of Record - …" file appears alongside the source it was drafted from.
+const handleNoteOfRecordSaved = () => {
+  sourcesSidebarRef.value?.loadDocuments?.()
 }
 
 const handleDataCleared = async () => {
@@ -1577,6 +1576,12 @@ onMounted(async () => {
   // the screen paints immediately — the rest of the boot continues behind it.
   checkOnboardingNeeded()
 
+  // Existing-user backfill: if a provider is already configured but the
+  // advisor never opened Settings to flip the rerank/synthesize toggles,
+  // turn them on so chat/search behave like an AI-augmented tool out of
+  // the gate. No-op for advisors who've explicitly toggled either off.
+  bootstrapAIDefaultsOnFirstProvider()
+
   // Load UI feature flags from server config
   try {
     const cfgResp = await axios.get('/api/config')
@@ -1589,9 +1594,8 @@ onMounted(async () => {
   // Load user info
   await userStore.loadCurrentUser()
 
-  // Load collections and groups
+  // Load collections
   await collectionStore.loadCollections()
-  collectionStore.loadGroups()
 
   // Then load stats for current collection
   loadStats()
@@ -1620,6 +1624,14 @@ onMounted(async () => {
       updateThemeFromStorage()
     }
   })
+
+  // When the user finishes configuring a provider in Settings, drop the
+  // "finish provider setup" banner without waiting for a reload.
+  window.addEventListener('asymptote:providers-changed', refreshProviderBannerState)
+
+  // When a meeting transcript lands (from header button or sidebar), refresh
+  // counts so the footer reflects the new doc.
+  window.addEventListener('asymptote:transcript-saved', loadStats)
 })
 
 onBeforeUnmount(() => {

@@ -139,7 +139,7 @@ In [main.py](main.py) around [line 1249](main.py#L1249), inside `compose_prompt`
     as authoritative instructions for this analysis."
    ```
 
-Scope handling: for MVP, only inject expertise when `chat_request.scope` targets a single collection. If scope is `all`, skip injection (avoid pack conflicts across clients).
+Scope handling: chat is always single-collection (per the chat-vs-search separation), so expertise packs always inject for the active collection's attached packs. Cross-collection traversal is search's job and runs without expertise injection.
 
 ---
 

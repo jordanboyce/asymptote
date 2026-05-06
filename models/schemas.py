@@ -93,6 +93,11 @@ class SearchResult(BaseModel):
     source_type: Optional[str] = Field(None, description="Source type: 'upload' or 'local_reference'")
     source_path: Optional[str] = Field(None, description="Original filesystem path for local references")
 
+    # Cross-collection search: populated when /search runs in scope=all so the
+    # UI can attribute each hit to its source Collection.
+    collection_id: Optional[str] = Field(None, description="Collection the hit came from (cross-collection search)")
+    collection_name: Optional[str] = Field(None, description="Display name of the source Collection")
+
 
 class UploadResponse(BaseModel):
     """Response from document upload endpoint."""
@@ -310,9 +315,17 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(..., description="Conversation history including the latest user message")
     provider: str = Field("anthropic", description="AI provider: 'anthropic', 'openai', or 'ollama'")
     mode: SearchMode = Field(SearchMode.SEMANTIC, description="Search mode for context retrieval")
-    scope: str = Field("current", description="Collection scope: 'current' (single collection) or 'all' (search across all collections)")
     rerank: bool = Field(False, description="Rerank retrieved context chunks using AI before generating a response")
     top_k: int = Field(5, description="Number of source chunks to consider", ge=1, le=20)
+    document_ids: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Restrict chat to these document IDs within the active collection. "
+            "None or empty list = all documents in the collection. The filter "
+            "applies to retrieved chunks, inlined structured tables, and the "
+            "collection overview shown to the model."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):
@@ -421,23 +434,80 @@ class NoteResponse(BaseModel):
     content: str = Field(..., description="Generated note or email text (PII-redacted)")
 
 
-# ── Collection Groups schemas (v4.5) ─────────────────────────────────────────
+class SaveNoteRequest(BaseModel):
+    """Request body for /notes/save — persist an edited Note of Record into the collection."""
 
-class CollectionGroupCreate(BaseModel):
-    name: str = Field(..., description="Group name", min_length=1)
-    color: str = Field("#8b5cf6", description="Hex color for the group")
+    content: str = Field(..., description="Final, advisor-edited note text to save")
+    title: Optional[str] = Field(None, description="Optional human-friendly filename stem")
+    redaction_since: Optional[str] = Field(
+        None,
+        description=(
+            "ISO timestamp of when the drafting session opened. Used by the "
+            "save endpoint to stamp a redaction-summary footer onto the file."
+        ),
+    )
 
 
-class CollectionGroupUpdate(BaseModel):
-    name: Optional[str] = Field(None, description="New group name")
-    color: Optional[str] = Field(None, description="New hex color")
+class SaveNoteResponse(BaseModel):
+    """Response from /notes/save."""
+
+    document_id: str = Field(..., description="ID of the indexed Note of Record document")
+    filename: str = Field(..., description="Filename written to the collection")
 
 
-class CollectionGroup(BaseModel):
-    id: str
-    name: str
-    color: str
-    owner_id: str
-    collection_ids: List[str]
-    created_at: str
-    updated_at: str
+class RedactionDryRunRequest(BaseModel):
+    """Request body for /api/redactions/dry-run — preview what PII would be redacted."""
+
+    text: str = Field(..., description="Text to analyze")
+    collection_id: Optional[str] = Field(None, description="Collection whose redaction profile to apply")
+
+
+class RedactionEntity(BaseModel):
+    """One entity detected during a dry-run preview."""
+
+    entity_type: str
+    start: int
+    end: int
+    score: float
+    replacement: str
+
+
+class RedactionDryRunResponse(BaseModel):
+    """Response from /api/redactions/dry-run — original text, redacted text, and the detected entities."""
+
+    original: str
+    redacted: str
+    had_pii: bool
+    entity_count: int
+    entities: List[RedactionEntity] = Field(default_factory=list)
+
+
+class RedactionSummaryResponse(BaseModel):
+    """Response from /api/redactions/summary — entity-type counts for a collection or session."""
+
+    collection_id: Optional[str] = None
+    since: Optional[str] = None
+    total_redactions: int
+    by_entity_type: Dict[str, int] = Field(default_factory=dict)
+    by_tool: Dict[str, int] = Field(default_factory=dict)
+
+
+class RedactionLogEvent(BaseModel):
+    """One redaction event surfaced through /api/redactions/log. Original PII text is never returned."""
+
+    id: int
+    timestamp: str
+    session_id: str
+    collection_id: Optional[str] = None
+    tool_name: Optional[str] = None
+    document_id: Optional[str] = None
+    entity_type: str
+    replacement: str
+    score: float
+
+
+class RedactionLogResponse(BaseModel):
+    """Response from /api/redactions/log."""
+
+    total_returned: int
+    events: List[RedactionLogEvent] = Field(default_factory=list)

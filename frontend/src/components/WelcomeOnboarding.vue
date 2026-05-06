@@ -7,22 +7,103 @@
     aria-labelledby="welcome-title"
   >
     <div class="max-w-md w-full my-auto">
-      <!-- Logo + welcome -->
-      <div class="text-center mb-8">
+      <!-- Step indicator -->
+      <div
+        v-if="stage !== 'welcome'"
+        class="flex items-center justify-center gap-1.5 mb-6"
+        aria-label="Setup progress"
+      >
+        <span
+          v-for="(s, i) in STAGES"
+          :key="s"
+          class="h-1 rounded-full transition-all"
+          :class="[
+            stageIndex >= i ? 'bg-primary' : 'bg-base-content/20',
+            stageIndex === i ? 'w-8' : 'w-4',
+          ]"
+          aria-hidden="true"
+        ></span>
+      </div>
+
+      <!-- Logo + heading (welcome stage only) -->
+      <div v-if="stage === 'welcome'" class="text-center mb-8">
         <img src="/icon_black.svg" alt="" class="w-14 h-14 mx-auto mb-5 opacity-90" />
         <h1 id="welcome-title" class="text-2xl font-semibold tracking-tight">
-          Welcome to Asymptote
+          Welcome to Finn
         </h1>
-        <p class="text-sm text-base-content/60 mt-2 max-w-sm mx-auto leading-relaxed">
-          Paste your Ollama Cloud API key to get started. Free tier — no credit card required.
+        <p class="text-sm text-base-content/60 mt-3 max-w-sm mx-auto leading-relaxed">
+          Let's get you set up in three short steps.
         </p>
       </div>
 
-      <!-- Form -->
-      <div class="space-y-3">
+      <!-- ── Stage 1: welcome / privacy ──────────────────────────────────── -->
+      <div v-if="stage === 'welcome'" class="space-y-5">
+        <div class="bg-base-100 rounded-lg p-5 space-y-4 text-sm leading-relaxed">
+          <p class="font-medium text-base">Your client data stays on this device.</p>
+          <ul class="space-y-2 text-base-content/75">
+            <li class="flex gap-2">
+              <span class="text-primary font-semibold">·</span>
+              <span>Brokerage exports, transcripts, and notes are stored locally — never uploaded to a server.</span>
+            </li>
+            <li class="flex gap-2">
+              <span class="text-primary font-semibold">·</span>
+              <span>Names, account numbers, and other PII are redacted on-device before any AI call.</span>
+            </li>
+            <li class="flex gap-2">
+              <span class="text-primary font-semibold">·</span>
+              <span>The AI provider only ever sees redacted text — never the raw data.</span>
+            </li>
+          </ul>
+        </div>
+        <button class="btn btn-primary w-full" @click="advance('provider')">
+          Continue
+        </button>
+      </div>
+
+      <!-- ── Stage 2: provider + key ─────────────────────────────────────── -->
+      <div v-else-if="stage === 'provider'" class="space-y-5">
+        <div class="text-center">
+          <h2 class="text-xl font-semibold">Choose an AI provider</h2>
+          <p class="text-sm text-base-content/60 mt-2">
+            Pick one and paste your key. You can change this later in Settings.
+          </p>
+        </div>
+
+        <!-- Provider radio cards -->
+        <div role="radiogroup" aria-label="AI provider" class="space-y-2">
+          <label
+            v-for="p in PROVIDER_OPTIONS"
+            :key="p.id"
+            class="flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition"
+            :class="providerId === p.id ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/30'"
+          >
+            <input
+              type="radio"
+              :value="p.id"
+              v-model="providerId"
+              class="radio radio-primary radio-sm mt-0.5"
+              :disabled="validating"
+            />
+            <div class="flex-1 text-sm">
+              <div class="font-medium">{{ p.name }}</div>
+              <div class="text-xs text-base-content/55 mt-0.5">{{ p.tagline }}</div>
+            </div>
+          </label>
+        </div>
+
+        <!-- Key input -->
         <div class="form-control w-full">
           <label class="label py-1" for="welcome-api-key">
-            <span class="label-text text-sm">Ollama Cloud API Key</span>
+            <span class="label-text text-sm">API key</span>
+            <a
+              v-if="activeProvider?.keyLink"
+              :href="activeProvider.keyLink"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="label-text-alt link link-hover text-xs"
+            >
+              Get a key →
+            </a>
           </label>
           <input
             id="welcome-api-key"
@@ -30,42 +111,112 @@
             type="password"
             autocomplete="off"
             spellcheck="false"
-            placeholder="Paste your key"
+            :placeholder="activeProvider?.keyPlaceholder || 'Paste your key'"
             class="input input-bordered w-full font-mono text-sm"
-            :disabled="saving"
-            @keyup.enter="handleSave"
+            :disabled="validating"
+            @keyup.enter="handleProviderSubmit"
             ref="keyInputRef"
           />
         </div>
 
-        <!-- Validation error -->
-        <div v-if="error" class="alert alert-error text-sm py-2" role="alert">
-          <span>{{ error }}</span>
+        <!-- Typed error -->
+        <div v-if="errorCode" class="alert alert-error text-sm py-2" role="alert">
+          <span>{{ errorMessage }}</span>
         </div>
 
-        <button
-          class="btn btn-primary w-full"
-          :disabled="!apiKey.trim() || saving"
-          @click="handleSave"
-        >
-          <span v-if="saving" class="loading loading-spinner loading-sm"></span>
-          {{ saving ? 'Verifying…' : 'Get Started' }}
-        </button>
-
-        <div class="text-center text-xs text-base-content/55 pt-3 space-x-2">
-          <a
-            href="https://ollama.com/settings/keys"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="link link-hover"
+        <div class="flex gap-2">
+          <button class="btn btn-ghost flex-1" @click="goBack" :disabled="validating">
+            Back
+          </button>
+          <button
+            class="btn btn-primary flex-1"
+            :disabled="!apiKey.trim() || validating"
+            @click="handleProviderSubmit"
           >
-            Get your key →
-          </a>
-          <span class="text-base-content/30" aria-hidden="true">·</span>
-          <button class="link link-hover" @click="handleSkip">
-            Use a different provider
+            <span v-if="validating" class="loading loading-spinner loading-sm"></span>
+            {{ validating ? 'Verifying…' : 'Continue' }}
           </button>
         </div>
+
+        <div class="text-center text-xs text-base-content/55">
+          <button class="link link-hover" @click="handleSkip" :disabled="validating">
+            Skip — set up later
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Stage 3: first collection ───────────────────────────────────── -->
+      <div v-else-if="stage === 'collection'" class="space-y-5">
+        <div class="text-center">
+          <h2 class="text-xl font-semibold">Create your first collection</h2>
+          <p class="text-sm text-base-content/60 mt-2">
+            One collection per client household — usually the household name.
+          </p>
+        </div>
+
+        <div class="form-control w-full">
+          <label class="label py-1" for="welcome-collection-name">
+            <span class="label-text text-sm">Client / household name</span>
+          </label>
+          <input
+            id="welcome-collection-name"
+            v-model="collectionName"
+            type="text"
+            autocomplete="off"
+            placeholder="e.g. Henderson Household"
+            class="input input-bordered w-full text-sm"
+            :disabled="creating"
+            @keyup.enter="handleCollectionSubmit"
+            ref="collectionInputRef"
+          />
+        </div>
+
+        <div v-if="collectionError" class="alert alert-error text-sm py-2" role="alert">
+          <span>{{ collectionError }}</span>
+        </div>
+
+        <div class="flex gap-2">
+          <button class="btn btn-ghost flex-1" @click="goBack" :disabled="creating">
+            Back
+          </button>
+          <button
+            class="btn btn-primary flex-1"
+            :disabled="!collectionName.trim() || creating"
+            @click="handleCollectionSubmit"
+          >
+            <span v-if="creating" class="loading loading-spinner loading-sm"></span>
+            {{ creating ? 'Creating…' : 'Create' }}
+          </button>
+        </div>
+
+        <div class="text-center text-xs text-base-content/55">
+          <button class="link link-hover" @click="advance('done')" :disabled="creating">
+            I'll do this later
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Stage 4: done ───────────────────────────────────────────────── -->
+      <div v-else-if="stage === 'done'" class="space-y-5 text-center">
+        <div class="w-14 h-14 rounded-full bg-success/15 text-success mx-auto flex items-center justify-center">
+          <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12l5 5L20 7" />
+          </svg>
+        </div>
+        <div>
+          <h2 class="text-xl font-semibold">You're all set</h2>
+          <p class="text-sm text-base-content/60 mt-2">
+            <span v-if="createdCollection">
+              Upload a brokerage export to <span class="font-medium">{{ createdCollection.name }}</span>, then ask Finn about the portfolio.
+            </span>
+            <span v-else>
+              Create a collection from the Collections tab and upload your first brokerage export.
+            </span>
+          </p>
+        </div>
+        <button class="btn btn-primary w-full" @click="handleFinish">
+          Open chat
+        </button>
       </div>
 
       <!-- Trust copy footer -->
@@ -77,9 +228,10 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch } from 'vue'
-import axios from 'axios'
+import { ref, computed, nextTick, watch } from 'vue'
 import { upsertProviderConfig, setActiveProviderLS } from '../utils/aiProviders.js'
+import { validateProviderKey, validateErrorMessage } from '../utils/validateKey.js'
+import { useCollectionStore } from '../stores/collectionStore.js'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -87,55 +239,164 @@ const props = defineProps({
 
 const emit = defineEmits(['complete', 'skip'])
 
-const apiKey = ref('')
-const saving = ref(false)
-const error = ref('')
-const keyInputRef = ref(null)
+const collectionStore = useCollectionStore()
 
-// Focus the input whenever the onboarding becomes visible so the advisor can
-// paste immediately without tabbing in.
+// Step machine
+const STAGES = ['welcome', 'provider', 'collection', 'done']
+const stage = ref('welcome')
+const stageIndex = computed(() => STAGES.indexOf(stage.value))
+
+// Provider stage state
+const PROVIDER_OPTIONS = [
+  {
+    id: 'anthropic',
+    name: 'Anthropic Claude',
+    tagline: 'Best reasoning. Bring your own key from console.anthropic.com.',
+    keyPlaceholder: 'sk-ant-...',
+    keyLink: 'https://console.anthropic.com/settings/keys',
+    defaultModel: 'claude-sonnet-4-5-20250929',
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    tagline: 'GPT-4o and o-series. Bring your own key from platform.openai.com.',
+    keyPlaceholder: 'sk-...',
+    keyLink: 'https://platform.openai.com/api-keys',
+    defaultModel: 'gpt-4o',
+  },
+  {
+    id: 'ollama_cloud',
+    name: 'Ollama Cloud',
+    tagline: 'Free tier — no credit card. Open-weight models.',
+    keyPlaceholder: 'your Ollama API key',
+    keyLink: 'https://ollama.com/settings/keys',
+    defaultModel: 'gpt-oss:120b',
+  },
+]
+const providerId = ref('anthropic')
+const apiKey = ref('')
+const validating = ref(false)
+const errorCode = ref('') // 'invalid_key' | 'network_error' | 'unsupported_provider' | ''
+
+const activeProvider = computed(() =>
+  PROVIDER_OPTIONS.find(p => p.id === providerId.value),
+)
+
+const errorMessage = computed(() => validateErrorMessage(errorCode.value))
+
+// Collection stage state
+const collectionName = ref('')
+const creating = ref(false)
+const collectionError = ref('')
+const createdCollection = ref(null)
+
+// Refs for autofocus
+const keyInputRef = ref(null)
+const collectionInputRef = ref(null)
+
+// Reset to welcome stage every time the dialog opens (e.g. via Settings reset).
 watch(
   () => props.show,
   (isShown) => {
     if (isShown) {
-      nextTick(() => keyInputRef.value?.focus())
+      stage.value = 'welcome'
+      apiKey.value = ''
+      collectionName.value = ''
+      errorCode.value = ''
+      collectionError.value = ''
+      createdCollection.value = null
     }
   },
 )
 
-const handleSave = async () => {
+// Autofocus the right input as we advance.
+watch(stage, async (s) => {
+  await nextTick()
+  if (s === 'provider') keyInputRef.value?.focus()
+  if (s === 'collection') collectionInputRef.value?.focus()
+})
+
+function advance(next) {
+  errorCode.value = ''
+  collectionError.value = ''
+  stage.value = next
+}
+
+function goBack() {
+  const i = stageIndex.value
+  if (i <= 0) return
+  stage.value = STAGES[i - 1]
+}
+
+async function handleProviderSubmit() {
   const key = apiKey.value.trim()
-  if (!key || saving.value) return
+  if (!key || validating.value) return
+  validating.value = true
+  errorCode.value = ''
 
-  saving.value = true
-  error.value = ''
+  const def = activeProvider.value
+  const result = await validateProviderKey({
+    provider: def.id,
+    apiKey: key,
+    model: def.defaultModel,
+  })
+  validating.value = false
+
+  if (!result.valid) {
+    errorCode.value = result.code || 'invalid_key'
+    return
+  }
+
+  // Persist locally so chat requests pick it up. We deliberately don't call
+  // /api/agent/config here — that path is for the MCP-only key store. The
+  // primary chat surface reads from localStorage via buildProviderHeaders.
+  upsertProviderConfig(def.id, {
+    apiKey: key,
+    model: def.defaultModel,
+  })
+  setActiveProviderLS(def.id)
+  advance('collection')
+}
+
+async function handleCollectionSubmit() {
+  const name = collectionName.value.trim()
+  if (!name || creating.value) return
+  creating.value = true
+  collectionError.value = ''
   try {
-    // Server-side: validates the key and stores it in the agent_api_keys table
-    // so the MCP chat path can use it without per-request headers.
-    await axios.post('/api/agent/config', null, {
-      params: { provider: 'ollama_cloud', api_key: key },
-    })
-
-    // Client-side: persist for chat requests (X-AI-Key header on each call)
-    // and set as the default selected provider so the chat UI picks it up.
-    upsertProviderConfig('ollama_cloud', {
-      apiKey: key,
-      model: 'gpt-oss:120b',
-    })
-    setActiveProviderLS('ollama_cloud')
-
-    emit('complete')
+    const created = await collectionStore.createCollection({ name })
+    createdCollection.value = created
+    if (created?.id) {
+      collectionStore.setCurrentCollection(created.id)
+    }
+    advance('done')
   } catch (err) {
-    const detail = err?.response?.data?.detail
-    error.value =
-      detail ||
-      'Could not verify that key. Double-check you copied it correctly from ollama.com/settings/keys.'
+    collectionError.value =
+      err?.response?.data?.detail || 'Could not create the collection. Please try again.'
   } finally {
-    saving.value = false
+    creating.value = false
   }
 }
 
-const handleSkip = () => {
+function handleFinish() {
+  // Mark onboarding complete (Pass 1: localStorage; Pass 2 will move to app DB
+  // alongside other key/value flags introduced for §12.3).
+  try {
+    localStorage.setItem('asymptote_onboarding_completed_at', new Date().toISOString())
+  } catch { /* localStorage disabled — non-fatal */ }
+  emit('complete', {
+    providerConfigured: true,
+    collectionId: createdCollection.value?.id || null,
+  })
+}
+
+function handleSkip() {
+  // Stamp the timestamp even on skip so we don't re-show the takeover. The
+  // App-level banner reads `getConfiguredProviderIds().length` to decide
+  // whether to nudge the advisor back into Settings.
+  try {
+    localStorage.setItem('asymptote_onboarding_completed_at', new Date().toISOString())
+  } catch { /* localStorage disabled — non-fatal */ }
   emit('skip')
 }
 </script>

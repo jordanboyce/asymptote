@@ -138,6 +138,23 @@
         <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Settings</button>
       </div>
 
+      <!-- Auth error banner: 401/403 from a configured provider. Mutually
+           exclusive with the "no providers" notice above so we never stack. -->
+      <div
+        v-else-if="authErrorVisible"
+        class="flex items-center gap-3 rounded-lg bg-warning/10 border border-warning/40 px-3 py-2 flex-shrink-0"
+        role="alert"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-warning shrink-0 w-4 h-4">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"></path>
+        </svg>
+        <span class="text-sm flex-1">
+          The provider rejected your key. It may have expired or been revoked — re-enter it in Settings to keep chatting.
+        </span>
+        <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Open Settings</button>
+        <button class="btn btn-xs btn-ghost" @click="dismissAuthError" aria-label="Dismiss">Dismiss</button>
+      </div>
+
       <!-- Chat Settings Drawer -->
       <div
         v-if="settingsDrawerOpen"
@@ -166,29 +183,6 @@
 
           <!-- Content -->
           <div class="flex-1 overflow-y-auto p-4 space-y-5">
-
-            <!-- Scope -->
-            <div class="space-y-2">
-              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Scope</span>
-              <div class="flex items-center gap-1 rounded-lg border border-base-300 p-1 bg-base-200/60">
-                <button
-                  class="btn btn-xs gap-1 flex-1 transition-all"
-                  :class="scope === 'current' ? 'btn-primary' : 'btn-ghost'"
-                  @click="scope = 'current'"
-                >
-                  <Layers :size="12" />
-                  Current
-                </button>
-                <button
-                  class="btn btn-xs gap-1 flex-1 transition-all"
-                  :class="scope === 'all' ? 'btn-secondary' : 'btn-ghost'"
-                  @click="scope = 'all'"
-                >
-                  <Database :size="12" />
-                  All
-                </button>
-              </div>
-            </div>
 
             <!-- Retrieval -->
             <div class="space-y-2">
@@ -305,17 +299,41 @@
                   class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug break-words [overflow-wrap:anywhere]"
                 >{{ msg.content }}</div>
 
-                <!-- Initial "Thinking…" placeholder before any content arrives -->
-                <div v-else-if="msg.streaming && !msg.content && (!msg.structuredResults || msg.structuredResults.length === 0)"
-                  class="flex items-center gap-2 text-xs text-base-content/50 py-0.5">
+                <!-- Initial "Thinking…" placeholder.
+
+                     Expert Mode: hide the indicator as soon as the first
+                     tool-call card appears so it doesn't double up with the
+                     spinner inside the card itself.
+
+                     Basic Mode: keep it visible for the whole pre-prose phase
+                     (R8.4 — "raw tool-call output is replaced by a simple
+                     'thinking…' indicator while the AI processes"). The
+                     structured-results block below is gated on isExpertMode,
+                     so without this the bubble would render empty until the
+                     first text_delta. -->
+                <div
+                  v-else-if="
+                    msg.streaming &&
+                    !msg.content &&
+                    (
+                      !isExpertMode ||
+                      !msg.structuredResults ||
+                      msg.structuredResults.length === 0
+                    )
+                  "
+                  class="flex items-center gap-2 text-xs text-base-content/50 py-0.5"
+                >
                   <span class="loading loading-dots loading-xs text-primary"></span>
                   <span>Thinking…</span>
                 </div>
 
                 <!-- Structured query / metric results (rendered BEFORE the prose answer
                      so the synthesized response lands at the bottom of the message,
-                     where the auto-scroll anchor keeps it in view as it streams) -->
-                <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
+                     where the auto-scroll anchor keeps it in view as it streams).
+
+                     Expert Mode only — Basic Mode suppresses raw tool output
+                     per R8.4. -->
+                <div v-if="isExpertMode && msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
                   <template v-for="(sr, srIdx) in msg.structuredResults" :key="srIdx">
 
                   <!-- Thinking breadcrumb: prose the agent emitted between tool calls -->
@@ -356,8 +374,19 @@
                       </button>
                     </div>
 
-                    <!-- Error -->
-                    <div v-if="sr.error" class="px-3 py-2 text-xs text-error">{{ sr.error }}</div>
+                    <!-- Tool-call error: styled as a warning (amber), not an
+                         error (red), because mid-loop tool failures are
+                         routine — the agent typically retries with adjusted
+                         args. A truly fatal turn surfaces via the top-level
+                         red error banner instead, so reserving red for that
+                         keeps the visual hierarchy honest. -->
+                    <div
+                      v-if="sr.error"
+                      class="px-3 py-2 text-xs text-warning bg-warning/5 flex items-start gap-2"
+                    >
+                      <span class="font-semibold flex-shrink-0">retried —</span>
+                      <span class="break-all">{{ sr.error }}</span>
+                    </div>
 
                     <!-- Tabular result (query / top_holdings / etc.) -->
                     <div
@@ -544,7 +573,7 @@
                 <!-- Synthesized prose answer — streams in below the tool cards so
                      auto-scroll keeps the final response visible. -->
                 <div v-if="!msg.slashCommand && (msg.content || msg.streaming)" class="relative"
-                  :class="{ 'mt-3': msg.structuredResults && msg.structuredResults.length > 0 }">
+                  :class="{ 'mt-3': isExpertMode && msg.structuredResults && msg.structuredResults.length > 0 }">
                   <div
                     class="prose prose-sm max-w-none text-sm chat-markdown break-words [overflow-wrap:anywhere]"
                     v-html="renderAssistantMarkdown(msg.content)"
@@ -555,9 +584,10 @@
                     class="inline-block w-0.5 h-4 bg-primary align-middle ml-0.5 animate-pulse"
                     aria-hidden="true"
                   ></span>
-                  <!-- Post-tool "Synthesizing…" hint: tools finished, prose not started -->
+                  <!-- Post-tool "Synthesizing…" hint (Expert Mode only): tools finished, prose not started.
+                       In Basic Mode the single "Thinking…" indicator above stays visible through this phase. -->
                   <div
-                    v-if="msg.streaming && !msg.content && msg.structuredResults?.length > 0 && !msg.structuredResults.some(sr => sr.pending)"
+                    v-if="isExpertMode && msg.streaming && !msg.content && msg.structuredResults?.length > 0 && !msg.structuredResults.some(sr => sr.pending)"
                     class="flex items-center gap-2 text-xs text-base-content/50 py-0.5"
                   >
                     <span class="loading loading-dots loading-xs text-primary"></span>
@@ -581,7 +611,13 @@
                     <span v-if="msg.aiUsage.features_used?.includes('structured_tools')" class="badge badge-xs badge-success gap-0.5">
                       <Table2 :size="9" /> sql
                     </span>
-                    <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
+                    <span
+                      v-if="msg.scopeFilter && msg.scopeFilter.total > 0"
+                      class="badge badge-xs badge-accent badge-outline"
+                      :title="`Restricted to ${msg.scopeFilter.count} of ${msg.scopeFilter.total} sources`"
+                    >
+                      {{ msg.scopeFilter.count }}/{{ msg.scopeFilter.total }} sources
+                    </span>
                   </template>
                   <button
                     v-if="msg.content"
@@ -747,7 +783,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic } from 'lucide-vue-next'
 import { useSpeechRecognition } from '../composables/useSpeechRecognition.js'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
@@ -780,12 +816,22 @@ const loading = ref(false)
 const error = ref('')
 const inputMessage = ref('')
 const messagesEnd = ref(null)
+
+// Auth-error banner: shown when a chat-stream call comes back 401/403 from
+// the configured provider, so the advisor knows their key is bad. Sticky until
+// dismissed or until the next successful turn — non-stacking with the "no
+// providers" notice (handled via v-else-if in the template).
+const authErrorActive = ref(false)
+const authErrorDismissed = ref(false)
+const authErrorVisible = computed(
+  () => authErrorActive.value && !authErrorDismissed.value
+)
+const dismissAuthError = () => { authErrorDismissed.value = true }
 const settingsDrawerOpen = ref(false)
 
 // Chat options (persisted)
 const topK = ref(parseInt(localStorage.getItem('chat_top_k') || '5'))
 const searchMode = ref(localStorage.getItem('chat_search_mode') || 'semantic')
-const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 
 // Provider state
@@ -1135,7 +1181,6 @@ const runInlineSlashCommand = async (input) => {
     const result = await runSlashCommand(input, {
       collectionId,
       collection: collectionStore.currentCollection,
-      groupId: collectionStore.currentGroupId,
       messages: messages.value,
       providerHeaders: buildProviderHeaders(selectedProvider.value),
     })
@@ -1191,6 +1236,12 @@ const sendMessage = async () => {
       .filter(m => !m.streaming)
       .map(m => ({ role: m.role, content: m.content }))
 
+    // Chat is always scoped to the active collection. The advisor can narrow
+    // further to specific sources via the SourcesSidebar checkboxes; null
+    // means "all sources in the collection".
+    const docFilter = chatStore.getScopedDocumentIds(collectionId)
+    const documentCountAtSend = props.documentCount
+
     const response = await fetch(
       `/api/chat/stream?collection_id=${collectionId}`,
       {
@@ -1201,16 +1252,26 @@ const sendMessage = async () => {
           provider: selectedProvider.value,
           top_k: topK.value,
           mode: searchMode.value,
-          scope: collectionStore.currentGroupId ? `group:${collectionStore.currentGroupId}` : scope.value,
           rerank: rerank.value,
+          document_ids: docFilter,
         }),
       }
     )
 
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}))
+      // 401/403 indicates the stored provider key is bad/expired — surface a
+      // dedicated, non-stacking banner instead of the generic error toast so
+      // the advisor knows where to go to fix it.
+      if (response.status === 401 || response.status === 403) {
+        authErrorActive.value = true
+        authErrorDismissed.value = false
+      }
       throw new Error(errBody.detail || `HTTP ${response.status}`)
     }
+    // Reaching this point means the provider accepted the key — clear any
+    // stale auth-error banner from a previous turn.
+    authErrorActive.value = false
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
@@ -1258,7 +1319,14 @@ const sendMessage = async () => {
           for (let i = msgs.length - 1; i >= 0; i--) {
             if (msgs[i].role === 'assistant') {
               msgs[i].provider = selectedProvider.value
-              msgs[i].scope = scope.value
+              if (docFilter !== null) {
+                // Snapshot the filter at send time so the badge reflects the
+                // turn that just ran, not the live sidebar state.
+                msgs[i].scopeFilter = {
+                  count: docFilter.length,
+                  total: documentCountAtSend,
+                }
+              }
               break
             }
           }
@@ -1294,7 +1362,6 @@ const runBriefCommand = async () => {
 // Persist options
 watch(topK, (v) => localStorage.setItem('chat_top_k', String(v)))
 watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
-watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
 
 // Scroll-on-new-message only. Streaming events (text_delta/thinking/tool_start)
@@ -1313,15 +1380,24 @@ const handlePrefill = (e) => {
   })
 }
 
+// Re-read settings that may have been flipped by bootstrapAIDefaults*
+// when the user just configured their first provider. Component refs
+// were initialized once at script setup, so we sync them on the event.
+const onProvidersChanged = () => {
+  rerank.value = localStorage.getItem('chat_rerank') === 'true'
+}
+
 onMounted(() => {
   ensureValidProvider()
   scrollToBottom()
   loadPrivacyStatus()
   window.addEventListener('asymptote:prefill-chat', handlePrefill)
+  window.addEventListener('asymptote:providers-changed', onProvidersChanged)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('asymptote:prefill-chat', handlePrefill)
+  window.removeEventListener('asymptote:providers-changed', onProvidersChanged)
   if (copyResetTimer) clearTimeout(copyResetTimer)
 })
 </script>

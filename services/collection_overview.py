@@ -5,7 +5,7 @@ Used by chat, search, ask, and MCP so LLMs can answer meta-questions like
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from services.collection_service import collection_service
 from services.indexer_manager import indexer_manager
@@ -15,13 +15,22 @@ logger = logging.getLogger(__name__)
 MAX_FILENAMES = 50
 
 
-def build_collection_overview(collection_ids: List[str]) -> str:
+def build_collection_overview(
+    collection_ids: List[str],
+    document_ids: Optional[List[str]] = None,
+) -> str:
     """Build a compact, plain-text summary of one or more collections.
 
     Includes name, document count, page total, date range, and filenames so the LLM
     can answer meta-questions like "how many files are in here?" or "do you have
     anything from March?" without having to retrieve content chunks.
+
+    When ``document_ids`` is provided, the listed documents — and the counts/date
+    range derived from them — are restricted to that set. Empty list is treated
+    the same as None (no filter), so the caller can pass the raw selection
+    without special-casing.
     """
+    doc_filter = set(document_ids) if document_ids else None
     lines: List[str] = []
 
     for col_id in collection_ids:
@@ -35,6 +44,9 @@ def build_collection_overview(collection_ids: List[str]) -> str:
         except Exception as e:
             logger.warning(f"Overview: failed to list documents for '{col_id}': {e}")
             docs = []
+
+        if doc_filter is not None:
+            docs = [d for d in docs if d.get("document_id") in doc_filter]
 
         doc_count = len(docs)
         page_total = sum((d.get("total_pages") or d.get("num_pages") or 0) for d in docs)

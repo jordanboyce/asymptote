@@ -64,11 +64,6 @@
             </button>
           </div>
 
-          <!-- Hint: external recordings are welcome via the Files button -->
-          <p class="text-[11px] text-base-content/50 leading-snug -mt-0.5">
-            Past meeting recordings work too — use Files to upload Zoom, Teams, or phone voice memos. Whisper transcribes them locally.
-          </p>
-
           <!-- Recording / transcription panel -->
           <div
             v-if="isRecording || transcribing || recordError"
@@ -86,7 +81,7 @@
             </div>
             <div v-else-if="recordError" class="flex items-start gap-2">
               <span class="flex-1 text-error">{{ recordError }}</span>
-              <button class="btn btn-ghost btn-xs" @click="recordError = ''">Dismiss</button>
+              <button class="btn btn-ghost btn-xs" @click="dismissError">Dismiss</button>
             </div>
           </div>
 
@@ -218,30 +213,92 @@
         </div>
       </div>
 
-      <!-- Document list header -->
+      <!-- Portfolio snapshot card (R3 — Advisor Desktop UX) -->
+      <div
+        v-if="summary && summary.positions > 0"
+        class="px-3 py-2.5 border-b border-base-300 bg-base-200/40"
+        role="region"
+        aria-label="Portfolio snapshot for this collection"
+      >
+        <div class="flex items-baseline gap-3">
+          <div class="flex items-baseline gap-1">
+            <span class="text-sm font-semibold tabular-nums">{{ summary.positions }}</span>
+            <span class="text-[10px] uppercase tracking-wider text-base-content/50">
+              {{ summary.positions === 1 ? 'position' : 'positions' }}
+            </span>
+          </div>
+          <div v-if="summary.accounts > 0" class="flex items-baseline gap-1">
+            <span class="text-sm font-semibold tabular-nums">{{ summary.accounts }}</span>
+            <span class="text-[10px] uppercase tracking-wider text-base-content/50">
+              {{ summary.accounts === 1 ? 'account' : 'accounts' }}
+            </span>
+          </div>
+        </div>
+        <div
+          v-if="summary.most_recent_export_iso"
+          class="text-[11px] text-base-content/55 mt-1"
+          :title="`Most recent brokerage export: ${summary.most_recent_export_iso}`"
+        >
+          Most recent export: {{ formatExportDate(summary.most_recent_export_iso) }}
+        </div>
+        <button
+          class="btn btn-primary btn-sm w-full mt-2 gap-1.5"
+          @click="emit('open-brief')"
+          title="Compute a pre-meeting brief from this collection's holdings"
+        >
+          <FileText :size="13" aria-hidden="true" />
+          Generate Meeting Brief
+        </button>
+        <button
+          v-if="hasTranscript"
+          class="btn btn-outline btn-sm w-full mt-2 gap-1.5"
+          @click="emit('open-note-of-record')"
+          title="Draft a compliance Note of Record from the latest meeting transcript"
+        >
+          <FileText :size="13" aria-hidden="true" />
+          Draft Note of Record
+        </button>
+      </div>
+
+      <!-- Fallback Note of Record entry: holdings card is hidden when there
+           are no positions, but a transcript-only collection should still
+           expose the button. -->
+      <div
+        v-else-if="hasTranscript"
+        class="px-3 py-2.5 border-b border-base-300 bg-base-200/40"
+        role="region"
+        aria-label="Note of Record drafting"
+      >
+        <button
+          class="btn btn-outline btn-sm w-full gap-1.5"
+          @click="emit('open-note-of-record')"
+          title="Draft a compliance Note of Record from the latest meeting transcript"
+        >
+          <FileText :size="13" aria-hidden="true" />
+          Draft Note of Record
+        </button>
+      </div>
+
+      <!-- Document list header — checkbox toggles chat scope (NotebookLM-style) -->
       <div class="flex items-center gap-2 px-3 py-2 border-b border-base-300 flex-shrink-0">
         <input
           v-if="documents.length > 0"
           type="checkbox"
           class="checkbox checkbox-xs flex-shrink-0"
-          :checked="isAllSelected"
-          :indeterminate="selectedDocuments.length > 0 && !isAllSelected"
-          @change="toggleSelectAll"
-          :disabled="deleting"
-          title="Select all sources"
-          aria-label="Select all sources"
+          :checked="allInScope"
+          :indeterminate="someInScope && !allInScope"
+          @change="toggleAllInScope"
+          :title="allInScope ? 'Exclude all sources from chat' : 'Include all sources in chat'"
+          :aria-label="allInScope ? 'Exclude all sources from chat' : 'Include all sources in chat'"
         />
         <span class="text-xs font-semibold text-base-content/60 flex-1" id="sources-list-heading">Your Sources</span>
-        <button
-          v-if="selectedDocuments.length > 0"
-          class="btn btn-xs btn-error gap-1"
-          @click="confirmBulkDelete"
-          :disabled="deleting"
-          :aria-label="`Delete ${selectedDocuments.length} selected source${selectedDocuments.length === 1 ? '' : 's'}`"
+        <span
+          v-if="documents.length > 0 && !allInScope"
+          class="text-[11px] text-base-content/55 tabular-nums"
+          :title="`${inScopeCount} of ${documents.length} source${documents.length === 1 ? '' : 's'} included in chat`"
         >
-          <Trash2 :size="11" aria-hidden="true" />
-          {{ selectedDocuments.length }}
-        </button>
+          {{ inScopeCount }}/{{ documents.length }} in chat
+        </span>
       </div>
 
       <!-- Loading spinner -->
@@ -263,16 +320,16 @@
           v-for="doc in documents"
           :key="doc.document_id"
           class="flex items-start gap-2 px-3 py-2.5 hover:bg-base-200/60 transition-colors"
-          :class="{ 'bg-primary/5': isSelected(doc.document_id) }"
+          :class="{ 'opacity-50': !isInScope(doc.document_id) }"
         >
-          <!-- Checkbox -->
+          <!-- Checkbox — controls chat scope, not deletion -->
           <input
             type="checkbox"
             class="checkbox checkbox-xs mt-1 flex-shrink-0"
-            :checked="isSelected(doc.document_id)"
-            @change="toggleSelect(doc.document_id)"
-            :disabled="deleting"
-            :aria-label="`Select ${doc.filename}`"
+            :checked="isInScope(doc.document_id)"
+            @change="toggleScope(doc.document_id)"
+            :title="isInScope(doc.document_id) ? 'Exclude this source from chat' : 'Include this source in chat'"
+            :aria-label="`${isInScope(doc.document_id) ? 'Exclude' : 'Include'} ${doc.filename} in chat`"
           />
 
           <!-- File icon -->
@@ -358,7 +415,7 @@
 
     </div>
 
-    <!-- Delete confirmation modal (same as DocumentsTab) -->
+    <!-- Delete confirmation modal -->
     <dialog ref="deleteModal" class="modal" aria-labelledby="sidebar-delete-title">
       <div class="modal-box">
         <h3 id="sidebar-delete-title" class="font-bold text-lg">Confirm Delete</h3>
@@ -368,10 +425,9 @@
             Note: The original file will not be deleted, only the index entry.
           </span>
         </p>
-        <p v-else class="py-4">Delete <strong>{{ selectedDocuments.length }} source(s)</strong>?</p>
         <div class="modal-action">
           <button class="btn" @click="closeDeleteModal" :disabled="deleting">Cancel</button>
-          <button class="btn btn-error" @click="documentToDelete ? deleteDocument() : deleteBulk()" :disabled="deleting">
+          <button class="btn btn-error" @click="deleteDocument" :disabled="deleting || !documentToDelete">
             <span v-if="deleting" class="loading loading-spinner"></span>
             {{ deleting ? 'Deleting...' : 'Delete' }}
           </button>
@@ -498,13 +554,16 @@ import PiiReviewModal from './PiiReviewModal.vue'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useExpertiseStore } from '../stores/expertiseStore'
+import { useChatStore } from '../stores/chatStore'
 import { isExpertMode } from '../utils/expertMode'
+import { useMeetingRecorder } from '../composables/useMeetingRecorder'
 
-const emit = defineEmits(['document-deleted', 'background-job-started', 'close'])
+const emit = defineEmits(['document-deleted', 'background-job-started', 'close', 'open-brief', 'open-note-of-record'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const expertiseStore = useExpertiseStore()
+const chatStore = useChatStore()
 
 // ── PII review state ──────────────────────────────────────────────────────
 const piiModal = ref(null)
@@ -588,11 +647,16 @@ const indexResult = ref({ count: 0, chunks: 0 })
 // Document management state
 const documents = ref([])
 const loading = ref(false)
+
+// Per-Collection portfolio snapshot for the summary card. Hidden when
+// positions === 0 — see template — so a fresh empty Collection doesn't
+// render an awkward "0 positions" pill before any holdings file is added.
+const summary = ref(null)
+const summaryLoading = ref(false)
 const deleting = ref(false)
 const error = ref('')
 const deleteModal = ref(null)
 const documentToDelete = ref(null)
-const selectedDocuments = ref([])
 const chunksModal = ref(null)
 const chunkDocument = ref(null)
 const chunksLoading = ref(false)
@@ -607,165 +671,35 @@ const chunkResponse = ref({
   chunks: []
 })
 
-// Meeting recording state
-const isRecording = ref(false)
-const transcribing = ref(false)
-const transcribeStatus = ref('')
-const recordError = ref('')
-const elapsedSeconds = ref(0)
-let mediaRecorder = null
-let recordedChunks = []
-let mediaStream = null
-let elapsedTimer = null
-let cancelled = false
-
-const formattedElapsed = computed(() => {
-  const mm = String(Math.floor(elapsedSeconds.value / 60)).padStart(2, '0')
-  const ss = String(elapsedSeconds.value % 60).padStart(2, '0')
-  return `${mm}:${ss}`
-})
-
-function pickRecordingMime() {
-  // Prefer opus/webm (small, widely supported). Fall back to browser default.
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/mp4',
-  ]
-  if (typeof MediaRecorder === 'undefined') return ''
-  for (const mime of candidates) {
-    if (MediaRecorder.isTypeSupported(mime)) return mime
-  }
-  return ''
-}
-
-function stopMediaTracks() {
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(t => t.stop())
-    mediaStream = null
-  }
-  if (elapsedTimer) {
-    clearInterval(elapsedTimer)
-    elapsedTimer = null
-  }
-}
-
-async function startRecording() {
-  if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
-    recordError.value = 'Recording is not supported in this browser.'
-    return
-  }
-  if (!collectionStore.canEditCurrent) {
-    recordError.value = 'You do not have permission to add sources to this collection.'
-    return
-  }
-  recordError.value = ''
-  cancelled = false
-  recordedChunks = []
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-  } catch (err) {
-    console.error('getUserMedia failed:', err)
-    recordError.value = err?.message?.includes('Permission')
-      ? 'Microphone permission denied.'
-      : 'Could not access microphone.'
-    return
-  }
-
-  const mime = pickRecordingMime()
-  try {
-    mediaRecorder = mime
-      ? new MediaRecorder(mediaStream, { mimeType: mime })
-      : new MediaRecorder(mediaStream)
-  } catch (err) {
-    console.error('MediaRecorder init failed:', err)
-    recordError.value = 'Failed to start recorder.'
-    stopMediaTracks()
-    return
-  }
-
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) recordedChunks.push(e.data)
-  }
-  mediaRecorder.onstop = async () => {
-    stopMediaTracks()
-    if (cancelled) {
-      recordedChunks = []
-      isRecording.value = false
-      return
-    }
-    const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' })
-    recordedChunks = []
-    isRecording.value = false
-    await uploadRecording(blob)
-  }
-
-  elapsedSeconds.value = 0
-  elapsedTimer = setInterval(() => { elapsedSeconds.value += 1 }, 1000)
-  mediaRecorder.start()
-  isRecording.value = true
-}
-
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop()
-  }
-}
-
-function cancelRecording() {
-  cancelled = true
-  stopRecording()
-}
+// Meeting recording state — singleton in useMeetingRecorder so the header
+// button (App.vue) and this sidebar share the same in-flight session. The
+// sidebar only initiates recording for the *current* collection; the
+// composable pins the collection id at start so a mid-recording switch
+// doesn't misroute the transcript.
+const {
+  isRecording,
+  transcribing,
+  transcribeStatus,
+  recordError,
+  formattedElapsed,
+  toggleRecording: toggleRecorderState,
+  cancelRecording,
+  dismissError,
+  preflightAudioExtensionError,
+} = useMeetingRecorder()
 
 function toggleRecording() {
-  if (isRecording.value) stopRecording()
-  else startRecording()
+  toggleRecorderState({
+    collectionId: collectionStore.currentCollectionId,
+    canEdit: collectionStore.canEditCurrent,
+  })
 }
 
-function extensionForMime(mime) {
-  if (!mime) return 'webm'
-  if (mime.includes('webm')) return 'webm'
-  if (mime.includes('ogg')) return 'ogg'
-  if (mime.includes('mp4')) return 'm4a'
-  if (mime.includes('wav')) return 'wav'
-  return 'webm'
-}
-
-async function uploadRecording(blob) {
-  transcribing.value = true
-  transcribeStatus.value = 'Uploading recording…'
-  try {
-    const ext = extensionForMime(blob.type)
-    const now = new Date()
-    const pad = (n) => String(n).padStart(2, '0')
-    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-    const filename = `meeting-${stamp}.${ext}`
-    const file = new File([blob], filename, { type: blob.type })
-
-    const form = new FormData()
-    form.append('files', file)
-
-    transcribeStatus.value = 'Transcribing with Whisper (may take a minute)…'
-    const response = await axios.post('/documents/upload', form, {
-      params: { collection_id: collectionStore.currentCollectionId },
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-
-    indexSuccess.value = true
-    indexResult.value = {
-      count: response.data.documents_processed || 1,
-      chunks: response.data.total_chunks || 0,
-    }
-    await loadDocuments()
-    emit('document-deleted')
-  } catch (err) {
-    console.error('Recording upload failed:', err)
-    recordError.value = err.response?.data?.detail || err.message || 'Failed to transcribe recording'
-  } finally {
-    transcribing.value = false
-    transcribeStatus.value = ''
-  }
+// When a transcript lands (from this sidebar OR the header recording button)
+// refresh the document list so the new Meeting Notes file appears.
+async function handleTranscriptSaved() {
+  await loadDocuments()
+  emit('document-deleted')
 }
 
 // Injection warnings modal state
@@ -971,6 +905,18 @@ const indexFiles = async () => {
   const files = selectedPaths.value.filter(p => !p.isFolder)
   const filePaths = files.map(p => p.path)
 
+  // Pre-flight: catch audio formats Whisper won't accept (.aac, .wma, etc.)
+  // and surface a friendly message naming what *is* supported, so the
+  // advisor doesn't burn an upload round-trip on a generic "unsupported
+  // type" error. R6.5 / §7.3.
+  const audioPreflightErrors = filePaths
+    .map(p => preflightAudioExtensionError(getFilename(p)))
+    .filter(Boolean)
+  if (audioPreflightErrors.length > 0) {
+    indexError.value = audioPreflightErrors.join('\n')
+    return
+  }
+
   // Route tabular files through PII review before indexing.
   // Non-tabular files go straight through.
   const tabularPaths = filePaths.filter(p => TABULAR_EXTENSIONS.includes('.' + p.split('.').pop().toLowerCase()))
@@ -1109,29 +1055,74 @@ const indexFiles = async () => {
   }
 }
 
-// Document management functions
-const isAllSelected = computed(() => {
-  return documents.value.length > 0 && selectedDocuments.value.length === documents.value.length
+// ── Chat scope (NotebookLM-style per-source toggle) ──────────────────────
+//
+// `chatStore.getScopedDocumentIds(colId)` returns:
+//   - null  → no filter (all documents are in scope)
+//   - []    → user has explicitly excluded everything
+//   - [...] → only these document IDs are in scope
+//
+// We expose a couple of computed helpers so the template can stay simple.
+
+const scopedIds = computed(() =>
+  chatStore.getScopedDocumentIds(collectionStore.currentCollectionId)
+)
+
+const inScopeCount = computed(() => {
+  if (scopedIds.value === null) return documents.value.length
+  return scopedIds.value.length
 })
 
-const isSelected = (docId) => {
-  return selectedDocuments.value.includes(docId)
+const allInScope = computed(() => scopedIds.value === null)
+const someInScope = computed(() => inScopeCount.value > 0)
+
+// True when the collection contains at least one meeting transcript (the
+// `_find_recent_transcript` helper on the backend looks for any document
+// whose filename starts with "Meeting Notes"). Gates the "Draft Note of
+// Record" button per R7.1.
+const hasTranscript = computed(() =>
+  documents.value.some((d) => (d.filename || '').startsWith('Meeting Notes'))
+)
+
+const isInScope = (docId) => {
+  if (scopedIds.value === null) return true
+  return scopedIds.value.includes(docId)
 }
 
-const toggleSelect = (docId) => {
-  const index = selectedDocuments.value.indexOf(docId)
-  if (index > -1) {
-    selectedDocuments.value.splice(index, 1)
+const toggleScope = (docId) => {
+  const colId = collectionStore.currentCollectionId
+  if (scopedIds.value === null) {
+    // Currently "all in scope" — unchecking this doc means: include every
+    // OTHER doc, exclude this one.
+    const others = documents.value
+      .map((d) => d.document_id)
+      .filter((id) => id !== docId)
+    chatStore.setScopedDocumentIds(colId, others)
+    return
+  }
+  const current = [...scopedIds.value]
+  const idx = current.indexOf(docId)
+  if (idx >= 0) {
+    current.splice(idx, 1)
+    chatStore.setScopedDocumentIds(colId, current)
   } else {
-    selectedDocuments.value.push(docId)
+    current.push(docId)
+    // If checking this doc means everything is now in scope, collapse to
+    // null so a future doc add isn't silently excluded.
+    if (current.length >= documents.value.length) {
+      chatStore.setScopedDocumentIds(colId, null)
+    } else {
+      chatStore.setScopedDocumentIds(colId, current)
+    }
   }
 }
 
-const toggleSelectAll = () => {
-  if (isAllSelected.value) {
-    selectedDocuments.value = []
+const toggleAllInScope = () => {
+  const colId = collectionStore.currentCollectionId
+  if (allInScope.value) {
+    chatStore.setScopedDocumentIds(colId, [])
   } else {
-    selectedDocuments.value = documents.value.map(doc => doc.document_id)
+    chatStore.setScopedDocumentIds(colId, null)
   }
 }
 
@@ -1143,11 +1134,46 @@ const loadDocuments = async () => {
     const collectionId = collectionStore.currentCollectionId
     const response = await axios.get(`/documents?collection_id=${collectionId}`)
     documents.value = response.data.documents || []
+    // Drop any stale IDs from the persisted chat-scope filter and collapse
+    // to "all in scope" if the filter now covers every doc — keeps the
+    // sidebar honest after deletes / additions.
+    chatStore.reconcileScope(
+      collectionId,
+      documents.value.map((d) => d.document_id),
+    )
   } catch (err) {
     error.value = err.response?.data?.detail || 'Failed to load sources'
   } finally {
     loading.value = false
   }
+
+  loadSummary()
+}
+
+const loadSummary = async () => {
+  // Reset between collections so a stale card never lingers while the new
+  // one is loading.
+  summary.value = null
+  const collectionId = collectionStore.currentCollectionId
+  if (!collectionId) return
+  summaryLoading.value = true
+  try {
+    const response = await axios.get(`/api/collections/${collectionId}/summary`)
+    summary.value = response.data
+  } catch (err) {
+    // The card is non-essential — log and stay quiet rather than blocking
+    // the document list with an alert.
+    console.warn('Failed to load collection summary:', err)
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+const formatExportDate = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 const openChunks = async (doc) => {
@@ -1233,16 +1259,19 @@ const deleteDocument = async () => {
 
   try {
     const collectionId = collectionStore.currentCollectionId
-    await axios.delete(`/documents/${documentToDelete.value.document_id}?collection_id=${collectionId}`)
+    const deletedId = documentToDelete.value.document_id
+    await axios.delete(`/documents/${deletedId}?collection_id=${collectionId}`)
 
     documents.value = documents.value.filter(
-      doc => doc.document_id !== documentToDelete.value.document_id
+      doc => doc.document_id !== deletedId
     )
 
-    const index = selectedDocuments.value.indexOf(documentToDelete.value.document_id)
-    if (index > -1) {
-      selectedDocuments.value.splice(index, 1)
-    }
+    // Strip the deleted doc from any persisted chat-scope filter so the
+    // sidebar's "in scope" count stays accurate.
+    chatStore.reconcileScope(
+      collectionId,
+      documents.value.map((d) => d.document_id),
+    )
 
     emit('document-deleted')
   } catch (err) {
@@ -1253,41 +1282,9 @@ const deleteDocument = async () => {
   }
 }
 
-const confirmBulkDelete = () => {
-  documentToDelete.value = null
-  deleteModal.value?.showModal()
-}
-
-const deleteBulk = async () => {
-  if (selectedDocuments.value.length === 0) return
-
-  deleting.value = true
-  error.value = ''
-
-  try {
-    const collectionId = collectionStore.currentCollectionId
-    for (const docId of selectedDocuments.value) {
-      await axios.delete(`/documents/${docId}?collection_id=${collectionId}`)
-    }
-
-    documents.value = documents.value.filter(
-      doc => !selectedDocuments.value.includes(doc.document_id)
-    )
-
-    selectedDocuments.value = []
-    emit('document-deleted')
-  } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to delete sources'
-  } finally {
-    deleting.value = false
-    closeDeleteModal()
-  }
-}
-
 // Watch for collection changes
 watch(() => collectionStore.currentCollectionId, (newId) => {
   loadDocuments()
-  selectedDocuments.value = []
   loadExpertise(newId)
 })
 
@@ -1423,14 +1420,18 @@ onMounted(() => {
   loadRecentRepos()
   loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
+  window.addEventListener('asymptote:transcript-saved', handleTranscriptSaved)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
-  if (isRecording.value) {
-    cancelled = true
-    try { mediaRecorder?.stop() } catch (_) { /* ignore */ }
-  }
-  stopMediaTracks()
+  window.removeEventListener('asymptote:transcript-saved', handleTranscriptSaved)
+  // Recording lifecycle is owned by useMeetingRecorder (module singleton);
+  // intentionally not torn down here so navigating away from this surface
+  // doesn't kill an in-flight session.
 })
+
+// Exposed so parent surfaces (App.vue) can refresh the document list after
+// flows that land a new file in the collection — e.g. Note of Record save.
+defineExpose({ loadDocuments })
 </script>

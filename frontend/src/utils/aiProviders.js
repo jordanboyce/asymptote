@@ -170,6 +170,35 @@ export function getAISettings() {
   }
 }
 
+/**
+ * On the first time a provider is configured, flip rerank + synthesize ON
+ * by default — without an AI provider these toggles do nothing, but with
+ * one the experience is meaningfully better, and a new advisor shouldn't
+ * have to discover them in Settings to see the value. Idempotent: only
+ * writes when the localStorage keys are missing, so an advisor who has
+ * explicitly toggled either off keeps their preference.
+ *
+ * Returns true if defaults were written this call (useful for testing).
+ */
+export function bootstrapAIDefaultsOnFirstProvider() {
+  if (getConfiguredProviderIds().length === 0) return false
+  let wrote = false
+  if (localStorage.getItem(SETTINGS_KEY) === null) {
+    localStorage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({ rerank: true, synthesize: true }),
+    )
+    wrote = true
+  }
+  // ChatTab uses its own key (so chat-only rerank can be toggled
+  // independently of the search-tab AI defaults). Flip it the same way.
+  if (localStorage.getItem('chat_rerank') === null) {
+    localStorage.setItem('chat_rerank', 'true')
+    wrote = true
+  }
+  return wrote
+}
+
 /** Get the active provider id. */
 export function getActiveProvider() {
   return getAISettings().provider || null

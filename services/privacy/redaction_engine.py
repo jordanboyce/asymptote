@@ -129,11 +129,19 @@ class _RedactionEngine:
         self,
         text: str,
         collection_id: str | None = None,
+        exclude_entity_types: set[str] | frozenset[str] | None = None,
     ) -> RedactionResult:
         """Analyze and anonymize a single string.
 
         Returns the redacted text and a list of every entity found with its
         original value, replacement, and confidence score.
+
+        ``exclude_entity_types`` is a per-call exclusion set — entities of
+        these types are dropped before anonymization. Used by output-side
+        redaction on advisor-drafted documents (Note of Record, follow-up
+        email) to keep DATE_TIME from being scrubbed; the prompt injects
+        today's date and the model invents action-item due dates, neither
+        of which is sensitive PII.
         """
         if not text or not text.strip():
             return RedactionResult(redacted_text=text)
@@ -183,6 +191,11 @@ class _RedactionEngine:
             r for r in results
             if not (r.entity_type == "PHONE_NUMBER" and "." in text[r.start:r.end])
         ]
+
+        # Per-call exclusion (for output-side advisor-drafted documents).
+        if exclude_entity_types:
+            excl = {e.upper() for e in exclude_entity_types}
+            results = [r for r in results if r.entity_type.upper() not in excl]
 
         # Filter by allow list
         if profile.allow_list:

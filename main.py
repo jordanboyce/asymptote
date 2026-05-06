@@ -76,9 +76,14 @@ from models.schemas import (
     NotesRequest,
     FollowupRequest,
     NoteResponse,
-    CollectionGroupCreate,
-    CollectionGroupUpdate,
-    CollectionGroup,
+    SaveNoteRequest,
+    SaveNoteResponse,
+    RedactionDryRunRequest,
+    RedactionDryRunResponse,
+    RedactionSummaryResponse,
+    RedactionLogResponse,
+    RedactionLogEvent,
+    RedactionEntity,
 )
 from services.upload_service import upload_service
 from services.form_field_extractor import (
@@ -93,6 +98,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Install the in-memory diagnostics buffer so the /api/diagnostics endpoints
+# can serve recent log records to the frontend Diagnostics tab. Additive to
+# the stdout stream handler — does not reroute or suppress normal logs.
+from services.diagnostics import install as _install_diagnostics
+_install_diagnostics(level=logging.INFO)
 
 CLOUD_AI_PROVIDERS = ("anthropic", "openai", "grok", "google", "github", "ollama_cloud", "openai_compatible")
 ALL_AI_PROVIDERS = CLOUD_AI_PROVIDERS + ("ollama",)
@@ -903,6 +914,7 @@ async def search_documents(
     search_request: SearchRequest,
     request: Request,
     collection_id: str = "default",
+    scope: str = "current",
     x_ai_key: str = Header(None),
     x_ollama_model: str = Header(None),
     x_anthropic_model: str = Header(None),
@@ -915,32 +927,31 @@ async def search_documents(
 
     Args:
         search_request: Search query and options
-        collection_id: Collection to search (default: "default")
+        collection_id: Collection to search when scope='current' (default: "default")
+        scope: 'current' searches one collection; 'all' fans out across every
+            collection visible to the caller and merges by similarity score.
+            Cross-collection scope is search's job; chat is always
+            single-collection.
 
     Optionally enable AI enhancements by including 'ai' options in the request body.
-    Supports Anthropic, OpenAI, and Ollama providers.
-
-    For cloud providers (Anthropic, OpenAI):
-    - Pass API key via X-AI-Key header
-    - Set provider in request body ai.provider
-
-    For Ollama:
-    - Pass model name via X-Ollama-Model header (e.g., llama3.2)
-    - Set provider to 'ollama' in request body ai.provider
-    - No API key required
+    AI synthesis is only run in scope='current' — synthesizing across many
+    households at once isn't useful and risks blending client data.
     """
     try:
         import time
         start_time = time.time()
 
-        # Get indexer for the collection
-        try:
-            indexer = get_indexer(collection_id)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e),
-            )
+        cross_collection = scope == "all"
+
+        if not cross_collection:
+            # Validate the single-collection target up front; no-op for scope=all.
+            try:
+                get_indexer(collection_id)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=str(e),
+                )
 
         # Build AI service if AI options requested
         ai_service = None
@@ -973,50 +984,156 @@ async def search_documents(
             except Exception as e:
                 logger.warning(f"Failed to create AI service: {e}")
 
-        # Build collection overview so AI synthesis can answer meta-questions
-        # like "how many sources are in this collection?"
-        collection_overview = None
-        structured_context_str = None
-        skip_filenames: set = set()
-        if ai_service and ai_options and ai_options.synthesize:
-            try:
-                collection_overview = _build_collection_overview([collection_id])
-            except Exception as e:
-                logger.warning(f"Failed to build collection overview for search: {e}")
-
-            # Inline small CSV/XLSX tables in full so synthesis never has to
-            # rely on top-K chunk recall for numeric questions. Large tables
-            # stay out of synthesis (users should use the Chat tab which runs
-            # the SQL tool loop for those).
-            try:
-                s_tables, s_stores = collect_structured_tables([collection_id])
-                if s_tables:
-                    ctx = build_structured_context(s_tables, s_stores)
-                    if ctx["inline_block"]:
-                        structured_context_str = ctx["inline_block"]
-                        skip_filenames = ctx["inlined_filenames"]
-            except Exception as e:
-                logger.warning(f"Failed to build structured context for search: {e}")
-
-        search_result = indexer.search(
-            query=search_request.query,
-            top_k=search_request.top_k,
-            ai_service=ai_service,
-            ai_options=ai_options,
-            mode=search_request.mode,
-            semantic_weight=search_request.semantic_weight,
-            collection_overview=collection_overview,
-            structured_context=structured_context_str,
-            skip_filenames=skip_filenames or None,
-        )
-
-        results = search_result["results"]
-
-        # Add URLs to each result (include collection_id for proper routing)
         base_url = str(request.base_url).rstrip('/')
-        for result in results:
-            result.pdf_url = f"{base_url}/documents/{result.document_id}/pdf?collection_id={collection_id}"
-            result.page_url = f"{base_url}/documents/{result.document_id}/pdf?collection_id={collection_id}#page={result.page_number}"
+        synthesis_text: Optional[str] = None
+        ai_usage_data: Optional[Dict[str, Any]] = None
+
+        if cross_collection:
+            # Fan out across every collection visible to the caller. Each
+            # result is attributed to its source Collection so the UI can
+            # group/badge. Synthesis runs once over the merged top-K — same
+            # privacy posture as single-collection synthesis (the AI
+            # provider sees redacted chunk text), just over more collections.
+            all_cols = collection_service.get_all_collections()
+            collection_names_by_id: Dict[str, str] = {}
+            merged: list = []
+            for col in all_cols:
+                col_id = col["id"]
+                collection_names_by_id[col_id] = col.get("name") or col_id
+                try:
+                    col_indexer = get_indexer(col_id)
+                except Exception as e:
+                    logger.warning(f"Search: skipping collection '{col_id}': {e}")
+                    continue
+                try:
+                    col_search = col_indexer.search(
+                        query=search_request.query,
+                        top_k=search_request.top_k,
+                        mode=search_request.mode,
+                        semantic_weight=search_request.semantic_weight,
+                    )
+                except Exception as e:
+                    logger.warning(f"Search failed for collection '{col_id}': {e}")
+                    continue
+                for r in col_search["results"]:
+                    r.collection_id = col_id
+                    r.collection_name = collection_names_by_id[col_id]
+                    r.pdf_url = f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}"
+                    r.page_url = f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}"
+                    merged.append(r)
+            merged.sort(key=lambda r: r.similarity_score, reverse=True)
+            results = merged[:search_request.top_k]
+
+            if ai_service and ai_options and ai_options.synthesize and results:
+                # Only build overviews of collections that contributed at
+                # least one hit — keeps the prompt focused and short. Each
+                # collection's overview is wrapped in a header so the model
+                # knows which client a fact belongs to. Structured tables
+                # are intentionally not inlined in cross-collection
+                # synthesis — they're a single-client analysis tool.
+                contributing_ids = list({r.collection_id for r in results})
+                overview_sections = []
+                for cid in contributing_ids:
+                    cname = collection_names_by_id.get(cid, cid)
+                    try:
+                        per_col_overview = _build_collection_overview([cid])
+                    except Exception as e:
+                        logger.warning(f"Failed overview for {cid}: {e}")
+                        continue
+                    overview_sections.append(
+                        f"### Collection: {cname}\n{per_col_overview}"
+                    )
+                cross_overview = (
+                    "Search ran across multiple collections (one per client "
+                    "household). Each [Source N] citation below carries its "
+                    "originating collection. When summarizing, name the "
+                    "collection a fact came from so the advisor can tell "
+                    "which client it relates to.\n\n"
+                    + "\n\n".join(overview_sections)
+                ) if overview_sections else None
+
+                # Annotate each chunk with its collection so synthesis can
+                # cite "[Source 3, Henderson Household]" instead of bare
+                # filenames that could collide across clients.
+                synth_input = [
+                    {
+                        "filename": f"{r.filename} ({r.collection_name})",
+                        "page_number": r.page_number,
+                        "text_snippet": r.text_snippet,
+                    }
+                    for r in results
+                ]
+                try:
+                    synth_result = ai_service.synthesize_results(
+                        search_request.query,
+                        synth_input,
+                        collection_overview=cross_overview,
+                        structured_context=None,
+                    )
+                    synthesis_text = synth_result.get("synthesis")
+                    usage = synth_result.get("usage")
+                    if usage:
+                        from models.schemas import AIUsage, AIUsageDetail
+                        ai_usage_data = AIUsage(
+                            features_used=["synthesis"],
+                            synthesis=AIUsageDetail(**usage),
+                            total_input_tokens=usage["input_tokens"],
+                            total_output_tokens=usage["output_tokens"],
+                        )
+                except Exception as e:
+                    logger.warning(f"Cross-collection synthesis failed: {e}")
+        else:
+            indexer = get_indexer(collection_id)
+
+            # Build collection overview so AI synthesis can answer
+            # meta-questions like "how many sources are in this collection?"
+            collection_overview = None
+            structured_context_str = None
+            skip_filenames: set = set()
+            if ai_service and ai_options and ai_options.synthesize:
+                try:
+                    collection_overview = _build_collection_overview([collection_id])
+                except Exception as e:
+                    logger.warning(f"Failed to build collection overview for search: {e}")
+                # Inline small CSV/XLSX tables in full so synthesis never has
+                # to rely on top-K chunk recall for numeric questions.
+                try:
+                    s_tables, s_stores = collect_structured_tables([collection_id])
+                    if s_tables:
+                        ctx = build_structured_context(s_tables, s_stores)
+                        if ctx["inline_block"]:
+                            structured_context_str = ctx["inline_block"]
+                            skip_filenames = ctx["inlined_filenames"]
+                except Exception as e:
+                    logger.warning(f"Failed to build structured context for search: {e}")
+
+            search_result = indexer.search(
+                query=search_request.query,
+                top_k=search_request.top_k,
+                ai_service=ai_service,
+                ai_options=ai_options,
+                mode=search_request.mode,
+                semantic_weight=search_request.semantic_weight,
+                collection_overview=collection_overview,
+                structured_context=structured_context_str,
+                skip_filenames=skip_filenames or None,
+            )
+            results = search_result["results"]
+            synthesis_text = search_result.get("synthesis")
+            ai_usage_data = search_result.get("ai_usage")
+
+            # Resolve the active collection's display name once so the UI can
+            # show the same attribution regardless of scope.
+            try:
+                col_meta = collection_service.get_collection(collection_id)
+                col_name = col_meta.get("name") if col_meta else collection_id
+            except Exception:
+                col_name = collection_id
+            for result in results:
+                result.collection_id = collection_id
+                result.collection_name = col_name
+                result.pdf_url = f"{base_url}/documents/{result.document_id}/pdf?collection_id={collection_id}"
+                result.page_url = f"{base_url}/documents/{result.document_id}/pdf?collection_id={collection_id}#page={result.page_number}"
 
         execution_time_ms = int((time.time() - start_time) * 1000)
 
@@ -1050,8 +1167,8 @@ async def search_documents(
             query=search_request.query,
             results=results,
             total_results=len(results),
-            synthesis=search_result.get("synthesis"),
-            ai_usage=search_result.get("ai_usage"),
+            synthesis=synthesis_text,
+            ai_usage=ai_usage_data,
         )
 
     except Exception as e:
@@ -1085,8 +1202,23 @@ async def chat_stream_endpoint(
     tool_end, thinking, text_delta, sources, done, error).
     """
     import json as _json
+    import uuid as _uuid
     from services.chat.context import build_chat_turn
     from services.chat.engine import run_agentic
+    from services.diagnostics import record_chat_event as _record_diag
+
+    # Stable per-turn id so the diagnostics view can group all events that
+    # belong to the same chat turn. Generated server-side; the client never
+    # sees it.
+    turn_id = _uuid.uuid4().hex[:12]
+
+    def _diag(type_: str, payload: dict) -> None:
+        _record_diag(
+            turn_id=turn_id,
+            collection_id=collection_id,
+            type_=type_,
+            payload=payload,
+        )
 
     async def generate():
         try:
@@ -1097,6 +1229,7 @@ async def chat_stream_endpoint(
                     x_ai_base_url,
                 )
             except Exception as e:
+                _diag("error", {"stage": "provider_init", "message": str(e)})
                 yield f"data: {_json.dumps({'type':'error','message':f'Failed to initialize AI provider: {e}'})}\n\n"
                 return
 
@@ -1110,12 +1243,20 @@ async def chat_stream_endpoint(
                     max_tokens=4096,
                 )
             except ValueError as e:
+                _diag("error", {"stage": "context_build", "message": str(e)})
                 yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
                 return
             except Exception as e:
                 logger.exception("Stream chat: context build failed")
+                _diag("error", {"stage": "context_build", "message": str(e)})
                 yield f"data: {_json.dumps({'type':'error','message':f'Failed to prepare chat context: {e}'})}\n\n"
                 return
+
+            _diag("turn_start", {
+                "provider": chat_request.provider,
+                "messages": len(chat_request.messages or []),
+                "collection_id": collection_id,
+            })
 
             executed_results: list[dict] = []
             usage = {"input_tokens": 0, "output_tokens": 0, "model": None}
@@ -1129,9 +1270,11 @@ async def chat_stream_endpoint(
                         "args": {"iteration": ev.get("iteration", 0)},
                         "result": {"text": ev.get("text", "")},
                     })
+                    _diag("thinking", {"text": ev.get("text", ""), "iteration": ev.get("iteration", 0)})
                     yield f"data: {_json.dumps({'type':'thinking','text':ev.get('text','')})}\n\n"
                 elif t == "tool_start":
                     pending_args[ev["tool"]] = ev.get("args") or {}
+                    _diag("tool_start", {"tool": ev["tool"], "args": ev.get("args") or {}})
                     yield f"data: {_json.dumps({'type':'tool_start','tool':ev['tool'],'args':ev.get('args') or {}})}\n\n"
                 elif t == "tool_end":
                     executed_results.append({
@@ -1139,12 +1282,14 @@ async def chat_stream_endpoint(
                         "args": pending_args.pop(ev["tool"], {}),
                         "result": ev.get("result", {}),
                     })
+                    _diag("tool_end", {"tool": ev["tool"], "result": ev.get("result") or {}})
                     yield f"data: {_json.dumps({'type':'tool_end','tool':ev['tool'],'result':ev.get('result') or {}})}\n\n"
                 elif t == "text_delta":
                     yield f"data: {_json.dumps({'type':'text_delta','delta':ev.get('delta','')})}\n\n"
                 elif t == "done":
                     usage = ev.get("usage", usage)
                 elif t == "error":
+                    _diag("error", {"stage": "engine", "message": ev.get("message", "Unknown error")})
                     yield f"data: {_json.dumps({'type':'error','message':ev.get('message','Unknown error')})}\n\n"
                     return
 
@@ -1156,17 +1301,23 @@ async def chat_stream_endpoint(
                     "text_snippet": r.text_snippet,
                     "similarity_score": r.similarity_score,
                     "document_id": r.document_id,
-                    "pdf_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}",
-                    "page_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}",
+                    "pdf_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={collection_id}",
+                    "page_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={collection_id}#page={r.page_number}",
                 }
-                for r, col_id in prepared.filtered_results
+                for r in prepared.filtered_results
             ]
             yield f"data: {_json.dumps({'type':'sources','sources':sources_data})}\n\n"
 
+            _diag("done", {
+                "usage": usage,
+                "tool_count": sum(1 for r in executed_results if r.get("tool") and not r["tool"].startswith("_")),
+                "source_count": len(sources_data),
+            })
             yield f"data: {_json.dumps({'type':'done','usage':usage,'structured_results':executed_results})}\n\n"
 
         except Exception as e:
             logger.exception("Stream chat failed")
+            _diag("error", {"stage": "endpoint", "message": str(e)})
             yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
 
     return StreamingResponse(
@@ -3441,6 +3592,49 @@ async def generate_brief_endpoint(
     return brief
 
 
+@app.get(
+    "/api/collections/{collection_id}/summary",
+    tags=["collections"],
+    summary="Per-collection portfolio snapshot for the Collection card",
+)
+async def get_collection_summary(
+    collection_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Return positions/accounts/most-recent-export for a Collection.
+
+    Counts Positions across every brokerage table (using the ``__by_symbol``
+    rollup view when available, falling back to row count). Counts distinct
+    Accounts from the account-role column. ``most_recent_export_iso`` is the
+    most recent ``csv_schemas.created_at`` — i.e. the last brokerage export
+    that was actually ingested into a typed Holdings table — so the card
+    answers "how fresh is this Collection?" rather than "when was anything
+    last uploaded?".
+    """
+    access = sharing_service.check_collection_access(collection_id, user_id)
+    if not access:
+        raise HTTPException(status_code=403, detail="You do not have access to this collection")
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        store = indexer.vector_store.holdings_store
+    except AttributeError:
+        return {
+            "collection_id": collection_id,
+            "positions": 0,
+            "accounts": 0,
+            "most_recent_export_iso": None,
+            "source_files": [],
+        }
+
+    from services.collection_summary import compute_collection_summary
+    return compute_collection_summary(store, collection_id)
+
+
 # ── Meeting Capture endpoints (v4.5) ──────────────────────────────────────────
 
 def _build_ai_provider_from_headers(provider_name: str, ai_key: str, model: str, base_url: str):
@@ -3459,7 +3653,16 @@ def _build_ai_provider_from_headers(provider_name: str, ai_key: str, model: str,
 
 
 def _find_recent_transcript(collection_id: str) -> str:
-    """Return the text of the most recently indexed Meeting Notes doc, or empty string."""
+    """Return the text of the most recently indexed Meeting Notes doc, or empty string.
+
+    Pulls chunks directly from the metadata store keyed by document_id rather
+    than running a keyword search — the previous implementation searched for
+    the literal phrase "meeting notes transcript" against the indexer and
+    almost always returned nothing because actual transcript chunks contain
+    the meeting's content, not those keywords. The result was that
+    /notes/stream silently fell through to "(No transcript found …)" even
+    when a transcript clearly existed in the collection.
+    """
     try:
         indexer = get_indexer(collection_id)
         docs = indexer.list_documents()
@@ -3469,14 +3672,13 @@ def _find_recent_transcript(collection_id: str) -> str:
         # Most recent by filename (timestamp embedded: 'Meeting Notes - YYYY-MM-DD HH-MM.md')
         notes_docs.sort(key=lambda d: d.get("filename", ""), reverse=True)
         latest_id = notes_docs[0]["document_id"]
-        # Pull all chunks for this document
-        results = indexer.search(f"meeting notes transcript", top_k=20, mode="keyword")
-        chunks = [r.text_snippet for r in results["results"] if r.document_id == latest_id]
-        if not chunks:
-            # Fall back: search by document id
-            results2 = indexer.search(notes_docs[0]["filename"], top_k=20, mode="keyword")
-            chunks = [r.text_snippet for r in results2["results"] if r.document_id == latest_id]
-        return "\n\n".join(chunks)
+
+        metadata_store = indexer.vector_store.metadata_store
+        all_chunks = metadata_store.get_chunks_by_document(latest_id)
+        # Preserve document order so the prompt receives a coherent narrative.
+        all_chunks.sort(key=lambda c: (c.get("page_number", 0), c.get("chunk_index", 0)))
+        texts = [c.get("text", "") for c in all_chunks if c.get("text")]
+        return "\n\n".join(texts)
     except Exception as e:
         logger.warning(f"Could not find recent transcript for {collection_id}: {e}")
         return ""
@@ -3541,7 +3743,10 @@ Draft the Note of Record with these sections:
 2. **Topics Discussed** — bullet list from transcript
 3. **Recommendations Made** — from advisor chat/tool calls
 4. **Action Items** — concrete follow-ups with owner and due date
-5. **Redaction Confirmation** — state that PII was reviewed per firm policy
+
+Do NOT include any "Redaction Confirmation" or compliance-affirmation
+section — a real redaction-summary footer is stamped onto the saved file
+from the audit log, and a model-asserted affirmation would be misleading.
 
 Be concise and professional. Use bullet points where appropriate.
 """
@@ -3814,195 +4019,269 @@ async def stream_followup_email(
     )
 
 
-# ── Collection Group endpoints (v4.5) ─────────────────────────────────────────
+def _build_redaction_footer(
+    *, collection_id: str, since: str | None
+) -> str:
+    """Compose a redaction-summary footer for a saved Note of Record.
 
-@app.get("/api/groups", tags=["groups"], summary="List all collection groups")
-async def list_groups():
-    from services.app_database import app_db
-    groups = app_db.get_all_collection_groups()
-    return {"groups": groups}
+    Returns a markdown block listing entity-type counts pulled from the audit
+    log for ``collection_id`` since ``since`` (the drafting session start).
+    Empty string when redaction is disabled, the engine isn't installed, or
+    no redactions occurred — so the footer is honest about its own state
+    rather than producing a misleading "0 redactions" line on a vanilla
+    install where redaction was never running.
+    """
+    if not getattr(settings, "enable_pii_redaction", False):
+        return ""
+
+    try:
+        from services.privacy.redaction_log import redaction_log
+        summary = redaction_log.summarize(
+            collection_id=collection_id,
+            since=since,
+        )
+    except Exception as e:
+        logger.warning(f"redaction footer lookup failed for {collection_id}: {e}")
+        return ""
+
+    total = int(summary.get("total_redactions") or 0)
+    if total == 0:
+        return ""
+
+    by_type = summary.get("by_entity_type") or {}
+    rows = sorted(by_type.items(), key=lambda kv: kv[1], reverse=True)
+
+    def _humanize(name: str) -> str:
+        return " ".join(part.capitalize() for part in name.split("_"))
+
+    lines = [
+        "",
+        "---",
+        "",
+        "**PII redaction summary**",
+        "",
+        f"- Total entities redacted before AI processing: **{total}**",
+    ]
+    for entity, count in rows:
+        lines.append(f"- {_humanize(entity)}: {count}")
+    lines.append("")
+    lines.append(
+        "_Counts only — original text never left this device. "
+        "Full audit log retained locally._"
+    )
+    lines.append("")
+    return "\n".join(lines)
 
 
-@app.post("/api/groups", tags=["groups"], status_code=201, summary="Create a collection group")
-async def create_group(body: CollectionGroupCreate):
-    from services.app_database import app_db
-    group_id = app_db.create_collection_group(body.name, body.color)
-    group = app_db.get_collection_group(group_id)
-    return group
+# ── Note of Record save (R7 — Advisor Desktop UX) ────────────────────────────
+
+@app.post(
+    "/api/collections/{collection_id}/notes/save",
+    response_model=SaveNoteResponse,
+    tags=["chat"],
+    summary="Persist an advisor-edited Note of Record into the collection",
+)
+async def save_note_of_record(collection_id: str, body: SaveNoteRequest):
+    """Write the edited Note of Record as a Markdown doc and index it.
+
+    The advisor edits the streamed draft locally, then this endpoint commits
+    the final text to the collection — same pattern as the Whisper transcript
+    flow, so the saved note appears alongside other documents and is
+    immediately searchable / chat-addressable.
+    """
+    text = (body.content or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="content is empty")
+
+    indexer = get_indexer(collection_id)
+    document_dir = indexer_manager.get_documents_path(collection_id)
+    document_dir.mkdir(parents=True, exist_ok=True)
+
+    from datetime import datetime as _dt
+    now = _dt.now()
+    stamp = now.strftime("%Y-%m-%d %H-%M")
+    title_clean = (body.title or "").strip()
+    if title_clean:
+        safe = "".join(c if c.isalnum() or c in (" ", "-", "_") else "-" for c in title_clean).strip()
+        filename = f"Note of Record - {stamp} - {safe}.md"[:160]
+    else:
+        filename = f"Note of Record - {stamp}.md"
+
+    # Avoid clobbering an existing file (advisor saved twice in one minute)
+    md_path = document_dir / filename
+    counter = 2
+    while md_path.exists():
+        stem = md_path.stem
+        md_path = document_dir / f"{stem} ({counter}).md"
+        counter += 1
+
+    header = (
+        f"# Note of Record\n\n"
+        f"**Date:** {now.strftime('%Y-%m-%d %H:%M')}\n"
+        f"**Collection:** {collection_id}\n\n"
+        f"---\n\n"
+    )
+
+    # Stamp a real redaction-summary footer (R9.4 / R9.6) so the saved file
+    # has a defensible compliance trail — counts pulled from the audit log
+    # for the collection within the drafting session window. We do this here
+    # rather than in the prompt so the affirmation is grounded in actual
+    # redaction events, not a model-asserted "PII was reviewed" line.
+    footer = _build_redaction_footer(
+        collection_id=collection_id,
+        since=body.redaction_since,
+    )
+    md_path.write_text(header + text + "\n" + footer, encoding="utf-8")
+
+    try:
+        doc_metadata = indexer.index_document(md_path, md_path.name)
+    except Exception as e:
+        # Clean up the file if indexing fails so the collection doesn't
+        # accumulate orphan markdown when something goes wrong downstream.
+        try:
+            md_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        logger.exception(f"Failed to index saved Note of Record for {collection_id}")
+        raise HTTPException(status_code=500, detail=f"Failed to save note: {e}")
+
+    collection_service.add_document(collection_id, doc_metadata.document_id)
+    indexer.save_index()
+
+    return SaveNoteResponse(
+        document_id=doc_metadata.document_id,
+        filename=md_path.name,
+    )
 
 
-@app.get("/api/groups/{group_id}", tags=["groups"], summary="Get a collection group")
-async def get_group(group_id: str):
-    from services.app_database import app_db
-    group = app_db.get_collection_group(group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    return group
+# ── PII redaction surfacing (R9.1 — Advisor Desktop UX) ──────────────────────
+
+@app.get(
+    "/api/redactions/summary",
+    response_model=RedactionSummaryResponse,
+    tags=["privacy"],
+    summary="PII redaction counts grouped by entity type",
+)
+async def get_redactions_summary(
+    collection_id: str | None = None,
+    since: str | None = None,
+    session_id: str | None = None,
+):
+    """Count redactions for a collection / session / time-window.
+
+    Powers the redaction pill in the chat input bar and the redaction
+    summary footer on Notes of Record and Meeting Briefs. Only counts —
+    never original PII text — leave the box.
+    """
+    from services.privacy.redaction_log import redaction_log
+    summary = redaction_log.summarize(
+        collection_id=collection_id,
+        session_id=session_id,
+        since=since,
+    )
+    return RedactionSummaryResponse(
+        collection_id=summary.get("collection_id"),
+        since=summary.get("since"),
+        total_redactions=summary.get("total_redactions", 0),
+        by_entity_type=summary.get("by_entity_type", {}) or {},
+        by_tool=summary.get("by_tool", {}) or {},
+    )
 
 
-@app.patch("/api/groups/{group_id}", tags=["groups"], summary="Update a collection group")
-async def update_group(group_id: str, body: CollectionGroupUpdate):
-    from services.app_database import app_db
-    updated = app_db.update_collection_group(group_id, name=body.name, color=body.color)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Group not found")
-    return app_db.get_collection_group(group_id)
+@app.get(
+    "/api/redactions/log",
+    response_model=RedactionLogResponse,
+    tags=["privacy"],
+    summary="Recent PII redaction events (no original text)",
+)
+async def get_redactions_log(
+    collection_id: str | None = None,
+    session_id: str | None = None,
+    limit: int = 50,
+):
+    """Return the most recent redaction events for the requested filter.
 
+    Used by the in-chat "PII redaction active" viewer. Original PII text is
+    stripped from the response — it stays in the local audit log only.
+    """
+    from services.privacy.redaction_log import redaction_log
 
-@app.delete("/api/groups/{group_id}", tags=["groups"], status_code=204, summary="Delete a collection group")
-async def delete_group(group_id: str):
-    from services.app_database import app_db
-    deleted = app_db.delete_collection_group(group_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Group not found")
+    capped = max(1, min(int(limit), 500))
+    events = redaction_log.get_recent(
+        session_id=session_id,
+        collection_id=collection_id,
+        limit=capped,
+    )
 
-
-@app.post("/api/groups/{group_id}/members/{collection_id}", tags=["groups"], status_code=204,
-          summary="Add a collection to a group")
-async def add_group_member(group_id: str, collection_id: str):
-    from services.app_database import app_db
-    if not app_db.get_collection_group(group_id):
-        raise HTTPException(status_code=404, detail="Group not found")
-    app_db.add_collection_to_group(group_id, collection_id)
-
-
-@app.delete("/api/groups/{group_id}/members/{collection_id}", tags=["groups"], status_code=204,
-            summary="Remove a collection from a group")
-async def remove_group_member(group_id: str, collection_id: str):
-    from services.app_database import app_db
-    app_db.remove_collection_from_group(group_id, collection_id)
+    safe_events = [
+        RedactionLogEvent(
+            id=e.get("id", 0),
+            timestamp=e.get("timestamp") or "",
+            session_id=e.get("session_id") or "",
+            collection_id=e.get("collection_id"),
+            tool_name=e.get("tool_name"),
+            document_id=e.get("document_id"),
+            entity_type=e.get("entity_type") or "",
+            replacement=e.get("replacement") or "",
+            score=float(e.get("score") or 0.0),
+        )
+        for e in events
+    ]
+    return RedactionLogResponse(total_returned=len(safe_events), events=safe_events)
 
 
 @app.post(
-    "/api/groups/{group_id}/brief",
-    tags=["groups"],
-    summary="Generate a household-level brief across all collections in a group",
+    "/api/redactions/dry-run",
+    response_model=RedactionDryRunResponse,
+    tags=["privacy"],
+    summary="Preview what PII would be redacted without writing to the audit log",
 )
-async def generate_group_brief(
-    group_id: str,
-    tax_loss_min: float = 500.0,
-    concentration_pct: float = 10.0,
-    cash_drag_min: float = 50000.0,
-    top_n: int = 10,
-):
-    """Aggregate portfolio briefs for every collection in the group into a household-level brief."""
-    from services.app_database import app_db
-    from services.brief_generator import generate_meeting_brief as _gen_brief
+async def post_redactions_dry_run(body: RedactionDryRunRequest):
+    """Run the redaction engine on a string without persisting anything.
 
-    group = app_db.get_collection_group(group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
+    Used by the Note of Record drafting view to show the advisor exactly
+    what the AI provider will see before the AI call is made.
+    """
+    if not getattr(settings, "enable_pii_redaction", False):
+        # Mirror the runtime behavior: if redaction is disabled, dry-run
+        # returns the input unchanged with no entities.
+        return RedactionDryRunResponse(
+            original=body.text,
+            redacted=body.text,
+            had_pii=False,
+            entity_count=0,
+            entities=[],
+        )
 
-    thresholds = {
-        "tax_loss_min": tax_loss_min,
-        "concentration_pct": concentration_pct,
-        "cash_drag_min": cash_drag_min,
-        "top_n": top_n,
-    }
+    from services.privacy.redaction_engine import redaction_engine
 
-    briefs = []
-    for col_id in group["collection_ids"]:
-        try:
-            indexer = get_indexer(col_id)
-            store = indexer.vector_store.holdings_store
-            b = _gen_brief(store, collection_id=col_id, thresholds=thresholds)
-            briefs.append(b)
-        except Exception as e:
-            logger.warning(f"Group brief: skipping collection {col_id}: {e}")
+    if not redaction_engine.available:
+        return RedactionDryRunResponse(
+            original=body.text,
+            redacted=body.text,
+            had_pii=False,
+            entity_count=0,
+            entities=[],
+        )
 
-    if not briefs:
-        raise HTTPException(status_code=422, detail="No portfolio data found in any group member collection")
-
-    # Merge briefs into household summary
-    merged = _merge_briefs(briefs, thresholds)
-    merged["group_id"] = group_id
-    merged["group_name"] = group["name"]
-    return merged
-
-
-def _merge_briefs(briefs: list, thresholds: dict) -> dict:
-    """Combine per-collection briefs into a single household-level dict."""
-    from datetime import datetime as _dt, timezone as _tz
-
-    total_mv = sum(b.get("household_summary", {}).get("total_market_value") or 0 for b in briefs)
-    total_cb = sum(b.get("household_summary", {}).get("total_cost_basis") or 0 for b in briefs)
-    total_pnl = sum(b.get("household_summary", {}).get("total_unrealized_pnl") or 0 for b in briefs)
-
-    accounts = []
-    seen_acct = set()
-    for b in briefs:
-        for a in b.get("accounts", []):
-            key = f"{a.get('account')}|{a.get('market_value')}"
-            if key not in seen_acct:
-                seen_acct.add(key)
-                accounts.append(a)
-
-    all_positions = []
-    seen_pos = set()
-    for b in briefs:
-        for p in b.get("top_positions", []):
-            key = f"{p.get('ticker') or p.get('name')}|{round(p.get('market_value', 0))}"
-            if key not in seen_pos:
-                seen_pos.add(key)
-                all_positions.append(p)
-    all_positions.sort(key=lambda p: p.get("market_value", 0), reverse=True)
-    top_n = thresholds.get("top_n", 10)
-    top_positions = all_positions[:top_n]
-
-    # Re-compute concentration against total portfolio
-    conc_pct = thresholds.get("concentration_pct", 10.0)
-    concentration_alerts = [
-        {**p, "pct_of_portfolio": round(p.get("market_value", 0) / total_mv * 100, 2)}
-        for p in all_positions
-        if total_mv > 0 and (p.get("market_value", 0) / total_mv * 100) >= conc_pct
+    result = redaction_engine.redact_text(body.text, collection_id=body.collection_id)
+    entities = [
+        RedactionEntity(
+            entity_type=d.entity_type,
+            start=d.start,
+            end=d.end,
+            score=d.score,
+            replacement=d.replacement,
+        )
+        for d in result.details
     ]
-
-    tax_loss = []
-    seen_tax = set()
-    for b in briefs:
-        for p in b.get("tax_loss_candidates", []):
-            key = f"{p.get('ticker') or p.get('name')}|{round(p.get('unrealized_loss', 0))}"
-            if key not in seen_tax:
-                seen_tax.add(key)
-                tax_loss.append(p)
-
-    cash = []
-    seen_cash = set()
-    for b in briefs:
-        for p in b.get("cash_drag_alerts", []):
-            key = f"{p.get('name') or p.get('ticker')}|{round(p.get('market_value', 0))}"
-            if key not in seen_cash:
-                seen_cash.add(key)
-                cash.append(p)
-
-    # Merge sector allocation
-    sector_totals: dict = {}
-    for b in briefs:
-        for s in b.get("sector_allocation", []):
-            sec = s.get("sector", "Unknown")
-            sector_totals[sec] = sector_totals.get(sec, 0) + (s.get("market_value") or 0)
-    sector_allocation = [
-        {"sector": sec, "market_value": mv,
-         "weight_pct": round(mv / total_mv * 100, 2) if total_mv else 0}
-        for sec, mv in sorted(sector_totals.items(), key=lambda x: x[1], reverse=True)
-    ]
-
-    return {
-        "household_summary": {
-            "total_market_value": total_mv,
-            "total_cost_basis": total_cb,
-            "total_unrealized_pnl": total_pnl,
-        },
-        "accounts": accounts,
-        "top_positions": top_positions,
-        "concentration_alerts": concentration_alerts,
-        "tax_loss_candidates": tax_loss,
-        "cash_drag_alerts": cash,
-        "sector_allocation": sector_allocation,
-        "generated_at": _dt.now(_tz.utc).isoformat(),
-        "collection_count": len(briefs),
-    }
-
+    return RedactionDryRunResponse(
+        original=body.text,
+        redacted=result.redacted_text,
+        had_pii=result.had_pii,
+        entity_count=len(entities),
+        entities=entities,
+    )
 
 
 # ── Expertise Library endpoints ───────────────────────────────────────────────
@@ -4146,6 +4425,45 @@ async def remove_pii_blacklist_terms(
     from services.privacy.collection_blacklist import remove_terms
     updated = remove_terms(collection_id, body.terms)
     return {"collection_id": collection_id, "terms": updated}
+
+
+# ── Diagnostics endpoints ────────────────────────────────────────────────────
+# In-memory log + chat-event ring buffers. See services.diagnostics for the
+# capture mechanism. Used by the Expert-mode Diagnostics tab in the frontend
+# to view recent activity and copy structured output for sharing with AI
+# agents during development.
+
+@app.get(
+    "/api/diagnostics/logs",
+    summary="Recent in-memory log records",
+    tags=["diagnostics"],
+)
+async def get_diagnostics_logs(limit: int = 200, level: str = "INFO") -> dict:
+    from services.diagnostics import get_buffer
+    buf = get_buffer()
+    return {"logs": buf.recent_logs(limit=limit, min_level=level)}
+
+
+@app.get(
+    "/api/diagnostics/chat-events",
+    summary="Recent chat-stream events captured server-side",
+    tags=["diagnostics"],
+)
+async def get_diagnostics_chat_events(limit: int = 100) -> dict:
+    from services.diagnostics import get_buffer
+    buf = get_buffer()
+    return {"events": buf.recent_events(limit=limit)}
+
+
+@app.post(
+    "/api/diagnostics/clear",
+    summary="Clear the in-memory diagnostics buffers",
+    tags=["diagnostics"],
+)
+async def clear_diagnostics() -> dict:
+    from services.diagnostics import get_buffer
+    get_buffer().clear()
+    return {"cleared": True}
 
 
 # Redirect bare /mcp (no trailing slash) to /mcp/ so MCP clients that use the old

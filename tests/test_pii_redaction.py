@@ -345,6 +345,65 @@ class TestRedactionLog:
         assert summary["by_entity_type"]["PERSON"] == 2
         assert summary["by_entity_type"]["EMAIL_ADDRESS"] == 1
 
+    def test_summarize_filters_by_collection_and_since(self, tmp_path):
+        """`summarize` powers /api/redactions/summary — filter by collection
+        and timestamp so per-Note-of-Record footers don't leak counts from
+        unrelated drafting sessions on other collections."""
+        from datetime import datetime, timedelta, timezone
+        import sqlite3
+        from services.privacy.redaction_log import RedactionLog
+        from services.privacy.redaction_engine import RedactionDetail
+
+        log = RedactionLog(db_path=tmp_path / "test_summarize.db")
+
+        # Old event in collection-A — before our `since` cutoff
+        old = datetime.now(timezone.utc) - timedelta(hours=2)
+        with sqlite3.connect(log.db_path) as conn:
+            conn.execute(
+                "INSERT INTO redaction_log (timestamp, session_id, collection_id, "
+                "tool_name, document_id, entity_type, original_text, replacement, "
+                "start_char, end_char, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (old.isoformat(), "s1", "collection-A", "notes_output", None,
+                 "PERSON", "Old", "[PERSON]", 0, 3, 0.9),
+            )
+
+        # Recent events: 2 PERSON + 1 EMAIL_ADDRESS in collection-A
+        log.log_redactions(
+            [
+                RedactionDetail("PERSON", 0, 5, 0.9, "Alice", "[PERSON]"),
+                RedactionDetail("PERSON", 10, 13, 0.85, "Bob", "[PERSON]"),
+                RedactionDetail("EMAIL_ADDRESS", 20, 40, 0.99, "a@b.com", "[EMAIL_ADDRESS]"),
+            ],
+            session_id="s2",
+            collection_id="collection-A",
+            tool_name="notes_output",
+        )
+
+        # Cross-collection noise that must NOT be counted
+        log.log_redactions(
+            [RedactionDetail("PERSON", 0, 5, 0.9, "Eve", "[PERSON]")],
+            session_id="s3",
+            collection_id="collection-B",
+            tool_name="notes_output",
+        )
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        summary = log.summarize(collection_id="collection-A", since=cutoff)
+
+        assert summary["total_redactions"] == 3
+        assert summary["by_entity_type"]["PERSON"] == 2
+        assert summary["by_entity_type"]["EMAIL_ADDRESS"] == 1
+        assert summary["by_tool"] == {"notes_output": 3}
+        assert summary["collection_id"] == "collection-A"
+
+        # Without `since`, the old event in collection-A is included
+        unfiltered = log.summarize(collection_id="collection-A")
+        assert unfiltered["total_redactions"] == 4
+
+        # No filters at all — every collection contributes
+        all_events = log.summarize()
+        assert all_events["total_redactions"] == 5
+
 
 # ---------------------------------------------------------------------------
 # Tests: Middleware (dict walker)
@@ -445,6 +504,59 @@ class TestEndToEndRedaction:
         # Structural fields preserved
         assert redacted["collection_id"] == "default"
         assert len(redacted["results"]) == 2
+
+    def test_notes_output_preserves_dates(self, monkeypatch, tmp_path):
+        """`redact_text_for_ai` with source_label="notes_output" must not
+        scrub DATE_TIME entities — the prompt injects today's date and the
+        model invents action-item due dates, neither of which is sensitive.
+        Without this exclusion the saved note shows "Date: [DATE_TIME]".
+        """
+        from config import settings
+        monkeypatch.setattr(settings, "enable_pii_redaction", True)
+
+        # Point the audit-log singleton at a temp DB so the test doesn't
+        # write into the dev `data/` directory.
+        from services.privacy.redaction_log import RedactionLog
+        import services.privacy.redaction_log as rl_mod
+        monkeypatch.setattr(rl_mod, "redaction_log", RedactionLog(db_path=tmp_path / "rl.db"))
+
+        from services.privacy.redaction_middleware import redact_text_for_ai
+
+        # Real prose containing both a sensitive entity (PERSON) and benign
+        # dates. Only the person name should change.
+        text = (
+            "Note of Record\n"
+            "Date: 2026-05-06\n"
+            "Attendee: John Smith\n"
+            "Action item: schedule review by 2026-06-15."
+        )
+        out = redact_text_for_ai(text, collection_id="test", source_label="notes_output")
+
+        assert "2026-05-06" in out, "today's date got redacted"
+        assert "2026-06-15" in out, "action-item date got redacted"
+        # PERSON should still be scrubbed — the exclusion is DATE_TIME-only.
+        assert "John Smith" not in out
+
+    def test_mcp_path_still_redacts_dates(self, monkeypatch, tmp_path):
+        """The DATE_TIME exclusion is per-source. MCP tool output (no
+        source_label override) must keep the default behavior so dates of
+        birth in transcripts continue to be scrubbed before reaching an LLM.
+        """
+        from config import settings
+        monkeypatch.setattr(settings, "enable_pii_redaction", True)
+        from services.privacy.redaction_log import RedactionLog
+        import services.privacy.redaction_log as rl_mod
+        monkeypatch.setattr(rl_mod, "redaction_log", RedactionLog(db_path=tmp_path / "rl.db"))
+
+        from services.privacy.redaction_engine import redaction_engine
+        if not redaction_engine.available:
+            pytest.skip("Presidio not installed")
+
+        # Default redact_text call (no exclude) should still rewrite dates.
+        result = redaction_engine.redact_text("DOB 03/15/1975 of Jane Doe")
+        # The date should have been classified as DATE_TIME and rewritten.
+        date_types = {d.entity_type for d in result.details}
+        assert "DATE_TIME" in date_types
 
     def test_redaction_disabled_passthrough(self, monkeypatch):
         """When enable_pii_redaction=False, data passes through unchanged."""

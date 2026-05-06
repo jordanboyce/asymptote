@@ -110,7 +110,15 @@
                 <div v-if="getProviderModelLabel(def.id)" class="text-xs text-base-content/50 mt-0.5 truncate">{{ getProviderModelLabel(def.id) }}</div>
               </div>
               <div class="flex items-center gap-2 flex-shrink-0">
-                <span v-if="isProviderConfigured(def.id)" class="badge badge-success badge-xs">Configured</span>
+                <span
+                  v-if="isProviderConfigured(def.id) && activeProviderId === def.id"
+                  class="badge badge-primary badge-xs"
+                  title="This is the provider used for chat right now"
+                >Active</span>
+                <span
+                  v-else-if="isProviderConfigured(def.id)"
+                  class="badge badge-success badge-xs"
+                >Configured</span>
                 <span v-else class="text-base-content/35 text-xs hidden sm:block">Not set up</span>
                 <span class="text-base-content/35 text-xs">{{ expandedProvider === def.id ? '▲' : '▼' }}</span>
               </div>
@@ -189,7 +197,7 @@
                       :type="showEditKey ? 'text' : 'password'"
                       :placeholder="def.keyPlaceholder || 'API key…'"
                       class="input input-bordered input-sm join-item flex-1"
-                      @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''"
+                      @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''; editBuffer.errorCode = ''"
                     />
                     <button
                       class="btn btn-sm join-item"
@@ -217,17 +225,22 @@
                     :disabled="validatingProvider === def.id || !editBuffer.apiKey?.trim()"
                   >
                     <span v-if="validatingProvider === def.id" class="loading loading-spinner loading-xs"></span>
-                    {{ validatingProvider === def.id ? '' : 'Validate & Save' }}
+                    {{ validatingProvider === def.id ? 'Testing…' : 'Test connection' }}
                   </button>
+                  <button
+                    v-if="isProviderConfigured(def.id) && activeProviderId !== def.id"
+                    class="btn btn-sm btn-ghost"
+                    @click="setActiveProvider(def.id)"
+                    title="Use this provider for chat"
+                  >Make active</button>
                   <button
                     v-if="isProviderConfigured(def.id) && !editBuffer.keyDirty"
                     class="btn btn-sm btn-ghost text-error"
                     @click="removeProvider(def.id)"
                   >Remove</button>
-                  <span v-if="editBuffer.keyStatus === 'valid'" class="text-success text-sm font-semibold">✓ Key valid</span>
-                  <span v-else-if="editBuffer.keyStatus === 'invalid'" class="text-error text-sm font-semibold">✗ Invalid</span>
+                  <span v-if="editBuffer.keyStatus === 'valid'" class="text-success text-sm font-semibold">✓ Connection OK · saved</span>
+                  <span v-else-if="editBuffer.keyStatus === 'invalid'" class="text-error text-sm font-semibold">✗ {{ validateErrorMessage(editBuffer.errorCode) || 'Invalid' }}</span>
                   <span v-else-if="editBuffer.keyStatus === 'saved'" class="text-success text-sm font-semibold">Saved</span>
-                  <span v-if="editBuffer.keyError" class="text-error text-xs">{{ editBuffer.keyError }}</span>
                 </div>
 
                 <div v-if="editBuffer.capabilities" class="mt-2 rounded border border-base-300 bg-base-100 px-3 py-2 text-xs space-y-1">
@@ -347,8 +360,9 @@
           + Add Custom Endpoint
         </button>
 
-        <!-- AI Feature Toggles -->
-        <div v-if="configuredProviderIds.length > 0" class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm space-y-3">
+        <!-- AI Feature Toggles (expert only — these are Search-tab defaults
+             and not part of the basic-mode chat surface) -->
+        <div v-if="isExpertMode && configuredProviderIds.length > 0" class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm space-y-3">
           <div>
             <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">AI Features (Defaults)</h4>
             <p class="mt-1 text-xs text-base-content/60">Default on/off state for reranking and synthesis when you run a search. You can also toggle these live in the Search tab.</p>
@@ -912,9 +926,16 @@ import {
   upsertProviderConfig,
   removeProviderConfig,
   getAISettings,
+  getActiveProvider,
+  setActiveProviderLS,
   getConfiguredProviderIds,
   migrateLegacySettings,
+  bootstrapAIDefaultsOnFirstProvider,
 } from '../utils/aiProviders.js'
+import {
+  validateProviderKey,
+  validateErrorMessage,
+} from '../utils/validateKey.js'
 
 const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
 
@@ -1262,6 +1283,12 @@ const aiSettings = ref({ rerank: false, synthesize: false })
 // Ids of all currently-configured providers (drives AI Features visibility)
 const configuredProviderIds = computed(() => getConfiguredProviderIds())
 
+// Currently-active provider id; surfaces as the "Active" badge and gates the
+// "Make active" button. Kept as a plain ref (not a computed over localStorage)
+// because localStorage reads aren't reactive — we update it explicitly when
+// the user toggles via setActiveProvider() and on mount.
+const activeProviderId = ref(getActiveProvider() || '')
+
 // Expand/edit state
 const expandedProvider = ref(null)
 const editBuffer = ref({})
@@ -1310,7 +1337,7 @@ const toggleExpand = (id) => {
     name: cfg.name || '',
     keyDirty: false,
     keyStatus: cfg.apiKey ? 'saved' : '',
-    keyError: '',
+    errorCode: '',
     capabilities: null,
   }
   if (id === 'ollama' && ollamaCheckStatus.value === null) {
@@ -1329,36 +1356,50 @@ const validateAndSave = async (id) => {
   if (!key) return
   validatingProvider.value = id
   editBuffer.value.keyStatus = ''
-  editBuffer.value.keyError = ''
+  editBuffer.value.errorCode = ''
 
-  try {
-    const response = await axios.post('/api/ai/validate-key', null, {
-      headers: {
-        'X-AI-Key': key,
-        'X-AI-Provider': id,
-        ...(editBuffer.value.model ? { 'X-AI-Model': editBuffer.value.model } : {}),
-      },
+  const result = await validateProviderKey({
+    provider: id,
+    apiKey: key,
+    model: editBuffer.value.model || undefined,
+  })
+
+  if (result.valid) {
+    upsertProviderConfig(id, {
+      apiKey: key,
+      model: editBuffer.value.model || '',
     })
-    if (response.data.valid) {
-      upsertProviderConfig(id, {
-        apiKey: key,
-        model: editBuffer.value.model || '',
-      })
-      editBuffer.value.keyStatus = 'valid'
-      editBuffer.value.keyDirty = false
-      editBuffer.value.capabilities = response.data.capabilities || null
-    } else {
-      editBuffer.value.keyStatus = 'invalid'
-      editBuffer.value.keyError = response.data.error || ''
-      editBuffer.value.capabilities = null
+    // Auto-promote the first-configured provider to active so chat works
+    // immediately after the very first Test connection in Settings.
+    if (!activeProviderId.value) {
+      setActiveProviderLS(id)
+      activeProviderId.value = id
+      // Flip AI defaults ON before notifying listeners so SearchTab/ChatTab
+      // re-read the post-bootstrap values when they handle the event.
+      bootstrapAIDefaultsOnFirstProvider()
+      // Pull the just-flipped defaults into the live AI Features card too.
+      const refreshedAI = getAISettings()
+      aiSettings.value = {
+        rerank: !!refreshedAI.rerank,
+        synthesize: !!refreshedAI.synthesize,
+      }
+      window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
     }
-  } catch {
+    editBuffer.value.keyStatus = 'valid'
+    editBuffer.value.keyDirty = false
+    editBuffer.value.capabilities = result.capabilities || null
+  } else {
     editBuffer.value.keyStatus = 'invalid'
-    editBuffer.value.keyError = 'Request failed'
+    editBuffer.value.errorCode = result.code || 'invalid_key'
     editBuffer.value.capabilities = null
-  } finally {
-    validatingProvider.value = null
   }
+  validatingProvider.value = null
+}
+
+const setActiveProvider = (id) => {
+  setActiveProviderLS(id)
+  activeProviderId.value = id
+  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
 }
 
 const capabilityIcon = (value) => {
