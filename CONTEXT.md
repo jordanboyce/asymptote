@@ -52,6 +52,21 @@ The one-page pre-meeting document an advisor uses for a client review: household
 **Collection**
 A logical grouping of documents in Finn — e.g. all of one Household's brokerage exports plus their meeting transcripts. Each Collection has its own SQLite metadata DB and its own HoldingsStore.
 
+## Agent architecture (Skills / Connectors / Subagents)
+
+The vocabulary Anthropic uses to describe agent templates ([`anthropics/financial-services`](https://github.com/anthropics/financial-services), May 2026) maps cleanly onto Finn's architecture. Use it when describing Finn's design to anyone arriving from that ecosystem.
+
+**Skill**
+A task-shaped capability — instructions plus the tools the model needs to perform it. In Finn, the unified MCP tool registry (`services.mcp_server`, surfaced through `services.structured_chat.execute_tool_calls`) is the skill substrate. Slash commands (`/brief`, `/notes`, `/followup`, future `/tlh` / `/rebalance`) are user-facing skill entrypoints; each routes to a structured workflow built on the same tool registry.
+
+**Connector**
+Governed access to a data source. In Finn: vendor profiles (`services/ingest_profiles/`) connect to brokerage exports; `services/market_data/` connects to price / classification / corporate-events feeds; `HoldingsStore` connects to the typed lot/position layer. Finn's connectors are local-first — they ingest data into the user's own structured store rather than calling out per-query.
+
+**Subagent**
+A separate Claude (or other-provider) invocation handling a sub-task within a larger workflow. In Finn, `services.chat.engine.AgenticEngine` is the primary agent; `OneShotEngine` runs subagent-shaped one-shot completions for `/notes`, `/followup`, `/ask`. Future composite skills (Meeting Prep Agent in v4.5, the Rebalance + TLH bundle in v4.6.1) compose AgenticEngine + OneShotEngine calls.
+
+The Anthropic reference repo packages these three together as "agent templates" (e.g. their Meeting Prep Agent = a skill bundle + connectors + subagent driver). Finn's user-facing surfaces — slash commands, the brief generator, the chat tab — are the same shape, packaged for advisors instead of investment bankers.
+
 ## Architecture
 
 For the architectural vocabulary used in refactor discussions (Module, Interface, Depth, Seam, Adapter, Locality, Leverage), see the `improve-codebase-architecture` skill.

@@ -12,7 +12,7 @@
         title="View all collections"
         aria-label="Finn — view all collections"
       >
-        <img src="/icon_black.svg" alt="" class="logo-header h-5 w-5 flex-shrink-0">
+        <img :src="headerLogoSrc" alt="" class="h-5 w-5 flex-shrink-0">
         <span class="font-bold text-sm tracking-tight hidden sm:inline">Finn</span>
       </button>
 
@@ -30,41 +30,7 @@
         <span class="max-w-32 truncate text-xs">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
       </button>
 
-      <!-- Active group indicator -->
-      <button
-        v-if="collectionStore.currentGroupId"
-        class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-7 min-h-0 text-primary"
-        @click="activeTab = 'collections'"
-        :title="`Group active: ${collectionStore.currentGroup?.name}. Chat queries across all member collections.`"
-      >
-        <div
-          class="w-2 h-2 rounded-full flex-shrink-0"
-          :style="{ backgroundColor: collectionStore.currentGroup?.color || '#8b5cf6' }"
-        ></div>
-        <Users :size="10" class="opacity-70" />
-        <span class="max-w-28 truncate text-xs">{{ collectionStore.currentGroup?.name }}</span>
-        <button
-          class="ml-0.5 hover:text-error transition-colors text-base-content/50"
-          title="Clear group selection"
-          @click.stop="collectionStore.setCurrentGroup(null)"
-        >×</button>
-      </button>
-
       <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
-
-      <!-- Sources toggle (hidden on collections overview) -->
-      <button
-        v-if="!isCollectionsView"
-        class="btn btn-xs btn-ghost gap-1"
-        :class="sourcesSidebarOpen ? 'btn-active' : ''"
-        @click="sourcesSidebarOpen = !sourcesSidebarOpen"
-        title="Toggle sources panel"
-        aria-label="Toggle sources panel"
-        :aria-pressed="sourcesSidebarOpen"
-      >
-        <Library :size="14" />
-        <span class="hidden md:inline text-xs">Sources</span>
-      </button>
 
       <!-- Tabs (hidden on collections overview) -->
       <template v-if="!isCollectionsView">
@@ -118,17 +84,34 @@
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
 
-      <!-- Analysis sidebar toggle (hidden on collections overview, hidden in basic mode) -->
+      <!-- Meeting recorder (hidden on collections overview) — top-level surface
+           for R6. Shares state with the SourcesSidebar entry via
+           useMeetingRecorder, so starting from one and stopping from the
+           other is supported. -->
       <button
-        v-if="!isCollectionsView && isExpertMode"
-        class="btn btn-ghost btn-circle btn-sm"
-        :class="{ 'bg-base-300': analysisSidebarOpen }"
-        @click="analysisSidebarOpen = !analysisSidebarOpen"
-        title="Toggle analysis panel"
-        aria-label="Toggle analysis panel"
-        :aria-pressed="analysisSidebarOpen"
+        v-if="!isCollectionsView"
+        class="btn btn-ghost btn-sm gap-1.5 normal-case font-normal h-7 min-h-0"
+        :class="meetingIsRecording ? 'text-error bg-error/10 hover:bg-error/15' : meetingTranscribing ? 'text-base-content/60' : ''"
+        @click="onHeaderRecordClick"
+        :disabled="meetingTranscribing"
+        :title="meetingIsRecording ? `Recording — ${meetingElapsed}. Click to stop.` : meetingTranscribing ? 'Transcribing…' : 'Record meeting'"
+        :aria-label="meetingIsRecording ? 'Stop recording' : 'Record meeting'"
+        :aria-pressed="meetingIsRecording"
       >
-        <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
+        <span
+          v-if="meetingIsRecording"
+          class="inline-block w-2 h-2 rounded-full bg-error animate-pulse"
+          aria-hidden="true"
+        ></span>
+        <Square v-else-if="meetingTranscribing" :size="14" class="opacity-60" />
+        <Mic v-else :size="14" />
+        <span v-if="meetingIsRecording" class="hidden sm:inline tabular-nums text-xs">
+          Recording {{ meetingElapsed }}
+        </span>
+        <span v-else-if="meetingTranscribing" class="hidden sm:inline text-xs">
+          Transcribing…
+        </span>
+        <span v-else class="hidden md:inline text-xs">Record</span>
       </button>
 
       <!-- Basic / Expert toggle in header -->
@@ -160,19 +143,29 @@
     <!-- ── Body ── -->
     <div class="flex flex-1 overflow-hidden min-h-0">
 
-      <!-- Left sidebar: sources (resizable, hidden on collections overview) -->
+      <!-- Left sidebar: sources (resizable, hidden on collections overview).
+           NotebookLM-style: when collapsed, stays visible as a thin RAIL_WIDTH
+           rail of file icons so the toggle is always reachable. -->
       <aside
         v-show="!isCollectionsView"
         class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative"
         :class="isResizing ? '' : 'transition-all duration-200 ease-in-out'"
-        :style="{ width: sourcesSidebarOpen ? sidebarWidth + 'px' : '0px' }"
+        :style="{ width: (sourcesSidebarOpen ? sidebarWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
       >
-        <!-- Sidebar content fixed to sidebarWidth so it doesn't shrink during close animation -->
-        <div class="h-full flex flex-col" :style="{ width: sidebarWidth + 'px' }">
+        <!-- Inner div is sized to the *expanded* width while open and to the
+             rail width while collapsed. This keeps the full template from
+             reflowing during the close animation while letting the rail
+             content render at its natural narrow width. -->
+        <div
+          class="h-full flex flex-col"
+          :style="{ width: (sourcesSidebarOpen ? sidebarWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
+        >
           <SourcesSidebar
+            ref="sourcesSidebarRef"
+            :expanded="sourcesSidebarOpen"
             @document-deleted="handleDocumentDeleted"
             @background-job-started="showJobsDrawer = true"
-            @close="sourcesSidebarOpen = false"
+            @toggle="sourcesSidebarOpen = !sourcesSidebarOpen"
           />
         </div>
 
@@ -197,14 +190,65 @@
       <!-- Main panel -->
       <main class="flex-1 flex flex-col overflow-hidden min-w-0">
 
+        <!-- Cross-tab update banner (R10.4). Non-blocking, dismissible per
+             session. latest_known is written to data/latest_known.json by the
+             desktop launcher; the banner shows only when that file reports a
+             newer version than what's running. -->
+        <div
+          v-if="showUpdateBanner"
+          role="status"
+          class="alert bg-info/10 border border-info/30 text-sm py-2 px-3 mx-3 mt-2 flex flex-row items-center justify-between gap-3 flex-shrink-0"
+        >
+          <span>
+            A newer Finn build (<span class="font-semibold tabular-nums">{{ latestKnownVersion }}</span>) is available. You're on <span class="tabular-nums">{{ appVersion }}</span>.
+          </span>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-sm btn-primary" @click="reloadForUpdate">
+              Reload to update
+            </button>
+            <button
+              class="btn btn-sm btn-ghost"
+              aria-label="Dismiss update reminder"
+              @click="updateBannerDismissed = true"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+
         <!-- Tab content -->
         <div
           class="flex-1 min-h-0"
           :class="activeTab === 'chat' ? 'overflow-hidden p-0' : 'overflow-y-auto'"
         >
+          <ErrorBoundary :key="activeTab">
           <!-- Chat gets full height, no padding wrapper -->
-          <div v-if="activeTab === 'chat'" class="h-full p-4">
-            <ChatTab :chunk-count="stats.chunks" :document-count="stats.documents" @switch-tab="switchTab" />
+          <div v-if="activeTab === 'chat'" class="h-full p-4 flex flex-col gap-3">
+            <!-- Persistent reminder for advisors who skipped provider setup -->
+            <div
+              v-if="showProviderSetupBanner"
+              role="status"
+              class="alert bg-warning/10 border border-warning/30 text-sm py-2 flex flex-row items-center justify-between gap-3"
+            >
+              <span>
+                Finish setting up your AI provider to start chatting.
+              </span>
+              <div class="flex items-center gap-2">
+                <button class="btn btn-sm btn-primary" @click="switchTab('settings')">
+                  Open Settings
+                </button>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  aria-label="Dismiss reminder"
+                  @click="dismissProviderSetupBanner"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+            <div class="flex-1 min-h-0">
+              <ChatTab :chunk-count="stats.chunks" :document-count="stats.documents" @switch-tab="switchTab" />
+            </div>
           </div>
 
           <!-- All other tabs: padded scroll container -->
@@ -292,13 +336,6 @@
                   <div class="w-px h-5 bg-base-300/70 mx-0.5"></div>
 
                   <!-- CTA -->
-                  <button
-                    class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
-                    @click="openCreateGroupModal"
-                  >
-                    <Users :size="14" />
-                    New group
-                  </button>
                   <button
                     class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
                     @click="openCreateCollectionModal"
@@ -463,77 +500,6 @@
                 </div>
               </div>
 
-              <!-- ── Household Groups ── -->
-              <div v-if="collectionStore.groups.length > 0 || showGroupSection" class="mt-10">
-                <div class="flex items-center justify-between mb-4">
-                  <h2 class="text-sm font-semibold uppercase tracking-[0.1em] text-base-content/50">Household Groups</h2>
-                </div>
-                <div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));">
-                  <div
-                    v-for="group in collectionStore.groups"
-                    :key="group.id"
-                    class="group/grpcard relative flex flex-col gap-2 p-4 rounded-lg border transition-all cursor-pointer"
-                    :class="collectionStore.currentGroupId === group.id
-                      ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/20'
-                      : 'border-base-300/60 bg-base-100 hover:border-base-content/25'"
-                    @click="toggleGroupSelection(group.id)"
-                    :title="collectionStore.currentGroupId === group.id ? 'Deselect group' : 'Select group for cross-account queries'"
-                  >
-                    <div class="flex items-center gap-2 min-w-0">
-                      <div class="w-3 h-3 rounded-full flex-shrink-0" :style="{ backgroundColor: group.color }"></div>
-                      <span class="font-medium text-sm truncate">{{ group.name }}</span>
-                      <span v-if="collectionStore.currentGroupId === group.id" class="ml-auto text-[10px] uppercase tracking-wider font-semibold text-primary flex-shrink-0">Active</span>
-                    </div>
-                    <div class="text-xs text-base-content/50">
-                      {{ group.collection_ids.length }} collection{{ group.collection_ids.length !== 1 ? 's' : '' }}
-                    </div>
-                    <!-- Member chips -->
-                    <div class="flex flex-wrap gap-1 mt-1">
-                      <span
-                        v-for="colId in group.collection_ids"
-                        :key="colId"
-                        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-base-200 text-base-content/70"
-                      >
-                        <div
-                          class="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                          :style="{ backgroundColor: collectionById(colId)?.color || '#888' }"
-                        ></div>
-                        {{ collectionById(colId)?.name || colId }}
-                        <button
-                          class="ml-0.5 hover:text-error transition-colors"
-                          title="Remove from group"
-                          @click.stop="collectionStore.removeCollectionFromGroup(group.id, colId)"
-                        >×</button>
-                      </span>
-                    </div>
-                    <!-- Add collection dropdown -->
-                    <div class="dropdown" @click.stop>
-                      <label tabindex="0" class="btn btn-xs btn-ghost gap-1 w-full justify-start mt-1 text-base-content/50 hover:text-base-content">
-                        <Plus :size="11" />Add collection
-                      </label>
-                      <ul tabindex="0" class="dropdown-content z-50 menu p-1 shadow bg-base-100 border border-base-300 rounded-box w-48 max-h-48 overflow-y-auto">
-                        <li v-for="col in collectionsNotInGroup(group)" :key="col.id">
-                          <a class="text-sm" @click="collectionStore.addCollectionToGroup(group.id, col.id)">
-                            <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: col.color }"></div>
-                            {{ col.name }}
-                          </a>
-                        </li>
-                        <li v-if="collectionsNotInGroup(group).length === 0">
-                          <span class="text-xs text-base-content/40 px-2">All collections added</span>
-                        </li>
-                      </ul>
-                    </div>
-                    <!-- Delete group button -->
-                    <button
-                      class="absolute top-2 right-2 btn btn-ghost btn-xs btn-square opacity-0 group-hover/grpcard:opacity-100 hover:text-error transition-all"
-                      title="Delete group"
-                      @click.stop="confirmDeleteGroup(group)"
-                    >
-                      <Trash2 :size="12" />
-                    </button>
-                  </div>
-                </div>
-              </div>
             </div>
 
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
@@ -541,18 +507,23 @@
             <MCPTab v-if="activeTab === 'mcp'" />
             <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
             <TokenizerTab v-if="activeTab === 'tokenizer'" />
-            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
+            <DiagnosticsTab v-if="activeTab === 'diagnostics'" />
+            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @search-tab-toggled="onSearchTabToggled" />
           </div>
+          </ErrorBoundary>
         </div>
 
       </main>
 
-      <!-- Right sidebar: analysis (resizable, hidden on collections overview, hidden in basic mode) -->
+      <!-- Right sidebar: Studio (resizable, hidden on collections overview).
+           Visible to all users — the primary tools (Brief, Note of Record,
+           Applied Expertise) live here so the left Sources panel stays
+           single-purpose, NotebookLM-style. -->
       <aside
-        v-show="!isCollectionsView && isExpertMode"
+        v-show="!isCollectionsView"
         class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative border-l border-base-300"
         :class="isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out'"
-        :style="{ width: analysisSidebarOpen ? analysisWidth + 'px' : '0px' }"
+        :style="{ width: (analysisSidebarOpen ? analysisWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
       >
         <!-- Drag handle (on the LEFT edge of the right sidebar) -->
         <div
@@ -570,10 +541,17 @@
           </div>
         </div>
 
-        <div class="h-full flex flex-col" :style="{ width: analysisWidth + 'px' }">
+        <div
+          class="h-full flex flex-col"
+          :style="{ width: (analysisSidebarOpen ? analysisWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
+        >
           <AnalysisSidebar
-            @close="analysisSidebarOpen = false"
+            ref="analysisSidebarRef"
+            :expanded="analysisSidebarOpen"
+            @toggle="analysisSidebarOpen = !analysisSidebarOpen"
             @send-to-chat="handleSendToChat"
+            @open-brief="openBriefModal"
+            @open-note-of-record="openNoteOfRecordModal"
           />
         </div>
       </aside>
@@ -621,6 +599,17 @@
       </template>
 
       <div class="flex-1"></div>
+
+      <button
+        class="flex items-center gap-1.5 hover:text-base-content transition-colors"
+        @click="showFeedbackModal = true"
+        title="Report an issue or send feedback"
+        aria-label="Report an issue"
+      >
+        <Bug :size="11" aria-hidden="true" />
+        <span>Report issue</span>
+      </button>
+      <span class="w-px h-3 bg-base-300" aria-hidden="true"></span>
 
       <!-- Stats moved here from the header for breathing room -->
       <span class="hidden md:inline tabular-nums">
@@ -876,50 +865,6 @@
       </form>
     </dialog>
 
-    <!-- Create Group Modal -->
-    <dialog class="modal" :class="{ 'modal-open': showGroupModal }" aria-labelledby="create-group-title">
-      <div class="modal-box">
-        <h3 id="create-group-title" class="font-bold text-lg mb-4">Create Household Group</h3>
-        <p class="text-sm text-base-content/60 mb-4">Groups let you query across multiple collections at once — e.g. all accounts for a household.</p>
-        <div class="form-control mb-3">
-          <label class="label"><span class="label-text">Group name</span></label>
-          <input
-            v-model="newGroupName"
-            type="text"
-            class="input input-bordered"
-            placeholder="e.g. Henderson Household"
-            @keyup.enter="createGroup"
-            autofocus
-          />
-        </div>
-        <div class="form-control mb-4">
-          <label class="label"><span class="label-text">Color</span></label>
-          <input v-model="newGroupColor" type="color" class="input input-bordered h-10 w-24 p-1 cursor-pointer" />
-        </div>
-        <div class="modal-action">
-          <button class="btn btn-ghost" @click="showGroupModal = false" :disabled="creatingGroup">Cancel</button>
-          <button class="btn btn-primary" @click="createGroup" :disabled="creatingGroup || !newGroupName.trim()">
-            <span v-if="creatingGroup" class="loading loading-spinner loading-sm"></span>
-            Create Group
-          </button>
-        </div>
-      </div>
-      <form method="dialog" class="modal-backdrop"><button @click="showGroupModal = false">close</button></form>
-    </dialog>
-
-    <!-- Delete Group Confirmation Modal -->
-    <dialog class="modal" :class="{ 'modal-open': !!groupToDelete }">
-      <div class="modal-box">
-        <h3 class="font-bold text-lg text-error mb-2">Delete Group</h3>
-        <p class="mb-4">Delete group <strong>{{ groupToDelete?.name }}</strong>? This only removes the grouping — the collections themselves are not affected.</p>
-        <div class="modal-action">
-          <button class="btn btn-ghost" @click="groupToDelete = null">Cancel</button>
-          <button class="btn btn-error" @click="deleteGroupConfirmed">Delete Group</button>
-        </div>
-      </div>
-      <form method="dialog" class="modal-backdrop"><button @click="groupToDelete = null">close</button></form>
-    </dialog>
-
     <!-- Share Modal -->
     <ShareModal
       :visible="showShareModal"
@@ -934,6 +879,39 @@
       :show="showOnboarding"
       @complete="handleOnboardingComplete"
       @skip="handleOnboardingSkip"
+    />
+
+    <!-- 7-day welcome-back card (R10.7). Shown once on launch when the previous
+         session was 7+ days ago. /api/version returns the days-since BEFORE
+         /health writes the new last_active_at, so the value reflects the gap
+         since the last session, not zero. -->
+    <WelcomeBackCard
+      :show="showWelcomeBackCard"
+      :days="daysSinceLastActive"
+      @dismiss="dismissWelcomeBack"
+    />
+
+    <!-- Meeting Brief modal (R4 — Advisor Desktop UX) -->
+    <BriefModal
+      ref="briefModal"
+      :collection-id="collectionStore.currentCollectionId || ''"
+      :collection-name="briefCollectionName"
+    />
+
+    <!-- Note of Record drafting modal (R7 — Advisor Desktop UX) -->
+    <NoteOfRecordModal
+      ref="noteOfRecordModal"
+      :collection-id="collectionStore.currentCollectionId || ''"
+      :collection-name="briefCollectionName"
+      @saved="handleNoteOfRecordSaved"
+    />
+
+    <!-- User feedback / issue-report modal -->
+    <FeedbackModal
+      :open="showFeedbackModal"
+      :app-route="activeTab"
+      :collection-id="collectionStore.currentCollectionId || ''"
+      @close="showFeedbackModal = false"
     />
 
     <!-- Background Jobs Sidebar Drawer -->
@@ -1066,15 +1044,22 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, FileSearch, MessageSquare, Hash, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug } from 'lucide-vue-next'
 import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
+import { useMeetingRecorder } from './composables/useMeetingRecorder.js'
+import { useThemeIcon } from './composables/useThemeIcon.js'
 
-const chatTabEnabled = ref(true)
+// Header logo: dark icon on light themes, light icon on dark themes. The
+// composable subscribes to data-theme changes on <html> so the swap is live.
+const { src: headerLogoSrc } = useThemeIcon('/icon_light.svg', '/icon_dark.svg')
+
+// Chat is the primary advisor surface and always renders. Search is the
+// legacy retrieval-only tab and can be hidden via Settings → UI Features.
+const searchTabEnabled = ref(true)
 
 const tabs = computed(() => {
-  const t = []
-  if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
-  t.push({ id: 'search', label: 'Search', icon: Search })
+  const t = [{ id: 'chat', label: 'Chat', icon: MessageSquare }]
+  if (searchTabEnabled.value) t.push({ id: 'search', label: 'Search', icon: Search })
   if (isExpertMode.value) t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   return t
 })
@@ -1083,19 +1068,27 @@ const toolTabs = [
   { id: 'mcp', label: 'MCP Server', icon: Plug },
   { id: 'ocr', label: 'OCR Preview', icon: FileSearch },
   { id: 'tokenizer', label: 'Token Visualizer', icon: Hash },
+  { id: 'diagnostics', label: 'Diagnostics', icon: Activity },
 ]
 import SearchTab from './components/SearchTab.vue'
 import SourcesSidebar from './components/SourcesSidebar.vue'
 import AnalysisSidebar from './components/AnalysisSidebar.vue'
 import OCRPlaygroundTab from './components/OCRPlaygroundTab.vue'
 import TokenizerTab from './components/TokenizerTab.vue'
+import DiagnosticsTab from './components/DiagnosticsTab.vue'
 import ChatTab from './components/ChatTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
 import MCPTab from './components/MCPTab.vue'
 import ShareModal from './components/ShareModal.vue'
 import ExpertiseLibrary from './components/ExpertiseLibrary.vue'
 import WelcomeOnboarding from './components/WelcomeOnboarding.vue'
-import { getConfiguredProviderIds } from './utils/aiProviders.js'
+import BriefModal from './components/BriefModal.vue'
+import FeedbackModal from './components/FeedbackModal.vue'
+import NoteOfRecordModal from './components/NoteOfRecordModal.vue'
+import ErrorBoundary from './components/ErrorBoundary.vue'
+import WelcomeBackCard from './components/WelcomeBackCard.vue'
+import { isUpdateAvailable } from './utils/version.js'
+import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
@@ -1106,12 +1099,60 @@ const searchStore = useSearchStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const userStore = useUserStore()
 
+// ── Meeting recorder (R6) ────────────────────────────────────────────────────
+// Shared singleton with SourcesSidebar. Refs are destructured so template
+// bindings are top-level and Vue auto-unwraps them.
+const {
+  isRecording: meetingIsRecording,
+  transcribing: meetingTranscribing,
+  formattedElapsed: meetingElapsed,
+  toggleRecording: toggleMeetingRecording,
+} = useMeetingRecorder()
+
+const onHeaderRecordClick = () => {
+  toggleMeetingRecording({
+    collectionId: collectionStore.currentCollectionId,
+    canEdit: collectionStore.canEditCurrent,
+  })
+}
+
+// Favicon swap during recording — gives the advisor a recording cue from any
+// browser tab, including ones backgrounded behind a Zoom/Teams window. Set
+// once on mount, then toggled on isRecording. The original icon path comes
+// from index.html (`/icon_light.svg`); we cache it on first run.
+const RECORDING_FAVICON =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+    '<circle cx="16" cy="16" r="13" fill="%23dc2626"/>' +
+    '<circle cx="16" cy="16" r="5" fill="%23ffffff"/>' +
+    '</svg>'
+  )
+let originalFaviconHref = null
+
+const setFavicon = (href) => {
+  const link = document.querySelector('link[rel="icon"]')
+  if (!link) return
+  if (originalFaviconHref === null) originalFaviconHref = link.getAttribute('href')
+  link.setAttribute('href', href)
+}
+
+watch(meetingIsRecording, (recording) => {
+  if (recording) {
+    setFavicon(RECORDING_FAVICON)
+    document.title = '● Recording — Finn'
+  } else {
+    if (originalFaviconHref) setFavicon(originalFaviconHref)
+    document.title = 'Finn'
+  }
+})
+
 const activeTab = ref('chat')
-const currentTheme = ref('light')
+const currentTheme = ref('corporate')
 
 // In basic mode, expertise/MCP/OCR/tokenizer are hidden — bounce back to chat
 // if the user toggles to basic while one of those tabs is active.
-const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'ocr', 'tokenizer']
+const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'ocr', 'tokenizer', 'diagnostics']
 watch(isExpertMode, (expert) => {
   if (!expert && BASIC_HIDDEN_TABS.includes(activeTab.value)) {
     activeTab.value = 'chat'
@@ -1121,6 +1162,9 @@ watch(isExpertMode, (expert) => {
 // Resizable sidebar
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 600
+// Width of the always-visible rail when a sidebar is collapsed. Matches the
+// w-11 (44px) used inside SourcesSidebar/AnalysisSidebar rail mode.
+const SIDEBAR_RAIL_WIDTH = 44
 const sidebarWidth = ref(parseInt(localStorage.getItem('sidebar_width') || '320'))
 const isResizing = ref(false)
 
@@ -1197,11 +1241,10 @@ const footerActiveJob = computed(() =>
 
 // Forward an Analysis-sidebar action into the chat input.
 const handleSendToChat = (prompt) => {
-  if (!chatTabEnabled.value) return
   activeTab.value = 'chat'
   // Wait one tick so ChatTab is mounted before we deliver the prompt.
   setTimeout(() => {
-    window.dispatchEvent(new CustomEvent('asymptote:prefill-chat', { detail: { prompt } }))
+    window.dispatchEvent(new CustomEvent('finn:prefill-chat', { detail: { prompt } }))
   }, 50)
 }
 
@@ -1234,33 +1277,123 @@ const shareCollectionName = ref('')
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
 
+// Feedback / issue-report modal state — toggled from the footer.
+const showFeedbackModal = ref(false)
+
 // First-run onboarding: a full-screen takeover shown when the advisor has
 // never configured an AI provider. Resolves the "you installed the app but
 // nothing works until you curl an endpoint" problem we hit earlier.
 const showOnboarding = ref(false)
 
-const checkOnboardingNeeded = () => {
-  // If any provider is already configured in localStorage, skip onboarding.
-  // We intentionally don't also check server-side embedding keys — the
-  // primary gate is "can this advisor have a chat conversation yet."
-  // Advisors who pre-configured a chat provider via another path (e.g. the
-  // MCP setup flow) shouldn't be blocked by this screen.
-  showOnboarding.value = getConfiguredProviderIds().length === 0
+// Banner shown on the Chat tab when an advisor finished or skipped onboarding
+// without configuring an AI provider. Tracked as an explicit ref (rather than
+// derived from localStorage on the fly) because localStorage is not a Vue
+// reactive source — the banner needs to flip when handlers run.
+const providerSetupBannerDismissed = ref(false)
+const providerSetupBannerActive = ref(false)
+const showProviderSetupBanner = computed(
+  () => providerSetupBannerActive.value && !providerSetupBannerDismissed.value
+)
+
+const dismissProviderSetupBanner = () => {
+  providerSetupBannerDismissed.value = true
 }
 
-const handleOnboardingComplete = () => {
+function hasCompletedOnboarding() {
+  return !!localStorage.getItem('finn_onboarding_completed_at')
+}
+
+// ── Update banner + welcome-back card (R10.4 / R10.7) ─────────────────────
+// Populated by loadVersionInfo() on mount, called before the first /health
+// ping so the days-since reflects the previous session.
+const appVersion = ref('')
+const latestKnownVersion = ref(null)
+const updateBannerDismissed = ref(false)
+const daysSinceLastActive = ref(null)
+const welcomeBackDismissed = ref(false)
+
+const showUpdateBanner = computed(() => {
+  if (updateBannerDismissed.value) return false
+  return isUpdateAvailable(appVersion.value, latestKnownVersion.value)
+})
+
+const showWelcomeBackCard = computed(() => {
+  if (welcomeBackDismissed.value) return false
+  if (showOnboarding.value) return false  // never stack with onboarding takeover
+  const d = daysSinceLastActive.value
+  return typeof d === 'number' && d >= 7
+})
+
+const dismissWelcomeBack = () => {
+  welcomeBackDismissed.value = true
+}
+
+const reloadForUpdate = () => {
+  window.location.reload()
+}
+
+const loadVersionInfo = async () => {
+  try {
+    const { data } = await axios.get('/api/version')
+    appVersion.value = data?.version || ''
+    latestKnownVersion.value = data?.latest_known || null
+    daysSinceLastActive.value = typeof data?.days_since_last_active === 'number'
+      ? data.days_since_last_active
+      : null
+  } catch (err) {
+    // Non-fatal — banner stays hidden, welcome-back stays hidden. We don't
+    // want a backend hiccup at boot to gate the entire UI.
+    console.debug('Could not load /api/version:', err)
+  }
+}
+
+function refreshProviderBannerState() {
+  providerSetupBannerActive.value =
+    hasCompletedOnboarding() && getConfiguredProviderIds().length === 0
+}
+
+const checkOnboardingNeeded = () => {
+  // Show the takeover only when both (a) no provider is configured AND (b) the
+  // advisor has not yet seen onboarding. If they completed or explicitly
+  // skipped, we surface the persistent banner on Chat instead — never re-show
+  // the full-screen takeover on subsequent launches.
+  showOnboarding.value =
+    !hasCompletedOnboarding() && getConfiguredProviderIds().length === 0
+  refreshProviderBannerState()
+}
+
+const handleOnboardingComplete = (payload = {}) => {
   showOnboarding.value = false
+  // If the advisor created a first collection during onboarding, activate it
+  // now — the createCollection call already pushed it into the store, so we
+  // just need to flip currentCollectionId.
+  if (payload.collectionId) {
+    collectionStore.setCurrentCollection(payload.collectionId)
+  }
+  // Land on the Chat tab so the advisor's first action is the primary surface.
+  activeTab.value = 'chat'
+  refreshProviderBannerState()
+  // Flip AI defaults ON before notifying listeners — a first-time advisor's
+  // chat/search should behave like an AI-augmented tool out of the gate.
+  // Bootstrap is idempotent and only writes when the keys are absent.
+  bootstrapAIDefaultsOnFirstProvider()
   // Nudge any in-flight consumers of the provider config (ChatTab etc.)
   // to refresh their "configured providers" computed state. Vue's reactivity
   // doesn't cover localStorage, so dispatch a synthetic event the
   // components can listen to — or simply rely on re-mount on next tab
   // switch. For now a page-agnostic event is cheapest.
-  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
+  window.dispatchEvent(new CustomEvent('finn:providers-changed'))
 }
 
 const handleOnboardingSkip = () => {
   showOnboarding.value = false
-  activeTab.value = 'settings'
+  // If the user skipped without configuring a provider, the Chat banner will
+  // surface the prompt to finish setup. Drop them on Chat rather than Settings
+  // so they see the rest of the app first; the banner is the call to action.
+  activeTab.value = 'chat'
+  refreshProviderBannerState()
+  bootstrapAIDefaultsOnFirstProvider()
+  window.dispatchEvent(new CustomEvent('finn:providers-changed'))
 }
 
 // Collections overview: view, search, sort
@@ -1318,63 +1451,30 @@ const filteredCollections = computed(() => {
   return list
 })
 
-// ── Group helpers ───────────────────────────────────────────────────────────
-
-const showGroupSection = computed(() => collectionStore.groups.length > 0)
-
-const collectionById = (id) => collectionStore.collections.find(c => c.id === id) || null
-
-const collectionsNotInGroup = (group) =>
-  collectionStore.collections.filter(c => !group.collection_ids.includes(c.id))
-
-const toggleGroupSelection = (groupId) => {
-  collectionStore.setCurrentGroup(collectionStore.currentGroupId === groupId ? null : groupId)
+// Legacy theme values that need to map to the two we ship today.
+// Anything not in this map (e.g. cupcake, dracula, nord from older builds)
+// is treated as "no explicit pref" and resolved from the OS color scheme.
+const LEGACY_THEME_MAP = {
+  light: 'corporate',
+  dark: 'business',
+  corporate: 'corporate',
+  business: 'business',
 }
 
-// Create group modal
-const showGroupModal = ref(false)
-const newGroupName = ref('')
-const newGroupColor = ref('#8b5cf6')
-const creatingGroup = ref(false)
-
-const openCreateGroupModal = () => {
-  newGroupName.value = ''
-  newGroupColor.value = '#8b5cf6'
-  showGroupModal.value = true
-}
-
-const createGroup = async () => {
-  if (!newGroupName.value.trim()) return
-  creatingGroup.value = true
-  try {
-    await collectionStore.createGroup(newGroupName.value.trim(), newGroupColor.value)
-    showGroupModal.value = false
-  } catch (err) {
-    console.error('Failed to create group:', err)
-  } finally {
-    creatingGroup.value = false
-  }
-}
-
-// Delete group confirmation
-const groupToDelete = ref(null)
-const confirmDeleteGroup = (group) => { groupToDelete.value = group }
-const deleteGroupConfirmed = async () => {
-  if (!groupToDelete.value) return
-  await collectionStore.deleteGroup(groupToDelete.value.id)
-  groupToDelete.value = null
+const resolveTheme = (raw) => {
+  if (raw && LEGACY_THEME_MAP[raw]) return LEGACY_THEME_MAP[raw]
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+  return prefersDark ? 'business' : 'corporate'
 }
 
 const updateThemeFromStorage = () => {
-  const savedTheme = localStorage.getItem('theme')
-  if (savedTheme) {
-    currentTheme.value = savedTheme
-    document.documentElement.setAttribute('data-theme', savedTheme)
-  } else {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    currentTheme.value = prefersDark ? 'dark' : 'light'
-    document.documentElement.setAttribute('data-theme', currentTheme.value)
-  }
+  const saved = localStorage.getItem('theme')
+  const resolved = resolveTheme(saved)
+  // Persist the migrated value so SettingsTab and the next boot see the
+  // current theme name, not the legacy one.
+  if (saved !== resolved) localStorage.setItem('theme', resolved)
+  currentTheme.value = resolved
+  document.documentElement.setAttribute('data-theme', resolved)
 }
 
 const loadStats = async () => {
@@ -1394,11 +1494,37 @@ const loadStats = async () => {
 }
 
 const handleDocumentDeleted = async () => {
-  // Reload both stats and collections list (for document_count in dropdown)
+  // Reload stats, collections list (for document_count in dropdown), and the
+  // Studio panel's slim document/summary copies so the snapshot card and NoR
+  // nudge stay in sync with whatever just changed in Sources.
+  analysisSidebarRef.value?.loadDocuments?.()
+  analysisSidebarRef.value?.loadSummary?.()
   await Promise.all([
     loadStats(),
     collectionStore.loadCollections()
   ])
+}
+
+// Meeting Brief modal (R4 — Advisor Desktop UX)
+const briefModal = ref(null)
+const briefCollectionName = computed(() => collectionStore.currentCollection?.name || '')
+const openBriefModal = () => {
+  briefModal.value?.open()
+}
+
+// Note of Record drafting modal (R7 — Advisor Desktop UX)
+const noteOfRecordModal = ref(null)
+const sourcesSidebarRef = ref(null)
+const analysisSidebarRef = ref(null)
+const openNoteOfRecordModal = () => {
+  noteOfRecordModal.value?.open()
+}
+// After saving, refresh both sidebars' document lists so the new
+// "Note of Record - …" file appears alongside the source it was drafted from
+// and the Studio nudge banner clears.
+const handleNoteOfRecordSaved = () => {
+  sourcesSidebarRef.value?.loadDocuments?.()
+  analysisSidebarRef.value?.loadDocuments?.()
 }
 
 const handleDataCleared = async () => {
@@ -1409,10 +1535,10 @@ const handleDataCleared = async () => {
   ])
 }
 
-const onChatTabToggled = (enabled) => {
-  chatTabEnabled.value = enabled
-  if (!enabled && activeTab.value === 'chat') {
-    activeTab.value = 'search'
+const onSearchTabToggled = (enabled) => {
+  searchTabEnabled.value = enabled
+  if (!enabled && activeTab.value === 'search') {
+    activeTab.value = 'chat'
   }
 }
 
@@ -1426,7 +1552,7 @@ const selectCollection = (collectionId) => {
 
 const selectCollectionAndNavigate = (collectionId) => {
   collectionStore.setCurrentCollection(collectionId)
-  activeTab.value = chatTabEnabled.value ? 'chat' : 'search'
+  activeTab.value = 'chat'
 }
 
 const openCreateCollectionModal = () => {
@@ -1577,21 +1703,31 @@ onMounted(async () => {
   // the screen paints immediately — the rest of the boot continues behind it.
   checkOnboardingNeeded()
 
+  // Existing-user backfill: if a provider is already configured but the
+  // advisor never opened Settings to flip the rerank/synthesize toggles,
+  // turn them on so chat/search behave like an AI-augmented tool out of
+  // the gate. No-op for advisors who've explicitly toggled either off.
+  bootstrapAIDefaultsOnFirstProvider()
+
+  // Pull /api/version before the first /health call so days_since_last_active
+  // reflects the previous session, not zero. /health stamps the new
+  // last_active_at, so any later read would return ~0.
+  await loadVersionInfo()
+
   // Load UI feature flags from server config
   try {
     const cfgResp = await axios.get('/api/config')
-    chatTabEnabled.value = cfgResp.data.enable_chat_tab ?? true
-    if (!chatTabEnabled.value && activeTab.value === 'chat') {
-      activeTab.value = 'search'
+    searchTabEnabled.value = cfgResp.data.enable_search_tab ?? true
+    if (!searchTabEnabled.value && activeTab.value === 'search') {
+      activeTab.value = 'chat'
     }
   } catch { /* defaults to true */ }
 
   // Load user info
   await userStore.loadCurrentUser()
 
-  // Load collections and groups
+  // Load collections
   await collectionStore.loadCollections()
-  collectionStore.loadGroups()
 
   // Then load stats for current collection
   loadStats()
@@ -1620,6 +1756,14 @@ onMounted(async () => {
       updateThemeFromStorage()
     }
   })
+
+  // When the user finishes configuring a provider in Settings, drop the
+  // "finish provider setup" banner without waiting for a reload.
+  window.addEventListener('finn:providers-changed', refreshProviderBannerState)
+
+  // When a meeting transcript lands (from header button or sidebar), refresh
+  // counts so the footer reflects the new doc.
+  window.addEventListener('finn:transcript-saved', loadStats)
 })
 
 onBeforeUnmount(() => {

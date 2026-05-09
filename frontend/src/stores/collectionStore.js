@@ -131,7 +131,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
     currentCollectionId.value = collectionId
     // Persist selection
-    localStorage.setItem('asymptote_current_collection', collectionId)
+    localStorage.setItem('finn_current_collection', collectionId)
 
     // Clear search state when switching collections
     const searchStore = useSearchStore()
@@ -141,60 +141,10 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   function initializeFromStorage() {
-    const saved = localStorage.getItem('asymptote_current_collection')
+    const saved = localStorage.getItem('finn_current_collection')
     if (saved) {
       currentCollectionId.value = saved
     }
-  }
-
-  // ── Collection Groups (v4.5) ─────────────────────────────────────────────
-
-  const groups = ref([])
-  const currentGroupId = ref(null)
-
-  const currentGroup = computed(() =>
-    groups.value.find(g => g.id === currentGroupId.value) || null
-  )
-
-  async function loadGroups() {
-    try {
-      const res = await axios.get('/api/groups')
-      groups.value = res.data.groups || []
-    } catch (err) {
-      console.error('Failed to load groups:', err)
-    }
-  }
-
-  async function createGroup(name, color = '#8b5cf6') {
-    const res = await axios.post('/api/groups', { name, color })
-    await loadGroups()
-    return res.data
-  }
-
-  async function updateGroup(groupId, updates) {
-    const res = await axios.patch(`/api/groups/${groupId}`, updates)
-    await loadGroups()
-    return res.data
-  }
-
-  async function deleteGroup(groupId) {
-    await axios.delete(`/api/groups/${groupId}`)
-    if (currentGroupId.value === groupId) currentGroupId.value = null
-    await loadGroups()
-  }
-
-  async function addCollectionToGroup(groupId, collectionId) {
-    await axios.post(`/api/groups/${groupId}/members/${collectionId}`)
-    await loadGroups()
-  }
-
-  async function removeCollectionFromGroup(groupId, collectionId) {
-    await axios.delete(`/api/groups/${groupId}/members/${collectionId}`)
-    await loadGroups()
-  }
-
-  function setCurrentGroup(groupId) {
-    currentGroupId.value = groupId
   }
 
   // Initialize
@@ -208,8 +158,6 @@ export const useCollectionStore = defineStore('collection', () => {
     error,
     multiUser,
     userId,
-    groups,
-    currentGroupId,
     // Computed
     currentCollection,
     sortedCollections,
@@ -217,19 +165,11 @@ export const useCollectionStore = defineStore('collection', () => {
     sharedCollections,
     currentPermission,
     canEditCurrent,
-    currentGroup,
     // Actions
     loadCollections,
     createCollection,
     updateCollection,
     deleteCollection,
     setCurrentCollection,
-    loadGroups,
-    createGroup,
-    updateGroup,
-    deleteGroup,
-    addCollectionToGroup,
-    removeCollectionFromGroup,
-    setCurrentGroup,
   }
 })

@@ -1,7 +1,7 @@
 @echo off
-REM Asymptote API startup script for Windows
+REM Finn API startup script for Windows
 
-echo Starting Asymptote API...
+echo Starting Finn API...
 echo.
 
 REM Check if virtual environment exists

@@ -1,53 +1,38 @@
-# Finn Desktop Application
+# Finn Desktop — Backend Bundle
 
-This directory contains files for building Finn as a standalone Windows desktop application.
+This directory holds the PyInstaller pieces that package the FastAPI backend
+into a standalone executable. The Electron shell in [`electron/`](../electron/)
+spawns that executable and provides the window, tray, and installer.
 
-## Quick Start
+The full build is orchestrated from the repo root:
 
-To build the desktop application:
-
-```bash
-cd desktop
-build_windows.bat
+```bat
+:: Windows
+build_electron_win.bat
 ```
 
-This creates a standalone executable at `dist/Finn/Finn.exe`
+```bash
+# macOS
+./build_electron_mac.sh
+```
 
-## Files in This Directory
+That script builds the Vue renderer, runs PyInstaller against
+`build_desktop.spec` to produce `dist/Finn/Finn.exe`, and then invokes
+`electron-builder` to package both into `electron-dist/Finn Setup *.exe`.
 
-- **finn_desktop.py** - Main desktop application wrapper
-- **build_desktop.spec** - PyInstaller configuration
-- **requirements_desktop.txt** - Desktop-specific dependencies
-- **build_windows.bat** - Automated build script for Windows
-- **installer.iss** - Inno Setup script for creating installer
-- **build_installer.bat** - Script to build Windows installer
-- **DESKTOP_BUILD.md** - Comprehensive build and distribution guide
+## Files
 
-## Documentation
-
-See [DESKTOP_BUILD.md](DESKTOP_BUILD.md) for complete instructions on:
-- Building the application
-- Creating installers
-- Distribution options
-- Troubleshooting
-- Advanced configuration
-
-## Requirements
-
-- Python 3.13 (or 3.8+)
-- Node.js 20+ (for building frontend)
-- Inno Setup 6 (optional, for creating installer)
+- **finn_desktop.py** — entry script for the bundled exe; starts FastAPI in
+  headless mode when launched by Electron (or with a tray icon when run alone).
+- **build_desktop.spec** — PyInstaller spec used by step 3 of the build.
+- **requirements_desktop.txt** — pip dependencies for the build venv.
+- **generate_third_party_licenses.py** — emits `THIRD_PARTY_LICENSES.txt` from
+  the active venv before PyInstaller runs.
+- **icon.ico** — tray / window icon embedded in the bundled exe.
+- **LICENSE** — license text shipped alongside the exe.
 
 ## Output
 
-After building, you'll have:
-
-- `dist/Finn/` - Folder containing the executable and dependencies
-- `installer_output/` - Windows installer (if built)
-
-## Notes
-
-- The desktop app runs the FastAPI server on localhost only
-- Includes system tray support (optional)
-- All dependencies are bundled - no installation required
-- User data stored in the `data/` subdirectory
+- `dist/Finn/Finn.exe` — PyInstaller bundle of the backend.
+- `electron-dist/Finn Setup <version>.exe` — final installer (produced by
+  `electron-builder`, not by anything in this directory).

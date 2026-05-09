@@ -7,6 +7,7 @@ Each collection has its own:
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -19,6 +20,23 @@ from services.indexing import DocumentIndexer
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# HuggingFace repo id rules (also what `sentence-transformers` accepts):
+# alphanumeric, '-', '_', '.', '/'; max 96 chars; no leading/trailing '-' or
+# '.'. We mirror those rules here so an obviously-malformed value (e.g.
+# "ollama_cloud:nomic-embed-text" — a chat-provider model name that leaked
+# into a collection's embedding_model column) is caught before SentenceTransformer
+# turns it into a HuggingFace lookup that errors mid-search.
+_VALID_EMBEDDING_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-./]{0,94}[A-Za-z0-9_]$")
+
+
+def _is_valid_embedding_model_name(name: Optional[str]) -> bool:
+    if not name or not isinstance(name, str):
+        return False
+    if len(name) > 96:
+        return False
+    return bool(_VALID_EMBEDDING_MODEL_RE.match(name))
 
 
 class IndexerManager:
@@ -130,7 +148,31 @@ class IndexerManager:
             DocumentIndexer instance
         """
         collection_id = collection["id"]
-        embedding_model = collection.get("embedding_model", settings.embedding_model)
+        stored_model = collection.get("embedding_model")
+        embedding_model = stored_model or settings.embedding_model
+        # Self-heal corrupted DB values: a malformed embedding model name
+        # (e.g. a chat-provider model identifier like
+        # "ollama_cloud:nomic-embed-text" written by an old code path) breaks
+        # every semantic-search call on this collection until the user
+        # manually edits the DB. Detect, log, fall back to the default, and
+        # write the correction back so future loads are clean.
+        if not _is_valid_embedding_model_name(embedding_model):
+            logger.warning(
+                "Collection %s has invalid embedding_model %r; falling back "
+                "to %r and updating the collection record.",
+                collection_id, embedding_model, settings.embedding_model,
+            )
+            embedding_model = settings.embedding_model
+            try:
+                collection_service.update_collection(
+                    collection_id,
+                    embedding_model=embedding_model,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to persist embedding_model auto-heal for %s: %s",
+                    collection_id, exc,
+                )
         chunk_size = collection.get("chunk_size", settings.chunk_size)
         chunk_overlap = collection.get("chunk_overlap", settings.chunk_overlap)
 

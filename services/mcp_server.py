@@ -1667,12 +1667,44 @@ def get_recent_redactions(
     return result
 
 
+_PRICE_HISTORY_PERIOD_DAYS = {
+    "1d": 1,
+    "5d": 5,
+    "1mo": 30,
+    "3mo": 90,
+    "6mo": 180,
+    "1y": 365,
+    "2y": 730,
+    "5y": 1825,
+    "10y": 3650,
+    "max": 18250,
+}
+
+
+def _period_to_start(period: str) -> str | None:
+    """Translate a yfinance-style relative period ("1y", "5d", "ytd", "max")
+    into an explicit ISO start date. Returns None for unrecognized values so
+    the underlying default lookback kicks in."""
+    from datetime import date, timedelta
+
+    p = (period or "").strip().lower()
+    if not p:
+        return None
+    if p == "ytd":
+        return f"{date.today().year}-01-01"
+    days = _PRICE_HISTORY_PERIOD_DAYS.get(p)
+    if days is None:
+        return None
+    return (date.today() - timedelta(days=days)).isoformat()
+
+
 @_finn_mcp.tool()
 def get_price_history(
     symbol: str,
     start: str | None = None,
     end: str | None = None,
     interval: str = "1d",
+    period: str | None = None,
 ) -> dict[str, Any]:
     """Return historical OHLCV price data for a security.
 
@@ -1683,9 +1715,12 @@ def get_price_history(
 
     Parameters:
       - symbol: Ticker symbol (e.g. "AAPL", "MSFT", "^GSPC"). Required.
-      - start: ISO date (YYYY-MM-DD) or omit for a sensible default
-        lookback based on interval (7 days for intraday, 1 year for
-        daily, longer for weekly/monthly).
+      - period: Convenience window ("1d", "5d", "1mo", "3mo", "6mo", "1y",
+        "2y", "5y", "10y", "ytd", "max"). Translated to an explicit start
+        date ending today. Ignored if `start` is given.
+      - start: ISO date (YYYY-MM-DD) or omit to derive from `period`, or
+        fall back to a sensible default lookback based on interval (7
+        days for intraday, 1 year for daily, longer for weekly/monthly).
       - end: ISO date (YYYY-MM-DD) or omit for today.
       - interval: Bar size. One of: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h,
         1d, 5d, 1wk, 1mo, 3mo. Default "1d". Note: yfinance limits
@@ -1706,6 +1741,9 @@ def get_price_history(
     _ensure_enabled()
 
     from services.market_data.price_history import get_price_history as _fetch
+
+    if period and not start:
+        start = _period_to_start(period)
 
     response = _fetch(symbol=symbol, start=start, end=end, interval=interval)
     return _redact(response, tool_name="get_price_history")

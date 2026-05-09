@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { getActiveProvider, getAPIProviderName } from './aiProviders'
+import { apiUrl } from './apiUrl.js'
 
 // Shared slash commands used by both Chat and Search. Each command reads
 // collection metadata directly and returns a plain-text block — zero tokens,
@@ -392,7 +393,7 @@ export const streamSlashCommand = async (
     : `/api/collections/${collectionId}/followup/stream`
 
   try {
-    const response = await fetch(path, {
+    const response = await fetch(apiUrl(path), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -455,10 +456,9 @@ export const streamSlashCommand = async (
 // options:
 //   collectionId      — active collection ID
 //   collection        — active collection object
-//   groupId           — active group ID (or null) for group-aware commands
 //   messages          — recent chat messages array (for /notes and /followup)
 //   providerHeaders   — AI provider headers { 'x-ai-key': ..., etc. }
-export const runSlashCommand = async (input, { collectionId, collection, groupId, messages, providerHeaders }) => {
+export const runSlashCommand = async (input, { collectionId, collection, messages, providerHeaders }) => {
   const cmd = input.trim().split(/\s+/)[0].toLowerCase()
   if (!SLASH_COMMANDS[cmd]) {
     return { cmd, content: `Unknown command: ${cmd}`, error: true }
@@ -474,14 +474,6 @@ export const runSlashCommand = async (input, { collectionId, collection, groupId
     }
 
     if (cmd === '/brief') {
-      if (groupId) {
-        const response = await axios.post(`/api/groups/${groupId}/brief`)
-        const brief = response.data
-        const header = brief.group_name
-          ? `HOUSEHOLD BRIEF — ${brief.group_name} (${brief.collection_count} account${brief.collection_count !== 1 ? 's' : ''})`
-          : 'HOUSEHOLD BRIEF'
-        return { cmd, content: header + '\n' + '═'.repeat(Math.min(header.length, 48)) + '\n\n' + formatBrief(brief) }
-      }
       const response = await axios.post(`/api/collections/${collectionId}/brief`)
       return { cmd, content: formatBrief(response.data) }
     }

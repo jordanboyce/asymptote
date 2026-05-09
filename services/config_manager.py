@@ -72,7 +72,7 @@ class ConfigManager:
             "enable_llm_schema_inference": settings.enable_llm_schema_inference,
             "llm_schema_inference_threshold": settings.llm_schema_inference_threshold,
             # UI feature flags
-            "enable_chat_tab": settings.enable_chat_tab,
+            "enable_search_tab": settings.enable_search_tab,
         }
 
         # Override with database values if present
@@ -122,7 +122,7 @@ class ConfigManager:
                       "mcp_max_source_length", "mcp_ai_provider", "mcp_ollama_model"}
         privacy_fields = {"enable_pii_redaction", "pii_redaction_style", "pii_score_threshold"}
         inference_fields = {"enable_llm_schema_inference", "llm_schema_inference_threshold"}
-        ui_fields = {"enable_chat_tab"}
+        ui_fields = {"enable_search_tab"}
 
         # Validate updates
         valid_fields = {
@@ -139,7 +139,7 @@ class ConfigManager:
             "mcp_ai_provider", "mcp_ollama_model",
             "enable_pii_redaction", "pii_redaction_style", "pii_score_threshold",
             "enable_llm_schema_inference", "llm_schema_inference_threshold",
-            "enable_chat_tab",
+            "enable_search_tab",
         }
 
         for key in updates.keys():

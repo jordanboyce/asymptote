@@ -1,5 +1,40 @@
 <template>
-  <div class="flex flex-col h-full">
+  <!-- Collapsed rail: thin column of file icons, always visible -->
+  <div v-if="!expanded" class="flex flex-col h-full w-11 items-center py-2 gap-1.5 border-r border-base-300 flex-shrink-0">
+    <button
+      class="btn btn-ghost btn-sm btn-square"
+      @click="$emit('toggle')"
+      title="Open sources panel"
+      aria-label="Open sources panel"
+    >
+      <PanelLeftOpen :size="16" />
+    </button>
+    <button
+      class="btn btn-ghost btn-sm btn-square text-primary"
+      @click="$emit('toggle')"
+      title="Add sources"
+      aria-label="Add sources"
+    >
+      <Plus :size="16" />
+    </button>
+    <div class="w-6 border-t border-base-300 my-0.5" aria-hidden="true"></div>
+    <div class="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1.5 px-1">
+      <button
+        v-for="doc in documents"
+        :key="doc.document_id"
+        class="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 hover:ring-2 hover:ring-primary/40 transition-all"
+        :class="[getFileIconClass(doc.filename), { 'opacity-50': !isInScope(doc.document_id) }]"
+        @click="$emit('toggle')"
+        :title="`${doc.filename}${isInScope(doc.document_id) ? '' : ' (excluded from chat)'}`"
+        :aria-label="doc.filename"
+      >
+        <component :is="getFileIcon(doc.filename)" :size="13" :class="getFileIconTextClass(doc.filename)" />
+      </button>
+    </div>
+  </div>
+
+  <!-- Expanded panel -->
+  <div v-else class="flex flex-col h-full">
 
     <!-- Header bar -->
     <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Sources">
@@ -16,11 +51,11 @@
       </button>
       <button
         class="btn btn-ghost btn-xs btn-circle"
-        @click="$emit('close')"
-        title="Close sidebar"
-        aria-label="Close sources sidebar"
+        @click="$emit('toggle')"
+        title="Collapse sources panel"
+        aria-label="Collapse sources panel"
       >
-        <X :size="13" />
+        <PanelLeftClose :size="13" />
       </button>
     </div>
 
@@ -64,11 +99,6 @@
             </button>
           </div>
 
-          <!-- Hint: external recordings are welcome via the Files button -->
-          <p class="text-[11px] text-base-content/50 leading-snug -mt-0.5">
-            Past meeting recordings work too — use Files to upload Zoom, Teams, or phone voice memos. Whisper transcribes them locally.
-          </p>
-
           <!-- Recording / transcription panel -->
           <div
             v-if="isRecording || transcribing || recordError"
@@ -86,7 +116,7 @@
             </div>
             <div v-else-if="recordError" class="flex items-start gap-2">
               <span class="flex-1 text-error">{{ recordError }}</span>
-              <button class="btn btn-ghost btn-xs" @click="recordError = ''">Dismiss</button>
+              <button class="btn btn-ghost btn-xs" @click="dismissError">Dismiss</button>
             </div>
           </div>
 
@@ -152,96 +182,26 @@
         </div>
       </div>
 
-      <!-- Applied Expertise section (collapsible) -->
-      <div class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="expertiseSectionOpen = !expertiseSectionOpen"
-          aria-label="Toggle Applied Expertise section"
-        >
-          <BookOpen :size="13" class="text-accent flex-shrink-0" aria-hidden="true" />
-          <span class="text-xs font-semibold text-accent flex-1">Applied Expertise</span>
-          <span v-if="attachedPackIds.length > 0" class="badge badge-xs badge-accent">{{ attachedPackIds.length }}</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="expertiseSectionOpen ? 'rotate-180' : ''" />
-        </button>
-
-        <div v-show="expertiseSectionOpen" class="px-3 pb-3 space-y-2">
-          <!-- Attached packs -->
-          <div v-if="attachedPackIds.length === 0" class="text-xs text-base-content/50 py-1">
-            No expertise packs applied. Add one below to shape AI analysis.
-          </div>
-          <div v-else class="space-y-1">
-            <div
-              v-for="pack in attachedPacks"
-              :key="pack.id"
-              class="flex items-center gap-1.5 bg-accent/10 border border-accent/20 rounded px-2 py-1.5"
-            >
-              <FileText :size="11" class="text-accent shrink-0" aria-hidden="true" />
-              <span class="text-xs flex-1 truncate" :title="pack.name">{{ pack.name }}</span>
-              <button
-                class="btn btn-ghost btn-xs btn-circle text-error"
-                :title="`Remove ${pack.name}`"
-                :disabled="expertiseLoading"
-                @click.stop="removeExpertisePack(pack.id)"
-              >
-                <X :size="11" />
-              </button>
-            </div>
-          </div>
-
-          <!-- Add pack dropdown -->
-          <div v-if="availablePacks.length > 0" class="dropdown w-full">
-            <label
-              tabindex="0"
-              class="btn btn-outline btn-xs w-full gap-1"
-              :class="{ 'btn-disabled': expertiseLoading }"
-            >
-              <Plus :size="11" />
-              Add expertise…
-              <ChevronDown :size="11" class="ml-auto" />
-            </label>
-            <ul tabindex="0" class="dropdown-content z-[50] menu p-1 shadow-lg bg-base-100 border border-base-300 rounded-box w-full max-h-48 overflow-y-auto flex-nowrap">
-              <li v-for="pack in availablePacks" :key="pack.id">
-                <a class="text-xs py-1.5" @click.prevent="addExpertisePack(pack.id)">
-                  <FileText :size="11" class="shrink-0" />
-                  <span class="truncate">{{ pack.name }}</span>
-                </a>
-              </li>
-            </ul>
-          </div>
-          <p v-else-if="expertiseStore.packs.length === 0" class="text-xs text-base-content/40">
-            No packs in the Expertise Library yet.
-          </p>
-          <p v-else class="text-xs text-base-content/40">
-            All packs are already applied.
-          </p>
-        </div>
-      </div>
-
-      <!-- Document list header -->
+      <!-- Document list header — checkbox toggles chat scope (NotebookLM-style) -->
       <div class="flex items-center gap-2 px-3 py-2 border-b border-base-300 flex-shrink-0">
         <input
           v-if="documents.length > 0"
           type="checkbox"
           class="checkbox checkbox-xs flex-shrink-0"
-          :checked="isAllSelected"
-          :indeterminate="selectedDocuments.length > 0 && !isAllSelected"
-          @change="toggleSelectAll"
-          :disabled="deleting"
-          title="Select all sources"
-          aria-label="Select all sources"
+          :checked="allInScope"
+          :indeterminate="someInScope && !allInScope"
+          @change="toggleAllInScope"
+          :title="allInScope ? 'Exclude all sources from chat' : 'Include all sources in chat'"
+          :aria-label="allInScope ? 'Exclude all sources from chat' : 'Include all sources in chat'"
         />
         <span class="text-xs font-semibold text-base-content/60 flex-1" id="sources-list-heading">Your Sources</span>
-        <button
-          v-if="selectedDocuments.length > 0"
-          class="btn btn-xs btn-error gap-1"
-          @click="confirmBulkDelete"
-          :disabled="deleting"
-          :aria-label="`Delete ${selectedDocuments.length} selected source${selectedDocuments.length === 1 ? '' : 's'}`"
+        <span
+          v-if="documents.length > 0 && !allInScope"
+          class="text-[11px] text-base-content/55 tabular-nums"
+          :title="`${inScopeCount} of ${documents.length} source${documents.length === 1 ? '' : 's'} included in chat`"
         >
-          <Trash2 :size="11" aria-hidden="true" />
-          {{ selectedDocuments.length }}
-        </button>
+          {{ inScopeCount }}/{{ documents.length }} in chat
+        </span>
       </div>
 
       <!-- Loading spinner -->
@@ -263,16 +223,16 @@
           v-for="doc in documents"
           :key="doc.document_id"
           class="flex items-start gap-2 px-3 py-2.5 hover:bg-base-200/60 transition-colors"
-          :class="{ 'bg-primary/5': isSelected(doc.document_id) }"
+          :class="{ 'opacity-50': !isInScope(doc.document_id) }"
         >
-          <!-- Checkbox -->
+          <!-- Checkbox — controls chat scope, not deletion -->
           <input
             type="checkbox"
             class="checkbox checkbox-xs mt-1 flex-shrink-0"
-            :checked="isSelected(doc.document_id)"
-            @change="toggleSelect(doc.document_id)"
-            :disabled="deleting"
-            :aria-label="`Select ${doc.filename}`"
+            :checked="isInScope(doc.document_id)"
+            @change="toggleScope(doc.document_id)"
+            :title="isInScope(doc.document_id) ? 'Exclude this source from chat' : 'Include this source in chat'"
+            :aria-label="`${isInScope(doc.document_id) ? 'Exclude' : 'Include'} ${doc.filename} in chat`"
           />
 
           <!-- File icon -->
@@ -358,7 +318,7 @@
 
     </div>
 
-    <!-- Delete confirmation modal (same as DocumentsTab) -->
+    <!-- Delete confirmation modal -->
     <dialog ref="deleteModal" class="modal" aria-labelledby="sidebar-delete-title">
       <div class="modal-box">
         <h3 id="sidebar-delete-title" class="font-bold text-lg">Confirm Delete</h3>
@@ -368,10 +328,9 @@
             Note: The original file will not be deleted, only the index entry.
           </span>
         </p>
-        <p v-else class="py-4">Delete <strong>{{ selectedDocuments.length }} source(s)</strong>?</p>
         <div class="modal-action">
           <button class="btn" @click="closeDeleteModal" :disabled="deleting">Cancel</button>
-          <button class="btn btn-error" @click="documentToDelete ? deleteDocument() : deleteBulk()" :disabled="deleting">
+          <button class="btn btn-error" @click="deleteDocument" :disabled="deleting || !documentToDelete">
             <span v-if="deleting" class="loading loading-spinner"></span>
             {{ deleting ? 'Deleting...' : 'Delete' }}
           </button>
@@ -493,18 +452,23 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, ShieldCheck, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, ShieldCheck, Table2, Mic, Square, PanelLeftOpen, PanelLeftClose } from 'lucide-vue-next'
 import PiiReviewModal from './PiiReviewModal.vue'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
-import { useExpertiseStore } from '../stores/expertiseStore'
+import { useChatStore } from '../stores/chatStore'
 import { isExpertMode } from '../utils/expertMode'
+import { friendlyError } from '../utils/friendlyError.js'
+import { useMeetingRecorder } from '../composables/useMeetingRecorder'
 
-const emit = defineEmits(['document-deleted', 'background-job-started', 'close'])
+const props = defineProps({
+  expanded: { type: Boolean, default: true },
+})
+const emit = defineEmits(['document-deleted', 'background-job-started', 'toggle'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
-const expertiseStore = useExpertiseStore()
+const chatStore = useChatStore()
 
 // ── PII review state ──────────────────────────────────────────────────────
 const piiModal = ref(null)
@@ -548,8 +512,6 @@ function openPiiReview(doc) {
 // Sidebar-specific state
 const addSectionOpen = ref(true)
 const advancedOpen = ref(false)
-const expertiseSectionOpen = ref(false)
-const expertiseLoading = ref(false)
 
 // Source code mode
 const isSourceCode = ref(false)
@@ -588,11 +550,11 @@ const indexResult = ref({ count: 0, chunks: 0 })
 // Document management state
 const documents = ref([])
 const loading = ref(false)
+
 const deleting = ref(false)
 const error = ref('')
 const deleteModal = ref(null)
 const documentToDelete = ref(null)
-const selectedDocuments = ref([])
 const chunksModal = ref(null)
 const chunkDocument = ref(null)
 const chunksLoading = ref(false)
@@ -607,165 +569,35 @@ const chunkResponse = ref({
   chunks: []
 })
 
-// Meeting recording state
-const isRecording = ref(false)
-const transcribing = ref(false)
-const transcribeStatus = ref('')
-const recordError = ref('')
-const elapsedSeconds = ref(0)
-let mediaRecorder = null
-let recordedChunks = []
-let mediaStream = null
-let elapsedTimer = null
-let cancelled = false
-
-const formattedElapsed = computed(() => {
-  const mm = String(Math.floor(elapsedSeconds.value / 60)).padStart(2, '0')
-  const ss = String(elapsedSeconds.value % 60).padStart(2, '0')
-  return `${mm}:${ss}`
-})
-
-function pickRecordingMime() {
-  // Prefer opus/webm (small, widely supported). Fall back to browser default.
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/mp4',
-  ]
-  if (typeof MediaRecorder === 'undefined') return ''
-  for (const mime of candidates) {
-    if (MediaRecorder.isTypeSupported(mime)) return mime
-  }
-  return ''
-}
-
-function stopMediaTracks() {
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(t => t.stop())
-    mediaStream = null
-  }
-  if (elapsedTimer) {
-    clearInterval(elapsedTimer)
-    elapsedTimer = null
-  }
-}
-
-async function startRecording() {
-  if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
-    recordError.value = 'Recording is not supported in this browser.'
-    return
-  }
-  if (!collectionStore.canEditCurrent) {
-    recordError.value = 'You do not have permission to add sources to this collection.'
-    return
-  }
-  recordError.value = ''
-  cancelled = false
-  recordedChunks = []
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-  } catch (err) {
-    console.error('getUserMedia failed:', err)
-    recordError.value = err?.message?.includes('Permission')
-      ? 'Microphone permission denied.'
-      : 'Could not access microphone.'
-    return
-  }
-
-  const mime = pickRecordingMime()
-  try {
-    mediaRecorder = mime
-      ? new MediaRecorder(mediaStream, { mimeType: mime })
-      : new MediaRecorder(mediaStream)
-  } catch (err) {
-    console.error('MediaRecorder init failed:', err)
-    recordError.value = 'Failed to start recorder.'
-    stopMediaTracks()
-    return
-  }
-
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) recordedChunks.push(e.data)
-  }
-  mediaRecorder.onstop = async () => {
-    stopMediaTracks()
-    if (cancelled) {
-      recordedChunks = []
-      isRecording.value = false
-      return
-    }
-    const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' })
-    recordedChunks = []
-    isRecording.value = false
-    await uploadRecording(blob)
-  }
-
-  elapsedSeconds.value = 0
-  elapsedTimer = setInterval(() => { elapsedSeconds.value += 1 }, 1000)
-  mediaRecorder.start()
-  isRecording.value = true
-}
-
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop()
-  }
-}
-
-function cancelRecording() {
-  cancelled = true
-  stopRecording()
-}
+// Meeting recording state — singleton in useMeetingRecorder so the header
+// button (App.vue) and this sidebar share the same in-flight session. The
+// sidebar only initiates recording for the *current* collection; the
+// composable pins the collection id at start so a mid-recording switch
+// doesn't misroute the transcript.
+const {
+  isRecording,
+  transcribing,
+  transcribeStatus,
+  recordError,
+  formattedElapsed,
+  toggleRecording: toggleRecorderState,
+  cancelRecording,
+  dismissError,
+  preflightAudioExtensionError,
+} = useMeetingRecorder()
 
 function toggleRecording() {
-  if (isRecording.value) stopRecording()
-  else startRecording()
+  toggleRecorderState({
+    collectionId: collectionStore.currentCollectionId,
+    canEdit: collectionStore.canEditCurrent,
+  })
 }
 
-function extensionForMime(mime) {
-  if (!mime) return 'webm'
-  if (mime.includes('webm')) return 'webm'
-  if (mime.includes('ogg')) return 'ogg'
-  if (mime.includes('mp4')) return 'm4a'
-  if (mime.includes('wav')) return 'wav'
-  return 'webm'
-}
-
-async function uploadRecording(blob) {
-  transcribing.value = true
-  transcribeStatus.value = 'Uploading recording…'
-  try {
-    const ext = extensionForMime(blob.type)
-    const now = new Date()
-    const pad = (n) => String(n).padStart(2, '0')
-    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-    const filename = `meeting-${stamp}.${ext}`
-    const file = new File([blob], filename, { type: blob.type })
-
-    const form = new FormData()
-    form.append('files', file)
-
-    transcribeStatus.value = 'Transcribing with Whisper (may take a minute)…'
-    const response = await axios.post('/documents/upload', form, {
-      params: { collection_id: collectionStore.currentCollectionId },
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-
-    indexSuccess.value = true
-    indexResult.value = {
-      count: response.data.documents_processed || 1,
-      chunks: response.data.total_chunks || 0,
-    }
-    await loadDocuments()
-    emit('document-deleted')
-  } catch (err) {
-    console.error('Recording upload failed:', err)
-    recordError.value = err.response?.data?.detail || err.message || 'Failed to transcribe recording'
-  } finally {
-    transcribing.value = false
-    transcribeStatus.value = ''
-  }
+// When a transcript lands (from this sidebar OR the header recording button)
+// refresh the document list so the new Meeting Notes file appears.
+async function handleTranscriptSaved() {
+  await loadDocuments()
+  emit('document-deleted')
 }
 
 // Injection warnings modal state
@@ -830,7 +662,7 @@ const openFilePicker = async () => {
     }
   } catch (err) {
     console.error('File picker error:', err)
-    indexError.value = err.response?.data?.detail || 'Failed to open file picker'
+    indexError.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to open file picker' })
   }
 }
 
@@ -900,7 +732,7 @@ const openFolderPicker = async () => {
     }
   } catch (err) {
     console.error('Folder picker error:', err)
-    indexError.value = err.response?.data?.detail || 'Failed to open folder picker'
+    indexError.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to open folder picker' })
   }
 }
 
@@ -971,6 +803,18 @@ const indexFiles = async () => {
   const files = selectedPaths.value.filter(p => !p.isFolder)
   const filePaths = files.map(p => p.path)
 
+  // Pre-flight: catch audio formats Whisper won't accept (.aac, .wma, etc.)
+  // and surface a friendly message naming what *is* supported, so the
+  // advisor doesn't burn an upload round-trip on a generic "unsupported
+  // type" error. R6.5 / §7.3.
+  const audioPreflightErrors = filePaths
+    .map(p => preflightAudioExtensionError(getFilename(p)))
+    .filter(Boolean)
+  if (audioPreflightErrors.length > 0) {
+    indexError.value = audioPreflightErrors.join('\n')
+    return
+  }
+
   // Route tabular files through PII review before indexing.
   // Non-tabular files go straight through.
   const tabularPaths = filePaths.filter(p => TABULAR_EXTENSIONS.includes('.' + p.split('.').pop().toLowerCase()))
@@ -1022,8 +866,7 @@ const indexFiles = async () => {
           selectedPaths.value = folders.length > 0 ? folders : []
 
         } catch (err) {
-          const errorMsg = err.response?.data?.detail || err.message
-          errors.push(`Files: ${errorMsg}`)
+          errors.push(`Files: ${friendlyError(err, { expert: isExpertMode.value, fallback: 'Could not be indexed.' })}`)
           console.error('Failed to start background indexing:', err)
         }
       } else {
@@ -1045,8 +888,7 @@ const indexFiles = async () => {
             // Update progress after successful index
             indexProgressPercent.value = ((i + 1) / filePaths.length) * 100
           } catch (err) {
-            const errorMsg = err.response?.data?.detail || err.message
-            errors.push(`${filename}: ${errorMsg}`)
+            errors.push(`${filename}: ${friendlyError(err, { expert: isExpertMode.value, fallback: 'Could not be indexed.' })}`)
             console.error(`Failed to index ${filePaths[i]}:`, err)
           }
         }
@@ -1076,8 +918,7 @@ const indexFiles = async () => {
         successCount += response.data.files_indexed || 0
         totalChunks += response.data.total_chunks || 0
       } catch (err) {
-        const errorMsg = err.response?.data?.detail || err.message
-        errors.push(`${folder.name}: ${errorMsg}`)
+        errors.push(`${folder.name}: ${friendlyError(err, { expert: isExpertMode.value, fallback: 'Could not be indexed.' })}`)
         console.error(`Failed to index ${folder.path}:`, err)
       }
     }
@@ -1109,29 +950,66 @@ const indexFiles = async () => {
   }
 }
 
-// Document management functions
-const isAllSelected = computed(() => {
-  return documents.value.length > 0 && selectedDocuments.value.length === documents.value.length
+// ── Chat scope (NotebookLM-style per-source toggle) ──────────────────────
+//
+// `chatStore.getScopedDocumentIds(colId)` returns:
+//   - null  → no filter (all documents are in scope)
+//   - []    → user has explicitly excluded everything
+//   - [...] → only these document IDs are in scope
+//
+// We expose a couple of computed helpers so the template can stay simple.
+
+const scopedIds = computed(() =>
+  chatStore.getScopedDocumentIds(collectionStore.currentCollectionId)
+)
+
+const inScopeCount = computed(() => {
+  if (scopedIds.value === null) return documents.value.length
+  return scopedIds.value.length
 })
 
-const isSelected = (docId) => {
-  return selectedDocuments.value.includes(docId)
+const allInScope = computed(() => scopedIds.value === null)
+const someInScope = computed(() => inScopeCount.value > 0)
+
+const isInScope = (docId) => {
+  if (scopedIds.value === null) return true
+  return scopedIds.value.includes(docId)
 }
 
-const toggleSelect = (docId) => {
-  const index = selectedDocuments.value.indexOf(docId)
-  if (index > -1) {
-    selectedDocuments.value.splice(index, 1)
+const toggleScope = (docId) => {
+  const colId = collectionStore.currentCollectionId
+  if (scopedIds.value === null) {
+    // Currently "all in scope" — unchecking this doc means: include every
+    // OTHER doc, exclude this one.
+    const others = documents.value
+      .map((d) => d.document_id)
+      .filter((id) => id !== docId)
+    chatStore.setScopedDocumentIds(colId, others)
+    return
+  }
+  const current = [...scopedIds.value]
+  const idx = current.indexOf(docId)
+  if (idx >= 0) {
+    current.splice(idx, 1)
+    chatStore.setScopedDocumentIds(colId, current)
   } else {
-    selectedDocuments.value.push(docId)
+    current.push(docId)
+    // If checking this doc means everything is now in scope, collapse to
+    // null so a future doc add isn't silently excluded.
+    if (current.length >= documents.value.length) {
+      chatStore.setScopedDocumentIds(colId, null)
+    } else {
+      chatStore.setScopedDocumentIds(colId, current)
+    }
   }
 }
 
-const toggleSelectAll = () => {
-  if (isAllSelected.value) {
-    selectedDocuments.value = []
+const toggleAllInScope = () => {
+  const colId = collectionStore.currentCollectionId
+  if (allInScope.value) {
+    chatStore.setScopedDocumentIds(colId, [])
   } else {
-    selectedDocuments.value = documents.value.map(doc => doc.document_id)
+    chatStore.setScopedDocumentIds(colId, null)
   }
 }
 
@@ -1143,8 +1021,15 @@ const loadDocuments = async () => {
     const collectionId = collectionStore.currentCollectionId
     const response = await axios.get(`/documents?collection_id=${collectionId}`)
     documents.value = response.data.documents || []
+    // Drop any stale IDs from the persisted chat-scope filter and collapse
+    // to "all in scope" if the filter now covers every doc — keeps the
+    // sidebar honest after deletes / additions.
+    chatStore.reconcileScope(
+      collectionId,
+      documents.value.map((d) => d.document_id),
+    )
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to load sources'
+    error.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to load sources' })
   } finally {
     loading.value = false
   }
@@ -1233,51 +1118,23 @@ const deleteDocument = async () => {
 
   try {
     const collectionId = collectionStore.currentCollectionId
-    await axios.delete(`/documents/${documentToDelete.value.document_id}?collection_id=${collectionId}`)
+    const deletedId = documentToDelete.value.document_id
+    await axios.delete(`/documents/${deletedId}?collection_id=${collectionId}`)
 
     documents.value = documents.value.filter(
-      doc => doc.document_id !== documentToDelete.value.document_id
+      doc => doc.document_id !== deletedId
     )
 
-    const index = selectedDocuments.value.indexOf(documentToDelete.value.document_id)
-    if (index > -1) {
-      selectedDocuments.value.splice(index, 1)
-    }
+    // Strip the deleted doc from any persisted chat-scope filter so the
+    // sidebar's "in scope" count stays accurate.
+    chatStore.reconcileScope(
+      collectionId,
+      documents.value.map((d) => d.document_id),
+    )
 
     emit('document-deleted')
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to delete source'
-  } finally {
-    deleting.value = false
-    closeDeleteModal()
-  }
-}
-
-const confirmBulkDelete = () => {
-  documentToDelete.value = null
-  deleteModal.value?.showModal()
-}
-
-const deleteBulk = async () => {
-  if (selectedDocuments.value.length === 0) return
-
-  deleting.value = true
-  error.value = ''
-
-  try {
-    const collectionId = collectionStore.currentCollectionId
-    for (const docId of selectedDocuments.value) {
-      await axios.delete(`/documents/${docId}?collection_id=${collectionId}`)
-    }
-
-    documents.value = documents.value.filter(
-      doc => !selectedDocuments.value.includes(doc.document_id)
-    )
-
-    selectedDocuments.value = []
-    emit('document-deleted')
-  } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to delete sources'
+    error.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to delete source' })
   } finally {
     deleting.value = false
     closeDeleteModal()
@@ -1285,57 +1142,9 @@ const deleteBulk = async () => {
 }
 
 // Watch for collection changes
-watch(() => collectionStore.currentCollectionId, (newId) => {
+watch(() => collectionStore.currentCollectionId, () => {
   loadDocuments()
-  selectedDocuments.value = []
-  loadExpertise(newId)
 })
-
-// Applied Expertise helpers
-
-const attachedPackIds = computed(() =>
-  expertiseStore.attachedPackIds[collectionStore.currentCollectionId] || []
-)
-
-const attachedPacks = computed(() =>
-  expertiseStore.getAttachedPackObjects(collectionStore.currentCollectionId)
-)
-
-const availablePacks = computed(() =>
-  expertiseStore.packs.filter(p => !attachedPackIds.value.includes(p.id))
-)
-
-async function loadExpertise(collId) {
-  const id = collId || collectionStore.currentCollectionId
-  try {
-    await Promise.all([
-      expertiseStore.fetchPacks(),
-      expertiseStore.fetchAttached(id),
-    ])
-  } catch (e) {
-    // non-fatal
-  }
-}
-
-async function addExpertisePack(packId) {
-  expertiseLoading.value = true
-  try {
-    const newIds = [...attachedPackIds.value, packId]
-    await expertiseStore.setAttached(collectionStore.currentCollectionId, newIds)
-  } finally {
-    expertiseLoading.value = false
-  }
-}
-
-async function removeExpertisePack(packId) {
-  expertiseLoading.value = true
-  try {
-    const newIds = attachedPackIds.value.filter(id => id !== packId)
-    await expertiseStore.setAttached(collectionStore.currentCollectionId, newIds)
-  } finally {
-    expertiseLoading.value = false
-  }
-}
 
 // Watch for completed background uploads to reload documents.
 // Derived primitive avoids deep-walking the jobs array on every nested mutation.
@@ -1413,7 +1222,7 @@ const selectRecentRepo = async (repo) => {
       indexError.value = 'No matching files found in the selected folder'
     }
   } catch (err) {
-    indexError.value = err.response?.data?.detail || 'Failed to scan folder'
+    indexError.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to scan folder' })
   }
 }
 
@@ -1421,16 +1230,19 @@ const selectRecentRepo = async (repo) => {
 onMounted(() => {
   loadDocuments()
   loadRecentRepos()
-  loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
+  window.addEventListener('finn:transcript-saved', handleTranscriptSaved)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
-  if (isRecording.value) {
-    cancelled = true
-    try { mediaRecorder?.stop() } catch (_) { /* ignore */ }
-  }
-  stopMediaTracks()
+  window.removeEventListener('finn:transcript-saved', handleTranscriptSaved)
+  // Recording lifecycle is owned by useMeetingRecorder (module singleton);
+  // intentionally not torn down here so navigating away from this surface
+  // doesn't kill an in-flight session.
 })
+
+// Exposed so parent surfaces (App.vue) can refresh the document list after
+// flows that land a new file in the collection — e.g. Note of Record save.
+defineExpose({ loadDocuments })
 </script>

@@ -138,6 +138,23 @@
         <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Settings</button>
       </div>
 
+      <!-- Auth error banner: 401/403 from a configured provider. Mutually
+           exclusive with the "no providers" notice above so we never stack. -->
+      <div
+        v-else-if="authErrorVisible"
+        class="flex items-center gap-3 rounded-lg bg-warning/10 border border-warning/40 px-3 py-2 flex-shrink-0"
+        role="alert"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-warning shrink-0 w-4 h-4">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"></path>
+        </svg>
+        <span class="text-sm flex-1">
+          The provider rejected your key. It may have expired or been revoked — re-enter it in Settings to keep chatting.
+        </span>
+        <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Open Settings</button>
+        <button class="btn btn-xs btn-ghost" @click="dismissAuthError" aria-label="Dismiss">Dismiss</button>
+      </div>
+
       <!-- Chat Settings Drawer -->
       <div
         v-if="settingsDrawerOpen"
@@ -166,29 +183,6 @@
 
           <!-- Content -->
           <div class="flex-1 overflow-y-auto p-4 space-y-5">
-
-            <!-- Scope -->
-            <div class="space-y-2">
-              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Scope</span>
-              <div class="flex items-center gap-1 rounded-lg border border-base-300 p-1 bg-base-200/60">
-                <button
-                  class="btn btn-xs gap-1 flex-1 transition-all"
-                  :class="scope === 'current' ? 'btn-primary' : 'btn-ghost'"
-                  @click="scope = 'current'"
-                >
-                  <Layers :size="12" />
-                  Current
-                </button>
-                <button
-                  class="btn btn-xs gap-1 flex-1 transition-all"
-                  :class="scope === 'all' ? 'btn-secondary' : 'btn-ghost'"
-                  @click="scope = 'all'"
-                >
-                  <Database :size="12" />
-                  All
-                </button>
-              </div>
-            </div>
 
             <!-- Retrieval -->
             <div class="space-y-2">
@@ -238,6 +232,114 @@
               </div>
             </div>
 
+          </div>
+        </div>
+      </div>
+
+      <!-- PII redaction viewer drawer (R9.3 / R9.4 — Advisor Desktop UX §9.2).
+           Renders the audit-log events for the current chat session. Opens
+           from the persistent pill in the chat input toolbar. -->
+      <div
+        v-if="redactionDrawerOpen"
+        class="fixed inset-0 z-[200]"
+        @click.self="closeRedactionDrawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="redaction-drawer-title"
+      >
+        <div class="absolute inset-0 bg-black/30" @click="closeRedactionDrawer" aria-hidden="true"></div>
+        <div class="absolute right-0 top-0 h-full w-96 max-w-[90vw] bg-base-100 shadow-2xl flex flex-col">
+          <div class="flex items-center justify-between p-4 border-b border-base-300">
+            <div class="flex items-center gap-2 min-w-0">
+              <ShieldCheck v-if="piiRedactionEnabled" :size="16" class="text-success flex-shrink-0" aria-hidden="true" />
+              <ShieldAlert v-else :size="16" class="text-warning flex-shrink-0" aria-hidden="true" />
+              <h3 id="redaction-drawer-title" class="text-sm font-bold truncate">
+                PII redactions — this session
+              </h3>
+            </div>
+            <button
+              class="btn btn-ghost btn-sm btn-circle"
+              @click="closeRedactionDrawer"
+              aria-label="Close redaction viewer"
+            >
+              <X :size="18" />
+            </button>
+          </div>
+
+          <!-- Status banner -->
+          <div
+            v-if="!piiRedactionEnabled"
+            class="m-4 p-3 rounded-lg bg-warning/10 border border-warning/30 text-xs leading-snug"
+          >
+            <div class="font-medium text-base-content/90 mb-1">Redaction is currently disabled</div>
+            <div class="text-base-content/70">
+              Prompts sent to the AI provider may contain names, account numbers, and other client identifiers. Re-enable in Privacy settings.
+            </div>
+            <button
+              class="btn btn-xs btn-warning mt-2"
+              @click="closeRedactionDrawer(); $emit('switch-tab', 'settings')"
+            >
+              Open Settings
+            </button>
+          </div>
+
+          <!-- Summary -->
+          <div v-else class="px-4 pt-3 pb-2 border-b border-base-300/60">
+            <div class="flex items-baseline justify-between">
+              <span class="text-xs text-base-content/60 uppercase tracking-wider">Total redactions</span>
+              <span class="text-lg font-semibold tabular-nums">{{ redactionSessionTotal }}</span>
+            </div>
+            <div v-if="redactionSessionByType && Object.keys(redactionSessionByType).length > 0" class="mt-2 space-y-0.5">
+              <div
+                v-for="(count, type) in redactionSessionByType"
+                :key="type"
+                class="flex items-baseline justify-between text-xs"
+              >
+                <span class="text-base-content/70">{{ formatEntityName(type) }}</span>
+                <span class="tabular-nums text-base-content/80">{{ count }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Event list -->
+          <div class="flex-1 overflow-y-auto px-4 py-3">
+            <div v-if="redactionLoading && redactionEvents.length === 0" class="flex justify-center py-6">
+              <span class="loading loading-spinner loading-sm text-base-content/40"></span>
+            </div>
+            <div
+              v-else-if="!piiRedactionEnabled && redactionEvents.length === 0"
+              class="text-xs text-base-content/55 italic text-center py-6"
+            >
+              No redactions logged.
+            </div>
+            <div
+              v-else-if="piiRedactionEnabled && redactionEvents.length === 0"
+              class="text-xs text-base-content/55 italic text-center py-6"
+            >
+              No PII detected in this session yet. Events appear here as soon as a tool call or AI prompt redacts an identifier.
+            </div>
+            <ul v-else class="space-y-2">
+              <li
+                v-for="evt in redactionEvents"
+                :key="evt.id"
+                class="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs space-y-0.5"
+              >
+                <div class="flex items-baseline justify-between gap-2">
+                  <span class="font-semibold text-base-content/85 truncate">{{ formatEntityName(evt.entity_type) }}</span>
+                  <span class="tabular-nums text-base-content/45 text-[11px]">{{ formatEventTime(evt.timestamp) }}</span>
+                </div>
+                <div class="text-base-content/55 truncate">
+                  Replaced with <span class="font-mono">{{ evt.replacement || '[REDACTED]' }}</span>
+                </div>
+                <div v-if="evt.tool_name" class="text-[11px] text-base-content/45 truncate">
+                  via {{ evt.tool_name }}
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <div class="px-4 py-3 border-t border-base-300/60 text-[11px] text-base-content/50 leading-snug">
+            Counts only — original text never leaves this device. Audit log retained locally.
           </div>
         </div>
       </div>
@@ -305,17 +407,41 @@
                   class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug break-words [overflow-wrap:anywhere]"
                 >{{ msg.content }}</div>
 
-                <!-- Initial "Thinking…" placeholder before any content arrives -->
-                <div v-else-if="msg.streaming && !msg.content && (!msg.structuredResults || msg.structuredResults.length === 0)"
-                  class="flex items-center gap-2 text-xs text-base-content/50 py-0.5">
+                <!-- Initial "Thinking…" placeholder.
+
+                     Expert Mode: hide the indicator as soon as the first
+                     tool-call card appears so it doesn't double up with the
+                     spinner inside the card itself.
+
+                     Basic Mode: keep it visible for the whole pre-prose phase
+                     (R8.4 — "raw tool-call output is replaced by a simple
+                     'thinking…' indicator while the AI processes"). The
+                     structured-results block below is gated on isExpertMode,
+                     so without this the bubble would render empty until the
+                     first text_delta. -->
+                <div
+                  v-else-if="
+                    msg.streaming &&
+                    !msg.content &&
+                    (
+                      !isExpertMode ||
+                      !msg.structuredResults ||
+                      msg.structuredResults.length === 0
+                    )
+                  "
+                  class="flex items-center gap-2 text-xs text-base-content/50 py-0.5"
+                >
                   <span class="loading loading-dots loading-xs text-primary"></span>
                   <span>Thinking…</span>
                 </div>
 
                 <!-- Structured query / metric results (rendered BEFORE the prose answer
                      so the synthesized response lands at the bottom of the message,
-                     where the auto-scroll anchor keeps it in view as it streams) -->
-                <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
+                     where the auto-scroll anchor keeps it in view as it streams).
+
+                     Expert Mode only — Basic Mode suppresses raw tool output
+                     per R8.4. -->
+                <div v-if="isExpertMode && msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
                   <template v-for="(sr, srIdx) in msg.structuredResults" :key="srIdx">
 
                   <!-- Thinking breadcrumb: prose the agent emitted between tool calls -->
@@ -356,8 +482,19 @@
                       </button>
                     </div>
 
-                    <!-- Error -->
-                    <div v-if="sr.error" class="px-3 py-2 text-xs text-error">{{ sr.error }}</div>
+                    <!-- Tool-call error: styled as a warning (amber), not an
+                         error (red), because mid-loop tool failures are
+                         routine — the agent typically retries with adjusted
+                         args. A truly fatal turn surfaces via the top-level
+                         red error banner instead, so reserving red for that
+                         keeps the visual hierarchy honest. -->
+                    <div
+                      v-if="sr.error"
+                      class="px-3 py-2 text-xs text-warning bg-warning/5 flex items-start gap-2"
+                    >
+                      <span class="font-semibold flex-shrink-0">retried —</span>
+                      <span class="break-all">{{ sr.error }}</span>
+                    </div>
 
                     <!-- Tabular result (query / top_holdings / etc.) -->
                     <div
@@ -544,7 +681,7 @@
                 <!-- Synthesized prose answer — streams in below the tool cards so
                      auto-scroll keeps the final response visible. -->
                 <div v-if="!msg.slashCommand && (msg.content || msg.streaming)" class="relative"
-                  :class="{ 'mt-3': msg.structuredResults && msg.structuredResults.length > 0 }">
+                  :class="{ 'mt-3': isExpertMode && msg.structuredResults && msg.structuredResults.length > 0 }">
                   <div
                     class="prose prose-sm max-w-none text-sm chat-markdown break-words [overflow-wrap:anywhere]"
                     v-html="renderAssistantMarkdown(msg.content)"
@@ -555,9 +692,10 @@
                     class="inline-block w-0.5 h-4 bg-primary align-middle ml-0.5 animate-pulse"
                     aria-hidden="true"
                   ></span>
-                  <!-- Post-tool "Synthesizing…" hint: tools finished, prose not started -->
+                  <!-- Post-tool "Synthesizing…" hint (Expert Mode only): tools finished, prose not started.
+                       In Basic Mode the single "Thinking…" indicator above stays visible through this phase. -->
                   <div
-                    v-if="msg.streaming && !msg.content && msg.structuredResults?.length > 0 && !msg.structuredResults.some(sr => sr.pending)"
+                    v-if="isExpertMode && msg.streaming && !msg.content && msg.structuredResults?.length > 0 && !msg.structuredResults.some(sr => sr.pending)"
                     class="flex items-center gap-2 text-xs text-base-content/50 py-0.5"
                   >
                     <span class="loading loading-dots loading-xs text-primary"></span>
@@ -581,7 +719,13 @@
                     <span v-if="msg.aiUsage.features_used?.includes('structured_tools')" class="badge badge-xs badge-success gap-0.5">
                       <Table2 :size="9" /> sql
                     </span>
-                    <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
+                    <span
+                      v-if="msg.scopeFilter && msg.scopeFilter.total > 0"
+                      class="badge badge-xs badge-accent badge-outline"
+                      :title="`Restricted to ${msg.scopeFilter.count} of ${msg.scopeFilter.total} sources`"
+                    >
+                      {{ msg.scopeFilter.count }}/{{ msg.scopeFilter.total }} sources
+                    </span>
                   </template>
                   <button
                     v-if="msg.content"
@@ -684,6 +828,32 @@
               >
                 <Mic :size="14" />
               </button>
+              <!-- Persistent PII redaction pill (R9.4 — Advisor Desktop UX §9.2).
+                   Click opens the slide-out viewer rendering this chat session's
+                   redaction events. Visible in both Basic and Expert mode -- the
+                   privacy posture is not optional UI. -->
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs gap-1 px-1.5 h-6 min-h-0 font-normal"
+                :class="piiRedactionEnabled ? 'text-success/80 hover:text-success' : 'text-warning hover:text-warning'"
+                @click="openRedactionDrawer"
+                :title="piiRedactionEnabled ? `PII redaction active — ${redactionSessionTotal} redaction${redactionSessionTotal === 1 ? '' : 's'} this session` : 'PII redaction is OFF — prompts may include client identifiers'"
+                :aria-label="piiRedactionEnabled ? `Open PII redaction log (${redactionSessionTotal} redactions this session)` : 'Open PII redaction log (redaction is off)'"
+                :aria-expanded="redactionDrawerOpen"
+              >
+                <ShieldCheck v-if="piiRedactionEnabled" :size="11" aria-hidden="true" />
+                <ShieldAlert v-else :size="11" aria-hidden="true" />
+                <span class="text-[11px]">
+                  {{ piiRedactionEnabled ? 'PII redacted' : 'PII off' }}
+                </span>
+                <span
+                  v-if="piiRedactionEnabled && redactionSessionTotal > 0"
+                  class="badge badge-xs badge-success badge-outline tabular-nums"
+                  aria-hidden="true"
+                >
+                  {{ redactionSessionTotal }}
+                </span>
+              </button>
               <template v-if="isExpertMode">
                 <button
                   class="btn btn-ghost btn-xs btn-circle"
@@ -747,7 +917,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic } from 'lucide-vue-next'
 import { useSpeechRecognition } from '../composables/useSpeechRecognition.js'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
@@ -761,6 +931,8 @@ import {
   isLocalProvider,
 } from '../utils/aiProviders.js'
 import { isExpertMode } from '../utils/expertMode.js'
+import { friendlyError } from '../utils/friendlyError.js'
+import { apiUrl } from '../utils/apiUrl.js'
 
 const props = defineProps({
   chunkCount: { type: Number, default: 0 },
@@ -780,12 +952,22 @@ const loading = ref(false)
 const error = ref('')
 const inputMessage = ref('')
 const messagesEnd = ref(null)
+
+// Auth-error banner: shown when a chat-stream call comes back 401/403 from
+// the configured provider, so the advisor knows their key is bad. Sticky until
+// dismissed or until the next successful turn — non-stacking with the "no
+// providers" notice (handled via v-else-if in the template).
+const authErrorActive = ref(false)
+const authErrorDismissed = ref(false)
+const authErrorVisible = computed(
+  () => authErrorActive.value && !authErrorDismissed.value
+)
+const dismissAuthError = () => { authErrorDismissed.value = true }
 const settingsDrawerOpen = ref(false)
 
 // Chat options (persisted)
 const topK = ref(parseInt(localStorage.getItem('chat_top_k') || '5'))
 const searchMode = ref(localStorage.getItem('chat_search_mode') || 'semantic')
-const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 
 // Provider state
@@ -803,6 +985,102 @@ const loadPrivacyStatus = async () => {
     // Keep optimistic default — the badge falls back to "on" if the config
     // endpoint is unreachable, which matches the server-side default.
   }
+}
+
+// PII redaction viewer (R9 — Advisor Desktop UX §9.2). The pill in the
+// chat input toolbar shows a running count of redactions in this session;
+// the drawer renders the underlying audit-log events. We pin the session
+// boundary at component mount so a long-lived chat tab doesn't accumulate
+// counts from yesterday's sessions.
+const chatSessionStartIso = new Date().toISOString()
+const redactionDrawerOpen = ref(false)
+const redactionEvents = ref([])
+const redactionLoading = ref(false)
+const redactionSessionTotal = ref(0)
+const redactionSessionByType = ref({})
+let redactionPollTimer = null
+
+function formatEntityName(type) {
+  if (!type) return '—'
+  return String(type)
+    .toLowerCase()
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+function formatEventTime(iso) {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  } catch {
+    return ''
+  }
+}
+
+async function loadRedactionSummary() {
+  const colId = collectionStore.currentCollectionId
+  if (!colId) return
+  try {
+    const { data } = await axios.get('/api/redactions/summary', {
+      params: { collection_id: colId, since: chatSessionStartIso },
+    })
+    redactionSessionTotal.value = data?.total_redactions || 0
+    redactionSessionByType.value = data?.by_entity_type || {}
+  } catch {
+    // Non-fatal — pill just shows whatever we last had.
+  }
+}
+
+async function loadRedactionEvents() {
+  const colId = collectionStore.currentCollectionId
+  if (!colId) return
+  redactionLoading.value = true
+  try {
+    const { data } = await axios.get('/api/redactions/log', {
+      params: { collection_id: colId, limit: 100 },
+    })
+    // Filter to this session window so the drawer agrees with the pill count.
+    const events = (data?.events || []).filter(
+      (e) => !e.timestamp || e.timestamp >= chatSessionStartIso,
+    )
+    // Newest first.
+    events.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+    redactionEvents.value = events
+  } catch {
+    redactionEvents.value = []
+  } finally {
+    redactionLoading.value = false
+  }
+}
+
+function startRedactionPolling() {
+  stopRedactionPolling()
+  redactionPollTimer = setInterval(() => {
+    loadRedactionSummary()
+    if (redactionDrawerOpen.value) loadRedactionEvents()
+  }, 4000)
+}
+
+function stopRedactionPolling() {
+  if (redactionPollTimer) {
+    clearInterval(redactionPollTimer)
+    redactionPollTimer = null
+  }
+}
+
+function openRedactionDrawer() {
+  redactionDrawerOpen.value = true
+  // Close the settings drawer if it's open — they share the same right-side slot.
+  settingsDrawerOpen.value = false
+  loadRedactionEvents()
+  loadRedactionSummary()
+  startRedactionPolling()
+}
+
+function closeRedactionDrawer() {
+  redactionDrawerOpen.value = false
+  stopRedactionPolling()
 }
 
 const sendDisabled = computed(() => {
@@ -1122,7 +1400,7 @@ const runInlineSlashCommand = async (input) => {
           },
           onError: (message) => {
             chatStore.removeLastStreamingMessage(collectionId)
-            error.value = message || 'Streaming failed'
+            error.value = friendlyError(message, { expert: isExpertMode.value, fallback: 'Streaming failed' })
             finalized = true
           },
         },
@@ -1135,7 +1413,6 @@ const runInlineSlashCommand = async (input) => {
     const result = await runSlashCommand(input, {
       collectionId,
       collection: collectionStore.currentCollection,
-      groupId: collectionStore.currentGroupId,
       messages: messages.value,
       providerHeaders: buildProviderHeaders(selectedProvider.value),
     })
@@ -1191,8 +1468,14 @@ const sendMessage = async () => {
       .filter(m => !m.streaming)
       .map(m => ({ role: m.role, content: m.content }))
 
+    // Chat is always scoped to the active collection. The advisor can narrow
+    // further to specific sources via the SourcesSidebar checkboxes; null
+    // means "all sources in the collection".
+    const docFilter = chatStore.getScopedDocumentIds(collectionId)
+    const documentCountAtSend = props.documentCount
+
     const response = await fetch(
-      `/api/chat/stream?collection_id=${collectionId}`,
+      apiUrl(`/api/chat/stream?collection_id=${collectionId}`),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...providerHeaders },
@@ -1201,16 +1484,26 @@ const sendMessage = async () => {
           provider: selectedProvider.value,
           top_k: topK.value,
           mode: searchMode.value,
-          scope: collectionStore.currentGroupId ? `group:${collectionStore.currentGroupId}` : scope.value,
           rerank: rerank.value,
+          document_ids: docFilter,
         }),
       }
     )
 
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}))
+      // 401/403 indicates the stored provider key is bad/expired — surface a
+      // dedicated, non-stacking banner instead of the generic error toast so
+      // the advisor knows where to go to fix it.
+      if (response.status === 401 || response.status === 403) {
+        authErrorActive.value = true
+        authErrorDismissed.value = false
+      }
       throw new Error(errBody.detail || `HTTP ${response.status}`)
     }
+    // Reaching this point means the provider accepted the key — clear any
+    // stale auth-error banner from a previous turn.
+    authErrorActive.value = false
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
@@ -1258,22 +1551,32 @@ const sendMessage = async () => {
           for (let i = msgs.length - 1; i >= 0; i--) {
             if (msgs[i].role === 'assistant') {
               msgs[i].provider = selectedProvider.value
-              msgs[i].scope = scope.value
+              if (docFilter !== null) {
+                // Snapshot the filter at send time so the badge reflects the
+                // turn that just ran, not the live sidebar state.
+                msgs[i].scopeFilter = {
+                  count: docFilter.length,
+                  total: documentCountAtSend,
+                }
+              }
               break
             }
           }
           await scrollToBottom()
         } else if (event.type === 'error') {
           chatStore.removeLastStreamingMessage(collectionId)
-          error.value = event.message || 'Chat failed. Please try again.'
+          error.value = friendlyError(event.message, { expert: isExpertMode.value, fallback: 'Chat failed. Please try again.' })
         }
       }
     }
   } catch (err) {
     chatStore.removeLastStreamingMessage(collectionId)
-    error.value = err.message || 'Chat failed. Please try again.'
+    error.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Chat failed. Please try again.' })
   } finally {
     loading.value = false
+    // Refresh the PII pill count so the toolbar reflects redactions logged
+    // during this turn even when the viewer drawer is closed.
+    loadRedactionSummary()
   }
 }
 
@@ -1294,7 +1597,6 @@ const runBriefCommand = async () => {
 // Persist options
 watch(topK, (v) => localStorage.setItem('chat_top_k', String(v)))
 watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
-watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
 
 // Scroll-on-new-message only. Streaming events (text_delta/thinking/tool_start)
@@ -1313,15 +1615,26 @@ const handlePrefill = (e) => {
   })
 }
 
+// Re-read settings that may have been flipped by bootstrapAIDefaults*
+// when the user just configured their first provider. Component refs
+// were initialized once at script setup, so we sync them on the event.
+const onProvidersChanged = () => {
+  rerank.value = localStorage.getItem('chat_rerank') === 'true'
+}
+
 onMounted(() => {
   ensureValidProvider()
   scrollToBottom()
   loadPrivacyStatus()
-  window.addEventListener('asymptote:prefill-chat', handlePrefill)
+  loadRedactionSummary()
+  window.addEventListener('finn:prefill-chat', handlePrefill)
+  window.addEventListener('finn:providers-changed', onProvidersChanged)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('asymptote:prefill-chat', handlePrefill)
+  window.removeEventListener('finn:prefill-chat', handlePrefill)
+  window.removeEventListener('finn:providers-changed', onProvidersChanged)
+  stopRedactionPolling()
   if (copyResetTimer) clearTimeout(copyResetTimer)
 })
 </script>

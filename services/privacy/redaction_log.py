@@ -146,6 +146,85 @@ class RedactionLog:
             logger.error(f"Failed to read redaction log: {e}")
             return []
 
+    def summarize(
+        self,
+        collection_id: str | None = None,
+        session_id: str | None = None,
+        since: str | None = None,
+    ) -> dict[str, Any]:
+        """Summarize redactions filtered by collection / session / start time.
+
+        Used by the HTTP /api/redactions/summary endpoint to power the
+        "PII redaction active" panel and the per-Note-of-Record redaction
+        footer. Original PII text is never read or returned — counts only.
+        """
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if collection_id:
+            conditions.append("collection_id = ?")
+            params.append(collection_id)
+        if session_id:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if since:
+            conditions.append("timestamp >= ?")
+            params.append(since)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+
+                cursor = conn.execute(
+                    f"""
+                    SELECT entity_type, COUNT(*) AS count
+                    FROM redaction_log
+                    {where}
+                    GROUP BY entity_type
+                    ORDER BY count DESC
+                    """,
+                    params,
+                )
+                by_type = {row["entity_type"]: row["count"] for row in cursor.fetchall()}
+
+                cursor = conn.execute(
+                    f"""
+                    SELECT tool_name, COUNT(*) AS count
+                    FROM redaction_log
+                    {where}
+                    GROUP BY tool_name
+                    ORDER BY count DESC
+                    """,
+                    params,
+                )
+                by_tool = {
+                    (row["tool_name"] or "unknown"): row["count"]
+                    for row in cursor.fetchall()
+                }
+
+                total = sum(by_type.values())
+
+                return {
+                    "collection_id": collection_id,
+                    "session_id": session_id,
+                    "since": since,
+                    "total_redactions": total,
+                    "by_entity_type": by_type,
+                    "by_tool": by_tool,
+                }
+        except Exception as e:
+            logger.error(f"Failed to summarize redaction log: {e}")
+            return {
+                "collection_id": collection_id,
+                "session_id": session_id,
+                "since": since,
+                "total_redactions": 0,
+                "by_entity_type": {},
+                "by_tool": {},
+            }
+
     def get_session_summary(
         self, session_id: str
     ) -> dict[str, Any]:

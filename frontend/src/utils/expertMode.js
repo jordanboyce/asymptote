@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 
-const STORAGE_KEY = 'asymptote_expert_mode'
+const STORAGE_KEY = 'finn_expert_mode'
 
 const _expert = ref(localStorage.getItem(STORAGE_KEY) === 'true')
 

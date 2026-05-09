@@ -4,21 +4,24 @@ Turns a ChatRequest + provider into a prepared ChatTurn (system text,
 messages, agent context) plus the filtered search results the endpoint
 needs to build its source list.
 
+Chat is always scoped to a single Collection (the household). The advisor
+can further restrict to a subset of sources via the SourcesSidebar
+checkboxes — that becomes `chat_request.document_ids`. Cross-collection
+queries are search's job, not chat's; see /search and SearchTab.
+
 Phases (in order):
 
-  1. Resolve scope to a list of collection ids ("current", "all",
-     "group:<id>").
-  2. Reformulate the latest user message using prior history (skipped on
+  1. Reformulate the latest user message using prior history (skipped on
      single-turn queries to avoid an unnecessary LLM call).
-  3. Search the resolved collections, paired with their origin collection
-     id so URLs stay correct in cross-collection scopes.
-  4. Optionally rerank the merged results.
-  5. Collect Holdings tables for the resolved collections — small ones get
-     inlined as JSONL, large ones are exposed as tool-callable tables.
-  6. Filter out chunks whose files were inlined (the JSONL is authoritative).
-  7. Assemble the system prompt: advisor framing + Collection overview +
-     Expertise packs (single-collection scope only) + inline JSONL block +
-     LARGE TABLES block + RETRIEVED CONTEXT.
+  2. Search the current collection (filtered by document_ids if the
+     advisor narrowed scope).
+  3. Optionally rerank the results.
+  4. Collect Holdings tables for the collection — small ones get inlined
+     as JSONL, large ones are exposed as tool-callable tables.
+  5. Filter out chunks whose files were inlined (the JSONL is authoritative).
+  6. Assemble the system prompt: advisor framing + Collection overview +
+     Expertise packs + inline JSONL block + LARGE TABLES block +
+     RETRIEVED CONTEXT.
 
 /notes, /followup, /ask skip this builder — they assemble their own
 prompts from briefs, transcripts, etc.
@@ -34,7 +37,6 @@ from models.schemas import ChatRequest
 from services.ai_service import AIProvider, AIService
 from services.chat.engine import ChatTurn
 from services.collection_overview import build_collection_overview
-from services.collection_service import collection_service
 from services.expertise_store import ExpertiseStore
 from services.indexer_manager import indexer_manager
 from services.structured_chat import (
@@ -51,10 +53,10 @@ class PreparedChat:
     """Engine input + the bits the endpoint still needs to shape the response."""
 
     turn: ChatTurn
-    # Search results that survived inlining-filter, paired with their origin
-    # collection id. The endpoint uses these to build pdf_url / page_url
-    # entries — URLs aren't the engine's concern.
-    filtered_results: list[tuple[Any, str]]
+    # Search results that survived the inlining-filter. The endpoint uses
+    # these to build pdf_url / page_url entries against the chat's
+    # collection_id — URLs aren't the engine's concern.
+    filtered_results: list[Any]
     # Reranking call's usage, when reranking ran. Used by /api/chat's legacy
     # AIUsage payload; SSE callers can ignore it.
     rerank_usage: dict[str, Any] | None
@@ -81,21 +83,26 @@ def build_chat_turn(
 
     ai_service = AIService(provider=provider)
 
+    # Per-document scope filter ("only chat about these N sources"). Empty list
+    # is treated like None — see SourcesSidebar's "all checked" default state.
+    doc_filter = set(chat_request.document_ids) if chat_request.document_ids else None
+
     search_query = _reformulate_if_needed(ai_service, chat_request, latest_query)
-    search_col_ids = _resolve_scope(chat_request.scope, collection_id)
-    context_results, result_collection_ids = _run_search(
-        search_col_ids, collection_id, search_query, chat_request,
+    context_results = _run_search(
+        collection_id, search_query, chat_request, doc_filter,
     )
 
     rerank_usage = None
     if chat_request.rerank and context_results:
-        context_results, result_collection_ids, rerank_usage = _rerank(
-            ai_service, latest_query, context_results,
-            result_collection_ids, chat_request.top_k,
+        context_results, rerank_usage = _rerank(
+            ai_service, latest_query, context_results, chat_request.top_k,
         )
 
-    overview_ids = search_col_ids if search_col_ids is not None else [collection_id]
-    structured_tables, structured_stores = collect_structured_tables(overview_ids)
+    structured_tables, structured_stores = collect_structured_tables([collection_id])
+    if doc_filter is not None and structured_tables:
+        structured_tables = [
+            t for t in structured_tables if t.get("document_id") in doc_filter
+        ]
     if structured_tables:
         structured_ctx = build_structured_context(structured_tables, structured_stores)
     else:
@@ -110,29 +117,29 @@ def build_chat_turn(
     inline_block = structured_ctx["inline_block"]
 
     filtered_results = [
-        (r, cid) for (r, cid) in zip(context_results, result_collection_ids)
-        if r.filename not in inlined_filenames
+        r for r in context_results if r.filename not in inlined_filenames
     ]
 
     context_text = _format_retrieved_context(filtered_results)
 
     try:
-        collection_overview = build_collection_overview(overview_ids)
+        collection_overview = build_collection_overview(
+            [collection_id],
+            document_ids=list(doc_filter) if doc_filter is not None else None,
+        )
     except Exception as e:
         logger.warning("Failed to build collection overview: %s", e)
         collection_overview = "(Collection overview unavailable.)"
 
-    expertise_block = _build_expertise_block(
-        expertise_store, collection_id, search_col_ids,
-    )
+    expertise_block = _build_expertise_block(expertise_store, collection_id)
 
     system_text = _assemble_system_prompt(
-        scope_note="all collections" if search_col_ids is not None else "the current collection",
         collection_overview=collection_overview,
         expertise_block=expertise_block,
         inline_block=inline_block,
         context_text=context_text,
         tables_block=describe_tables_for_prompt(tool_tables) if tool_tables else "",
+        doc_filter_count=len(doc_filter) if doc_filter is not None else None,
     )
 
     messages = [
@@ -144,7 +151,7 @@ def build_chat_turn(
         provider=provider,
         system_text=system_text,
         messages=messages,
-        agent_context={"collection_id": collection_id, "scope": chat_request.scope},
+        agent_context={"collection_id": collection_id},
         model=provider.QUALITY_MODEL,
         max_tokens=max_tokens,
         max_iterations=max_iterations,
@@ -170,58 +177,33 @@ def _reformulate_if_needed(
     return ai_service.reformulate_query(history_for_reformulation, latest_query)
 
 
-def _resolve_scope(scope: str, current_collection_id: str) -> list[str] | None:
-    """Return the explicit list of collection ids to search, or None for single-collection."""
-    if scope == "all":
-        return [c["id"] for c in collection_service.get_all_collections()]
-    if scope.startswith("group:"):
-        from services.app_database import app_db
-        group = app_db.get_collection_group(scope[6:])
-        return group["collection_ids"] if group else [current_collection_id]
-    return None
-
-
 def _run_search(
-    search_col_ids: list[str] | None,
     collection_id: str,
     search_query: str,
     chat_request: ChatRequest,
-) -> tuple[list, list[str]]:
-    if search_col_ids is None:
-        indexer = indexer_manager.get_indexer(collection_id)
-        result = indexer.search(
-            query=search_query, top_k=chat_request.top_k, mode=chat_request.mode,
-        )
-        return result["results"], [collection_id] * len(result["results"])
-
-    context_results: list = []
-    result_collection_ids: list[str] = []
-    for col_id in search_col_ids:
-        try:
-            col_indexer = indexer_manager.get_indexer(col_id)
-            col_search = col_indexer.search(
-                query=search_query, top_k=chat_request.top_k, mode=chat_request.mode,
-            )
-            for r in col_search["results"]:
-                context_results.append(r)
-                result_collection_ids.append(col_id)
-        except Exception as e:
-            logger.warning("Chat: search failed for collection '%s': %s", col_id, e)
-
-    paired = sorted(
-        zip(context_results, result_collection_ids),
-        key=lambda x: x[0].similarity_score, reverse=True,
-    )[:chat_request.top_k]
-    return [p[0] for p in paired], [p[1] for p in paired]
+    doc_filter: set[str] | None = None,
+) -> list:
+    # When a document filter is active we widen the fetch so the post-filter
+    # pool can still satisfy top_k. Without this, narrowing scope to a single
+    # doc could leave us with zero hits if the top_k unfiltered results all
+    # came from other docs.
+    fetch_k = chat_request.top_k * 5 if doc_filter else chat_request.top_k
+    indexer = indexer_manager.get_indexer(collection_id)
+    result = indexer.search(
+        query=search_query, top_k=fetch_k, mode=chat_request.mode,
+    )
+    results = result["results"]
+    if doc_filter is not None:
+        results = [r for r in results if r.document_id in doc_filter]
+    return results[:chat_request.top_k]
 
 
 def _rerank(
     ai_service: AIService,
     latest_query: str,
     context_results: list,
-    result_collection_ids: list[str],
     top_k: int,
-) -> tuple[list, list[str], dict[str, Any] | None]:
+) -> tuple[list, dict[str, Any] | None]:
     try:
         rerank_input = [
             {
@@ -239,19 +221,18 @@ def _rerank(
         ]
         if valid_indices:
             context_results = [context_results[i] for i in valid_indices]
-            result_collection_ids = [result_collection_ids[i] for i in valid_indices]
-        return context_results, result_collection_ids, rerank_result.get("usage")
+        return context_results, rerank_result.get("usage")
     except Exception as e:
         logger.warning("Chat context reranking failed, using original order: %s", e)
         return context_results, result_collection_ids, None
 
 
-def _format_retrieved_context(filtered_results: list[tuple[Any, str]]) -> str:
+def _format_retrieved_context(filtered_results: list) -> str:
     if not filtered_results:
         return "No relevant context found."
     parts = [
         f"[Source {i + 1}: {r.filename}, page {r.page_number}]\n{r.text_snippet}"
-        for i, (r, _cid) in enumerate(filtered_results)
+        for i, r in enumerate(filtered_results)
     ]
     return "\n\n---\n\n".join(parts)
 
@@ -259,11 +240,8 @@ def _format_retrieved_context(filtered_results: list[tuple[Any, str]]) -> str:
 def _build_expertise_block(
     expertise_store: ExpertiseStore,
     collection_id: str,
-    search_col_ids: list[str] | None,
 ) -> str:
-    """Expertise packs are scoped to a single Collection; skip in 'all'/group scope."""
-    if search_col_ids is not None:
-        return ""
+    """Expertise packs are attached to the active Collection."""
     try:
         attached_packs = expertise_store.get_packs_for_collection(collection_id)
     except Exception as e:
@@ -283,12 +261,12 @@ def _build_expertise_block(
 
 def _assemble_system_prompt(
     *,
-    scope_note: str,
     collection_overview: str,
     expertise_block: str,
     inline_block: str,
     context_text: str,
     tables_block: str,
+    doc_filter_count: int | None = None,
 ) -> str:
     """Assemble the system prompt the engine will hand to the provider.
 
@@ -298,9 +276,9 @@ def _assemble_system_prompt(
     """
     base_parts = [
         f"You are an analytical assistant for a financial advisor. The person "
-        f"chatting with you is the advisor — not the client. The documents, "
-        f"holdings, accounts, and portfolio data in {scope_note} belong to "
-        f"one of the advisor's clients.",
+        "chatting with you is the advisor — not the client. The documents, "
+        "holdings, accounts, and portfolio data in this collection belong to "
+        "one of the advisor's clients.",
         "Always refer to the portfolio in the third person: \"the client's "
         "holdings\", \"the client's cash position\", \"this account\" — never "
         "\"your holdings\" or \"your portfolio\". Frame recommendations as "
@@ -311,7 +289,32 @@ def _assemble_system_prompt(
         "TABLES (when provided), and RETRIEVED CONTEXT below.",
         "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base "
         "itself (file counts, available documents, date ranges).",
+        # R5.6 — when the data needed to answer is genuinely absent, refuse to
+        # speculate. The advisor must be able to trust that "I don't see X"
+        # means "X isn't in this collection," not "I didn't try hard enough."
+        "If the question cannot be answered from the data in this collection — "
+        "for example, the COLLECTION OVERVIEW shows no relevant documents, the "
+        "STRUCTURED TABLES lack the column the question requires, or a tool "
+        "call returns no rows — say so explicitly. Begin the answer with "
+        "\"I don't have …\" and name the missing piece (e.g. \"I don't have "
+        "cost-basis data for this collection\", \"I don't have account-level "
+        "tagging in this export\", \"I don't have any holdings files indexed "
+        "yet\"). Do NOT guess, do NOT estimate from chunk text, and do NOT "
+        "invent positions, account numbers, or dollar figures. Suggest the "
+        "next concrete step the advisor could take (upload a different "
+        "export, switch collections, etc.) only when one is obvious.",
     ]
+    if doc_filter_count is not None:
+        # Tell the model the narrowed scope is intentional — otherwise it may
+        # hedge ("I don't see any other documents…") as if data is missing.
+        plural = "source" if doc_filter_count == 1 else "sources"
+        base_parts.append(
+            f"The advisor has restricted this conversation to {doc_filter_count} "
+            f"specific {plural}. The COLLECTION OVERVIEW, STRUCTURED TABLES, and "
+            f"RETRIEVED CONTEXT below already reflect that filter — answer only "
+            f"from these sources and do not speculate about documents that have "
+            f"been excluded from scope."
+        )
     if inline_block:
         base_parts.append(
             "When STRUCTURED TABLES are included below, they are the FULL contents "

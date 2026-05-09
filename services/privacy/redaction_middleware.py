@@ -61,15 +61,19 @@ _STRIP_KEYS = frozenset({
 
 # Keys whose values may contain PII embedded in identifiers (underscores,
 # hyphens, camelCase). For these keys, also check a normalized (spaces) form.
+# `name` is intentionally NOT here — collection display names are user-chosen
+# labels the model needs to disambiguate collections; redacting them breaks
+# every "search by client name" flow. The normalize-and-retry pass on
+# filenames is kept because file metadata is auto-derived (e.g. NetX360 export
+# filenames embedding account numbers).
 _NORMALIZE_KEYS = frozenset({
-    "name",
     "collection_name",
-    "description",
     "filename",
-    "sheet_name",
 })
 
-# Keys whose string values should NOT be redacted (structural identifiers)
+# Keys whose string values should NOT be redacted (structural identifiers
+# and user-controlled metadata that the LLM needs to operate). The walker
+# skips these wholesale — Presidio is never invoked on the value.
 _SKIP_KEYS = frozenset({
     "collection_id",
     "document_id",
@@ -86,6 +90,7 @@ _SKIP_KEYS = frozenset({
     "search_modes",
     "type",
     "role",
+    "role_source",
     "agg_fn",
     "aggregate_col",
     "group_by",
@@ -95,6 +100,19 @@ _SKIP_KEYS = frozenset({
     "chunk_id",
     "server_id",
     "server_url",
+    # User-controlled metadata the model needs to read back unaltered.
+    # Without this the model can't map "Henderson" → the collection's id,
+    # and get_table_schema's column-name preview comes back as [LOCATION].
+    "name",
+    "original_name",
+    "description",
+    # Schema introspection: column-sample previews are dominated by numeric
+    # currency strings and dates that Presidio mis-classifies as DATE_TIME /
+    # LOCATION / PERSON. We need raw samples for the model to pick the right
+    # SQL column; leak risk is low since samples are values like "359,712.72"
+    # not free-form prose.
+    "samples",
+    "sheet_name",
     # Numeric-as-string fields that are never PII
     "similarity_score",
     "rank",
@@ -126,6 +144,19 @@ def set_session_id(session_id: str) -> None:
     _current_session_id.set(session_id)
 
 
+# Output-side entity types to skip per source. The Note-of-Record / follow-up
+# email prompts inject today's date and instruct the model to write action-item
+# due dates, neither of which is sensitive PII; without this allow-list
+# Presidio rewrites them as `[DATE_TIME]` and the saved draft becomes useless
+# ("Date: [DATE_TIME]"). Date-shaped PII inside transcript chunks is still
+# scrubbed on the *input* side via the MCP middleware before it ever reaches
+# the prompt.
+_OUTPUT_EXCLUDE_BY_SOURCE: dict[str, frozenset[str]] = {
+    "notes_output": frozenset({"DATE_TIME"}),
+    "followup_output": frozenset({"DATE_TIME"}),
+}
+
+
 def redact_text_for_ai(
     text: str,
     collection_id: str | None = None,
@@ -141,7 +172,8 @@ def redact_text_for_ai(
     ``source_label`` is recorded in the audit log under the same column the
     MCP path uses for ``tool_name`` (e.g. ``"notes_output"``,
     ``"followup_output"``) so compliance can distinguish where each
-    redaction happened.
+    redaction happened. It also selects the output-side entity-type
+    allow-list — see ``_OUTPUT_EXCLUDE_BY_SOURCE``.
     """
     if not text or not text.strip():
         return text
@@ -155,7 +187,10 @@ def redact_text_for_ai(
     if not redaction_engine.available:
         return text
 
-    result = redaction_engine.redact_text(text, collection_id=collection_id)
+    exclude = _OUTPUT_EXCLUDE_BY_SOURCE.get(source_label or "")
+    result = redaction_engine.redact_text(
+        text, collection_id=collection_id, exclude_entity_types=exclude,
+    )
 
     if result.details:
         redaction_log.log_redactions(

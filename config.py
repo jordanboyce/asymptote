@@ -90,7 +90,10 @@ class Settings(BaseSettings):
     market_data_provider: Literal["yfinance"] = "yfinance"
 
     # UI feature flags
-    enable_chat_tab: bool = True  # Show/hide the Chat tab in the frontend
+    enable_search_tab: bool = True  # Show/hide the Search tab. Chat is the
+    # primary advisor surface and is always on; Search is the legacy
+    # retrieval-only surface and can be hidden for advisors who only
+    # work through chat.
 
     # v3.0: CSV indexing configuration
     csv_row_level_indexing: bool = True  # Index CSV rows individually
@@ -109,6 +112,21 @@ class Settings(BaseSettings):
 
     # v3.0: Schema version (for data persistence)
     schema_version: str = "3.0"
+
+    # User-visible application version. Surfaced via GET /api/version so the
+    # frontend can render an update banner when a newer build is available
+    # (the desktop launcher writes data/latest_known.json at startup with
+    # what *should* be installed; comparison happens in the browser).
+    app_version: str = "3.0.1"
+
+    # Feedback / issue reporting. When the user clicks "Report issue" in the
+    # footer, the backend pulls a (PII-redacted) snapshot of the diagnostics
+    # buffer and emails it to feedback_email_to via Resend. Leaving
+    # resend_api_key empty disables the feature; the modal still renders but
+    # the endpoint returns a 503 the UI surfaces as a config hint.
+    resend_api_key: str = ""
+    feedback_email_to: str = "jordan.boyce@cyberlion.dev"
+    feedback_email_from: str = ""  # e.g. "Finn Feedback <feedback@yourdomain.com>" — empty falls back to Resend's onboarding sender
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -35,6 +35,96 @@ _DEFAULT_THRESHOLDS = {
     'top_n': 10,
 }
 
+# Some brokerage exports (e.g. an XLSX→CSV pass through "ExportExcel" on
+# Pershing's URGL report) leave the symbol column literally containing the
+# word "Symbol" in every data cell — the column-header label leaking into the
+# body. Null those values out at the SELECT layer so the brief surfaces the
+# (still-correct) name field instead of "Symbol" in every row.
+_HEADER_LITERALS_SQL = (
+    "'SYMBOL', 'TICKER', 'CUSIP', 'ISIN', 'NAME', 'DESCRIPTION', "
+    "'SECURITY IDENTIFIER', 'SECURITY DESCRIPTION', 'SECURITY ID'"
+)
+
+
+def _safe_label_select(col: str, alias: str) -> str:
+    """SQL fragment that emits NULL when col's value is a column-header literal."""
+    return (
+        f"CASE WHEN UPPER(TRIM(COALESCE(CAST(\"{col}\" AS TEXT), ''))) "
+        f"IN ({_HEADER_LITERALS_SQL}) THEN NULL ELSE \"{col}\" END AS {alias}"
+    )
+
+
+def _dedupe_key(row: Dict[str, Any]) -> Optional[str]:
+    """Pick a stable identity key for a position row, preferring ticker → name."""
+    for field in ('ticker', 'name'):
+        val = row.get(field)
+        if val is None:
+            continue
+        s = str(val).strip().upper()
+        if s:
+            return s
+    return None
+
+
+def _dedupe_positions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge rows that describe the same security across multiple tables.
+
+    Same security appearing in multiple files (e.g. HBIL positions + Pershing
+    URGL of the same household) gets collapsed into one row. The merged row
+    keeps the maximum market_value seen and prefers non-null values for every
+    other field, so a row with cost_basis/unrealized_pnl absorbs a positions-
+    only sibling. Ungroupable rows (no ticker, no name) pass through.
+    """
+    merged: Dict[str, Dict[str, Any]] = {}
+    passthrough: List[Dict[str, Any]] = []
+    for row in rows:
+        key = _dedupe_key(row)
+        if key is None:
+            passthrough.append(dict(row))
+            continue
+        if key not in merged:
+            merged[key] = dict(row)
+            continue
+        existing = merged[key]
+        for field, value in row.items():
+            if value is None:
+                continue
+            if field == 'market_value':
+                cur = existing.get('market_value')
+                if cur is None or (isinstance(value, (int, float)) and value > cur):
+                    existing['market_value'] = value
+            elif field == 'source':
+                existing_source = existing.get('source')
+                if existing_source and existing_source != value:
+                    sources = existing_source.split(' + ') if isinstance(existing_source, str) else [str(existing_source)]
+                    if value not in sources:
+                        sources.append(value)
+                        existing['source'] = ' + '.join(sources)
+                else:
+                    existing['source'] = value
+            elif existing.get(field) is None:
+                existing[field] = value
+    return list(merged.values()) + passthrough
+
+
+def _dedupe_alerts(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Dedupe alert rows by name; keep the entry with the highest market_value."""
+    merged: Dict[str, Dict[str, Any]] = {}
+    passthrough: List[Dict[str, Any]] = []
+    for row in rows:
+        name = row.get('name')
+        if name is None:
+            passthrough.append(dict(row))
+            continue
+        key = str(name).strip().upper()
+        if not key:
+            passthrough.append(dict(row))
+            continue
+        cur = merged.get(key)
+        if cur is None or (row.get('market_value') or 0) > (cur.get('market_value') or 0):
+            merged[key] = dict(row)
+    return list(merged.values()) + passthrough
+
 
 def _is_cash_like(name: str) -> bool:
     """Return True when a position name looks like a cash / money-market entry."""
@@ -157,13 +247,13 @@ def _process_table(
 
         # ── top N positions ────────────────────────────────────────────────
         if mv_col and name_col:
-            select_parts = [f'"{name_col}" AS name', f'"{mv_col}" AS market_value']
+            select_parts = [_safe_label_select(name_col, 'name'), f'"{mv_col}" AS market_value']
             if cb_col:
                 select_parts.append(f'"{cb_col}" AS cost_basis')
             if pnl_col:
                 select_parts.append(f'"{pnl_col}" AS unrealized_pnl')
             if ticker_col and ticker_col != name_col:
-                select_parts.append(f'"{ticker_col}" AS ticker')
+                select_parts.append(_safe_label_select(ticker_col, 'ticker'))
             if sector_col:
                 select_parts.append(f'"{sector_col}" AS sector')
 
@@ -181,13 +271,13 @@ def _process_table(
         if mv_col and cb_col and name_col:
             loss_expr = f'("{cb_col}" - "{mv_col}")'
             select_parts = [
-                f'"{name_col}" AS name',
+                _safe_label_select(name_col, 'name'),
                 f'"{mv_col}" AS market_value',
                 f'"{cb_col}" AS cost_basis',
                 f'{loss_expr} AS unrealized_loss',
             ]
             if ticker_col and ticker_col != name_col:
-                select_parts.append(f'"{ticker_col}" AS ticker')
+                select_parts.append(_safe_label_select(ticker_col, 'ticker'))
 
             _, loss_rows = _rows(
                 conn,
@@ -209,7 +299,7 @@ def _process_table(
             if total_mv_for_conc and total_mv_for_conc > 0:
                 _, pos_rows = _rows(
                     conn,
-                    f'SELECT "{name_col}" AS name, "{mv_col}" AS market_value '
+                    f'SELECT {_safe_label_select(name_col, "name")}, "{mv_col}" AS market_value '
                     f'FROM "{table}" WHERE "{mv_col}" IS NOT NULL ORDER BY "{mv_col}" DESC',
                 )
                 for pr in pos_rows:
@@ -228,7 +318,7 @@ def _process_table(
         if mv_col and name_col:
             _, all_pos = _rows(
                 conn,
-                f'SELECT "{name_col}" AS name, "{mv_col}" AS market_value '
+                f'SELECT {_safe_label_select(name_col, "name")}, "{mv_col}" AS market_value '
                 f'FROM "{table}" WHERE "{mv_col}" IS NOT NULL AND "{mv_col}" > 0',
             )
             for pos in all_pos:
@@ -330,6 +420,17 @@ def generate_meeting_brief(
         result['tables_scanned'] += 1
 
     # ── post-processing ────────────────────────────────────────────────────
+
+    # Cross-file dedup: when a Collection has multiple holdings tables
+    # describing the same household (e.g. NetX360 HBIL + Pershing URGL of
+    # the same accounts), the same security appears in every table. Group
+    # by normalised (ticker || name) and merge fields, preferring non-null
+    # values so a row from a richer table (with cost_basis / unrealized_pnl)
+    # absorbs the sparser row from a positions-only file.
+    result['top_positions'] = _dedupe_positions(result['top_positions'])
+    result['tax_loss_candidates'] = _dedupe_positions(result['tax_loss_candidates'])
+    result['concentration_alerts'] = _dedupe_alerts(result['concentration_alerts'])
+    result['cash_drag_alerts'] = _dedupe_alerts(result['cash_drag_alerts'])
 
     # Sort top_positions globally, keep top_n
     top_n = int(resolved_thresholds['top_n'])

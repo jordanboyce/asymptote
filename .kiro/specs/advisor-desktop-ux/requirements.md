@@ -2,9 +2,9 @@
 
 ## Introduction
 
-Asymptote is a locally-running desktop application for financial advisors. It ingests brokerage exports (CSV/XLSX/PDF), transcribes meeting recordings, and provides AI-powered chat and portfolio analysis — all with PII redacted before any data leaves the machine.
+Finn is a locally-running desktop application for financial advisors. It ingests brokerage exports (CSV/XLSX/PDF), transcribes meeting recordings, and provides AI-powered chat and portfolio analysis — all with PII redacted before any data leaves the machine.
 
-This spec covers the onboarding and workflow polish needed to make Asymptote genuinely usable by a pilot group of 5–6 non-technical financial advisors at a Pershing/NetX360 custodian firm. The goal is a tool any advisor can pick up on day one and use confidently for their three core workflows: meeting prep, portfolio analysis, and meeting notes.
+This spec covers the onboarding and workflow polish needed to make Finn genuinely usable by a pilot group of 5–6 non-technical financial advisors at a Pershing/NetX360 custodian firm. The goal is a tool any advisor can pick up on day one and use confidently for their three core workflows: meeting prep, portfolio analysis, and meeting notes.
 
 The application already has working backends for document ingestion, semantic search, AI chat, portfolio metrics, and audio transcription. This spec focuses on the user-facing experience that connects those capabilities into coherent, advisor-friendly workflows.
 
@@ -12,19 +12,19 @@ The application already has working backends for document ingestion, semantic se
 
 ## Glossary
 
-- **Advisor**: A licensed financial advisor using Asymptote on their own machine. The person interacting with the application.
-- **Client**: The end investor whose portfolio data the Advisor manages. The Client never interacts with Asymptote directly.
-- **Collection**: A logical grouping of documents in Asymptote — typically one Collection per Client household (e.g., all of the Henderson household's brokerage exports and meeting transcripts).
+- **Advisor**: A licensed financial advisor using Finn on their own machine. The person interacting with the application.
+- **Client**: The end investor whose portfolio data the Advisor manages. The Client never interacts with Finn directly.
+- **Collection**: A logical grouping of documents in Finn — typically one Collection per Client household (e.g., all of the Henderson household's brokerage exports and meeting transcripts).
 - **Household**: One Client relationship, possibly spanning multiple brokerage accounts and individuals.
 - **Meeting Brief**: A structured, one-page pre-meeting document summarizing a Client's portfolio — household total, account breakdown, top positions, tax-loss candidates, concentration alerts, and cash drag.
 - **Note of Record**: A compliance-ready summary of a client meeting, drafted from the meeting transcript and portfolio context.
 - **Onboarding**: The first-run experience that takes an Advisor from a fresh install to a working, configured application.
-- **AI Provider**: An external LLM service (Anthropic Claude, OpenAI, Ollama Cloud) that Asymptote sends redacted context to for chat and analysis.
-- **API Key**: A credential that authenticates Asymptote to an AI Provider. Stored locally on the Advisor's machine.
+- **AI Provider**: An external LLM service (Anthropic Claude, OpenAI, Ollama Cloud) that Finn sends redacted context to for chat and analysis.
+- **API Key**: A credential that authenticates Finn to an AI Provider. Stored locally on the Advisor's machine.
 - **Basic Mode**: The simplified interface mode showing only the features a non-technical advisor needs for daily workflows.
 - **Expert Mode**: The full interface mode exposing advanced configuration, developer tools, and MCP settings.
 - **PII Redaction**: The process of detecting and replacing personally identifiable information (names, account numbers, SSNs, etc.) before any data is sent to an external AI Provider.
-- **Pilot**: The initial group of 5–6 advisors testing Asymptote before broader rollout.
+- **Pilot**: The initial group of 5–6 advisors testing Finn before broader rollout.
 
 ---
 
@@ -32,11 +32,11 @@ The application already has working backends for document ingestion, semantic se
 
 ### Requirement 1: First-Run Onboarding
 
-**User Story:** As a financial advisor installing Asymptote for the first time, I want a clear, step-by-step setup experience, so that I can get from a fresh install to a working tool without needing technical help.
+**User Story:** As a financial advisor installing Finn for the first time, I want a clear, step-by-step setup experience, so that I can get from a fresh install to a working tool without needing technical help.
 
 #### Acceptance Criteria
 
-1. WHEN an Advisor launches Asymptote for the first time with no AI Provider configured, THE Application SHALL display a guided onboarding flow before showing the main interface.
+1. WHEN an Advisor launches Finn for the first time with no AI Provider configured, THE Application SHALL display a guided onboarding flow before showing the main interface.
 2. THE Onboarding Flow SHALL present setup in a sequence of no more than four steps: (1) welcome and privacy explanation, (2) AI Provider selection and API key entry, (3) first Collection creation, (4) completion confirmation.
 3. WHEN the Advisor enters an API key during onboarding, THE Application SHALL validate the key against the selected AI Provider before advancing to the next step.
 4. IF an API key validation fails during onboarding, THEN THE Application SHALL display a specific error message identifying whether the failure was due to an invalid key, a network error, or an unsupported provider.

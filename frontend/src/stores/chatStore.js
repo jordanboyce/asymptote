@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-const STORAGE_KEY = 'asymptote_chat_history_v2'
-const LEGACY_STORAGE_KEY = 'asymptote_chat_history_v1'
+const STORAGE_KEY = 'finn_chat_history_v2'
+const LEGACY_STORAGE_KEY = 'finn_chat_history_v1'
+const SCOPE_STORAGE_KEY = 'finn_chat_scope_v1'
 const MAX_MESSAGES_PER_SESSION = 100
 const MAX_SESSIONS_PER_COLLECTION = 50
 
@@ -28,31 +29,44 @@ export const useChatStore = defineStore('chat', () => {
   // { collectionId: { sessions: [Session], activeSessionId: string } }
   const conversations = ref({})
 
+  // Per-document chat scope filter, persisted separately from conversations so
+  // it survives session reset.
+  // { [collectionId]: string[] | undefined }
+  //   - undefined / missing → "all sources in scope" (no filter sent to server)
+  //   - empty array → "no sources in scope" (the user explicitly unchecked everything)
+  //   - non-empty array → only these document IDs are in scope for chat
+  const scopedDocIds = ref({})
+
   const loadFromStorage = () => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved) {
         conversations.value = JSON.parse(saved)
-        return
-      }
-      // Migrate from v1 format: { collectionId: { messages: [...] } }
-      const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
-      if (legacy) {
-        const parsed = JSON.parse(legacy)
-        const migrated = {}
-        for (const [colId, conv] of Object.entries(parsed)) {
-          const msgs = conv?.messages || []
-          const session = makeSession({
-            messages: msgs,
-            title: deriveTitle(msgs.find((m) => m.role === 'user')?.content),
-          })
-          migrated[colId] = {
-            sessions: [session],
-            activeSessionId: session.id,
+      } else {
+        // Migrate from v1 format: { collectionId: { messages: [...] } }
+        const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
+        if (legacy) {
+          const parsed = JSON.parse(legacy)
+          const migrated = {}
+          for (const [colId, conv] of Object.entries(parsed)) {
+            const msgs = conv?.messages || []
+            const session = makeSession({
+              messages: msgs,
+              title: deriveTitle(msgs.find((m) => m.role === 'user')?.content),
+            })
+            migrated[colId] = {
+              sessions: [session],
+              activeSessionId: session.id,
+            }
           }
+          conversations.value = migrated
+          saveToStorage()
         }
-        conversations.value = migrated
-        saveToStorage()
+      }
+
+      const savedScope = localStorage.getItem(SCOPE_STORAGE_KEY)
+      if (savedScope) {
+        scopedDocIds.value = JSON.parse(savedScope) || {}
       }
     } catch (e) {
       console.error('Failed to load chat history:', e)
@@ -65,6 +79,47 @@ export const useChatStore = defineStore('chat', () => {
     } catch (e) {
       console.error('Failed to save chat history:', e)
     }
+  }
+
+  const saveScope = () => {
+    try {
+      localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify(scopedDocIds.value))
+    } catch (e) {
+      console.error('Failed to save chat scope:', e)
+    }
+  }
+
+  // Returns the filter array, or null when no filter is set ("all sources in scope").
+  const getScopedDocumentIds = (collectionId) => {
+    const v = scopedDocIds.value[collectionId]
+    return Array.isArray(v) ? v : null
+  }
+
+  const setScopedDocumentIds = (collectionId, ids) => {
+    if (ids == null) {
+      delete scopedDocIds.value[collectionId]
+    } else {
+      scopedDocIds.value[collectionId] = [...ids]
+    }
+    saveScope()
+  }
+
+  // Reconcile the saved filter against the currently-loaded document list.
+  // Drops IDs for deleted docs; collapses to "all in scope" when the filter
+  // covers every known doc. Called by SourcesSidebar after loadDocuments.
+  const reconcileScope = (collectionId, allDocIds) => {
+    const current = scopedDocIds.value[collectionId]
+    if (!Array.isArray(current)) return  // already "all in scope"
+    const known = new Set(allDocIds)
+    const pruned = current.filter((id) => known.has(id))
+    if (pruned.length === allDocIds.length) {
+      // Filter now covers everything — collapse back to "all in scope" so a
+      // future doc add doesn't silently start excluded.
+      delete scopedDocIds.value[collectionId]
+    } else {
+      scopedDocIds.value[collectionId] = pruned
+    }
+    saveScope()
   }
 
   const ensureConversation = (collectionId) => {
@@ -297,6 +352,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     conversations,
+    scopedDocIds,
     getMessages,
     getSessions,
     getActiveSessionId,
@@ -309,6 +365,10 @@ export const useChatStore = defineStore('chat', () => {
     deleteSession,
     renameSession,
     clearCollectionChat,
+    // Per-document scope filter
+    getScopedDocumentIds,
+    setScopedDocumentIds,
+    reconcileScope,
     // Streaming
     addStreamingMessage,
     appendStreamingText,

@@ -38,6 +38,32 @@
         </div>
         <div class="flex-1 overflow-y-auto p-4 space-y-5">
 
+          <!-- Scope — search is the cross-collection lens (chat is single-collection) -->
+          <div class="space-y-2">
+            <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Scope</span>
+            <div class="flex items-center gap-1 rounded-lg border border-base-300 p-1 bg-base-200/60">
+              <button
+                class="btn btn-xs gap-1 flex-1 transition-all"
+                :class="searchScope === 'current' ? 'btn-primary' : 'btn-ghost'"
+                @click="searchScope = 'current'"
+                title="Search just the active collection"
+              >
+                This collection
+              </button>
+              <button
+                class="btn btn-xs gap-1 flex-1 transition-all"
+                :class="searchScope === 'all' ? 'btn-secondary' : 'btn-ghost'"
+                @click="searchScope = 'all'"
+                title="Search across every collection — useful for finding which client a topic was discussed with"
+              >
+                All collections
+              </button>
+            </div>
+            <p v-if="searchScope === 'all'" class="text-xs text-base-content/50">
+              Synthesis cites the collection each fact came from, so you can tell which client a hit belongs to.
+            </p>
+          </div>
+
           <!-- Retrieval -->
           <div class="space-y-3">
             <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Retrieval</span>
@@ -420,6 +446,14 @@
                 {{ result.filename }}
               </h4>
               <div class="flex flex-wrap gap-1 mt-1">
+                <!-- Collection attribution (visible in cross-collection search) -->
+                <div
+                  v-if="searchScope === 'all' && result.collection_name"
+                  class="badge badge-secondary badge-sm gap-1"
+                  :title="`From collection: ${result.collection_name}`"
+                >
+                  {{ result.collection_name }}
+                </div>
                 <!-- Page/Row/Line indicator -->
                 <div v-if="result.source_format === 'csv' && result.csv_row_number"
                   class="badge badge-success badge-sm">
@@ -713,6 +747,13 @@ const dismissSlashOutput = () => {
 const searchMode = ref('hybrid')  // 'semantic', 'keyword', or 'hybrid'
 const semanticWeight = ref(0.7)     // Weight for semantic search in hybrid mode (0-1)
 
+// Search scope — 'current' = active collection only, 'all' = fan-out across
+// every collection. Search is the cross-collection lens; chat is always
+// single-collection (advisor-desktop-ux: chat-vs-search separation).
+const SEARCH_SCOPE_KEY = 'finn_search_scope'
+const searchScope = ref(localStorage.getItem(SEARCH_SCOPE_KEY) || 'current')
+watch(searchScope, (v) => localStorage.setItem(SEARCH_SCOPE_KEY, v))
+
 const searchModeLabel = computed(() => {
   if (searchMode.value === 'keyword') return 'Keyword'
   if (searchMode.value === 'hybrid') return `Hybrid ${Math.round(semanticWeight.value * 100)}%`
@@ -736,7 +777,7 @@ const showHistoryModal = ref(false)
 const searchSettingsOpen = ref(false)
 
 // Collapsible settings state (legacy, kept for localStorage compat)
-const SEARCH_SETTINGS_COLLAPSED_KEY = 'asymptote_search_settings_collapsed'
+const SEARCH_SETTINGS_COLLAPSED_KEY = 'finn_search_settings_collapsed'
 const searchSettingsCollapsed = ref(true)
 
 // AI Settings - Read from Settings tab's localStorage values
@@ -751,8 +792,8 @@ const hasAnyProvider = computed(() => configuredProviderIds.value.length > 0)
 const ollamaAvailable = computed(() => configuredProviderIds.value.includes('ollama'))
 
 // Selected providers for this search session
-const PROVIDER_SELECTION_KEY = 'asymptote_selected_providers'
-const PROVIDER_MODEL_OVERRIDES_KEY = 'asymptote_search_model_overrides'
+const PROVIDER_SELECTION_KEY = 'finn_selected_providers'
+const PROVIDER_MODEL_OVERRIDES_KEY = 'finn_search_model_overrides'
 const selectedProviders = ref([])
 const selectedPrivateCount = computed(() => selectedProviders.value.filter(p => isLocalProvider(p)).length)
 const selectedExternalCount = computed(() => selectedProviders.value.filter(p => !isLocalProvider(p)).length)
@@ -824,23 +865,35 @@ const toggleProvider = (provider) => {
   localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(selectedProviders.value))
 }
 
+// Re-read AI defaults that may have been flipped by
+// bootstrapAIDefaultsOnFirstProvider when the user just configured their
+// first provider. Component refs were initialized once at script setup,
+// so we sync them on the event.
+const onProvidersChanged = () => {
+  const fresh = getAISettings()
+  localRerank.value = fresh.rerank ?? true
+  localSynthesize.value = fresh.synthesize ?? true
+}
+
 onMounted(() => {
   initializeProviders()
   const savedCollapsed = localStorage.getItem(SEARCH_SETTINGS_COLLAPSED_KEY)
   if (savedCollapsed !== null) {
     searchSettingsCollapsed.value = savedCollapsed === 'true'
   }
+  window.addEventListener('finn:providers-changed', onProvidersChanged)
 })
 
 onBeforeUnmount(() => {
   stopLoadingPhaseAnimation()
+  window.removeEventListener('finn:providers-changed', onProvidersChanged)
 })
 
 // Get configured AI settings from Settings tab (features only - rerank/synthesize)
 // Inline AI feature toggles (read initial value from shared ai_settings, write back on change)
 const _initialAISettings = getAISettings()
-const localRerank = ref(_initialAISettings.rerank ?? false)
-const localSynthesize = ref(_initialAISettings.synthesize ?? false)
+const localRerank = ref(_initialAISettings.rerank ?? true)
+const localSynthesize = ref(_initialAISettings.synthesize ?? true)
 
 watch([localRerank, localSynthesize], () => {
   try {
@@ -1133,7 +1186,10 @@ const executeSearch = async (queryEmbedding = null) => {
 
         try {
           const collectionId = collectionStore.currentCollectionId
-          const response = await axios.post(`/search?collection_id=${collectionId}`, body, { headers, signal })
+          const url = searchScope.value === 'all'
+            ? `/search?scope=all`
+            : `/search?collection_id=${collectionId}`
+          const response = await axios.post(url, body, { headers, signal })
           return {
             provider,
             results: response.data.results,
@@ -1177,7 +1233,10 @@ const executeSearch = async (queryEmbedding = null) => {
         semantic_weight: semanticWeight.value
       }
       const collectionId = collectionStore.currentCollectionId
-      const response = await axios.post(`/search?collection_id=${collectionId}`, body, { signal })
+      const url = searchScope.value === 'all'
+        ? `/search?scope=all`
+        : `/search?collection_id=${collectionId}`
+      const response = await axios.post(url, body, { signal })
       searchStore.setSearchResults({
         query: searchStore.query,
         results: response.data.results,

@@ -1,7 +1,7 @@
 @echo off
 REM ============================================================
-REM  Asymptote — Electron desktop build for Windows
-REM  Output: electron-dist/Asymptote Setup <version>.exe
+REM  Finn — Electron desktop build for Windows
+REM  Output: electron-dist/Finn Setup <version>.exe
 REM
 REM  Requirements:
 REM    - Python 3.11+ with venv
@@ -15,7 +15,7 @@ cd /d "%ROOT%"
 
 echo.
 echo ============================================================
-echo  Asymptote Windows Build
+echo  Finn Windows Build
 echo ============================================================
 echo.
 
@@ -41,6 +41,8 @@ call npm run build:electron
 if errorlevel 1 ( echo ERROR: Vue build failed & exit /b 1 )
 set VITE_ELECTRON=
 cd "%ROOT%"
+node "%ROOT%electron\verify-renderer.js"
+if errorlevel 1 ( exit /b 1 )
 echo       Done.
 echo.
 
@@ -64,21 +66,26 @@ if errorlevel 1 (
         python -m spacy download en_core_web_sm
     )
 )
+
+REM Generate third-party license manifest from the installed deps
+echo       Generating THIRD_PARTY_LICENSES.txt...
+python "%ROOT%desktop\generate_third_party_licenses.py"
+if errorlevel 1 ( echo ERROR: license manifest generation failed & exit /b 1 )
 echo       Done.
 echo.
 
 REM ── 3. Build Python backend with PyInstaller ─────────────────
 echo [3/4] Packaging Python backend with PyInstaller...
-if exist "%ROOT%dist\Asymptote\" (
+if exist "%ROOT%dist\Finn\" (
     echo       Removing previous build...
-    rmdir /s /q "%ROOT%dist\Asymptote"
+    rmdir /s /q "%ROOT%dist\Finn"
 )
 pyinstaller "%ROOT%desktop\build_desktop.spec" --clean --noconfirm
 if errorlevel 1 ( echo ERROR: PyInstaller build failed & exit /b 1 )
 
 REM Safety: strip any runtime user data that crept into the bundle
-if exist "%ROOT%dist\Asymptote\data\" (
-    rmdir /s /q "%ROOT%dist\Asymptote\data"
+if exist "%ROOT%dist\Finn\data\" (
+    rmdir /s /q "%ROOT%dist\Finn\data"
 )
 echo       Done.
 echo.
@@ -96,7 +103,7 @@ echo.
 
 echo ============================================================
 echo  Build complete!
-echo  Installer: electron-dist\Asymptote Setup *.exe
+echo  Installer: electron-dist\Finn Setup *.exe
 echo ============================================================
 echo.
 pause

@@ -5,7 +5,7 @@ import { useCollectionStore } from './collectionStore'
 export const useSearchStore = defineStore('search', () => {
   // Search state
   const query = ref('')
-  const topK = ref(parseInt(localStorage.getItem('asymptote_default_top_k')) || 10)
+  const topK = ref(parseInt(localStorage.getItem('finn_default_top_k')) || 10)
   const results = ref([])
   const lastQuery = ref('')
   const synthesis = ref('')
@@ -16,7 +16,7 @@ export const useSearchStore = defineStore('search', () => {
   const aiResponses = ref([])  // Array of {provider, synthesis, aiUsage}
 
   // Search cache - now collection-aware
-  const CACHE_KEY = 'asymptote_search_cache_v2'  // New key to avoid conflicts with old cache
+  const CACHE_KEY = 'finn_search_cache_v2'  // New key to avoid conflicts with old cache
   const MAX_CACHE_SIZE = 20
   const SEMANTIC_SIMILARITY_THRESHOLD = 0.75
   const cacheCount = ref(0) // Reactive cache count for UI updates

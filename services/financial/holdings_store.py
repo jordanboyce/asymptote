@@ -304,7 +304,12 @@ class HoldingsStore:
         security; summing both double-counts) and footer/total rows.
         """
         SUMMABLE_ROLES = {'market_value', 'cost_basis', 'pnl', 'quantity'}
-        FIRST_ROLES = {'name', 'asset_class', 'sector', 'region', 'currency', 'account', 'rating'}
+        # `return` (Current_Yield, Yield to Maturity, etc.) is per-security, not
+        # per-lot — MAX gives the right value across duplicated lot rows. Its
+        # absence from the rollup view caused weighted_return to silently
+        # return 0 because SQLite falls back to treating the unknown column
+        # name as a string literal.
+        FIRST_ROLES = {'name', 'asset_class', 'sector', 'region', 'currency', 'account', 'rating', 'return'}
 
         sql_name_by_norm: Dict[str, str] = {}
         for c in col_infos:
