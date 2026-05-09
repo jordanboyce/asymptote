@@ -236,6 +236,114 @@
         </div>
       </div>
 
+      <!-- PII redaction viewer drawer (R9.3 / R9.4 — Advisor Desktop UX §9.2).
+           Renders the audit-log events for the current chat session. Opens
+           from the persistent pill in the chat input toolbar. -->
+      <div
+        v-if="redactionDrawerOpen"
+        class="fixed inset-0 z-[200]"
+        @click.self="closeRedactionDrawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="redaction-drawer-title"
+      >
+        <div class="absolute inset-0 bg-black/30" @click="closeRedactionDrawer" aria-hidden="true"></div>
+        <div class="absolute right-0 top-0 h-full w-96 max-w-[90vw] bg-base-100 shadow-2xl flex flex-col">
+          <div class="flex items-center justify-between p-4 border-b border-base-300">
+            <div class="flex items-center gap-2 min-w-0">
+              <ShieldCheck v-if="piiRedactionEnabled" :size="16" class="text-success flex-shrink-0" aria-hidden="true" />
+              <ShieldAlert v-else :size="16" class="text-warning flex-shrink-0" aria-hidden="true" />
+              <h3 id="redaction-drawer-title" class="text-sm font-bold truncate">
+                PII redactions — this session
+              </h3>
+            </div>
+            <button
+              class="btn btn-ghost btn-sm btn-circle"
+              @click="closeRedactionDrawer"
+              aria-label="Close redaction viewer"
+            >
+              <X :size="18" />
+            </button>
+          </div>
+
+          <!-- Status banner -->
+          <div
+            v-if="!piiRedactionEnabled"
+            class="m-4 p-3 rounded-lg bg-warning/10 border border-warning/30 text-xs leading-snug"
+          >
+            <div class="font-medium text-base-content/90 mb-1">Redaction is currently disabled</div>
+            <div class="text-base-content/70">
+              Prompts sent to the AI provider may contain names, account numbers, and other client identifiers. Re-enable in Privacy settings.
+            </div>
+            <button
+              class="btn btn-xs btn-warning mt-2"
+              @click="closeRedactionDrawer(); $emit('switch-tab', 'settings')"
+            >
+              Open Settings
+            </button>
+          </div>
+
+          <!-- Summary -->
+          <div v-else class="px-4 pt-3 pb-2 border-b border-base-300/60">
+            <div class="flex items-baseline justify-between">
+              <span class="text-xs text-base-content/60 uppercase tracking-wider">Total redactions</span>
+              <span class="text-lg font-semibold tabular-nums">{{ redactionSessionTotal }}</span>
+            </div>
+            <div v-if="redactionSessionByType && Object.keys(redactionSessionByType).length > 0" class="mt-2 space-y-0.5">
+              <div
+                v-for="(count, type) in redactionSessionByType"
+                :key="type"
+                class="flex items-baseline justify-between text-xs"
+              >
+                <span class="text-base-content/70">{{ formatEntityName(type) }}</span>
+                <span class="tabular-nums text-base-content/80">{{ count }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Event list -->
+          <div class="flex-1 overflow-y-auto px-4 py-3">
+            <div v-if="redactionLoading && redactionEvents.length === 0" class="flex justify-center py-6">
+              <span class="loading loading-spinner loading-sm text-base-content/40"></span>
+            </div>
+            <div
+              v-else-if="!piiRedactionEnabled && redactionEvents.length === 0"
+              class="text-xs text-base-content/55 italic text-center py-6"
+            >
+              No redactions logged.
+            </div>
+            <div
+              v-else-if="piiRedactionEnabled && redactionEvents.length === 0"
+              class="text-xs text-base-content/55 italic text-center py-6"
+            >
+              No PII detected in this session yet. Events appear here as soon as a tool call or AI prompt redacts an identifier.
+            </div>
+            <ul v-else class="space-y-2">
+              <li
+                v-for="evt in redactionEvents"
+                :key="evt.id"
+                class="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs space-y-0.5"
+              >
+                <div class="flex items-baseline justify-between gap-2">
+                  <span class="font-semibold text-base-content/85 truncate">{{ formatEntityName(evt.entity_type) }}</span>
+                  <span class="tabular-nums text-base-content/45 text-[11px]">{{ formatEventTime(evt.timestamp) }}</span>
+                </div>
+                <div class="text-base-content/55 truncate">
+                  Replaced with <span class="font-mono">{{ evt.replacement || '[REDACTED]' }}</span>
+                </div>
+                <div v-if="evt.tool_name" class="text-[11px] text-base-content/45 truncate">
+                  via {{ evt.tool_name }}
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <div class="px-4 py-3 border-t border-base-300/60 text-[11px] text-base-content/50 leading-snug">
+            Counts only — original text never leaves this device. Audit log retained locally.
+          </div>
+        </div>
+      </div>
+
       <!-- No data notice -->
       <div v-if="documentCount === 0" class="alert alert-warning flex-shrink-0 py-2">
         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24">
@@ -720,6 +828,32 @@
               >
                 <Mic :size="14" />
               </button>
+              <!-- Persistent PII redaction pill (R9.4 — Advisor Desktop UX §9.2).
+                   Click opens the slide-out viewer rendering this chat session's
+                   redaction events. Visible in both Basic and Expert mode -- the
+                   privacy posture is not optional UI. -->
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs gap-1 px-1.5 h-6 min-h-0 font-normal"
+                :class="piiRedactionEnabled ? 'text-success/80 hover:text-success' : 'text-warning hover:text-warning'"
+                @click="openRedactionDrawer"
+                :title="piiRedactionEnabled ? `PII redaction active — ${redactionSessionTotal} redaction${redactionSessionTotal === 1 ? '' : 's'} this session` : 'PII redaction is OFF — prompts may include client identifiers'"
+                :aria-label="piiRedactionEnabled ? `Open PII redaction log (${redactionSessionTotal} redactions this session)` : 'Open PII redaction log (redaction is off)'"
+                :aria-expanded="redactionDrawerOpen"
+              >
+                <ShieldCheck v-if="piiRedactionEnabled" :size="11" aria-hidden="true" />
+                <ShieldAlert v-else :size="11" aria-hidden="true" />
+                <span class="text-[11px]">
+                  {{ piiRedactionEnabled ? 'PII redacted' : 'PII off' }}
+                </span>
+                <span
+                  v-if="piiRedactionEnabled && redactionSessionTotal > 0"
+                  class="badge badge-xs badge-success badge-outline tabular-nums"
+                  aria-hidden="true"
+                >
+                  {{ redactionSessionTotal }}
+                </span>
+              </button>
               <template v-if="isExpertMode">
                 <button
                   class="btn btn-ghost btn-xs btn-circle"
@@ -797,6 +931,8 @@ import {
   isLocalProvider,
 } from '../utils/aiProviders.js'
 import { isExpertMode } from '../utils/expertMode.js'
+import { friendlyError } from '../utils/friendlyError.js'
+import { apiUrl } from '../utils/apiUrl.js'
 
 const props = defineProps({
   chunkCount: { type: Number, default: 0 },
@@ -849,6 +985,102 @@ const loadPrivacyStatus = async () => {
     // Keep optimistic default — the badge falls back to "on" if the config
     // endpoint is unreachable, which matches the server-side default.
   }
+}
+
+// PII redaction viewer (R9 — Advisor Desktop UX §9.2). The pill in the
+// chat input toolbar shows a running count of redactions in this session;
+// the drawer renders the underlying audit-log events. We pin the session
+// boundary at component mount so a long-lived chat tab doesn't accumulate
+// counts from yesterday's sessions.
+const chatSessionStartIso = new Date().toISOString()
+const redactionDrawerOpen = ref(false)
+const redactionEvents = ref([])
+const redactionLoading = ref(false)
+const redactionSessionTotal = ref(0)
+const redactionSessionByType = ref({})
+let redactionPollTimer = null
+
+function formatEntityName(type) {
+  if (!type) return '—'
+  return String(type)
+    .toLowerCase()
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+function formatEventTime(iso) {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  } catch {
+    return ''
+  }
+}
+
+async function loadRedactionSummary() {
+  const colId = collectionStore.currentCollectionId
+  if (!colId) return
+  try {
+    const { data } = await axios.get('/api/redactions/summary', {
+      params: { collection_id: colId, since: chatSessionStartIso },
+    })
+    redactionSessionTotal.value = data?.total_redactions || 0
+    redactionSessionByType.value = data?.by_entity_type || {}
+  } catch {
+    // Non-fatal — pill just shows whatever we last had.
+  }
+}
+
+async function loadRedactionEvents() {
+  const colId = collectionStore.currentCollectionId
+  if (!colId) return
+  redactionLoading.value = true
+  try {
+    const { data } = await axios.get('/api/redactions/log', {
+      params: { collection_id: colId, limit: 100 },
+    })
+    // Filter to this session window so the drawer agrees with the pill count.
+    const events = (data?.events || []).filter(
+      (e) => !e.timestamp || e.timestamp >= chatSessionStartIso,
+    )
+    // Newest first.
+    events.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+    redactionEvents.value = events
+  } catch {
+    redactionEvents.value = []
+  } finally {
+    redactionLoading.value = false
+  }
+}
+
+function startRedactionPolling() {
+  stopRedactionPolling()
+  redactionPollTimer = setInterval(() => {
+    loadRedactionSummary()
+    if (redactionDrawerOpen.value) loadRedactionEvents()
+  }, 4000)
+}
+
+function stopRedactionPolling() {
+  if (redactionPollTimer) {
+    clearInterval(redactionPollTimer)
+    redactionPollTimer = null
+  }
+}
+
+function openRedactionDrawer() {
+  redactionDrawerOpen.value = true
+  // Close the settings drawer if it's open — they share the same right-side slot.
+  settingsDrawerOpen.value = false
+  loadRedactionEvents()
+  loadRedactionSummary()
+  startRedactionPolling()
+}
+
+function closeRedactionDrawer() {
+  redactionDrawerOpen.value = false
+  stopRedactionPolling()
 }
 
 const sendDisabled = computed(() => {
@@ -1168,7 +1400,7 @@ const runInlineSlashCommand = async (input) => {
           },
           onError: (message) => {
             chatStore.removeLastStreamingMessage(collectionId)
-            error.value = message || 'Streaming failed'
+            error.value = friendlyError(message, { expert: isExpertMode.value, fallback: 'Streaming failed' })
             finalized = true
           },
         },
@@ -1243,7 +1475,7 @@ const sendMessage = async () => {
     const documentCountAtSend = props.documentCount
 
     const response = await fetch(
-      `/api/chat/stream?collection_id=${collectionId}`,
+      apiUrl(`/api/chat/stream?collection_id=${collectionId}`),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...providerHeaders },
@@ -1333,15 +1565,18 @@ const sendMessage = async () => {
           await scrollToBottom()
         } else if (event.type === 'error') {
           chatStore.removeLastStreamingMessage(collectionId)
-          error.value = event.message || 'Chat failed. Please try again.'
+          error.value = friendlyError(event.message, { expert: isExpertMode.value, fallback: 'Chat failed. Please try again.' })
         }
       }
     }
   } catch (err) {
     chatStore.removeLastStreamingMessage(collectionId)
-    error.value = err.message || 'Chat failed. Please try again.'
+    error.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Chat failed. Please try again.' })
   } finally {
     loading.value = false
+    // Refresh the PII pill count so the toolbar reflects redactions logged
+    // during this turn even when the viewer drawer is closed.
+    loadRedactionSummary()
   }
 }
 
@@ -1391,13 +1626,15 @@ onMounted(() => {
   ensureValidProvider()
   scrollToBottom()
   loadPrivacyStatus()
-  window.addEventListener('asymptote:prefill-chat', handlePrefill)
-  window.addEventListener('asymptote:providers-changed', onProvidersChanged)
+  loadRedactionSummary()
+  window.addEventListener('finn:prefill-chat', handlePrefill)
+  window.addEventListener('finn:providers-changed', onProvidersChanged)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('asymptote:prefill-chat', handlePrefill)
-  window.removeEventListener('asymptote:providers-changed', onProvidersChanged)
+  window.removeEventListener('finn:prefill-chat', handlePrefill)
+  window.removeEventListener('finn:providers-changed', onProvidersChanged)
+  stopRedactionPolling()
   if (copyResetTimer) clearTimeout(copyResetTimer)
 })
 </script>

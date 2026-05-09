@@ -1,21 +1,71 @@
-MIT License
+FINN END-USER LICENSE AGREEMENT
 
-Copyright (c) 2026 Jordan Boyce
+Copyright (c) 2026 Jordan Boyce. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software ("Finn") is licensed, not sold. By installing or using
+Finn, you agree to the terms of this Agreement.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. GRANT OF LICENSE.
+   Subject to the terms of this Agreement and any separate written
+   agreement signed by Jordan Boyce ("Licensor"), Licensor grants you a
+   personal, non-exclusive, non-transferable, revocable license to
+   install and use Finn on devices you own or control, solely for your
+   own internal business or personal use.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. RESTRICTIONS.
+   You may not (a) copy, distribute, sublicense, rent, lease, or sell
+   Finn or any portion of it; (b) modify, translate, reverse engineer,
+   decompile, or disassemble Finn, except to the extent that applicable
+   law expressly permits despite this limitation; (c) remove or alter
+   any proprietary notices; or (d) use Finn to build a competing
+   product or service.
+
+3. OWNERSHIP.
+   Finn is the property of Licensor and is protected by copyright and
+   other intellectual property laws. This Agreement does not transfer
+   any ownership rights to you.
+
+4. THIRD-PARTY COMPONENTS.
+   Finn includes third-party open-source software components, each
+   governed by its own license. Those licenses are reproduced in the
+   installed application directory and apply only to those components.
+
+5. PRIVACY.
+   Finn runs locally on your device. Documents you index and queries
+   you make are stored locally. If you configure Finn to use a third-
+   party AI provider, queries you choose to send to that provider are
+   subject to that provider's terms and privacy policy. Licensor does
+   not collect your documents or queries.
+
+6. NO WARRANTY.
+   FINN IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED
+   WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+   AND NON-INFRINGEMENT. YOU ASSUME ALL RISK ARISING FROM YOUR USE OF
+   FINN. FINN IS NOT INVESTMENT, LEGAL, TAX, OR ACCOUNTING ADVICE.
+
+7. LIMITATION OF LIABILITY.
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT WILL LICENSOR
+   BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR
+   PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA, OR
+   USE, ARISING OUT OF OR RELATED TO YOUR USE OF FINN, EVEN IF ADVISED
+   OF THE POSSIBILITY OF SUCH DAMAGES. LICENSOR'S TOTAL AGGREGATE
+   LIABILITY UNDER THIS AGREEMENT WILL NOT EXCEED THE AMOUNT YOU PAID
+   FOR THE LICENSE IN THE TWELVE MONTHS PRECEDING THE CLAIM, OR
+   ONE HUNDRED U.S. DOLLARS, WHICHEVER IS GREATER.
+
+8. TERMINATION.
+   This Agreement is effective until terminated. It will terminate
+   automatically if you breach any of its terms. Upon termination, you
+   must stop using Finn and remove all copies from your devices.
+
+9. GOVERNING LAW.
+   This Agreement is governed by the laws of the State in which
+   Licensor is domiciled, without regard to conflict-of-law principles.
+
+10. ENTIRE AGREEMENT.
+    This Agreement is the entire agreement between you and Licensor
+    regarding Finn and supersedes any prior or contemporaneous
+    agreements regarding the same subject matter.
+
+For licensing inquiries, contact: jordan.boyce@cyberlion.dev

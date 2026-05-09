@@ -131,7 +131,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
     currentCollectionId.value = collectionId
     // Persist selection
-    localStorage.setItem('asymptote_current_collection', collectionId)
+    localStorage.setItem('finn_current_collection', collectionId)
 
     // Clear search state when switching collections
     const searchStore = useSearchStore()
@@ -141,7 +141,7 @@ export const useCollectionStore = defineStore('collection', () => {
   }
 
   function initializeFromStorage() {
-    const saved = localStorage.getItem('asymptote_current_collection')
+    const saved = localStorage.getItem('finn_current_collection')
     if (saved) {
       currentCollectionId.value = saved
     }

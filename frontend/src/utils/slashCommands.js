@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { getActiveProvider, getAPIProviderName } from './aiProviders'
+import { apiUrl } from './apiUrl.js'
 
 // Shared slash commands used by both Chat and Search. Each command reads
 // collection metadata directly and returns a plain-text block — zero tokens,
@@ -392,7 +393,7 @@ export const streamSlashCommand = async (
     : `/api/collections/${collectionId}/followup/stream`
 
   try {
-    const response = await fetch(path, {
+    const response = await fetch(apiUrl(path), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

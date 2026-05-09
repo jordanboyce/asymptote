@@ -750,7 +750,7 @@ const semanticWeight = ref(0.7)     // Weight for semantic search in hybrid mode
 // Search scope — 'current' = active collection only, 'all' = fan-out across
 // every collection. Search is the cross-collection lens; chat is always
 // single-collection (advisor-desktop-ux: chat-vs-search separation).
-const SEARCH_SCOPE_KEY = 'asymptote_search_scope'
+const SEARCH_SCOPE_KEY = 'finn_search_scope'
 const searchScope = ref(localStorage.getItem(SEARCH_SCOPE_KEY) || 'current')
 watch(searchScope, (v) => localStorage.setItem(SEARCH_SCOPE_KEY, v))
 
@@ -777,7 +777,7 @@ const showHistoryModal = ref(false)
 const searchSettingsOpen = ref(false)
 
 // Collapsible settings state (legacy, kept for localStorage compat)
-const SEARCH_SETTINGS_COLLAPSED_KEY = 'asymptote_search_settings_collapsed'
+const SEARCH_SETTINGS_COLLAPSED_KEY = 'finn_search_settings_collapsed'
 const searchSettingsCollapsed = ref(true)
 
 // AI Settings - Read from Settings tab's localStorage values
@@ -792,8 +792,8 @@ const hasAnyProvider = computed(() => configuredProviderIds.value.length > 0)
 const ollamaAvailable = computed(() => configuredProviderIds.value.includes('ollama'))
 
 // Selected providers for this search session
-const PROVIDER_SELECTION_KEY = 'asymptote_selected_providers'
-const PROVIDER_MODEL_OVERRIDES_KEY = 'asymptote_search_model_overrides'
+const PROVIDER_SELECTION_KEY = 'finn_selected_providers'
+const PROVIDER_MODEL_OVERRIDES_KEY = 'finn_search_model_overrides'
 const selectedProviders = ref([])
 const selectedPrivateCount = computed(() => selectedProviders.value.filter(p => isLocalProvider(p)).length)
 const selectedExternalCount = computed(() => selectedProviders.value.filter(p => !isLocalProvider(p)).length)
@@ -871,8 +871,8 @@ const toggleProvider = (provider) => {
 // so we sync them on the event.
 const onProvidersChanged = () => {
   const fresh = getAISettings()
-  localRerank.value = fresh.rerank ?? false
-  localSynthesize.value = fresh.synthesize ?? false
+  localRerank.value = fresh.rerank ?? true
+  localSynthesize.value = fresh.synthesize ?? true
 }
 
 onMounted(() => {
@@ -881,19 +881,19 @@ onMounted(() => {
   if (savedCollapsed !== null) {
     searchSettingsCollapsed.value = savedCollapsed === 'true'
   }
-  window.addEventListener('asymptote:providers-changed', onProvidersChanged)
+  window.addEventListener('finn:providers-changed', onProvidersChanged)
 })
 
 onBeforeUnmount(() => {
   stopLoadingPhaseAnimation()
-  window.removeEventListener('asymptote:providers-changed', onProvidersChanged)
+  window.removeEventListener('finn:providers-changed', onProvidersChanged)
 })
 
 // Get configured AI settings from Settings tab (features only - rerank/synthesize)
 // Inline AI feature toggles (read initial value from shared ai_settings, write back on change)
 const _initialAISettings = getAISettings()
-const localRerank = ref(_initialAISettings.rerank ?? false)
-const localSynthesize = ref(_initialAISettings.synthesize ?? false)
+const localRerank = ref(_initialAISettings.rerank ?? true)
+const localSynthesize = ref(_initialAISettings.synthesize ?? true)
 
 watch([localRerank, localSynthesize], () => {
   try {

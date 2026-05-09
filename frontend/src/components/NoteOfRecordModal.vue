@@ -15,13 +15,102 @@
             Streaming a compliance Note from the latest meeting transcript. Edit before saving.
           </p>
         </div>
-        <button class="btn btn-ghost btn-sm btn-circle" @click="cancel" aria-label="Close drafting view">
-          <X :size="16" aria-hidden="true" />
-        </button>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <!-- Preview redactions toggle (R9.7 — Advisor Desktop UX §9.3).
+               When enabled, the modal opens in preview mode: the transcript is
+               run through the redaction engine before any AI call so the
+               advisor can see exactly what the provider will receive. -->
+          <label
+            class="flex items-center gap-1.5 text-xs cursor-pointer select-none"
+            :title="previewRedactions ? 'Preview what the AI will see before sending' : 'Send transcript to AI without preview'"
+          >
+            <input
+              type="checkbox"
+              class="toggle toggle-xs toggle-primary"
+              v-model="previewRedactions"
+              :disabled="streaming || saving"
+              @change="onPreviewToggleChange"
+            />
+            <span class="text-base-content/70">Preview redactions</span>
+          </label>
+          <button class="btn btn-ghost btn-sm btn-circle" @click="cancel" aria-label="Close drafting view">
+            <X :size="16" aria-hidden="true" />
+          </button>
+        </div>
       </header>
 
+      <!-- Preview redactions view (R9.7 — Advisor Desktop UX §9.3). Replaces
+           the editor when previewMode is true: shows the transcript as it will
+           reach the AI, requiring an explicit "Send to AI" confirm before any
+           prompt leaves the box. -->
+      <div v-if="previewMode" class="flex-1 flex flex-col gap-3 overflow-hidden min-h-0">
+        <div class="flex items-center gap-2 px-1">
+          <ShieldCheck :size="16" class="text-success" aria-hidden="true" />
+          <span class="text-sm font-semibold">Redaction preview</span>
+          <span v-if="previewLoading" class="loading loading-spinner loading-xs ml-1"></span>
+        </div>
+        <p class="text-xs text-base-content/65 px-1 leading-snug">
+          This is the redacted transcript as the AI provider will receive it. Names, account numbers, and other identifiers are replaced on-device. Review then confirm to send.
+        </p>
+
+        <div v-if="previewError" class="alert alert-error text-sm">
+          <AlertTriangle :size="16" aria-hidden="true" />
+          <span>{{ previewError }}</span>
+        </div>
+
+        <div class="flex-1 grid grid-cols-1 md:grid-cols-[1fr_280px] gap-3 overflow-hidden min-h-0">
+          <!-- Redacted transcript -->
+          <section class="flex flex-col gap-2 min-h-0 min-w-0">
+            <div class="text-[11px] uppercase tracking-wider text-base-content/55 px-1">
+              Transcript (redacted)
+            </div>
+            <pre
+              class="textarea textarea-bordered w-full flex-1 resize-none text-xs leading-relaxed min-h-[260px] overflow-auto whitespace-pre-wrap font-sans"
+              aria-label="Redacted transcript preview"
+            >{{ previewLoading ? 'Computing preview…' : (previewData?.redacted || '(no transcript content available)') }}</pre>
+          </section>
+
+          <!-- Preview entity counts -->
+          <aside
+            class="rounded-lg border border-base-300 bg-base-200/40 p-3 text-xs flex flex-col min-h-0 overflow-hidden"
+            aria-label="Preview redaction counts"
+          >
+            <div class="flex items-center gap-1.5 font-semibold text-sm text-base-content/80 mb-1">
+              <ShieldCheck :size="14" class="text-success" aria-hidden="true" />
+              Will be redacted
+            </div>
+            <p class="text-[11px] text-base-content/55 leading-snug mb-2">
+              No PII has been sent yet — counts reflect a local dry-run only.
+            </p>
+            <div v-if="previewLoading" class="text-base-content/50 italic">
+              Computing…
+            </div>
+            <div v-else-if="!previewData?.had_pii" class="text-base-content/55 italic">
+              No PII detected in the transcript.
+            </div>
+            <div v-else class="flex-1 overflow-y-auto space-y-1.5 pr-1">
+              <div class="flex items-baseline justify-between border-b border-base-300 pb-1.5 mb-1">
+                <span class="font-semibold text-base-content/75">Total</span>
+                <span class="tabular-nums font-semibold">{{ previewData.entity_count }}</span>
+              </div>
+              <div
+                v-for="(count, type) in previewEntityCounts"
+                :key="type"
+                class="flex items-baseline justify-between"
+              >
+                <span class="truncate text-base-content/70" :title="type">{{ formatEntity(type) }}</span>
+                <span class="tabular-nums text-base-content/80">{{ count }}</span>
+              </div>
+            </div>
+            <div class="text-[11px] text-base-content/45 mt-2 pt-2 border-t border-base-300/60 leading-snug">
+              Counts only — original text never leaves this device.
+            </div>
+          </aside>
+        </div>
+      </div>
+
       <!-- Body: editor (left) + redaction summary (right) -->
-      <div class="flex-1 grid grid-cols-1 md:grid-cols-[1fr_280px] gap-3 overflow-hidden">
+      <div v-else class="flex-1 grid grid-cols-1 md:grid-cols-[1fr_280px] gap-3 overflow-hidden">
 
         <!-- Draft editor -->
         <section class="flex flex-col gap-2 min-h-0 min-w-0">
@@ -100,22 +189,38 @@
         >
           Cancel
         </button>
-        <button
-          v-if="!streaming && !error && draft.length === 0"
-          class="btn btn-outline btn-sm"
-          @click="restart"
-          :disabled="streaming || saving"
-        >
-          Retry draft
-        </button>
-        <button
-          class="btn btn-primary btn-sm"
-          :disabled="streaming || saving || !draft.trim()"
-          @click="save"
-        >
-          <span v-if="saving" class="loading loading-spinner loading-xs"></span>
-          {{ saving ? 'Saving…' : 'Save to collection' }}
-        </button>
+
+        <!-- Preview mode: explicit confirm before any AI call -->
+        <template v-if="previewMode">
+          <button
+            class="btn btn-primary btn-sm gap-1.5"
+            :disabled="previewLoading"
+            @click="confirmSendToAI"
+          >
+            <span v-if="previewLoading" class="loading loading-spinner loading-xs"></span>
+            Send to AI
+          </button>
+        </template>
+
+        <!-- Drafting mode: existing retry / save -->
+        <template v-else>
+          <button
+            v-if="!streaming && !error && draft.length === 0"
+            class="btn btn-outline btn-sm"
+            @click="restart"
+            :disabled="streaming || saving"
+          >
+            Retry draft
+          </button>
+          <button
+            class="btn btn-primary btn-sm"
+            :disabled="streaming || saving || !draft.trim()"
+            @click="save"
+          >
+            <span v-if="saving" class="loading loading-spinner loading-xs"></span>
+            {{ saving ? 'Saving…' : 'Save to collection' }}
+          </button>
+        </template>
       </footer>
     </div>
 
@@ -130,6 +235,7 @@ import { ref, computed, onBeforeUnmount } from 'vue'
 import { FileText, X, AlertTriangle, ShieldCheck } from 'lucide-vue-next'
 import axios from 'axios'
 import { buildProviderHeaders, getActiveProvider, getAPIProviderName } from '../utils/aiProviders.js'
+import { apiUrl } from '../utils/apiUrl.js'
 
 const props = defineProps({
   collectionId: { type: String, default: '' },
@@ -151,6 +257,26 @@ const byEntityType = ref({})
 let sessionStartIso = ''
 let pollTimer = null
 let abortController = null
+
+// Preview mode (R9.7 — Advisor Desktop UX §9.3). When the toggle is on, the
+// modal opens in preview mode: we fetch the transcript and dry-run it through
+// the redaction engine *before* any AI call, then wait for an explicit
+// "Send to AI" confirm. Default off — preserves the streaming-by-default UX
+// for the common path. Persisted in localStorage so the advisor's preference
+// sticks across sessions.
+const PREVIEW_TOGGLE_KEY = 'finn_note_preview_redactions'
+const previewRedactions = ref(localStorage.getItem(PREVIEW_TOGGLE_KEY) === 'true')
+const previewMode = ref(false)
+const previewLoading = ref(false)
+const previewError = ref('')
+const previewData = ref(null)
+const previewEntityCounts = computed(() => {
+  const counts = {}
+  for (const e of previewData.value?.entities || []) {
+    counts[e.entity_type] = (counts[e.entity_type] || 0) + 1
+  }
+  return counts
+})
 
 const wordCount = computed(() => {
   const t = draft.value.trim()
@@ -180,9 +306,81 @@ async function open() {
   error.value = ''
   totalRedactions.value = 0
   byEntityType.value = {}
+  previewMode.value = false
+  previewData.value = null
+  previewError.value = ''
   sessionStartIso = new Date().toISOString()
   modalEl.value?.showModal()
+  if (previewRedactions.value) {
+    await enterPreviewMode()
+  } else {
+    await startStreaming()
+  }
+}
+
+async function enterPreviewMode() {
+  previewMode.value = true
+  previewLoading.value = true
+  previewError.value = ''
+  previewData.value = null
+  if (!props.collectionId) {
+    previewError.value = 'No collection selected.'
+    previewLoading.value = false
+    return
+  }
+  try {
+    // 1. Fetch the latest transcript content (no AI call).
+    const tx = await axios.get(
+      `/api/collections/${props.collectionId}/transcript/latest`,
+    )
+    const content = tx?.data?.content || ''
+    if (!content.trim()) {
+      previewError.value =
+        'No transcript content found. Record a meeting or upload an audio file first.'
+      previewLoading.value = false
+      return
+    }
+    // 2. Dry-run the transcript through the redaction engine — same engine
+    // that wraps the actual AI call, so the preview is exact.
+    const dry = await axios.post('/api/redactions/dry-run', {
+      text: content,
+      collection_id: props.collectionId,
+    })
+    previewData.value = dry?.data || null
+  } catch (err) {
+    previewError.value = err.response?.data?.detail || err.message || 'Preview failed'
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+async function confirmSendToAI() {
+  // Leave preview mode and start the actual streaming draft. The session
+  // start window for the redaction summary panel is already pinned.
+  previewMode.value = false
+  previewData.value = null
+  previewError.value = ''
   await startStreaming()
+}
+
+function onPreviewToggleChange() {
+  // Persist the user's choice for next time.
+  try {
+    localStorage.setItem(PREVIEW_TOGGLE_KEY, previewRedactions.value ? 'true' : 'false')
+  } catch {
+    /* localStorage unavailable — preference just resets next time */
+  }
+  // Mid-session toggle handling:
+  // - turning ON before any draft exists: enter preview mode now
+  // - turning OFF while in preview: jump directly to streaming
+  // Once a draft has started streaming, the toggle becomes informational
+  // for the next open() — we don't interrupt an in-flight generation.
+  if (streaming.value || saving.value) return
+  if (previewRedactions.value && !previewMode.value && draft.value.length === 0) {
+    enterPreviewMode()
+  } else if (!previewRedactions.value && previewMode.value) {
+    confirmSendToAI()
+  }
 }
 
 function cancel() {
@@ -251,7 +449,7 @@ async function startStreaming() {
   try {
     const headers = buildProviderHeaders(getActiveProvider())
     const response = await fetch(
-      `/api/collections/${props.collectionId}/notes/stream`,
+      apiUrl(`/api/collections/${props.collectionId}/notes/stream`),
       {
         method: 'POST',
         headers: {

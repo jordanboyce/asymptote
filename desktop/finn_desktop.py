@@ -12,10 +12,46 @@ import time
 import socket
 from pathlib import Path
 
+
+def _resolve_user_data_dir() -> Path:
+    """Pick a stable per-user data directory for the bundled desktop app.
+
+    Order of precedence:
+      1. ``FINN_DATA_DIR`` (set by the Electron shell to ``app.getPath('userData')/data``)
+      2. ``DATA_DIR`` (already-mapped pydantic field)
+      3. Platform default — APPDATA on Windows, ~/Library/Application Support on macOS,
+         ~/.local/share elsewhere.
+
+    Critical: ``data_dir`` defaults to ``./data`` which is relative to cwd.
+    Inside a PyInstaller bundle the cwd is unstable (and previously was
+    ``sys._MEIPASS``, the per-launch extraction folder, which silently wiped
+    user data on every restart). We resolve to an absolute path before
+    importing ``config`` so all downstream code sees the same location.
+    """
+    explicit = os.environ.get("FINN_DATA_DIR") or os.environ.get("DATA_DIR")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "Finn" / "data"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Finn" / "data"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "Finn" / "data"
+
+
 # Add project root to Python path to find main module
 if getattr(sys, 'frozen', False):
     # Running as compiled executable
     application_path = sys._MEIPASS
+
+    # Pin DATA_DIR to a stable per-user location *before* config is imported.
+    # pydantic-settings reads DATA_DIR env into Settings.data_dir.
+    _data_dir = _resolve_user_data_dir()
+    _data_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["DATA_DIR"] = str(_data_dir)
 
     # Build a combined CA bundle so HuggingFace downloads work in corporate environments.
     # Merges certifi's default bundle with any .crt/.pem/.cer files from the bundled certs/ dir.
@@ -140,13 +176,41 @@ class FinnApp:
         self.port = find_free_port(settings.port)
         self.base_url = f"http://localhost:{self.port}"
         self.running = False
+        # Stamp data/latest_known.json so /api/version has something to compare
+        # the running build against. The default writer records the same version
+        # the launcher is shipping — so the banner stays quiet by default.
+        # A future auto-update mechanism (out of pilot scope) can overwrite this
+        # file post-install with the version the user *should* be running, and
+        # the next /api/version call will pick it up automatically.
+        self._write_latest_known_marker()
+
+    def _write_latest_known_marker(self):
+        """Write data/latest_known.json with the launcher's known version.
+
+        Best-effort — a write failure must not block startup.
+        """
+        import json
+        from datetime import datetime
+        try:
+            data_dir = Path(settings.data_dir)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": getattr(settings, "app_version", "0.0.0"),
+                "checked_at": datetime.utcnow().isoformat(),
+            }
+            with open(data_dir / "latest_known.json", "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+        except Exception as e:
+            print(f"Warning: could not write latest_known.json: {e}")
 
     def start_server(self):
         """Start the FastAPI server in a background thread."""
-        # Ensure we're running from the correct directory
-        if getattr(sys, 'frozen', False):
-            # Running as compiled executable - change to app directory
-            os.chdir(sys._MEIPASS)
+        # Note: do NOT chdir to sys._MEIPASS here. The PyInstaller extraction
+        # dir is wiped on relaunch, and Settings.data_dir resolves relative to
+        # cwd by default — chdir-ing into _MEIPASS used to silently destroy
+        # user data on every launch. ``main`` is importable via sys.path
+        # (set above), and DATA_DIR has already been pinned to an absolute
+        # path before config was imported.
 
         config = uvicorn.Config(
             "main:app",

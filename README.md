@@ -50,28 +50,27 @@ docker-compose -f docker-compose.yml up -d --build
 
 ### Desktop Application (Windows)
 
-For a native Windows experience with system tray integration:
+For a native Windows experience, the Electron shell wraps the FastAPI backend
+into a single installable app:
 
-```bash
-# Build Windows executable
-cd desktop
-build_windows.bat
+```bat
+:: Build the installer (Vue → PyInstaller backend → electron-builder)
+build_electron_win.bat
 
-# Run the desktop app
-dist\FinnDesktop.exe
-
-# Create installer (requires Inno Setup)
-build_installer.bat
+:: Output:
+::   electron-dist\Finn Setup <version>.exe   (installer)
+::   electron-dist\win-unpacked\               (portable folder build)
 ```
 
-**Desktop Features:**
-- System tray icon with quick access
-- Automatic port management (finds free port if 8000 is taken)
-- Native Windows application (no terminal needed)
-- Same functionality as web version
-- Opens browser automatically on startup
+The macOS equivalent is `./build_electron_mac.sh`.
 
-**First time setup**: The embedding model (~90MB) will download automatically on first run.
+**Desktop Features:**
+- Native window + system tray (Electron)
+- Automatic port management (finds a free port if 8000 is taken)
+- Bundled FastAPI backend — no Python install required on the target machine
+- Same functionality as the web version
+
+**First time setup**: The embedding model (~90MB) downloads automatically on first run.
 
 **SSL/TLS Support**: For corporate environments with custom CA certificates, see the [Corporate SSL Configuration](#corporate-ssl-configuration) section below.
 
@@ -98,6 +97,21 @@ Finn lets you:
 **Example:**
 - Query: *"How do I optimize database queries?"*
 - Result: Points you to page 47 of your database textbook with a direct link
+
+---
+
+## Where Finn fits
+
+Finn is built for **financial advisors and small wealth shops**. It ingests retail-custodian exports (Pershing, Schwab, Fidelity, Vanguard, NetX360), redacts PII at the boundary, and serves the result as a queryable data layer to whatever LLM the advisor already trusts — through Finn's chat tab by default, or via MCP into Claude Desktop, Cursor, or a Managed Agent.
+
+**Why not just use Claude for Excel?** Claude for Excel is excellent for analysts who already have clean, structured workbooks. Finn solves a different problem:
+
+- **Messy custodian exports.** NetX360 is hierarchical multi-account; Pershing has 9 preamble rows; Schwab quotes accounting negatives in parens. None of that drops cleanly into Excel. Finn's vendor profiles handle every one.
+- **PII never leaves the box uncleansed.** Claude for Excel sends cell contents to Anthropic's API as-is. Finn redacts before any external call (Presidio + custom financial recognizers, full audit log).
+- **Household-aware, not workbook-aware.** Finn's Collections model households across accounts, IPS targets, and meeting transcripts. A cross-account wash-sale check requires that scope; per-workbook tools miss it.
+- **Local-first by default.** Documents and indexes live on the advisor's machine. External AI is opt-in per request.
+
+For institutional buy-side and sell-side workflows, Anthropic's [`financial-services`](https://github.com/anthropics/financial-services) reference repo + Claude for Excel are the right tools. Finn is for the advisor layer below them.
 
 ---
 
@@ -693,7 +707,7 @@ For Windows desktop/exe builds:
    - `tesseract/tesseract.exe`
 4. Re-index the PDF after changing OCR settings/dependencies
 
-If OCR still fails, switch OCR engine to `docling` in settings and try again.
+If OCR still fails, install Docling as an optional CPU-only fallback (`pip install docling`) and switch the OCR engine to `docling` in settings.
 
 #### 6. "Out of memory"
 
@@ -911,14 +925,17 @@ finn/
 │   ├── index.html            # Production HTML
 │   └── assets/               # JS/CSS bundles
 │
-├── desktop/                   # Windows desktop application
-│   ├── finn_desktop.py  # Desktop wrapper with system tray
-│   ├── icon.ico              # Application icon
-│   ├── installer.iss         # Inno Setup installer script
-│   ├── build_windows.bat     # Build executable script
-│   ├── build_installer.bat   # Build installer script
-│   ├── requirements_desktop.txt  # Desktop-specific dependencies
-│   └── utils/                # Icon generation utilities
+├── desktop/                   # PyInstaller bundle for the backend
+│   ├── finn_desktop.py       # Entry script (headless under Electron, tray when standalone)
+│   ├── build_desktop.spec    # PyInstaller spec
+│   ├── requirements_desktop.txt  # Build-venv deps
+│   ├── generate_third_party_licenses.py  # License manifest generator
+│   └── icon.ico              # Tray / window icon
+│
+├── electron/                  # Electron shell that wraps the backend
+│   ├── main.js               # Spawns Finn.exe, owns the window + tray
+│   ├── preload.js
+│   └── package.json          # electron-builder config (NSIS installer)
 │
 ├── tests/                     # Test suite
 │   └── test_api.py           # API tests (placeholder)
@@ -1012,13 +1029,10 @@ A: Yes, but no built-in auth. Add authentication for multi-user.
 
 ## License
 
-This project is provided as-is for educational and internal use.
-
----
-
-## Contributing
-
-This is a reference implementation. Feel free to fork and adapt for your needs.
+Finn is proprietary software. Copyright (c) 2026 Jordan Boyce. All rights
+reserved. Use is governed by the End-User License Agreement at
+[desktop/LICENSE](desktop/LICENSE). For licensing inquiries, contact
+jordan.boyce@cyberlion.dev.
 
 ---
 

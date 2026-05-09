@@ -71,6 +71,7 @@ from models.schemas import (
     ExpertisePack,
     ExpertisePackCreate,
     ExpertisePackUpdate,
+    ExpertisePackGenerateRequest,
     CollectionExpertiseResponse,
     SetCollectionExpertiseRequest,
     NotesRequest,
@@ -84,6 +85,8 @@ from models.schemas import (
     RedactionLogResponse,
     RedactionLogEvent,
     RedactionEntity,
+    FeedbackRequest,
+    FeedbackResponse,
 )
 from services.upload_service import upload_service
 from services.form_field_extractor import (
@@ -239,6 +242,17 @@ async def embed_text(request: EmbedRequest):
 @app.get("/health", tags=["health"])
 async def health(collection_id: str = "default"):
     """Health check endpoint."""
+    # Stamp last-active on every successful health ping so the welcome-back
+    # card (R10.7) can compute days-since-last-launch on next mount. Best-effort
+    # — a write failure must never break /health, which the desktop launcher
+    # polls during boot.
+    try:
+        from services.app_database import app_db
+        from datetime import datetime as _dt
+        app_db.set_config("last_active_at", _dt.utcnow().isoformat())
+    except Exception:
+        pass
+
     try:
         stats = indexer_manager.get_collection_stats(collection_id)
         return {
@@ -254,6 +268,58 @@ async def health(collection_id: str = "default"):
             "indexed_chunks": 0,
             "error": str(e),
         }
+
+
+@app.get(
+    "/api/version",
+    summary="App version + last-known-available version + last-active timestamp",
+    tags=["health"],
+)
+async def get_version():
+    """Boot-time metadata for the frontend update banner (R10.4) and welcome-back
+    card (R10.7).
+
+    - ``version`` — the running build's user-visible version, from settings.
+    - ``latest_known`` — the latest version the desktop launcher recorded at
+      startup in ``data/latest_known.json``. ``None`` when the file is missing
+      or unparseable; the frontend treats that as "no update known".
+    - ``last_active_at`` / ``days_since_last_active`` — read from the app DB.
+      Read-only; the value is updated by the next ``/health`` ping, so this
+      response reflects the *previous* session's last-active timestamp on the
+      first mount of a new session. Frontend uses this to decide whether to
+      show the welcome-back card.
+    """
+    from services.app_database import app_db
+    from datetime import datetime as _dt
+    import json as _json
+
+    latest_known = None
+    try:
+        latest_path = settings.data_dir / "latest_known.json"
+        if latest_path.exists():
+            with open(latest_path, "r", encoding="utf-8") as f:
+                payload = _json.load(f)
+            v = payload.get("version") if isinstance(payload, dict) else None
+            if isinstance(v, str) and v.strip():
+                latest_known = v.strip()
+    except Exception as e:
+        logger.debug(f"Could not read latest_known.json: {e}")
+
+    last_active_at = app_db.get_config("last_active_at")
+    days_since = None
+    if isinstance(last_active_at, str) and last_active_at:
+        try:
+            prev = _dt.fromisoformat(last_active_at)
+            days_since = (_dt.utcnow() - prev).total_seconds() / 86400.0
+        except ValueError:
+            last_active_at = None
+
+    return {
+        "version": settings.app_version,
+        "latest_known": latest_known,
+        "last_active_at": last_active_at,
+        "days_since_last_active": days_since,
+    }
 
 
 @app.post(
@@ -3635,6 +3701,46 @@ async def get_collection_summary(
     return compute_collection_summary(store, collection_id)
 
 
+@app.get(
+    "/api/collections/{collection_id}/transcript/latest",
+    tags=["collections"],
+    summary="Latest Meeting Notes transcript content",
+)
+async def get_latest_transcript(
+    collection_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Return the filename and content of the most recent meeting transcript.
+
+    Powers the Note of Record "Preview redactions" toggle (R9.7): the modal
+    needs the raw transcript text to run a dry-run through the redaction
+    engine *before* the AI provider call, so the advisor can see exactly
+    what the LLM will receive. Reuses ``_find_recent_transcript`` so prompt
+    construction and preview operate on identical text.
+    """
+    access = sharing_service.check_collection_access(collection_id, user_id)
+    if not access:
+        raise HTTPException(status_code=403, detail="You do not have access to this collection")
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    docs = indexer.list_documents()
+    notes_docs = [d for d in docs if d.get("filename", "").startswith("Meeting Notes")]
+    if not notes_docs:
+        return {"filename": None, "content": ""}
+
+    notes_docs.sort(key=lambda d: d.get("filename", ""), reverse=True)
+    latest = notes_docs[0]
+    return {
+        "filename": latest.get("filename"),
+        "document_id": latest.get("document_id"),
+        "content": _find_recent_transcript(collection_id),
+    }
+
+
 # ── Meeting Capture endpoints (v4.5) ──────────────────────────────────────────
 
 def _build_ai_provider_from_headers(provider_name: str, ai_key: str, model: str, base_url: str):
@@ -4347,6 +4453,150 @@ async def set_collection_expertise(collection_id: str, data: SetCollectionExpert
     return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
 
 
+def _build_expertise_pack_prompt(topic: str, context: str | None, audience: str | None) -> str:
+    """Meta-prompt for generating expertise pack bodies.
+
+    The body becomes part of the chat system prompt downstream, so the model is
+    told its audience is another LLM and to use prompt-engineering patterns
+    (imperative directives, concrete thresholds, labeled sections, advisor
+    framing) rather than essay-style prose.
+    """
+    audience_clean = (audience or "financial advisors analyzing a client portfolio").strip()
+    extra = f"\n\nADDITIONAL CONTEXT FROM THE AUTHOR:\n{context.strip()}" if context and context.strip() else ""
+    return f"""You are drafting an "expertise pack" — a block of advisor guidance that will \
+be injected verbatim into the system prompt of a downstream AI assistant. The downstream \
+AI uses this guidance to analyze a client's portfolio and answer the advisor's questions.
+
+Your real audience is another LLM, not a human reader. Optimize the markdown you produce \
+for prompt-effectiveness, not prose elegance.
+
+TOPIC: {topic.strip()}
+PACK AUDIENCE: {audience_clean}{extra}
+
+WRITE THE PACK USING THESE PROMPT-ENGINEERING PATTERNS:
+
+1. Frame the user as the advisor analyzing a client. Never write "your portfolio" or \
+address the client directly — the advisor is the one reading the AI's output. Use \
+phrasing like "When the advisor's client holds X, surface Y."
+
+2. Use imperative directives, not descriptions. Write "Flag any single position over 5% \
+of household NAV" not "Concentration risk is something to consider." Directives steer \
+behavior; descriptions don't.
+
+3. Prefer concrete thresholds over vague language. "Duration > 7 years", "yield spread \
+> 200 bps to comparable Treasury", "expense ratio > 0.50%" beat "elevated", "long", or \
+"high." Name conventional numbers when they exist.
+
+4. Structure with labeled markdown H2 sections the LLM can latch onto. Use this \
+skeleton — omit any section that doesn't apply, add others where they help:
+
+   ## Scope
+   One short paragraph: what this pack covers and what it explicitly does NOT cover.
+
+   ## Frameworks the advisor uses
+   Named analytical lenses (e.g. "4% rule", "bucket strategy", "tax-loss harvesting \
+   eligibility window"), one to two lines each.
+
+   ## Heuristics & directives
+   Imperative bullets the AI must apply when the topic comes up.
+
+   ## Red flags — surface these proactively
+   Specific patterns the AI should call out without being asked.
+
+   ## Out of scope / do not advise on
+   Hard limits — things to refuse, defer, or escalate to the human advisor.
+
+5. Include do/don't pairs where a common LLM failure mode exists. Example: "DO cite the \
+specific line item from the holdings table when flagging concentration. DON'T speculate \
+about the client's tax bracket — ask the advisor."
+
+6. Be specific to the topic. Generic platitudes ("diversification matters") add no \
+steering value. If you can't say something specific, leave it out.
+
+7. No preamble, no closing summary, no meta-commentary. Output the markdown body ONLY \
+— no "Here's your pack:" intro, no "Let me know if you'd like changes" outro. Begin \
+with a single one-sentence summary line (no markdown heading), a blank line, then the \
+H2 sections.
+
+8. Length: 400–900 words. Tight and dense steers better than long and vague.
+
+Begin the pack now."""
+
+
+@app.post(
+    "/api/expertise/packs/generate/stream",
+    tags=["expertise"],
+    summary="Stream a generated expertise pack body from a topic (SSE)",
+)
+async def stream_generate_expertise_pack(
+    body: ExpertisePackGenerateRequest,
+    x_ai_key: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """Stream an AI-drafted expertise pack body using prompt-engineering patterns.
+
+    The user provides a topic (and optional context); the downstream LLM produces
+    a markdown body shaped to steer another LLM well — imperative directives,
+    concrete thresholds, labeled sections, advisor framing. Returns the same SSE
+    event vocabulary as /notes/stream: `text_delta`, `done` (with `content`),
+    `error`. The caller saves the result through the existing pack CRUD endpoints.
+    """
+    import json as _json
+    from services.chat.engine import ChatTurn, run_one_shot
+
+    async def generate():
+        try:
+            provider = _build_ai_provider_from_headers(
+                body.provider, x_ai_key,
+                x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
+                x_ai_base_url,
+            )
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'AI provider error: {e}'})}\n\n"
+            return
+
+        prompt = _build_expertise_pack_prompt(body.topic, body.context, body.audience)
+        turn = ChatTurn(
+            provider=provider,
+            system_text="",
+            messages=[{"role": "user", "content": prompt}],
+            model=provider.QUALITY_MODEL,
+            max_tokens=2000,
+        )
+
+        text_parts: list[str] = []
+        try:
+            async for ev in run_one_shot(turn):
+                t = ev.get("type")
+                if t == "text_delta":
+                    delta = ev.get("delta", "")
+                    text_parts.append(delta)
+                    yield f"data: {_json.dumps({'type': 'text_delta', 'delta': delta})}\n\n"
+                elif t == "error":
+                    yield f"data: {_json.dumps({'type': 'error', 'message': ev.get('message', 'Unknown error')})}\n\n"
+                    return
+                elif t == "done":
+                    raw_text = (ev.get("response_text") or "".join(text_parts)).strip()
+                    yield f"data: {_json.dumps({'type': 'done', 'content': raw_text, 'usage': ev.get('usage', {})})}\n\n"
+        except Exception as e:
+            logger.exception("Streaming expertise pack generation failed")
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # PII pre-flight + collection blacklist endpoints
 # ---------------------------------------------------------------------------
@@ -4464,6 +4714,42 @@ async def clear_diagnostics() -> dict:
     from services.diagnostics import get_buffer
     get_buffer().clear()
     return {"cleared": True}
+
+
+@app.get(
+    "/api/feedback/config",
+    summary="Whether the in-app feedback channel is configured",
+    tags=["diagnostics"],
+)
+async def get_feedback_config() -> dict:
+    """Lets the frontend show a hint when the maintainer hasn't wired Resend yet."""
+    return {
+        "enabled": bool(settings.resend_api_key and settings.feedback_email_to),
+        "recipient": settings.feedback_email_to if settings.feedback_email_to else None,
+    }
+
+
+@app.post(
+    "/api/feedback",
+    response_model=FeedbackResponse,
+    summary="Submit a user feedback / issue report",
+    tags=["diagnostics"],
+)
+async def submit_feedback(req: FeedbackRequest, request: Request) -> FeedbackResponse:
+    from services.feedback import FeedbackContext, send_feedback
+    ctx = FeedbackContext(
+        description=req.description,
+        include_diagnostics=req.include_diagnostics,
+        app_route=req.app_route,
+        collection_id=req.collection_id,
+        user_agent=request.headers.get("user-agent"),
+    )
+    result = send_feedback(ctx)
+    return FeedbackResponse(
+        ok=bool(result.get("ok")),
+        id=result.get("id"),
+        error=result.get("error"),
+    )
 
 
 # Redirect bare /mcp (no trailing slash) to /mcp/ so MCP clients that use the old

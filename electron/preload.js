@@ -8,7 +8,7 @@ const { contextBridge } = require('electron')
 const portArg = process.argv.find(arg => arg.startsWith('--api-port='))
 const apiPort = portArg ? portArg.split('=')[1] : null
 
-contextBridge.exposeInMainWorld('asymptote', {
+contextBridge.exposeInMainWorld('finn', {
   /** Base URL of the local Python API server, e.g. "http://127.0.0.1:57384" */
   apiUrl: apiPort ? `http://127.0.0.1:${apiPort}` : null,
   /** The host OS — useful for platform-specific UI tweaks in Vue */

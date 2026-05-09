@@ -299,7 +299,7 @@
             </p>
           </section>
 
-          <!-- Footer: sources + generated_at -->
+          <!-- Footer: sources + generated_at + privacy posture (R9.6 / §9.4) -->
           <footer class="border-t border-base-300 pt-3 mt-2 text-xs text-base-content/60 flex flex-col gap-1">
             <div v-if="sourceFilenames.length > 0">
               <span class="font-semibold text-base-content/70">Sources:</span>
@@ -312,6 +312,14 @@
             <div v-if="brief.generated_at">
               <span class="font-semibold text-base-content/70">Generated:</span>
               {{ formatTimestamp(brief.generated_at) }}
+            </div>
+            <!-- Compliance posture: brief is computed entirely on-device with
+                 no LLM call, so the privacy assertion is unconditional. -->
+            <div class="flex items-start gap-1.5 mt-1 pt-1 border-t border-base-300/40">
+              <ShieldCheck :size="11" class="text-success flex-shrink-0 mt-0.5" aria-hidden="true" />
+              <span>
+                Computed locally — no portfolio data was sent to an AI provider for this brief.
+              </span>
             </div>
           </footer>
         </div>
@@ -330,7 +338,7 @@
 
 <script setup>
 import { ref, reactive, computed, onBeforeUnmount } from 'vue'
-import { FileText, Printer, X, AlertTriangle } from 'lucide-vue-next'
+import { FileText, Printer, X, AlertTriangle, ShieldCheck } from 'lucide-vue-next'
 import axios from 'axios'
 
 const props = defineProps({

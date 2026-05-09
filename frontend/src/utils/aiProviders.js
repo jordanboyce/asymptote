@@ -108,6 +108,7 @@ export const PROVIDER_DEFS = [
     badge: 'cloud',
     keyPlaceholder: 'your Ollama API key',
     keyLink: 'https://ollama.com/settings/keys',
+    defaultModel: 'gemma4:31b',
     models: [
       { id: 'gpt-oss:120b', label: 'GPT-OSS 120B (quality)' },
       { id: 'gpt-oss:20b', label: 'GPT-OSS 20B (fast)' },

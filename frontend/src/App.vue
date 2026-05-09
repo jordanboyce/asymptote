@@ -12,7 +12,7 @@
         title="View all collections"
         aria-label="Finn — view all collections"
       >
-        <img src="/icon_black.svg" alt="" class="logo-header h-5 w-5 flex-shrink-0">
+        <img :src="headerLogoSrc" alt="" class="h-5 w-5 flex-shrink-0">
         <span class="font-bold text-sm tracking-tight hidden sm:inline">Finn</span>
       </button>
 
@@ -31,20 +31,6 @@
       </button>
 
       <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
-
-      <!-- Sources toggle (hidden on collections overview) -->
-      <button
-        v-if="!isCollectionsView"
-        class="btn btn-xs btn-ghost gap-1"
-        :class="sourcesSidebarOpen ? 'btn-active' : ''"
-        @click="sourcesSidebarOpen = !sourcesSidebarOpen"
-        title="Toggle sources panel"
-        aria-label="Toggle sources panel"
-        :aria-pressed="sourcesSidebarOpen"
-      >
-        <Library :size="14" />
-        <span class="hidden md:inline text-xs">Sources</span>
-      </button>
 
       <!-- Tabs (hidden on collections overview) -->
       <template v-if="!isCollectionsView">
@@ -128,19 +114,6 @@
         <span v-else class="hidden md:inline text-xs">Record</span>
       </button>
 
-      <!-- Analysis sidebar toggle (hidden on collections overview, hidden in basic mode) -->
-      <button
-        v-if="!isCollectionsView && isExpertMode"
-        class="btn btn-ghost btn-circle btn-sm"
-        :class="{ 'bg-base-300': analysisSidebarOpen }"
-        @click="analysisSidebarOpen = !analysisSidebarOpen"
-        title="Toggle analysis panel"
-        aria-label="Toggle analysis panel"
-        :aria-pressed="analysisSidebarOpen"
-      >
-        <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
-      </button>
-
       <!-- Basic / Expert toggle in header -->
       <label class="flex items-center gap-1.5 cursor-pointer select-none px-1" :title="isExpertMode ? 'Switch to Basic mode' : 'Switch to Expert mode'">
         <span class="text-xs font-medium" :class="!isExpertMode ? 'text-base-content' : 'text-base-content/40'">Basic</span>
@@ -170,22 +143,29 @@
     <!-- ── Body ── -->
     <div class="flex flex-1 overflow-hidden min-h-0">
 
-      <!-- Left sidebar: sources (resizable, hidden on collections overview) -->
+      <!-- Left sidebar: sources (resizable, hidden on collections overview).
+           NotebookLM-style: when collapsed, stays visible as a thin RAIL_WIDTH
+           rail of file icons so the toggle is always reachable. -->
       <aside
         v-show="!isCollectionsView"
         class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative"
         :class="isResizing ? '' : 'transition-all duration-200 ease-in-out'"
-        :style="{ width: sourcesSidebarOpen ? sidebarWidth + 'px' : '0px' }"
+        :style="{ width: (sourcesSidebarOpen ? sidebarWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
       >
-        <!-- Sidebar content fixed to sidebarWidth so it doesn't shrink during close animation -->
-        <div class="h-full flex flex-col" :style="{ width: sidebarWidth + 'px' }">
+        <!-- Inner div is sized to the *expanded* width while open and to the
+             rail width while collapsed. This keeps the full template from
+             reflowing during the close animation while letting the rail
+             content render at its natural narrow width. -->
+        <div
+          class="h-full flex flex-col"
+          :style="{ width: (sourcesSidebarOpen ? sidebarWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
+        >
           <SourcesSidebar
             ref="sourcesSidebarRef"
+            :expanded="sourcesSidebarOpen"
             @document-deleted="handleDocumentDeleted"
             @background-job-started="showJobsDrawer = true"
-            @close="sourcesSidebarOpen = false"
-            @open-brief="openBriefModal"
-            @open-note-of-record="openNoteOfRecordModal"
+            @toggle="sourcesSidebarOpen = !sourcesSidebarOpen"
           />
         </div>
 
@@ -210,11 +190,38 @@
       <!-- Main panel -->
       <main class="flex-1 flex flex-col overflow-hidden min-w-0">
 
+        <!-- Cross-tab update banner (R10.4). Non-blocking, dismissible per
+             session. latest_known is written to data/latest_known.json by the
+             desktop launcher; the banner shows only when that file reports a
+             newer version than what's running. -->
+        <div
+          v-if="showUpdateBanner"
+          role="status"
+          class="alert bg-info/10 border border-info/30 text-sm py-2 px-3 mx-3 mt-2 flex flex-row items-center justify-between gap-3 flex-shrink-0"
+        >
+          <span>
+            A newer Finn build (<span class="font-semibold tabular-nums">{{ latestKnownVersion }}</span>) is available. You're on <span class="tabular-nums">{{ appVersion }}</span>.
+          </span>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-sm btn-primary" @click="reloadForUpdate">
+              Reload to update
+            </button>
+            <button
+              class="btn btn-sm btn-ghost"
+              aria-label="Dismiss update reminder"
+              @click="updateBannerDismissed = true"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+
         <!-- Tab content -->
         <div
           class="flex-1 min-h-0"
           :class="activeTab === 'chat' ? 'overflow-hidden p-0' : 'overflow-y-auto'"
         >
+          <ErrorBoundary :key="activeTab">
           <!-- Chat gets full height, no padding wrapper -->
           <div v-if="activeTab === 'chat'" class="h-full p-4 flex flex-col gap-3">
             <!-- Persistent reminder for advisors who skipped provider setup -->
@@ -501,18 +508,22 @@
             <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
             <TokenizerTab v-if="activeTab === 'tokenizer'" />
             <DiagnosticsTab v-if="activeTab === 'diagnostics'" />
-            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
+            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @search-tab-toggled="onSearchTabToggled" />
           </div>
+          </ErrorBoundary>
         </div>
 
       </main>
 
-      <!-- Right sidebar: analysis (resizable, hidden on collections overview, hidden in basic mode) -->
+      <!-- Right sidebar: Studio (resizable, hidden on collections overview).
+           Visible to all users — the primary tools (Brief, Note of Record,
+           Applied Expertise) live here so the left Sources panel stays
+           single-purpose, NotebookLM-style. -->
       <aside
-        v-show="!isCollectionsView && isExpertMode"
+        v-show="!isCollectionsView"
         class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative border-l border-base-300"
         :class="isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out'"
-        :style="{ width: analysisSidebarOpen ? analysisWidth + 'px' : '0px' }"
+        :style="{ width: (analysisSidebarOpen ? analysisWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
       >
         <!-- Drag handle (on the LEFT edge of the right sidebar) -->
         <div
@@ -530,10 +541,17 @@
           </div>
         </div>
 
-        <div class="h-full flex flex-col" :style="{ width: analysisWidth + 'px' }">
+        <div
+          class="h-full flex flex-col"
+          :style="{ width: (analysisSidebarOpen ? analysisWidth : SIDEBAR_RAIL_WIDTH) + 'px' }"
+        >
           <AnalysisSidebar
-            @close="analysisSidebarOpen = false"
+            ref="analysisSidebarRef"
+            :expanded="analysisSidebarOpen"
+            @toggle="analysisSidebarOpen = !analysisSidebarOpen"
             @send-to-chat="handleSendToChat"
+            @open-brief="openBriefModal"
+            @open-note-of-record="openNoteOfRecordModal"
           />
         </div>
       </aside>
@@ -581,6 +599,17 @@
       </template>
 
       <div class="flex-1"></div>
+
+      <button
+        class="flex items-center gap-1.5 hover:text-base-content transition-colors"
+        @click="showFeedbackModal = true"
+        title="Report an issue or send feedback"
+        aria-label="Report an issue"
+      >
+        <Bug :size="11" aria-hidden="true" />
+        <span>Report issue</span>
+      </button>
+      <span class="w-px h-3 bg-base-300" aria-hidden="true"></span>
 
       <!-- Stats moved here from the header for breathing room -->
       <span class="hidden md:inline tabular-nums">
@@ -852,6 +881,16 @@
       @skip="handleOnboardingSkip"
     />
 
+    <!-- 7-day welcome-back card (R10.7). Shown once on launch when the previous
+         session was 7+ days ago. /api/version returns the days-since BEFORE
+         /health writes the new last_active_at, so the value reflects the gap
+         since the last session, not zero. -->
+    <WelcomeBackCard
+      :show="showWelcomeBackCard"
+      :days="daysSinceLastActive"
+      @dismiss="dismissWelcomeBack"
+    />
+
     <!-- Meeting Brief modal (R4 — Advisor Desktop UX) -->
     <BriefModal
       ref="briefModal"
@@ -865,6 +904,14 @@
       :collection-id="collectionStore.currentCollectionId || ''"
       :collection-name="briefCollectionName"
       @saved="handleNoteOfRecordSaved"
+    />
+
+    <!-- User feedback / issue-report modal -->
+    <FeedbackModal
+      :open="showFeedbackModal"
+      :app-route="activeTab"
+      :collection-id="collectionStore.currentCollectionId || ''"
+      @close="showFeedbackModal = false"
     />
 
     <!-- Background Jobs Sidebar Drawer -->
@@ -997,16 +1044,22 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, FileSearch, MessageSquare, Hash, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug } from 'lucide-vue-next'
 import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
 import { useMeetingRecorder } from './composables/useMeetingRecorder.js'
+import { useThemeIcon } from './composables/useThemeIcon.js'
 
-const chatTabEnabled = ref(true)
+// Header logo: dark icon on light themes, light icon on dark themes. The
+// composable subscribes to data-theme changes on <html> so the swap is live.
+const { src: headerLogoSrc } = useThemeIcon('/icon_light.svg', '/icon_dark.svg')
+
+// Chat is the primary advisor surface and always renders. Search is the
+// legacy retrieval-only tab and can be hidden via Settings → UI Features.
+const searchTabEnabled = ref(true)
 
 const tabs = computed(() => {
-  const t = []
-  if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
-  t.push({ id: 'search', label: 'Search', icon: Search })
+  const t = [{ id: 'chat', label: 'Chat', icon: MessageSquare }]
+  if (searchTabEnabled.value) t.push({ id: 'search', label: 'Search', icon: Search })
   if (isExpertMode.value) t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   return t
 })
@@ -1030,7 +1083,11 @@ import ShareModal from './components/ShareModal.vue'
 import ExpertiseLibrary from './components/ExpertiseLibrary.vue'
 import WelcomeOnboarding from './components/WelcomeOnboarding.vue'
 import BriefModal from './components/BriefModal.vue'
+import FeedbackModal from './components/FeedbackModal.vue'
 import NoteOfRecordModal from './components/NoteOfRecordModal.vue'
+import ErrorBoundary from './components/ErrorBoundary.vue'
+import WelcomeBackCard from './components/WelcomeBackCard.vue'
+import { isUpdateAvailable } from './utils/version.js'
 import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
@@ -1062,7 +1119,7 @@ const onHeaderRecordClick = () => {
 // Favicon swap during recording — gives the advisor a recording cue from any
 // browser tab, including ones backgrounded behind a Zoom/Teams window. Set
 // once on mount, then toggled on isRecording. The original icon path comes
-// from index.html (`/icon_white.svg`); we cache it on first run.
+// from index.html (`/icon_light.svg`); we cache it on first run.
 const RECORDING_FAVICON =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(
@@ -1091,7 +1148,7 @@ watch(meetingIsRecording, (recording) => {
 })
 
 const activeTab = ref('chat')
-const currentTheme = ref('light')
+const currentTheme = ref('corporate')
 
 // In basic mode, expertise/MCP/OCR/tokenizer are hidden — bounce back to chat
 // if the user toggles to basic while one of those tabs is active.
@@ -1105,6 +1162,9 @@ watch(isExpertMode, (expert) => {
 // Resizable sidebar
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 600
+// Width of the always-visible rail when a sidebar is collapsed. Matches the
+// w-11 (44px) used inside SourcesSidebar/AnalysisSidebar rail mode.
+const SIDEBAR_RAIL_WIDTH = 44
 const sidebarWidth = ref(parseInt(localStorage.getItem('sidebar_width') || '320'))
 const isResizing = ref(false)
 
@@ -1181,11 +1241,10 @@ const footerActiveJob = computed(() =>
 
 // Forward an Analysis-sidebar action into the chat input.
 const handleSendToChat = (prompt) => {
-  if (!chatTabEnabled.value) return
   activeTab.value = 'chat'
   // Wait one tick so ChatTab is mounted before we deliver the prompt.
   setTimeout(() => {
-    window.dispatchEvent(new CustomEvent('asymptote:prefill-chat', { detail: { prompt } }))
+    window.dispatchEvent(new CustomEvent('finn:prefill-chat', { detail: { prompt } }))
   }, 50)
 }
 
@@ -1218,6 +1277,9 @@ const shareCollectionName = ref('')
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
 
+// Feedback / issue-report modal state — toggled from the footer.
+const showFeedbackModal = ref(false)
+
 // First-run onboarding: a full-screen takeover shown when the advisor has
 // never configured an AI provider. Resolves the "you installed the app but
 // nothing works until you curl an endpoint" problem we hit earlier.
@@ -1238,7 +1300,51 @@ const dismissProviderSetupBanner = () => {
 }
 
 function hasCompletedOnboarding() {
-  return !!localStorage.getItem('asymptote_onboarding_completed_at')
+  return !!localStorage.getItem('finn_onboarding_completed_at')
+}
+
+// ── Update banner + welcome-back card (R10.4 / R10.7) ─────────────────────
+// Populated by loadVersionInfo() on mount, called before the first /health
+// ping so the days-since reflects the previous session.
+const appVersion = ref('')
+const latestKnownVersion = ref(null)
+const updateBannerDismissed = ref(false)
+const daysSinceLastActive = ref(null)
+const welcomeBackDismissed = ref(false)
+
+const showUpdateBanner = computed(() => {
+  if (updateBannerDismissed.value) return false
+  return isUpdateAvailable(appVersion.value, latestKnownVersion.value)
+})
+
+const showWelcomeBackCard = computed(() => {
+  if (welcomeBackDismissed.value) return false
+  if (showOnboarding.value) return false  // never stack with onboarding takeover
+  const d = daysSinceLastActive.value
+  return typeof d === 'number' && d >= 7
+})
+
+const dismissWelcomeBack = () => {
+  welcomeBackDismissed.value = true
+}
+
+const reloadForUpdate = () => {
+  window.location.reload()
+}
+
+const loadVersionInfo = async () => {
+  try {
+    const { data } = await axios.get('/api/version')
+    appVersion.value = data?.version || ''
+    latestKnownVersion.value = data?.latest_known || null
+    daysSinceLastActive.value = typeof data?.days_since_last_active === 'number'
+      ? data.days_since_last_active
+      : null
+  } catch (err) {
+    // Non-fatal — banner stays hidden, welcome-back stays hidden. We don't
+    // want a backend hiccup at boot to gate the entire UI.
+    console.debug('Could not load /api/version:', err)
+  }
 }
 
 function refreshProviderBannerState() {
@@ -1276,7 +1382,7 @@ const handleOnboardingComplete = (payload = {}) => {
   // doesn't cover localStorage, so dispatch a synthetic event the
   // components can listen to — or simply rely on re-mount on next tab
   // switch. For now a page-agnostic event is cheapest.
-  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
+  window.dispatchEvent(new CustomEvent('finn:providers-changed'))
 }
 
 const handleOnboardingSkip = () => {
@@ -1287,7 +1393,7 @@ const handleOnboardingSkip = () => {
   activeTab.value = 'chat'
   refreshProviderBannerState()
   bootstrapAIDefaultsOnFirstProvider()
-  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
+  window.dispatchEvent(new CustomEvent('finn:providers-changed'))
 }
 
 // Collections overview: view, search, sort
@@ -1345,16 +1451,30 @@ const filteredCollections = computed(() => {
   return list
 })
 
+// Legacy theme values that need to map to the two we ship today.
+// Anything not in this map (e.g. cupcake, dracula, nord from older builds)
+// is treated as "no explicit pref" and resolved from the OS color scheme.
+const LEGACY_THEME_MAP = {
+  light: 'corporate',
+  dark: 'business',
+  corporate: 'corporate',
+  business: 'business',
+}
+
+const resolveTheme = (raw) => {
+  if (raw && LEGACY_THEME_MAP[raw]) return LEGACY_THEME_MAP[raw]
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+  return prefersDark ? 'business' : 'corporate'
+}
+
 const updateThemeFromStorage = () => {
-  const savedTheme = localStorage.getItem('theme')
-  if (savedTheme) {
-    currentTheme.value = savedTheme
-    document.documentElement.setAttribute('data-theme', savedTheme)
-  } else {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    currentTheme.value = prefersDark ? 'dark' : 'light'
-    document.documentElement.setAttribute('data-theme', currentTheme.value)
-  }
+  const saved = localStorage.getItem('theme')
+  const resolved = resolveTheme(saved)
+  // Persist the migrated value so SettingsTab and the next boot see the
+  // current theme name, not the legacy one.
+  if (saved !== resolved) localStorage.setItem('theme', resolved)
+  currentTheme.value = resolved
+  document.documentElement.setAttribute('data-theme', resolved)
 }
 
 const loadStats = async () => {
@@ -1374,7 +1494,11 @@ const loadStats = async () => {
 }
 
 const handleDocumentDeleted = async () => {
-  // Reload both stats and collections list (for document_count in dropdown)
+  // Reload stats, collections list (for document_count in dropdown), and the
+  // Studio panel's slim document/summary copies so the snapshot card and NoR
+  // nudge stay in sync with whatever just changed in Sources.
+  analysisSidebarRef.value?.loadDocuments?.()
+  analysisSidebarRef.value?.loadSummary?.()
   await Promise.all([
     loadStats(),
     collectionStore.loadCollections()
@@ -1391,13 +1515,16 @@ const openBriefModal = () => {
 // Note of Record drafting modal (R7 — Advisor Desktop UX)
 const noteOfRecordModal = ref(null)
 const sourcesSidebarRef = ref(null)
+const analysisSidebarRef = ref(null)
 const openNoteOfRecordModal = () => {
   noteOfRecordModal.value?.open()
 }
-// After saving, refresh the sidebar's document list so the new
-// "Note of Record - …" file appears alongside the source it was drafted from.
+// After saving, refresh both sidebars' document lists so the new
+// "Note of Record - …" file appears alongside the source it was drafted from
+// and the Studio nudge banner clears.
 const handleNoteOfRecordSaved = () => {
   sourcesSidebarRef.value?.loadDocuments?.()
+  analysisSidebarRef.value?.loadDocuments?.()
 }
 
 const handleDataCleared = async () => {
@@ -1408,10 +1535,10 @@ const handleDataCleared = async () => {
   ])
 }
 
-const onChatTabToggled = (enabled) => {
-  chatTabEnabled.value = enabled
-  if (!enabled && activeTab.value === 'chat') {
-    activeTab.value = 'search'
+const onSearchTabToggled = (enabled) => {
+  searchTabEnabled.value = enabled
+  if (!enabled && activeTab.value === 'search') {
+    activeTab.value = 'chat'
   }
 }
 
@@ -1425,7 +1552,7 @@ const selectCollection = (collectionId) => {
 
 const selectCollectionAndNavigate = (collectionId) => {
   collectionStore.setCurrentCollection(collectionId)
-  activeTab.value = chatTabEnabled.value ? 'chat' : 'search'
+  activeTab.value = 'chat'
 }
 
 const openCreateCollectionModal = () => {
@@ -1582,12 +1709,17 @@ onMounted(async () => {
   // the gate. No-op for advisors who've explicitly toggled either off.
   bootstrapAIDefaultsOnFirstProvider()
 
+  // Pull /api/version before the first /health call so days_since_last_active
+  // reflects the previous session, not zero. /health stamps the new
+  // last_active_at, so any later read would return ~0.
+  await loadVersionInfo()
+
   // Load UI feature flags from server config
   try {
     const cfgResp = await axios.get('/api/config')
-    chatTabEnabled.value = cfgResp.data.enable_chat_tab ?? true
-    if (!chatTabEnabled.value && activeTab.value === 'chat') {
-      activeTab.value = 'search'
+    searchTabEnabled.value = cfgResp.data.enable_search_tab ?? true
+    if (!searchTabEnabled.value && activeTab.value === 'search') {
+      activeTab.value = 'chat'
     }
   } catch { /* defaults to true */ }
 
@@ -1627,11 +1759,11 @@ onMounted(async () => {
 
   // When the user finishes configuring a provider in Settings, drop the
   // "finish provider setup" banner without waiting for a reload.
-  window.addEventListener('asymptote:providers-changed', refreshProviderBannerState)
+  window.addEventListener('finn:providers-changed', refreshProviderBannerState)
 
   // When a meeting transcript lands (from header button or sidebar), refresh
   // counts so the footer reflects the new doc.
-  window.addEventListener('asymptote:transcript-saved', loadStats)
+  window.addEventListener('finn:transcript-saved', loadStats)
 })
 
 onBeforeUnmount(() => {

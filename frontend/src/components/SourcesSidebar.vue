@@ -1,5 +1,40 @@
 <template>
-  <div class="flex flex-col h-full">
+  <!-- Collapsed rail: thin column of file icons, always visible -->
+  <div v-if="!expanded" class="flex flex-col h-full w-11 items-center py-2 gap-1.5 border-r border-base-300 flex-shrink-0">
+    <button
+      class="btn btn-ghost btn-sm btn-square"
+      @click="$emit('toggle')"
+      title="Open sources panel"
+      aria-label="Open sources panel"
+    >
+      <PanelLeftOpen :size="16" />
+    </button>
+    <button
+      class="btn btn-ghost btn-sm btn-square text-primary"
+      @click="$emit('toggle')"
+      title="Add sources"
+      aria-label="Add sources"
+    >
+      <Plus :size="16" />
+    </button>
+    <div class="w-6 border-t border-base-300 my-0.5" aria-hidden="true"></div>
+    <div class="flex-1 overflow-y-auto w-full flex flex-col items-center gap-1.5 px-1">
+      <button
+        v-for="doc in documents"
+        :key="doc.document_id"
+        class="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 hover:ring-2 hover:ring-primary/40 transition-all"
+        :class="[getFileIconClass(doc.filename), { 'opacity-50': !isInScope(doc.document_id) }]"
+        @click="$emit('toggle')"
+        :title="`${doc.filename}${isInScope(doc.document_id) ? '' : ' (excluded from chat)'}`"
+        :aria-label="doc.filename"
+      >
+        <component :is="getFileIcon(doc.filename)" :size="13" :class="getFileIconTextClass(doc.filename)" />
+      </button>
+    </div>
+  </div>
+
+  <!-- Expanded panel -->
+  <div v-else class="flex flex-col h-full">
 
     <!-- Header bar -->
     <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Sources">
@@ -16,11 +51,11 @@
       </button>
       <button
         class="btn btn-ghost btn-xs btn-circle"
-        @click="$emit('close')"
-        title="Close sidebar"
-        aria-label="Close sources sidebar"
+        @click="$emit('toggle')"
+        title="Collapse sources panel"
+        aria-label="Collapse sources panel"
       >
-        <X :size="13" />
+        <PanelLeftClose :size="13" />
       </button>
     </div>
 
@@ -145,138 +180,6 @@
           <!-- Advanced options hidden for financial advisor build -->
 
         </div>
-      </div>
-
-      <!-- Applied Expertise section (collapsible) -->
-      <div class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="expertiseSectionOpen = !expertiseSectionOpen"
-          aria-label="Toggle Applied Expertise section"
-        >
-          <BookOpen :size="13" class="text-accent flex-shrink-0" aria-hidden="true" />
-          <span class="text-xs font-semibold text-accent flex-1">Applied Expertise</span>
-          <span v-if="attachedPackIds.length > 0" class="badge badge-xs badge-accent">{{ attachedPackIds.length }}</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="expertiseSectionOpen ? 'rotate-180' : ''" />
-        </button>
-
-        <div v-show="expertiseSectionOpen" class="px-3 pb-3 space-y-2">
-          <!-- Attached packs -->
-          <div v-if="attachedPackIds.length === 0" class="text-xs text-base-content/50 py-1">
-            No expertise packs applied. Add one below to shape AI analysis.
-          </div>
-          <div v-else class="space-y-1">
-            <div
-              v-for="pack in attachedPacks"
-              :key="pack.id"
-              class="flex items-center gap-1.5 bg-accent/10 border border-accent/20 rounded px-2 py-1.5"
-            >
-              <FileText :size="11" class="text-accent shrink-0" aria-hidden="true" />
-              <span class="text-xs flex-1 truncate" :title="pack.name">{{ pack.name }}</span>
-              <button
-                class="btn btn-ghost btn-xs btn-circle text-error"
-                :title="`Remove ${pack.name}`"
-                :disabled="expertiseLoading"
-                @click.stop="removeExpertisePack(pack.id)"
-              >
-                <X :size="11" />
-              </button>
-            </div>
-          </div>
-
-          <!-- Add pack dropdown -->
-          <div v-if="availablePacks.length > 0" class="dropdown w-full">
-            <label
-              tabindex="0"
-              class="btn btn-outline btn-xs w-full gap-1"
-              :class="{ 'btn-disabled': expertiseLoading }"
-            >
-              <Plus :size="11" />
-              Add expertise…
-              <ChevronDown :size="11" class="ml-auto" />
-            </label>
-            <ul tabindex="0" class="dropdown-content z-[50] menu p-1 shadow-lg bg-base-100 border border-base-300 rounded-box w-full max-h-48 overflow-y-auto flex-nowrap">
-              <li v-for="pack in availablePacks" :key="pack.id">
-                <a class="text-xs py-1.5" @click.prevent="addExpertisePack(pack.id)">
-                  <FileText :size="11" class="shrink-0" />
-                  <span class="truncate">{{ pack.name }}</span>
-                </a>
-              </li>
-            </ul>
-          </div>
-          <p v-else-if="expertiseStore.packs.length === 0" class="text-xs text-base-content/40">
-            No packs in the Expertise Library yet.
-          </p>
-          <p v-else class="text-xs text-base-content/40">
-            All packs are already applied.
-          </p>
-        </div>
-      </div>
-
-      <!-- Portfolio snapshot card (R3 — Advisor Desktop UX) -->
-      <div
-        v-if="summary && summary.positions > 0"
-        class="px-3 py-2.5 border-b border-base-300 bg-base-200/40"
-        role="region"
-        aria-label="Portfolio snapshot for this collection"
-      >
-        <div class="flex items-baseline gap-3">
-          <div class="flex items-baseline gap-1">
-            <span class="text-sm font-semibold tabular-nums">{{ summary.positions }}</span>
-            <span class="text-[10px] uppercase tracking-wider text-base-content/50">
-              {{ summary.positions === 1 ? 'position' : 'positions' }}
-            </span>
-          </div>
-          <div v-if="summary.accounts > 0" class="flex items-baseline gap-1">
-            <span class="text-sm font-semibold tabular-nums">{{ summary.accounts }}</span>
-            <span class="text-[10px] uppercase tracking-wider text-base-content/50">
-              {{ summary.accounts === 1 ? 'account' : 'accounts' }}
-            </span>
-          </div>
-        </div>
-        <div
-          v-if="summary.most_recent_export_iso"
-          class="text-[11px] text-base-content/55 mt-1"
-          :title="`Most recent brokerage export: ${summary.most_recent_export_iso}`"
-        >
-          Most recent export: {{ formatExportDate(summary.most_recent_export_iso) }}
-        </div>
-        <button
-          class="btn btn-primary btn-sm w-full mt-2 gap-1.5"
-          @click="emit('open-brief')"
-          title="Compute a pre-meeting brief from this collection's holdings"
-        >
-          <FileText :size="13" aria-hidden="true" />
-          Generate Meeting Brief
-        </button>
-        <button
-          v-if="hasTranscript"
-          class="btn btn-outline btn-sm w-full mt-2 gap-1.5"
-          @click="emit('open-note-of-record')"
-          title="Draft a compliance Note of Record from the latest meeting transcript"
-        >
-          <FileText :size="13" aria-hidden="true" />
-          Draft Note of Record
-        </button>
-      </div>
-
-      <!-- Fallback Note of Record entry: holdings card is hidden when there
-           are no positions, but a transcript-only collection should still
-           expose the button. -->
-      <div
-        v-else-if="hasTranscript"
-        class="px-3 py-2.5 border-b border-base-300 bg-base-200/40"
-        role="region"
-        aria-label="Note of Record drafting"
-      >
-        <button
-          class="btn btn-outline btn-sm w-full gap-1.5"
-          @click="emit('open-note-of-record')"
-          title="Draft a compliance Note of Record from the latest meeting transcript"
-        >
-          <FileText :size="13" aria-hidden="true" />
-          Draft Note of Record
-        </button>
       </div>
 
       <!-- Document list header — checkbox toggles chat scope (NotebookLM-style) -->
@@ -549,20 +452,22 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, ShieldCheck, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, ShieldCheck, Table2, Mic, Square, PanelLeftOpen, PanelLeftClose } from 'lucide-vue-next'
 import PiiReviewModal from './PiiReviewModal.vue'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
-import { useExpertiseStore } from '../stores/expertiseStore'
 import { useChatStore } from '../stores/chatStore'
 import { isExpertMode } from '../utils/expertMode'
+import { friendlyError } from '../utils/friendlyError.js'
 import { useMeetingRecorder } from '../composables/useMeetingRecorder'
 
-const emit = defineEmits(['document-deleted', 'background-job-started', 'close', 'open-brief', 'open-note-of-record'])
+const props = defineProps({
+  expanded: { type: Boolean, default: true },
+})
+const emit = defineEmits(['document-deleted', 'background-job-started', 'toggle'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
-const expertiseStore = useExpertiseStore()
 const chatStore = useChatStore()
 
 // ── PII review state ──────────────────────────────────────────────────────
@@ -607,8 +512,6 @@ function openPiiReview(doc) {
 // Sidebar-specific state
 const addSectionOpen = ref(true)
 const advancedOpen = ref(false)
-const expertiseSectionOpen = ref(false)
-const expertiseLoading = ref(false)
 
 // Source code mode
 const isSourceCode = ref(false)
@@ -648,11 +551,6 @@ const indexResult = ref({ count: 0, chunks: 0 })
 const documents = ref([])
 const loading = ref(false)
 
-// Per-Collection portfolio snapshot for the summary card. Hidden when
-// positions === 0 — see template — so a fresh empty Collection doesn't
-// render an awkward "0 positions" pill before any holdings file is added.
-const summary = ref(null)
-const summaryLoading = ref(false)
 const deleting = ref(false)
 const error = ref('')
 const deleteModal = ref(null)
@@ -764,7 +662,7 @@ const openFilePicker = async () => {
     }
   } catch (err) {
     console.error('File picker error:', err)
-    indexError.value = err.response?.data?.detail || 'Failed to open file picker'
+    indexError.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to open file picker' })
   }
 }
 
@@ -834,7 +732,7 @@ const openFolderPicker = async () => {
     }
   } catch (err) {
     console.error('Folder picker error:', err)
-    indexError.value = err.response?.data?.detail || 'Failed to open folder picker'
+    indexError.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to open folder picker' })
   }
 }
 
@@ -968,8 +866,7 @@ const indexFiles = async () => {
           selectedPaths.value = folders.length > 0 ? folders : []
 
         } catch (err) {
-          const errorMsg = err.response?.data?.detail || err.message
-          errors.push(`Files: ${errorMsg}`)
+          errors.push(`Files: ${friendlyError(err, { expert: isExpertMode.value, fallback: 'Could not be indexed.' })}`)
           console.error('Failed to start background indexing:', err)
         }
       } else {
@@ -991,8 +888,7 @@ const indexFiles = async () => {
             // Update progress after successful index
             indexProgressPercent.value = ((i + 1) / filePaths.length) * 100
           } catch (err) {
-            const errorMsg = err.response?.data?.detail || err.message
-            errors.push(`${filename}: ${errorMsg}`)
+            errors.push(`${filename}: ${friendlyError(err, { expert: isExpertMode.value, fallback: 'Could not be indexed.' })}`)
             console.error(`Failed to index ${filePaths[i]}:`, err)
           }
         }
@@ -1022,8 +918,7 @@ const indexFiles = async () => {
         successCount += response.data.files_indexed || 0
         totalChunks += response.data.total_chunks || 0
       } catch (err) {
-        const errorMsg = err.response?.data?.detail || err.message
-        errors.push(`${folder.name}: ${errorMsg}`)
+        errors.push(`${folder.name}: ${friendlyError(err, { expert: isExpertMode.value, fallback: 'Could not be indexed.' })}`)
         console.error(`Failed to index ${folder.path}:`, err)
       }
     }
@@ -1075,14 +970,6 @@ const inScopeCount = computed(() => {
 
 const allInScope = computed(() => scopedIds.value === null)
 const someInScope = computed(() => inScopeCount.value > 0)
-
-// True when the collection contains at least one meeting transcript (the
-// `_find_recent_transcript` helper on the backend looks for any document
-// whose filename starts with "Meeting Notes"). Gates the "Draft Note of
-// Record" button per R7.1.
-const hasTranscript = computed(() =>
-  documents.value.some((d) => (d.filename || '').startsWith('Meeting Notes'))
-)
 
 const isInScope = (docId) => {
   if (scopedIds.value === null) return true
@@ -1142,38 +1029,10 @@ const loadDocuments = async () => {
       documents.value.map((d) => d.document_id),
     )
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to load sources'
+    error.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to load sources' })
   } finally {
     loading.value = false
   }
-
-  loadSummary()
-}
-
-const loadSummary = async () => {
-  // Reset between collections so a stale card never lingers while the new
-  // one is loading.
-  summary.value = null
-  const collectionId = collectionStore.currentCollectionId
-  if (!collectionId) return
-  summaryLoading.value = true
-  try {
-    const response = await axios.get(`/api/collections/${collectionId}/summary`)
-    summary.value = response.data
-  } catch (err) {
-    // The card is non-essential — log and stay quiet rather than blocking
-    // the document list with an alert.
-    console.warn('Failed to load collection summary:', err)
-  } finally {
-    summaryLoading.value = false
-  }
-}
-
-const formatExportDate = (iso) => {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 const openChunks = async (doc) => {
@@ -1275,7 +1134,7 @@ const deleteDocument = async () => {
 
     emit('document-deleted')
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to delete source'
+    error.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to delete source' })
   } finally {
     deleting.value = false
     closeDeleteModal()
@@ -1283,56 +1142,9 @@ const deleteDocument = async () => {
 }
 
 // Watch for collection changes
-watch(() => collectionStore.currentCollectionId, (newId) => {
+watch(() => collectionStore.currentCollectionId, () => {
   loadDocuments()
-  loadExpertise(newId)
 })
-
-// Applied Expertise helpers
-
-const attachedPackIds = computed(() =>
-  expertiseStore.attachedPackIds[collectionStore.currentCollectionId] || []
-)
-
-const attachedPacks = computed(() =>
-  expertiseStore.getAttachedPackObjects(collectionStore.currentCollectionId)
-)
-
-const availablePacks = computed(() =>
-  expertiseStore.packs.filter(p => !attachedPackIds.value.includes(p.id))
-)
-
-async function loadExpertise(collId) {
-  const id = collId || collectionStore.currentCollectionId
-  try {
-    await Promise.all([
-      expertiseStore.fetchPacks(),
-      expertiseStore.fetchAttached(id),
-    ])
-  } catch (e) {
-    // non-fatal
-  }
-}
-
-async function addExpertisePack(packId) {
-  expertiseLoading.value = true
-  try {
-    const newIds = [...attachedPackIds.value, packId]
-    await expertiseStore.setAttached(collectionStore.currentCollectionId, newIds)
-  } finally {
-    expertiseLoading.value = false
-  }
-}
-
-async function removeExpertisePack(packId) {
-  expertiseLoading.value = true
-  try {
-    const newIds = attachedPackIds.value.filter(id => id !== packId)
-    await expertiseStore.setAttached(collectionStore.currentCollectionId, newIds)
-  } finally {
-    expertiseLoading.value = false
-  }
-}
 
 // Watch for completed background uploads to reload documents.
 // Derived primitive avoids deep-walking the jobs array on every nested mutation.
@@ -1410,7 +1222,7 @@ const selectRecentRepo = async (repo) => {
       indexError.value = 'No matching files found in the selected folder'
     }
   } catch (err) {
-    indexError.value = err.response?.data?.detail || 'Failed to scan folder'
+    indexError.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to scan folder' })
   }
 }
 
@@ -1418,14 +1230,13 @@ const selectRecentRepo = async (repo) => {
 onMounted(() => {
   loadDocuments()
   loadRecentRepos()
-  loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
-  window.addEventListener('asymptote:transcript-saved', handleTranscriptSaved)
+  window.addEventListener('finn:transcript-saved', handleTranscriptSaved)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
-  window.removeEventListener('asymptote:transcript-saved', handleTranscriptSaved)
+  window.removeEventListener('finn:transcript-saved', handleTranscriptSaved)
   // Recording lifecycle is owned by useMeetingRecorder (module singleton);
   // intentionally not torn down here so navigating away from this surface
   // doesn't kill an in-flight session.

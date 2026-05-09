@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Asymptote — Electron desktop build for macOS
-#  Output: electron-dist/Asymptote-<version>.dmg
+#  Finn — Electron desktop build for macOS
+#  Output: electron-dist/Finn-<version>.dmg
 #
 #  Requirements:
 #    - Python 3.11+ (recommend pyenv or Homebrew)
@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 echo ""
 echo "============================================================"
-echo " Asymptote macOS Build"
+echo " Finn macOS Build"
 echo "============================================================"
 echo ""
 
@@ -30,6 +30,7 @@ npm install
 #   VITE_ELECTRON=true  → Vue Router uses hash history (file:// compatible)
 VITE_ELECTRON=true npm run build:electron
 cd "$ROOT"
+node "$ROOT/electron/verify-renderer.js"
 echo "      Done."
 echo ""
 
@@ -49,16 +50,20 @@ if ! python -c "import en_core_web_lg" 2>/dev/null; then
         python -m spacy download en_core_web_sm
     }
 fi
+
+# Generate third-party license manifest from the installed deps
+echo "      Generating THIRD_PARTY_LICENSES.txt..."
+python "$ROOT/desktop/generate_third_party_licenses.py"
 echo "      Done."
 echo ""
 
 # ── 3. Build Python backend with PyInstaller ──────────────────
 echo "[3/4] Packaging Python backend with PyInstaller..."
-rm -rf "$ROOT/dist/Asymptote"
+rm -rf "$ROOT/dist/Finn"
 pyinstaller "$ROOT/desktop/build_desktop.spec" --clean --noconfirm
 
 # Safety: strip any runtime user data that crept into the bundle
-rm -rf "$ROOT/dist/Asymptote/data"
+rm -rf "$ROOT/dist/Finn/data"
 echo "      Done."
 echo ""
 
@@ -73,6 +78,6 @@ echo ""
 
 echo "============================================================"
 echo " Build complete!"
-echo " Installer: electron-dist/Asymptote-*.dmg"
+echo " Installer: electron-dist/Finn-*.dmg"
 echo "============================================================"
 echo ""

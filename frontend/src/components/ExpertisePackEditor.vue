@@ -48,22 +48,13 @@
       <div class="form-control">
         <label class="label pb-1">
           <span class="label-text font-medium">Guidance body <span class="text-error">*</span></span>
-          <span class="label-text-alt text-base-content/50">Markdown — injected into the AI system prompt</span>
+          <span class="label-text-alt text-base-content/50">Use sections and bullets — injected into the AI system prompt</span>
         </label>
-        <textarea
+        <MarkdownRichEditor
           v-model="form.body"
-          class="textarea textarea-bordered font-mono text-sm leading-relaxed w-full resize-y"
-          :class="{ 'textarea-error': errors.body }"
-          rows="14"
-          placeholder="Write your advisor guidelines, investment policies, or analysis frameworks here.
-
-Example:
-## Investment Policy
-- Minimum credit quality: Investment grade (BBB- or higher)
-- Maximum single-issuer concentration: 5% of portfolio
-- Duration target: 4–6 years
-- Preferred sectors: Utilities, healthcare, consumer staples"
-          @input="errors.body = ''"
+          :error="!!errors.body"
+          placeholder="Write your advisor guidelines, investment policies, or analysis frameworks. Use Section heading (H2) to label parts the AI should latch onto, and bullets for directives. Example: a 'Heuristics' section with bullets like 'Flag any single position over 5% of household NAV'."
+          @update:modelValue="errors.body = ''"
         />
         <label v-if="errors.body" class="label pt-1">
           <span class="label-text-alt text-error">{{ errors.body }}</span>
@@ -116,6 +107,7 @@ Example:
 import { ref, computed, watch } from 'vue'
 import { X, Save, Trash2 } from 'lucide-vue-next'
 import { useExpertiseStore } from '../stores/expertiseStore'
+import MarkdownRichEditor from './MarkdownRichEditor.vue'
 
 const props = defineProps({
   pack: {
@@ -128,7 +120,10 @@ const emit = defineEmits(['save', 'cancel', 'delete'])
 
 const store = useExpertiseStore()
 
-const isNew = computed(() => !props.pack)
+// "New" means no persisted id yet — covers both a null prop (clean create) and
+// a pre-filled draft object (e.g. handed over from the AI generator) that has
+// no id. The save path branches on this to call create vs. update.
+const isNew = computed(() => !props.pack?.id)
 
 const form = ref({
   name: props.pack?.name ?? '',

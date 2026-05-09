@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import axios from 'axios'
+import { apiUrl } from '../utils/apiUrl.js'
 
 export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
   // State
@@ -160,7 +161,7 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
       return
     }
 
-    const eventSource = new EventSource(`/documents/upload/${jobId}/stream`)
+    const eventSource = new EventSource(apiUrl(`/documents/upload/${jobId}/stream`))
 
     eventSource.addEventListener('connected', (e) => {
       console.log(`SSE connected for job ${jobId}`)

@@ -72,10 +72,10 @@
         </div>
         <div class="rounded-lg border border-base-300 bg-base-100 p-3">
           <label class="flex cursor-pointer items-start gap-4">
-            <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="chatTabEnabled" @change="saveChatTabSetting" />
+            <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="searchTabEnabled" @change="saveSearchTabSetting" />
             <div>
-              <span class="label-text font-medium">Chat Tab</span>
-              <p class="text-xs text-base-content/60">Built-in chat interface. Disable if you use Claude Desktop or another MCP client instead.</p>
+              <span class="label-text font-medium">Search Tab</span>
+              <p class="text-xs text-base-content/60">Standalone retrieval surface for ad-hoc queries against indexed sources. Chat is the primary advisor surface; turn this off if you only work through chat.</p>
             </div>
           </label>
         </div>
@@ -427,7 +427,7 @@
               <p class="mt-1 text-xs text-base-content/60">
                 Vision AI sends each PDF page as an image to a language model for text extraction.
                 More accurate than traditional OCR for complex layouts and degraded scans.
-                Set provider to "None" to use Docling (free, local) as fallback when available.
+                Set provider to "None" to fall back to local OCR (Tesseract / pdfplumber).
               </p>
             </div>
 
@@ -437,7 +437,7 @@
                   <span class="label-text font-medium">Provider</span>
                 </label>
                 <select id="vision-provider" v-model="visionProvider" class="select select-bordered w-full" @change="onOcrProviderChange">
-                  <option value="none">None (Docling fallback)</option>
+                  <option value="none">None (local OCR fallback)</option>
                   <option value="openai">OpenAI</option>
                   <option value="anthropic">Anthropic</option>
                   <option value="ollama">Ollama (local)</option>
@@ -607,8 +607,9 @@
       </div>
     </div>
 
-    <!-- Appearance -->
-    <div class="card bg-base-200">
+    <!-- Appearance (expert only — basic-mode keeps the OS-resolved theme;
+         the picker is a power-user knob the advisor doesn't need on day one) -->
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">Appearance</h3>
@@ -625,11 +626,8 @@
             class="select select-bordered w-full"
             @change="applyTheme"
           >
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="cupcake">Cupcake</option>
-            <option value="dracula">Dracula</option>
-            <option value="nord">Nord</option>
+            <option value="corporate">Light</option>
+            <option value="business">Dark</option>
           </select>
         </div>
 
@@ -645,8 +643,10 @@
       </div>
     </div>
 
-    <!-- Privacy / PII Redaction -->
-    <div class="card bg-base-200">
+    <!-- Privacy / PII Redaction (expert only — the chat-tab PII pill (§9.2)
+         already exposes the live posture in basic mode; the on/off toggle and
+         tuning live here for power users) -->
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
           <h3 class="card-title text-base">Privacy</h3>
@@ -780,8 +780,9 @@
       </div>
     </div>
 
-    <!-- Re-index Collection -->
-    <div class="card bg-base-200">
+    <!-- Re-index Collection (expert only — re-running indexing is a power-user
+         operation; basic-mode advisors never need this surface) -->
+    <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base">Re-index Collection</h3>
@@ -863,8 +864,8 @@
       </div>
     </div>
 
-    <!-- Danger Zone -->
-    <div class="card bg-error/10 border border-error">
+    <!-- Danger Zone (expert only — destructive op behind the mode toggle) -->
+    <div v-if="isExpertMode" class="card bg-error/10 border border-error">
       <div class="card-body space-y-3">
         <div>
           <h3 class="card-title text-base text-error">Danger Zone</h3>
@@ -937,7 +938,7 @@ import {
   validateErrorMessage,
 } from '../utils/validateKey.js'
 
-const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
+const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'search-tab-toggled'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
@@ -955,7 +956,7 @@ const trackTimeout = (fn, ms) => {
 }
 
 // UI feature flags
-const chatTabEnabled = ref(true)
+const searchTabEnabled = ref(true)
 
 // OCR settings state
 const ocrEnabled = ref(false)
@@ -1041,20 +1042,20 @@ const fetchOcrAllOllamaModels = async () => {
   }
 }
 
-const saveChatTabSetting = async () => {
+const saveSearchTabSetting = async () => {
   try {
-    await axios.post('/api/config', { enable_chat_tab: chatTabEnabled.value })
-    emit('chat-tab-toggled', chatTabEnabled.value)
+    await axios.post('/api/config', { enable_search_tab: searchTabEnabled.value })
+    emit('search-tab-toggled', searchTabEnabled.value)
   } catch {
     // revert on failure
-    chatTabEnabled.value = !chatTabEnabled.value
+    searchTabEnabled.value = !searchTabEnabled.value
   }
 }
 
 const loadOCRSettings = async () => {
   try {
     const response = await axios.get('/api/config')
-    chatTabEnabled.value = response.data.enable_chat_tab ?? true
+    searchTabEnabled.value = response.data.enable_search_tab ?? true
     ocrEnabled.value = response.data.enable_ocr || false
     ocrMaxPages.value = response.data.ocr_max_pages ?? 25
     ocrMaxFileMb.value = response.data.ocr_max_file_mb ?? 50
@@ -1269,7 +1270,7 @@ async function loadSystemInfo() {
 }
 
 // Theme
-const selectedTheme = ref('light')
+const selectedTheme = ref('corporate')
 
 // Clear data
 const clearing = ref(false)
@@ -1278,7 +1279,7 @@ const clearError = ref('')
 const clearModal = ref(null)
 
 // AI integration state
-const aiSettings = ref({ rerank: false, synthesize: false })
+const aiSettings = ref({ rerank: true, synthesize: true })
 
 // Ids of all currently-configured providers (drives AI Features visibility)
 const configuredProviderIds = computed(() => getConfiguredProviderIds())
@@ -1330,9 +1331,10 @@ const toggleExpand = (id) => {
   showEditKey.value = false
   // Init edit buffer from stored config
   const cfg = getProviderConfig(id) || {}
+  const def = PROVIDER_DEFS.find(d => d.id === id)
   editBuffer.value = {
     apiKey: cfg.apiKey || '',
-    model: cfg.model || '',
+    model: cfg.model || def?.defaultModel || '',
     baseUrl: cfg.baseUrl || (id === 'ollama' ? 'http://localhost:11434' : ''),
     name: cfg.name || '',
     keyDirty: false,
@@ -1380,10 +1382,10 @@ const validateAndSave = async (id) => {
       // Pull the just-flipped defaults into the live AI Features card too.
       const refreshedAI = getAISettings()
       aiSettings.value = {
-        rerank: !!refreshedAI.rerank,
-        synthesize: !!refreshedAI.synthesize,
+        rerank: refreshedAI.rerank ?? true,
+        synthesize: refreshedAI.synthesize ?? true,
       }
-      window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
+      window.dispatchEvent(new CustomEvent('finn:providers-changed'))
     }
     editBuffer.value.keyStatus = 'valid'
     editBuffer.value.keyDirty = false
@@ -1399,7 +1401,7 @@ const validateAndSave = async (id) => {
 const setActiveProvider = (id) => {
   setActiveProviderLS(id)
   activeProviderId.value = id
-  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
+  window.dispatchEvent(new CustomEvent('finn:providers-changed'))
 }
 
 const capabilityIcon = (value) => {
@@ -1494,8 +1496,8 @@ const loadAIState = () => {
   migrateLegacySettings()
   const settings = getAISettings()
   aiSettings.value = {
-    rerank: !!settings.rerank,
-    synthesize: !!settings.synthesize,
+    rerank: settings.rerank ?? true,
+    synthesize: settings.synthesize ?? true,
   }
 }
 
@@ -1555,13 +1557,16 @@ onMounted(() => {
   loadAIState()
   loadSystemInfo()
 
-  // Load theme
+  // Load theme. App.vue's bootstrap migrates legacy values (light/dark/cupcake/...)
+  // to corporate/business and rewrites localStorage, so by the time we read
+  // here it's always one of the two we ship — but we still defend against a
+  // direct first visit to Settings before App.vue's onMounted fires.
   const savedTheme = localStorage.getItem('theme')
-  if (savedTheme) {
+  if (savedTheme === 'corporate' || savedTheme === 'business') {
     selectedTheme.value = savedTheme
   } else {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    selectedTheme.value = prefersDark ? 'dark' : 'light'
+    selectedTheme.value = prefersDark ? 'business' : 'corporate'
   }
 
   loadOCRSettings()

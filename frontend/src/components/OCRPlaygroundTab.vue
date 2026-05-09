@@ -10,7 +10,7 @@
         </p>
 
         <div v-if="!ocrEnabled" class="alert alert-warning py-2 mb-3">
-          <span>OCR is disabled. Enable it in <button class="link link-primary" @click="$emit('switch-tab', 'settings')">Settings</button> to test Vision AI or Docling extraction.</span>
+          <span>OCR is disabled. Enable it in <button class="link link-primary" @click="$emit('switch-tab', 'settings')">Settings</button> to test Vision AI or local OCR extraction.</span>
         </div>
 
         <div class="flex flex-wrap gap-2 items-center">

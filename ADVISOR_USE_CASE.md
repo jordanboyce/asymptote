@@ -97,6 +97,34 @@ That's **practice leverage**. Your assistant gets 5 hours back per week. A junio
 
 ---
 
+## Why Finn vs. Claude for Excel?
+
+Anthropic just shipped Claude for Excel, generally available. It's powerful — Citadel and Hg are using it for coverage models and due diligence — and it's built for analysts who already work in Excel all day.
+
+Finn solves a different problem.
+
+**You don't have a clean-Excel-workbook problem. You have a brokerage-export problem.**
+
+Pershing's Unrealized Gain/Loss CSV has 9 preamble rows and accounting negatives in parens. NetX360 ships hierarchical multi-account reports with insurance metadata blocks between every account header. Schwab quotes percentages as text strings. None of this lands cleanly in Excel — your assistant pastes it, fixes the math by hand, and hopes nothing got transposed. Claude for Excel can read what's in the spreadsheet, but it can't fix what was wrong on the way in.
+
+Finn's vendor profiles know every one of those formats. Drop the file in, get a typed, queryable Holdings table out. The advisor never sees a preamble row.
+
+**Your client's account number doesn't belong in someone else's API logs.**
+
+Claude for Excel sends cell contents to Anthropic's API in cleartext. That's fine for IB analysts working with public filings. It's not fine for advisors handling real client SSNs, account numbers, and balances. Finn's PII redaction layer catches 31+ entity types — including financial-specific patterns like brokerage account numbers and CUSIPs in client-name context — and replaces them before any external call. The original lives on your machine; only the redacted version reaches the model. Full audit log of every replacement.
+
+**A wash-sale check needs the household, not a workbook.**
+
+When the Hendersons' joint account harvests a loss in PKST, Finn checks whether Bob's IRA, Linda's Roth, or the trust bought PKST in the last 30 days. Per-workbook tools — including Excel agents — miss spousal IRA traps because they only see one workbook at a time. Finn's Collection model is the household, and every cross-account analysis runs across all of it.
+
+**Local-first by default.**
+
+Finn runs on your machine. Documents, indexes, transcripts, audit logs — all local. External AI is opt-in per request, BYO key, and goes through the redaction layer first.
+
+For Citadel-shaped institutions running coverage models against FactSet feeds, Claude for Excel is the right tool. For an advisor walking into a Schwab review with a household's worth of messy custodian data, Finn is the layer below it.
+
+---
+
 ## Privacy: Nothing Leaves Your Machine Unprotected
 
 We built Finn with one non-negotiable rule: nothing identifiable reaches any AI model without being scrubbed first.

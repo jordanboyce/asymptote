@@ -27,7 +27,7 @@
 
       <!-- Logo + heading (welcome stage only) -->
       <div v-if="stage === 'welcome'" class="text-center mb-8">
-        <img src="/icon_black.svg" alt="" class="w-14 h-14 mx-auto mb-5 opacity-90" />
+        <img :src="logoSrc" alt="" class="w-14 h-14 mx-auto mb-5 opacity-90" />
         <h1 id="welcome-title" class="text-2xl font-semibold tracking-tight">
           Welcome to Finn
         </h1>
@@ -232,6 +232,9 @@ import { ref, computed, nextTick, watch } from 'vue'
 import { upsertProviderConfig, setActiveProviderLS } from '../utils/aiProviders.js'
 import { validateProviderKey, validateErrorMessage } from '../utils/validateKey.js'
 import { useCollectionStore } from '../stores/collectionStore.js'
+import { useThemeIcon } from '../composables/useThemeIcon.js'
+
+const { src: logoSrc } = useThemeIcon('/icon_light.svg', '/icon_dark.svg')
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -382,7 +385,7 @@ function handleFinish() {
   // Mark onboarding complete (Pass 1: localStorage; Pass 2 will move to app DB
   // alongside other key/value flags introduced for §12.3).
   try {
-    localStorage.setItem('asymptote_onboarding_completed_at', new Date().toISOString())
+    localStorage.setItem('finn_onboarding_completed_at', new Date().toISOString())
   } catch { /* localStorage disabled — non-fatal */ }
   emit('complete', {
     providerConfigured: true,
@@ -395,7 +398,7 @@ function handleSkip() {
   // App-level banner reads `getConfiguredProviderIds().length` to decide
   // whether to nudge the advisor back into Settings.
   try {
-    localStorage.setItem('asymptote_onboarding_completed_at', new Date().toISOString())
+    localStorage.setItem('finn_onboarding_completed_at', new Date().toISOString())
   } catch { /* localStorage disabled — non-fatal */ }
   emit('skip')
 }

@@ -412,6 +412,15 @@ class SetCollectionExpertiseRequest(BaseModel):
     pack_ids: List[str] = Field(..., description="Full set of pack IDs to attach (replaces existing)")
 
 
+class ExpertisePackGenerateRequest(BaseModel):
+    """Request body for AI-assisted generation of an expertise pack body from a topic."""
+
+    topic: str = Field(..., min_length=1, description="Subject of the pack — short phrase or sentence")
+    context: Optional[str] = Field(None, description="Optional extra context from the author (client situation, constraints, framework hints)")
+    audience: Optional[str] = Field(None, description="Who will use the pack; defaults to 'financial advisors analyzing a client portfolio'")
+    provider: str = Field("anthropic", description="AI provider: anthropic, openai, ollama, openai_compatible")
+
+
 # ── Meeting Capture schemas (v4.5) ────────────────────────────────────────────
 
 class NotesRequest(BaseModel):
@@ -511,3 +520,20 @@ class RedactionLogResponse(BaseModel):
 
     total_returned: int
     events: List[RedactionLogEvent] = Field(default_factory=list)
+
+
+class FeedbackRequest(BaseModel):
+    """Body for POST /api/feedback — user-submitted issue report."""
+
+    description: str = Field(..., min_length=1, max_length=8000)
+    include_diagnostics: bool = True
+    app_route: Optional[str] = Field(None, description="Active tab/route at time of report")
+    collection_id: Optional[str] = Field(None, description="Active collection at time of report")
+
+
+class FeedbackResponse(BaseModel):
+    """Response from POST /api/feedback."""
+
+    ok: bool
+    id: Optional[str] = None
+    error: Optional[str] = None

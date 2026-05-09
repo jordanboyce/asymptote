@@ -172,7 +172,7 @@ async function uploadRecording(blob, collectionId) {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
 
-    window.dispatchEvent(new CustomEvent('asymptote:transcript-saved', {
+    window.dispatchEvent(new CustomEvent('finn:transcript-saved', {
       detail: { collectionId },
     }))
   } catch (err) {
