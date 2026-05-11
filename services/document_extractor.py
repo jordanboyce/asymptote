@@ -981,6 +981,144 @@ class DocumentExtractor:
 
         raise ValueError(f"extract_tabular_sheets: unsupported extension {ext}")
 
+    def extract_pdf_tables(self, pdf_path: Path) -> List[Dict[str, Any]]:
+        """
+        Extract tabular data from a PDF as a list of sheets (v4.1 P0.8).
+
+        Walks every page with pdfplumber's ``extract_tables()``, applies the
+        same header detection / numeric coercion / vendor profile pipeline as
+        :meth:`extract_tabular_sheets`, and returns the same sheet shape so
+        the indexer can route PDF tables through the typed :class:`HoldingsStore`
+        path identically to CSV/XLSX.
+
+        Returns an empty list when the PDF has no detectable tables; callers
+        should fall back to the prose text-extraction path in that case. A
+        PDF with both tables and prose produces sheets here AND text via
+        :meth:`extract_text` — the two outputs are complementary.
+
+        Tables with fewer than 2 columns OR fewer than 2 data rows are
+        skipped as low-confidence noise (per the P0.8 acceptance criteria).
+        """
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "pandas is required for PDF table extraction. "
+                "Install with: pip install pandas"
+            ) from exc
+
+        sheets: List[Dict[str, Any]] = []
+
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page_num, page in enumerate(pdf.pages, start=1):
+                    try:
+                        raw_tables = page.extract_tables() or []
+                    except Exception as e:
+                        logger.warning(
+                            f"PDF {pdf_path.name} page {page_num}: extract_tables() failed: {e}"
+                        )
+                        continue
+
+                    for tbl_idx, raw_table in enumerate(raw_tables, start=1):
+                        sheet = self._pdf_table_to_sheet(
+                            raw_table=raw_table,
+                            sheet_name=f"page_{page_num}_table_{tbl_idx}",
+                        )
+                        if sheet is None:
+                            continue
+                        self._apply_ingest_profile(sheet, pdf_path)
+                        sheets.append(sheet)
+        except Exception as e:
+            logger.warning(f"PDF table extraction failed for {pdf_path.name}: {e}")
+            return []
+
+        if sheets:
+            logger.info(
+                f"PDF {pdf_path.name}: extracted {len(sheets)} table(s) "
+                f"across {sum(len(s['rows']) for s in sheets)} row(s)"
+            )
+        return sheets
+
+    def _pdf_table_to_sheet(
+        self,
+        raw_table: List[List[Optional[str]]],
+        sheet_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Convert one pdfplumber-extracted table into our standard sheet shape.
+
+        Runs the same header sniffing as CSV/XLSX so brokerage statements with
+        preamble rows (``As Of``, ``Currency``, blank cells) above the real
+        column labels land cleanly. Returns ``None`` for tables too small to
+        be meaningful (< 2 columns OR < 2 data rows after header detection).
+        """
+        import pandas as pd
+
+        if not raw_table:
+            return None
+
+        normalized: List[List[str]] = []
+        for row in raw_table:
+            if row is None:
+                continue
+            normalized.append(["" if cell is None else str(cell).strip() for cell in row])
+        if not normalized:
+            return None
+
+        # Pad ragged rows to the widest row so header detection sees a
+        # rectangular table (pdfplumber sometimes emits short rows for
+        # merged-cell artifacts).
+        width = max(len(r) for r in normalized)
+        for r in normalized:
+            if len(r) < width:
+                r.extend([""] * (width - len(r)))
+
+        header_idx = _detect_header_row(normalized)
+        preamble = normalized[:header_idx] if header_idx > 0 else []
+        doc_metadata = _extract_preamble_metadata(preamble) if preamble else {}
+
+        if header_idx >= len(normalized) - 1:
+            return None  # No data rows after header
+
+        header_row = normalized[header_idx]
+        data_rows = normalized[header_idx + 1:]
+
+        # Build a column list, naming any blank header cells positionally so
+        # downstream code that keys by column name doesn't collide on "".
+        seen: Dict[str, int] = {}
+        columns: List[str] = []
+        for i, h in enumerate(header_row):
+            name = h if h else f"Column_{i + 1}"
+            if name in seen:
+                seen[name] += 1
+                name = f"{name}_{seen[name]}"
+            else:
+                seen[name] = 1
+            columns.append(name)
+
+        # Reject low-confidence tables (fewer than 2 columns or 2 data rows).
+        if len(columns) < 2 or len(data_rows) < 2:
+            return None
+
+        # Reuse _dataframe_to_sheet so PDF tables go through the exact same
+        # NaN handling, repeated-header skipping, and row_text formatting as
+        # CSV / XLSX. Strings stay as strings; HoldingsStore's tabular
+        # inference (P0.2 _parse_generic_number) handles numeric coercion.
+        try:
+            df = pd.DataFrame(data_rows, columns=columns)
+        except Exception as e:
+            logger.warning(f"PDF table rows could not be loaded into DataFrame: {e}")
+            return None
+
+        sheet = self._dataframe_to_sheet(
+            df, sheet_name=sheet_name, document_metadata=doc_metadata
+        )
+        # Drop sheets that ended up empty after _dataframe_to_sheet's
+        # repeated-header filtering.
+        if not sheet['rows']:
+            return None
+        return sheet
+
     def _apply_ingest_profile(self, sheet: Dict[str, Any], file_path: Path) -> None:
         """Run vendor profile detection (P0.4) and embed overrides into sheet dict in-place."""
         sheet['role_overrides'] = {}

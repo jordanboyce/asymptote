@@ -326,6 +326,18 @@ class ChatRequest(BaseModel):
             "collection overview shown to the model."
         ),
     )
+    extended_thinking: bool = Field(
+        False,
+        description=(
+            "Opt-in per-turn extended thinking on Anthropic thinking-capable "
+            "models (Claude 4 family). The provider allocates a reasoning "
+            "budget before the visible answer; the trace surfaces via "
+            "`thinking` SSE events. Silently ignored on other providers and "
+            "on non-thinking-capable models. Off by default — turn-cost is "
+            "too high for trivial questions; specific slash commands "
+            "(TLH wash-sale, rebalance, Monte Carlo) opt in."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):
@@ -441,6 +453,13 @@ class NoteResponse(BaseModel):
     """Response from /notes or /followup."""
 
     content: str = Field(..., description="Generated note or email text (PII-redacted)")
+
+
+class ExtractMeetingNotesRequest(BaseModel):
+    """Request body for /meetings/extract — run the v4.5 structured-extraction pass on a transcript."""
+
+    document_id: str = Field(..., description="ID of the transcript document to extract notes from")
+    provider: str = Field("anthropic", description="AI provider")
 
 
 class SaveNoteRequest(BaseModel):

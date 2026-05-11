@@ -26,11 +26,14 @@ logger = logging.getLogger(__name__)
 # a new model; do NOT guess. An unknown model quietly degrades to ReAct or to
 # a clear "this model can't do tool calling" error in the UI.
 KNOWN_MODELS: Dict[str, Dict[str, object]] = {
-    # Anthropic
-    "claude-haiku-4-5-20251001":   {"tools": True,  "vision": True,  "context_window": 200_000},
-    "claude-sonnet-4-5-20250929":  {"tools": True,  "vision": True,  "context_window": 200_000},
-    "claude-opus-4-7":             {"tools": True,  "vision": True,  "context_window": 1_000_000},
-    "claude-sonnet-4-6":           {"tools": True,  "vision": True,  "context_window": 200_000},
+    # Anthropic — `thinking: True` means extended-thinking eligible (Claude 4
+    # family). Used by AgenticEngine to gate the per-turn opt-in: callers may
+    # ask for extended_thinking on every turn, but it only flows through to
+    # the API when the configured model can actually run it.
+    "claude-haiku-4-5-20251001":   {"tools": True,  "vision": True,  "context_window": 200_000, "thinking": True},
+    "claude-sonnet-4-5-20250929":  {"tools": True,  "vision": True,  "context_window": 200_000, "thinking": True},
+    "claude-opus-4-7":             {"tools": True,  "vision": True,  "context_window": 1_000_000, "thinking": True},
+    "claude-sonnet-4-6":           {"tools": True,  "vision": True,  "context_window": 200_000, "thinking": True},
     # OpenAI
     "gpt-4o":                      {"tools": True,  "vision": True,  "context_window": 128_000},
     "gpt-4o-mini":                 {"tools": True,  "vision": True,  "context_window": 128_000},
@@ -203,16 +206,30 @@ class AIProvider(ABC):
         max_tokens: int,
         model: str,
         system: str | None = None,
+        documents: list | None = None,
+        extended_thinking: bool = False,
     ) -> dict:
         """Run one turn of a tool-calling conversation.
 
         `messages` is the ongoing message list in each provider's native shape
         (appended to across the loop). `tools` is the provider-native tool list.
+        `documents`, when supplied, carries Anthropic native-citation document
+        blocks; providers without native citations ignore it (the engine keeps
+        prose context in the system prompt for those paths).
+        `extended_thinking`, when true on a thinking-capable provider+model,
+        asks the API to allocate a reasoning budget before the visible answer
+        — the engine surfaces the resulting reasoning trace via ``thinking``
+        events. Providers without extended-thinking support ignore it.
+
         Returns a dict:
           {
             "stop_reason": "tool_use" | "end_turn" | "stop",
             "text": str (concatenated assistant text; may be "" when only tool_use),
             "tool_calls": [{"id": str, "name": str, "input": dict}, ...],
+            "citations": [{...}, ...]  (optional — only providers with native
+                                        citation support populate this),
+            "thinking": str (optional — concatenated extended-thinking text;
+                             empty when extended_thinking is off or unsupported),
             "assistant_message": dict (provider-native message to append verbatim),
             "usage": {"input_tokens": int, "output_tokens": int, "model": str},
           }
@@ -225,12 +242,18 @@ class AIProvider(ABC):
         max_tokens: int,
         model: str,
         system: str | None = None,
+        documents: list | None = None,
+        extended_thinking: bool = False,
     ) -> Iterator[dict]:
         """Stream a chat completion (no tools), yielding event dicts.
 
         Used by AgenticEngine for the final-answer pass after the tool loop
-        terminates. Yields events of two shapes:
+        terminates. Yields events of three shapes:
           {"delta": str}              — one fragment of the assistant text
+          {"citation": {...}}         — one structured citation (Anthropic native
+                                        citations only; other providers do not emit)
+          {"thinking": str}           — one fragment of extended-thinking text
+                                        (Anthropic thinking-capable models only)
           {"done": True, "usage": {"input_tokens": int, "output_tokens": int, "model": str}}
 
         Default implementation falls back to ``complete_with_tools`` with no
@@ -267,7 +290,10 @@ class AnthropicProvider(AIProvider):
     """Anthropic Claude provider."""
 
     FAST_MODEL = "claude-haiku-4-5-20251001"
-    QUALITY_MODEL = "claude-sonnet-4-5-20250929"
+    QUALITY_MODEL = "claude-sonnet-4-6"
+    # Reserved for long-context paths that earn the per-token premium; falls
+    # back to QUALITY_MODEL when the account lacks Opus access.
+    OPUS_MODEL = "claude-opus-4-7"
 
     def __init__(self, api_key: str, model: Optional[str] = None):
         import anthropic
@@ -363,80 +389,241 @@ class AnthropicProvider(AIProvider):
             caps.notes.append(f"Tool probe failed: {e}")
         return caps
 
-    def complete_with_tools(self, messages, tools, max_tokens, model, system=None):
+    def _build_system_param(self, system):
+        """Wrap system prompt with an ephemeral cache_control breakpoint.
+
+        Render order is tools → system → messages, so a marker on the last
+        system block caches tools + system together. Within a single chat
+        turn, every tool-loop iteration reuses the same system prompt and
+        reads the cache; across turns, identical questions read it too.
+        Different questions in a multi-turn chat will not hit because the
+        retrieved-context block embedded in the system prompt varies — that
+        is a known limit, addressed by moving retrieved context into the
+        user turn (follow-up).
+        """
+        if not system:
+            return None
+        if isinstance(system, list):
+            return system
+        return [{
+            "type": "text",
+            "text": system,
+            "cache_control": {"type": "ephemeral"},
+        }]
+
+    def _extract_usage(self, raw_usage, model: str) -> dict:
+        usage = {
+            "input_tokens": getattr(raw_usage, "input_tokens", 0),
+            "output_tokens": getattr(raw_usage, "output_tokens", 0),
+            "cache_creation_input_tokens": getattr(raw_usage, "cache_creation_input_tokens", 0) or 0,
+            "cache_read_input_tokens": getattr(raw_usage, "cache_read_input_tokens", 0) or 0,
+            "model": model,
+        }
+        from services.diagnostics import record_cache_usage
+        record_cache_usage(
+            input_tokens=usage["input_tokens"],
+            cache_creation_input_tokens=usage["cache_creation_input_tokens"],
+            cache_read_input_tokens=usage["cache_read_input_tokens"],
+        )
+        return usage
+
+    def _inject_documents(self, messages, documents):
+        """Prepend ``documents`` content blocks to the first user message.
+
+        Anthropic's native Citations API expects retrieved context as
+        ``{"type": "document", source, title, citations: {enabled: True}}``
+        blocks on a user turn — putting them on the first user message keeps
+        the system-prompt cache breakpoint intact (system precedes messages
+        in the render order, so message-level changes don't invalidate it).
+        """
+        if not documents:
+            return messages
+        new_messages = list(messages)
+        for i, m in enumerate(new_messages):
+            if m.get("role") != "user":
+                continue
+            existing = m.get("content", "")
+            if isinstance(existing, str):
+                existing_blocks = [{"type": "text", "text": existing}] if existing else []
+            else:
+                existing_blocks = list(existing)
+            new_messages[i] = {
+                "role": "user",
+                "content": list(documents) + existing_blocks,
+            }
+            return new_messages
+        return new_messages
+
+    # Default reasoning budget when extended_thinking is enabled. Big enough to
+    # earn its keep on TLH wash-sale checks and rebalance trade ordering, small
+    # enough that an accidental trivial-question opt-in doesn't 10x the bill.
+    THINKING_BUDGET_TOKENS = 8000
+
+    def _supports_thinking(self, model: str) -> bool:
+        """Resolve ``thinking`` capability from KNOWN_MODELS; default False
+        for unrecognised models so an unknown ID never gets thinking enabled
+        silently (Anthropic 422s when the model can't reason)."""
+        info = _lookup_known_model(model)
+        return bool(info.get("thinking", False))
+
+    def _apply_thinking(self, kwargs: dict, model: str, extended_thinking: bool) -> bool:
+        """Mutate ``kwargs`` in place to enable extended thinking when the
+        caller asked and the model supports it. Returns True iff thinking
+        was actually turned on so callers can adjust downstream parsing.
+
+        ``max_tokens`` must exceed ``budget_tokens`` (the budget counts toward
+        the output cap), so we bump it when the caller's max would leave no
+        room for a visible answer.
+        """
+        if not extended_thinking or not self._supports_thinking(model):
+            return False
+        budget = self.THINKING_BUDGET_TOKENS
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        if kwargs.get("max_tokens", 0) <= budget:
+            kwargs["max_tokens"] = budget + 2048
+        # Extended thinking forces temperature=1; we don't set temperature
+        # anywhere else, so no override needed.
+        return True
+
+    def complete_with_tools(self, messages, tools, max_tokens, model, system=None, documents=None, extended_thinking=False):
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": messages,
+            "messages": self._inject_documents(messages, documents),
             "tools": tools,
         }
-        if system:
-            kwargs["system"] = system
+        sys_param = self._build_system_param(system)
+        if sys_param is not None:
+            kwargs["system"] = sys_param
+        thinking_on = self._apply_thinking(kwargs, model, extended_thinking)
         response = self.client.messages.create(**kwargs)
 
         text_parts: list[str] = []
         tool_calls: list[dict] = []
+        citations: list[dict] = []
+        thinking_parts: list[str] = []
         for block in response.content:
             btype = getattr(block, "type", None)
             if btype == "text":
                 text_parts.append(block.text)
+                for c in getattr(block, "citations", None) or []:
+                    parsed = self._parse_citation_block(c)
+                    if parsed is not None:
+                        citations.append(parsed)
             elif btype == "tool_use":
                 tool_calls.append({
                     "id": block.id,
                     "name": block.name,
                     "input": dict(block.input or {}),
                 })
-        assistant_message = {
-            "role": "assistant",
-            # Anthropic expects the raw content blocks back on replay
-            "content": [
-                (
-                    {"type": "text", "text": b.text}
-                    if getattr(b, "type", None) == "text"
-                    else {
-                        "type": "tool_use",
-                        "id": b.id,
-                        "name": b.name,
-                        "input": dict(b.input or {}),
-                    }
-                )
-                for b in response.content
-                if getattr(b, "type", None) in ("text", "tool_use")
-            ],
-        }
+            elif btype in ("thinking", "redacted_thinking"):
+                # Visible reasoning trace; redacted blocks have no `.thinking`
+                # attribute but must still round-trip on replay.
+                t = getattr(block, "thinking", None)
+                if t:
+                    thinking_parts.append(t)
+        # Anthropic expects extended-thinking blocks back on replay verbatim
+        # (with the ``signature`` field) so the model can resume from its
+        # earlier reasoning. Round-trip thinking + redacted_thinking blocks
+        # in addition to text + tool_use, in original order.
+        assistant_content = []
+        for b in response.content:
+            btype = getattr(b, "type", None)
+            if btype == "text":
+                assistant_content.append({"type": "text", "text": b.text})
+            elif btype == "tool_use":
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": b.id,
+                    "name": b.name,
+                    "input": dict(b.input or {}),
+                })
+            elif btype == "thinking":
+                block_dict: dict = {"type": "thinking", "thinking": getattr(b, "thinking", "")}
+                sig = getattr(b, "signature", None)
+                if sig is not None:
+                    block_dict["signature"] = sig
+                assistant_content.append(block_dict)
+            elif btype == "redacted_thinking":
+                assistant_content.append({
+                    "type": "redacted_thinking",
+                    "data": getattr(b, "data", ""),
+                })
+        assistant_message = {"role": "assistant", "content": assistant_content}
         return {
             "stop_reason": response.stop_reason,
             "text": "".join(text_parts).strip(),
             "tool_calls": tool_calls,
+            "citations": citations,
+            "thinking": "".join(thinking_parts).strip() if thinking_on else "",
             "assistant_message": assistant_message,
-            "usage": {
-                "input_tokens": response.usage.input_tokens,
-                "output_tokens": response.usage.output_tokens,
-                "model": model,
-            },
+            "usage": self._extract_usage(response.usage, model),
         }
 
-    def stream_chat(self, messages, max_tokens, model, system=None):
+    @staticmethod
+    def _parse_citation_block(c) -> Optional[dict]:
+        """Normalize an Anthropic citation object into a plain dict.
+
+        Plain-text documents emit ``char_location`` citations; we ignore page
+        and content-block variants for now since Finn passes chunks as text.
+        """
+        ctype = getattr(c, "type", None)
+        if ctype != "char_location":
+            return None
+        return {
+            "type": "char_location",
+            "document_index": getattr(c, "document_index", None),
+            "document_title": getattr(c, "document_title", None),
+            "cited_text": getattr(c, "cited_text", None),
+            "start_char_index": getattr(c, "start_char_index", None),
+            "end_char_index": getattr(c, "end_char_index", None),
+        }
+
+    def stream_chat(self, messages, max_tokens, model, system=None, documents=None, extended_thinking=False):
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": messages,
+            "messages": self._inject_documents(messages, documents),
         }
-        if system:
-            kwargs["system"] = system
+        sys_param = self._build_system_param(system)
+        if sys_param is not None:
+            kwargs["system"] = sys_param
+        self._apply_thinking(kwargs, model, extended_thinking)
 
-        usage = {"input_tokens": 0, "output_tokens": 0, "model": model}
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "model": model,
+        }
         with self.client.messages.stream(**kwargs) as stream:
-            for text_delta in stream.text_stream:
-                if text_delta:
-                    yield {"delta": text_delta}
+            # Iterate the raw event stream so citation_delta events surface
+            # alongside text deltas. text_stream alone drops them.
+            for event in stream:
+                etype = getattr(event, "type", None)
+                if etype == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    dtype = getattr(delta, "type", None) if delta is not None else None
+                    if dtype == "text_delta":
+                        text = getattr(delta, "text", "") or ""
+                        if text:
+                            yield {"delta": text}
+                    elif dtype == "citations_delta":
+                        citation = getattr(delta, "citation", None)
+                        parsed = self._parse_citation_block(citation) if citation is not None else None
+                        if parsed is not None:
+                            yield {"citation": parsed}
+                    elif dtype == "thinking_delta":
+                        # Reasoning trace fragments — surface separately so the
+                        # engine can route them to ``thinking`` SSE events
+                        # instead of the visible ``text_delta`` stream.
+                        thinking_text = getattr(delta, "thinking", "") or ""
+                        if thinking_text:
+                            yield {"thinking": thinking_text}
             try:
                 final = stream.get_final_message()
-                usage = {
-                    "input_tokens": final.usage.input_tokens,
-                    "output_tokens": final.usage.output_tokens,
-                    "model": model,
-                }
+                usage = self._extract_usage(final.usage, model)
             except Exception as e:
                 logger.warning("Anthropic stream final-message read failed: %s", e)
         yield {"done": True, "usage": usage}

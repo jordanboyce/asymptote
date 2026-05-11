@@ -457,8 +457,8 @@
               <div class="form-control" v-else-if="visionProvider === 'anthropic'">
                 <label class="label pb-1" for="vision-model-anthropic"><span class="label-text font-medium">Model</span></label>
                 <select id="vision-model-anthropic" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="claude-opus-4-6">claude-opus-4-6 (best quality)</option>
-                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5 (balanced)</option>
+                  <option value="claude-opus-4-7">claude-opus-4-7 (best quality)</option>
+                  <option value="claude-sonnet-4-6">claude-sonnet-4-6 (balanced)</option>
                   <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fastest)</option>
                 </select>
               </div>
@@ -568,8 +568,8 @@
                 </select>
                 <select v-else-if="visionProvider === 'anthropic'" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
                   <option value="">(same as vision model)</option>
-                  <option value="claude-opus-4-6">claude-opus-4-6</option>
-                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5</option>
+                  <option value="claude-opus-4-7">claude-opus-4-7</option>
+                  <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
                   <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
                 </select>
                 <select v-else-if="visionProvider === 'ollama' && ocrOllamaAllModels.length" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
@@ -982,7 +982,7 @@ const ocrOllamaAllModels = ref([])
 
 const OCR_DEFAULT_MODELS = {
   openai: 'gpt-4o',
-  anthropic: 'claude-opus-4-6',
+  anthropic: 'claude-opus-4-7',
   ollama: '',
   none: '',
 }

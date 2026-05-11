@@ -954,9 +954,7 @@ finn/
 ├── Dockerfile.corporate      # Docker image (with SSL certificates)
 ├── docker-compose.yml        # Docker setup
 ├── .dockerignore             # Docker build exclusions
-├── .gitignore                # Git exclusions (includes certs/)
-├── example_usage.py          # Python client example
-└── verify_setup.py           # Installation checker
+└── .gitignore                # Git exclusions (includes certs/)
 ```
 
 ---
@@ -997,8 +995,6 @@ if results:
     import webbrowser
     webbrowser.open(results[0]["page_url"])
 ```
-
-See [example_usage.py](example_usage.py) for more examples.
 
 ---
 

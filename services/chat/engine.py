@@ -20,6 +20,10 @@ Both are async generators emitting events:
                   fields: tool, result
     text_delta  — one chunk of the final answer
                   fields: delta
+    citation    — Anthropic native-citation block (resolved against the
+                  retrieved chunks the provider was given)
+                  fields: document_id, chunk_id, page_number, filename,
+                          cited_text, start_char, end_char
     done        — completion marker
                   fields: usage, response_text
     error       — something failed
@@ -86,6 +90,26 @@ class ChatTurn:
     # `thinking` events so SSE callers can render it. collect() records them
     # as `_thinking` entries in executed_results for the legacy response shape.
     emit_thinking: bool = True
+    # Anthropic native-citation document blocks (one per retrieved chunk),
+    # plus a parallel metadata list indexed by ``document_index`` so citation
+    # events can be enriched with document_id / chunk_id / page / filename
+    # before they leave the engine. Both empty for non-Anthropic providers.
+    documents: list[dict[str, Any]] = field(default_factory=list)
+    document_metadata: list[dict[str, Any]] = field(default_factory=list)
+    # When true, ask Anthropic thinking-capable models to allocate a reasoning
+    # budget before the visible answer. Per-turn opt-in — chat default is
+    # False because the per-turn cost balloons on trivial questions; specific
+    # slash commands (TLH wash-sale checks, rebalance trade ordering, future
+    # Monte Carlo) opt in by setting this True via ChatRequest. Silently
+    # ignored on non-Anthropic providers and on non-thinking-capable models.
+    extended_thinking: bool = False
+    # Optional allowlist of tool names the agent may use. When None (default),
+    # the engine advertises the full canonical tool list. When set, the engine
+    # filters the spec list down to exactly these names — used by
+    # ``services.collection_context`` to keep financial tools off the menu for
+    # docs-only collections (and vice versa). Set is more efficient than list
+    # for repeated membership checks.
+    allowed_tool_names: frozenset[str] | None = None
 
 
 async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
@@ -130,6 +154,16 @@ async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
 
     is_anthropic = isinstance(turn.provider, AnthropicProvider)
     tools_spec = anthropic_tools() if is_anthropic else openai_tools()
+    if turn.allowed_tool_names is not None:
+        from services.collection_context import filter_tool_specs
+        tools_spec = filter_tool_specs(tools_spec, allowed=turn.allowed_tool_names)
+    # Native-citation documents are Anthropic-only; passing the kwarg to other
+    # providers would raise. The ``or None`` keeps the wire payload tidy when
+    # context.py decided not to populate documents for this turn.
+    provider_documents = turn.documents if is_anthropic else None
+    # Same gate for extended thinking — only Anthropic implements it; other
+    # providers' kwargs lists don't include the parameter.
+    enable_thinking = bool(turn.extended_thinking) and is_anthropic
 
     messages = list(turn.messages)
     totals = _UsageTotals(model=turn.model)
@@ -137,13 +171,18 @@ async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
 
     for iteration in range(turn.max_iterations):
         try:
-            result = turn.provider.complete_with_tools(
-                messages=messages,
-                tools=tools_spec,
-                max_tokens=turn.max_tokens,
-                model=turn.model,
-                system=turn.system_text,
-            )
+            tool_kwargs: dict[str, Any] = {
+                "messages": messages,
+                "tools": tools_spec,
+                "max_tokens": turn.max_tokens,
+                "model": turn.model,
+                "system": turn.system_text,
+            }
+            if provider_documents:
+                tool_kwargs["documents"] = provider_documents
+            if enable_thinking:
+                tool_kwargs["extended_thinking"] = True
+            result = turn.provider.complete_with_tools(**tool_kwargs)
         except Exception as e:
             logger.exception("[engine] provider call failed at iter=%d", iteration)
             yield {"type": "error", "message": f"Provider call failed: {e}"}
@@ -156,6 +195,21 @@ async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
         # as a thinking-event bullet or as a streaming-failure fallback.
         thinking = strip_think_tags(result.get("text") or "")
 
+        # Extended-thinking text from Anthropic comes back as a separate field
+        # (real reasoning blocks, not embedded `<think>` markers). Emit them as
+        # `thinking` events ahead of any prose narration so the UI shows the
+        # reasoning trace in the order the model produced it.
+        extended_thinking_text = result.get("thinking") or ""
+        if extended_thinking_text and turn.emit_thinking:
+            yield {
+                "type": "thinking",
+                "iteration": iteration,
+                "text": extended_thinking_text,
+            }
+
+        for citation in result.get("citations") or []:
+            yield _enrich_citation(citation, turn.document_metadata)
+
         logger.info(
             "[engine] iter=%d stop=%s tool_calls=%d",
             iteration, result.get("stop_reason"), len(tool_calls),
@@ -166,15 +220,21 @@ async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
             # tokens as the model generates them. One extra LLM call; the
             # `thinking` text from the non-streaming detection call is the
             # safety net if streaming fails or returns nothing.
+            stream_kwargs: dict[str, Any] = {
+                "messages": messages,
+                "max_tokens": turn.max_tokens,
+                "model": turn.model,
+                "system": turn.system_text,
+            }
+            if provider_documents:
+                stream_kwargs["documents"] = provider_documents
+            if enable_thinking:
+                stream_kwargs["extended_thinking"] = True
             streamed_text, streamed_usage = "", None
             try:
                 async for ev in _drive_provider_stream(
-                    turn.provider.stream_chat(
-                        messages=messages,
-                        max_tokens=turn.max_tokens,
-                        model=turn.model,
-                        system=turn.system_text,
-                    )
+                    turn.provider.stream_chat(**stream_kwargs),
+                    document_metadata=turn.document_metadata,
                 ):
                     if ev["type"] == "_done":
                         streamed_text = ev["text"]
@@ -237,15 +297,21 @@ async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
 
     if not response_text:
         # Iteration cap hit — force a final answer with no tools, streamed.
+        forced_kwargs: dict[str, Any] = {
+            "messages": messages,
+            "max_tokens": turn.max_tokens,
+            "model": turn.model,
+            "system": turn.system_text + "\n\nDo not call any more tools. Summarize the final answer.",
+        }
+        if provider_documents:
+            forced_kwargs["documents"] = provider_documents
+        if enable_thinking:
+            forced_kwargs["extended_thinking"] = True
         streamed_text, streamed_usage = "", None
         try:
             async for ev in _drive_provider_stream(
-                turn.provider.stream_chat(
-                    messages=messages,
-                    max_tokens=turn.max_tokens,
-                    model=turn.model,
-                    system=turn.system_text + "\n\nDo not call any more tools. Summarize the final answer.",
-                )
+                turn.provider.stream_chat(**forced_kwargs),
+                document_metadata=turn.document_metadata,
             ):
                 if ev["type"] == "_done":
                     streamed_text = ev["text"]
@@ -280,18 +346,32 @@ async def run_one_shot(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
     is the prompt body; ``turn.system_text`` is prepended.
     """
 
-    latest = turn.messages[-1].get("content", "") if turn.messages else ""
-    prompt = (turn.system_text + "\n\n" + latest).strip() if turn.system_text else latest
+    is_anthropic = isinstance(turn.provider, AnthropicProvider)
+    enable_thinking = bool(turn.extended_thinking) and is_anthropic
 
     streamed_text, streamed_usage = "", None
     try:
-        async for ev in _drive_provider_stream(
-            turn.provider.stream(
+        if enable_thinking:
+            # Extended thinking only flows through the messages-shaped
+            # ``stream_chat`` API; route the prompt through that path with the
+            # system text sent as `system` so the thinking budget applies.
+            latest = turn.messages[-1].get("content", "") if turn.messages else ""
+            stream_iter = turn.provider.stream_chat(
+                messages=[{"role": "user", "content": latest}],
+                max_tokens=turn.max_tokens,
+                model=turn.model or "",
+                system=turn.system_text or None,
+                extended_thinking=True,
+            )
+        else:
+            latest = turn.messages[-1].get("content", "") if turn.messages else ""
+            prompt = (turn.system_text + "\n\n" + latest).strip() if turn.system_text else latest
+            stream_iter = turn.provider.stream(
                 prompt=prompt,
                 max_tokens=turn.max_tokens,
                 model=turn.model or "",
             )
-        ):
+        async for ev in _drive_provider_stream(stream_iter):
             if ev["type"] == "_done":
                 streamed_text = ev["text"]
                 streamed_usage = ev["usage"]
@@ -419,35 +499,87 @@ async def _run_react_fallback(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
 
 async def _drive_provider_stream(
     stream_iter: Any,
+    document_metadata: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Forward provider stream events as engine ``text_delta`` events.
+    """Forward provider stream events as engine events.
 
     Bridges a sync provider stream (``provider.stream`` /
     ``provider.stream_chat``, which yield ``{"delta": str}`` /
+    ``{"citation": {...}}`` / ``{"thinking": str}`` /
     ``{"done": True, "usage": ...}`` dicts) into the engine's async event
     vocabulary. Concludes with a private ``_done`` event carrying the
     accumulated text and usage so the caller can record state without
     re-iterating; ``_done`` is internal — callers must not re-yield it to
     SSE consumers.
+
+    ``document_metadata`` is the parallel mapping used to enrich
+    Anthropic-native citation deltas with our document_id/chunk_id.
     """
     text_parts: list[str] = []
+    thinking_parts: list[str] = []
     usage: dict[str, Any] | None = None
     stripper = StreamingThinkStripper()
+    metadata = document_metadata or []
     for sev in stream_iter:
-        delta = sev.get("delta") if isinstance(sev, dict) else None
+        if not isinstance(sev, dict):
+            continue
+        delta = sev.get("delta")
+        citation = sev.get("citation")
+        thinking = sev.get("thinking")
         if delta:
             visible = stripper.feed(delta)
             if visible:
                 text_parts.append(visible)
                 yield {"type": "text_delta", "delta": visible}
                 await asyncio.sleep(0)
-        elif isinstance(sev, dict) and sev.get("done"):
+        elif citation is not None:
+            yield _enrich_citation(citation, metadata)
+        elif thinking:
+            # Buffer extended-thinking fragments and emit them as a single
+            # `thinking` event when the stream ends — partial mid-thought
+            # fragments are not useful to the UI and Anthropic emits these
+            # in small chunks.
+            thinking_parts.append(thinking)
+        elif sev.get("done"):
             usage = sev.get("usage")
     tail = stripper.flush()
     if tail:
         text_parts.append(tail)
         yield {"type": "text_delta", "delta": tail}
+    if thinking_parts:
+        yield {
+            "type": "thinking",
+            "iteration": -1,  # streaming-pass thinking is post-loop
+            "text": "".join(thinking_parts).strip(),
+        }
     yield {"type": "_done", "text": "".join(text_parts), "usage": usage}
+
+
+def _enrich_citation(
+    citation: dict[str, Any],
+    document_metadata: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Translate a provider citation block to an engine ``citation`` event.
+
+    The provider gives us a 0-based ``document_index`` into the documents
+    array we sent in. ``document_metadata`` is the parallel array — same
+    indices — that lets us map back to Finn's document_id / chunk_id /
+    page_number / filename so the frontend can deep-link to a chunk.
+    """
+    idx = citation.get("document_index")
+    meta: dict[str, Any] = {}
+    if isinstance(idx, int) and 0 <= idx < len(document_metadata):
+        meta = document_metadata[idx] or {}
+    return {
+        "type": "citation",
+        "document_id": meta.get("document_id"),
+        "chunk_id": meta.get("chunk_id"),
+        "page_number": meta.get("page_number"),
+        "filename": meta.get("filename"),
+        "cited_text": citation.get("cited_text"),
+        "start_char": citation.get("start_char_index"),
+        "end_char": citation.get("end_char_index"),
+    }
 
 
 @dataclass
@@ -528,6 +660,7 @@ async def collect(events: AsyncIterator[dict[str, Any]]) -> dict[str, Any]:
     """
     text_parts: list[str] = []
     executed_results: list[dict[str, Any]] = []
+    citations: list[dict[str, Any]] = []
     pending_args: dict[str, dict[str, Any]] = {}
     usage = {"input_tokens": 0, "output_tokens": 0, "model": None}
     error: str | None = None
@@ -537,6 +670,8 @@ async def collect(events: AsyncIterator[dict[str, Any]]) -> dict[str, Any]:
         t = ev.get("type")
         if t == "text_delta":
             text_parts.append(ev.get("delta", ""))
+        elif t == "citation":
+            citations.append({k: v for k, v in ev.items() if k != "type"})
         elif t == "thinking":
             executed_results.append({
                 "tool": "_thinking",
@@ -561,6 +696,7 @@ async def collect(events: AsyncIterator[dict[str, Any]]) -> dict[str, Any]:
     return {
         "text": response_text or "".join(text_parts),
         "executed_results": executed_results,
+        "citations": citations,
         "usage": usage,
         "error": error,
     }

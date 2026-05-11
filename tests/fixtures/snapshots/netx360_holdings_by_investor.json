@@ -1,0 +1,54 @@
+{
+  "aggregate_metric": "total_market_value",
+  "aggregate_value": 1154647,
+  "column_count": 10,
+  "column_names": [
+    "Account Name",
+    "Account Number",
+    "Account Type",
+    "Asset",
+    "Ticker",
+    "Asset Type",
+    "Manager",
+    "Quantity",
+    "Price",
+    "Value"
+  ],
+  "column_types": {
+    "Account_Name": "text",
+    "Account_Number": "text",
+    "Account_Type": "text",
+    "Asset": "text",
+    "Asset_Type": "text",
+    "Manager": "text",
+    "Price": "real",
+    "Quantity": "real",
+    "Ticker": "text",
+    "Value": "currency"
+  },
+  "filename": "netx360_holdings_by_investor.csv",
+  "role_sources": {
+    "Account_Name": "profile",
+    "Account_Number": "profile",
+    "Asset": "profile",
+    "Asset_Type": "profile",
+    "Manager": "profile",
+    "Price": "profile",
+    "Quantity": "profile",
+    "Ticker": "profile",
+    "Value": "profile"
+  },
+  "roles": {
+    "Account_Name": "account",
+    "Account_Number": "account_number",
+    "Asset": "name",
+    "Asset_Type": "asset_class",
+    "Manager": "manager",
+    "Price": "price",
+    "Quantity": "quantity",
+    "Ticker": "ticker",
+    "Value": "market_value"
+  },
+  "row_count": 7,
+  "vendor_profile": "NetX360 — Holdings by Investor (HBIL)"
+}

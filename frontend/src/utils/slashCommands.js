@@ -8,6 +8,7 @@ import { apiUrl } from './apiUrl.js'
 
 export const SLASH_COMMANDS = {
   '/brief': 'Generate meeting brief for this collection (or household if a group is selected)',
+  '/tlh': 'Build a Tax-Loss Harvesting plan with household-wide wash-sale check',
   '/notes': 'Draft compliance Note of Record from the last meeting transcript',
   '/followup': 'Draft a client-safe follow-up email from the last meeting',
   '/stats': 'Show collection statistics',
@@ -16,12 +17,23 @@ export const SLASH_COMMANDS = {
   '/help': 'Show available slash commands',
 }
 
-export const filterCommands = (input) => {
+// Commands that only make sense when the active Collection contains
+// brokerage / portfolio data (kind == 'financial' or 'mixed'). The picker
+// hides these on general / meetings collections, but they remain callable
+// if the advisor types them manually — never silently strip a typed command.
+export const FINANCIAL_SLASH_COMMANDS = new Set(['/brief', '/tlh'])
+
+export const filterCommands = (input, options = {}) => {
+  const { collectionKind = null } = options
   const trimmed = (input || '').trim().toLowerCase()
-  if (!trimmed.startsWith('/')) return Object.entries(SLASH_COMMANDS)
-  return Object.entries(SLASH_COMMANDS).filter(([cmd]) =>
-    cmd.toLowerCase().startsWith(trimmed),
-  )
+  const hideFinancial =
+    collectionKind && collectionKind !== 'financial' && collectionKind !== 'mixed'
+  const entries = Object.entries(SLASH_COMMANDS).filter(([cmd]) => {
+    if (hideFinancial && FINANCIAL_SLASH_COMMANDS.has(cmd)) return false
+    return true
+  })
+  if (!trimmed.startsWith('/')) return entries
+  return entries.filter(([cmd]) => cmd.toLowerCase().startsWith(trimmed))
 }
 
 export const isSlashCommand = (input) => {
@@ -144,6 +156,7 @@ const TOOL_CATEGORIES = [
       'Compute metrics: market value, cost basis, P&L, concentration, top/bottom holdings',
       'Break down by sector, asset class, region, or currency',
       'Surface tax-loss candidates and weighted returns',
+      'Build a TLH plan with replacement ETFs and household-wide wash-sale checks (/tlh)',
       'Inspect schema, column types, and sample rows before querying',
     ],
   },
@@ -353,6 +366,129 @@ const formatBrief = (brief) => {
   return lines.join('\n')
 }
 
+// /tlh formatter — renders the harvest plan as a meeting-ready text block.
+// The structure mirrors the JSON returned by /api/collections/{id}/tlh:
+// candidates table, household-wide wash-sale warnings, gain/loss budget,
+// and the explicit guardrails the advisor needs to confirm before trading.
+const formatTlh = (plan) => {
+  if (!plan) return 'No portfolio data found in this collection.'
+  const lines = []
+  const cands = plan.candidates || []
+  const totals = plan.totals || {}
+  const budget = plan.budget || {}
+
+  lines.push('TAX-LOSS HARVESTING PLAN', '═'.repeat(40))
+  lines.push(
+    `Generated: ${plan.generated_at ? new Date(plan.generated_at).toLocaleString() : '—'}`,
+    '',
+  )
+
+  // Headline totals
+  lines.push('SUMMARY', '─'.repeat(20))
+  lines.push(`Candidates:        ${totals.candidate_count ?? cands.length}`)
+  if (totals.total_unrealized_loss != null) {
+    lines.push(`Total loss avail:  ${_fmtMoney(totals.total_unrealized_loss)}`)
+  }
+  if (totals.short_term_loss != null && totals.short_term_loss > 0) {
+    lines.push(`  Short-term:      ${_fmtMoney(totals.short_term_loss)}  (offsets ordinary income up to $3k/yr)`)
+  }
+  if (totals.long_term_loss != null && totals.long_term_loss > 0) {
+    lines.push(`  Long-term:       ${_fmtMoney(totals.long_term_loss)}`)
+  }
+  if (totals.unknown_period_loss != null && totals.unknown_period_loss > 0) {
+    lines.push(`  Unknown period:  ${_fmtMoney(totals.unknown_period_loss)}  (no acquisition date in the export)`)
+  }
+  lines.push('')
+
+  // Budget — offset capacity from realized YTD gains
+  lines.push(`OFFSET BUDGET (${budget.year ?? '—'})`, '─'.repeat(20))
+  if (budget.source === 'transactions') {
+    if (budget.realized_short_term != null) {
+      lines.push(`Realized ST gains: ${_fmtMoney(budget.realized_short_term)}`)
+    }
+    if (budget.realized_long_term != null) {
+      lines.push(`Realized LT gains: ${_fmtMoney(budget.realized_long_term)}`)
+    }
+    if (budget.available_to_offset != null) {
+      lines.push(`Available to offset: ${_fmtMoney(budget.available_to_offset)}`)
+    }
+  } else {
+    lines.push('Realized gains:    unknown (no 1099-B / Realized G/L export found)')
+  }
+  if (budget.note) lines.push('', budget.note)
+  lines.push('')
+
+  // Candidate table — one block per candidate with replacement + wash-sale
+  if (cands.length) {
+    lines.push(`CANDIDATES (${cands.length})`, '─'.repeat(20))
+    for (const c of cands) {
+      const sym = c.symbol || c.name || '(unnamed)'
+      const period = c.holding_period === 'short_term'
+        ? 'ST'
+        : c.holding_period === 'long_term'
+          ? 'LT'
+          : '—'
+      const acct = c.account ? ` • ${c.account}` : ''
+      const lossPct = c.loss_pct != null ? `${c.loss_pct.toFixed(1)}%` : '—'
+      lines.push(
+        `${sym} [${period}]${acct}`,
+        `  Loss: ${_fmtMoney(c.unrealized_loss)} (${lossPct} from cost ${_fmtMoney(c.cost_basis)})`,
+      )
+
+      const replacements = c.replacements || []
+      if (replacements.length) {
+        const r = replacements[0]
+        lines.push(`  Replace with: ${r.symbol}  ${r.name}`)
+        lines.push(`    ${r.rationale}`)
+        if (replacements.length > 1) {
+          const alts = replacements.slice(1).map((x) => x.symbol).join(', ')
+          lines.push(`    (also: ${alts})`)
+        }
+      } else {
+        lines.push('  Replace with: no curated suggestion — choose a sector ETF manually')
+      }
+
+      const wash = c.wash_sale || {}
+      if (wash.status === 'confirmed') {
+        lines.push(`  ⛔ WASH SALE — ${wash.note}`)
+      } else if (wash.status === 'potential') {
+        const accts = (wash.accounts_holding || []).join(', ')
+        lines.push(`  ⚠️  Potential wash sale — also held in: ${accts || '—'}`)
+      }
+      lines.push('')
+    }
+  } else {
+    lines.push(
+      'No candidates above the loss threshold in taxable accounts.',
+      '',
+    )
+  }
+
+  // Household-wide wash-sale warnings (consolidated)
+  const warnings = plan.wash_sale_warnings || []
+  if (warnings.length) {
+    lines.push(`⚠️  HOUSEHOLD WASH-SALE WARNINGS (${warnings.length})`, '─'.repeat(20))
+    for (const w of warnings) {
+      lines.push(`${w.symbol}: ${w.status.toUpperCase()}`)
+      if (w.accounts_holding?.length) {
+        lines.push(`  Held in: ${w.accounts_holding.join(', ')}`)
+      }
+    }
+    lines.push('')
+  }
+
+  // Guardrails — non-negotiable rules to confirm before trading
+  const guardrails = plan.guardrails || []
+  if (guardrails.length) {
+    lines.push('GUARDRAILS — confirm before trading', '─'.repeat(20))
+    for (const g of guardrails) {
+      lines.push(`• ${g}`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
 // True if a slash command's draft is best streamed over SSE — currently the
 // LLM-backed drafting commands (/notes, /followup). Other commands return
 // instantly from REST/local data and gain nothing from streaming.
@@ -476,6 +612,11 @@ export const runSlashCommand = async (input, { collectionId, collection, message
     if (cmd === '/brief') {
       const response = await axios.post(`/api/collections/${collectionId}/brief`)
       return { cmd, content: formatBrief(response.data) }
+    }
+
+    if (cmd === '/tlh') {
+      const response = await axios.post(`/api/collections/${collectionId}/tlh`, {})
+      return { cmd, content: formatTlh(response.data) }
     }
 
     if (cmd === '/notes') {

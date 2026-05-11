@@ -361,7 +361,12 @@
           </div>
           <div v-if="filteredChunks.length === 0" class="alert alert-info"><span>No chunks match the current filter.</span></div>
           <div v-else class="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-            <div v-for="chunk in filteredChunks" :key="chunk.chunk_id" class="card bg-base-200 border border-base-300">
+            <div
+              v-for="chunk in filteredChunks"
+              :key="chunk.chunk_id"
+              :data-chunk-id="chunk.chunk_id"
+              class="card bg-base-200 border border-base-300 transition-shadow"
+            >
               <div class="card-body p-4">
                 <div class="flex items-center justify-between flex-wrap gap-2">
                   <div class="font-mono text-xs text-base-content/60">{{ chunk.chunk_id }}</div>
@@ -1035,11 +1040,16 @@ const loadDocuments = async () => {
   }
 }
 
-const openChunks = async (doc) => {
+// When a citation deep-link fires, focus this chunk_id once the chunks
+// modal has loaded — pulses the card and scrolls it into view.
+const focusChunkId = ref('')
+
+const openChunks = async (doc, { chunkId = '' } = {}) => {
   chunkDocument.value = doc
   chunksLoading.value = true
   chunksError.value = ''
   showOnlyChunksWithFields.value = false
+  focusChunkId.value = chunkId
   chunkResponse.value = {
     document_id: doc.document_id,
     filename: doc.filename,
@@ -1063,11 +1073,36 @@ const openChunks = async (doc) => {
       }
     )
     chunkResponse.value = response.data
+    if (focusChunkId.value) {
+      // Wait two frames so v-for renders the chunk cards before we scroll.
+      await new Promise(requestAnimationFrame)
+      await new Promise(requestAnimationFrame)
+      const safe = CSS.escape ? CSS.escape(focusChunkId.value) : focusChunkId.value
+      const el = document.querySelector(`[data-chunk-id="${safe}"]`)
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('ring-2', 'ring-primary')
+        setTimeout(() => el.classList.remove('ring-2', 'ring-primary'), 1800)
+      }
+    }
   } catch (err) {
     chunksError.value = err.response?.data?.detail || 'Failed to load document chunks'
   } finally {
     chunksLoading.value = false
   }
+}
+
+// Citation deep-link handler — fired by ChatTab pills. Loads documents if
+// the user hasn't expanded the sidebar yet, expands the sidebar if collapsed,
+// then opens the chunks viewer scrolled to the cited chunk.
+async function handleOpenCitation(event) {
+  const detail = event?.detail || {}
+  if (!detail.documentId) return
+  if (!props.expanded) emit('toggle')
+  if (documents.value.length === 0) await loadDocuments()
+  const doc = documents.value.find((d) => d.document_id === detail.documentId)
+  if (!doc) return
+  openChunks(doc, { chunkId: detail.chunkId || '' })
 }
 
 const closeChunksModal = () => {
@@ -1232,11 +1267,13 @@ onMounted(() => {
   loadRecentRepos()
   window.addEventListener('beforeunload', beforeUnloadHandler)
   window.addEventListener('finn:transcript-saved', handleTranscriptSaved)
+  window.addEventListener('finn:open-citation', handleOpenCitation)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
   window.removeEventListener('finn:transcript-saved', handleTranscriptSaved)
+  window.removeEventListener('finn:open-citation', handleOpenCitation)
   // Recording lifecycle is owned by useMeetingRecorder (module singleton);
   // intentionally not torn down here so navigating away from this surface
   // doesn't kill an in-flight session.

@@ -152,6 +152,40 @@ class UploadService:
         """Check if job has been cancelled."""
         return self._cancel_flags.get(job_id, False)
 
+    def _kick_off_meeting_notes_extraction(
+        self,
+        *,
+        indexer,
+        collection_id: str,
+        document_id: str,
+        filename: str,
+        extraction_method: str,
+    ) -> None:
+        """Spawn a daemon thread that extracts meeting notes from a transcript.
+
+        Best-effort: failures inside the worker are logged but never bubble
+        up into the upload job. The thread is intentionally not tracked in
+        ``_active_threads`` — upload completion does not depend on it.
+        """
+        from services.meeting_notes import try_extract_after_indexing
+
+        def _worker() -> None:
+            try:
+                try_extract_after_indexing(
+                    indexer=indexer,
+                    collection_id=collection_id,
+                    document_id=document_id,
+                    filename=filename,
+                    extraction_method=extraction_method,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Background meeting-notes extraction crashed for %s: %s",
+                    filename, exc,
+                )
+
+        threading.Thread(target=_worker, daemon=True, name="meeting-notes").start()
+
     def start_upload(
         self,
         staged_files: List[dict],
@@ -341,6 +375,18 @@ class UploadService:
 
                     # Add document to collection
                     collection_service.add_document(collection_id, doc_metadata.document_id)
+
+                    # v4.5 — transcripts get an LLM extraction pass on a daemon
+                    # thread so the upload returns promptly. Best-effort: skips
+                    # if no agent key is stored, never blocks ingest on failure.
+                    if (doc_metadata.extraction_method or "").lower() == "whisper":
+                        self._kick_off_meeting_notes_extraction(
+                            indexer=indexer,
+                            collection_id=collection_id,
+                            document_id=doc_metadata.document_id,
+                            filename=filename,
+                            extraction_method=doc_metadata.extraction_method,
+                        )
 
                     # Update results
                     results["documents_processed"] += 1

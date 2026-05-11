@@ -75,7 +75,26 @@ def _load_profiles() -> List[Dict[str, Any]]:
 
 
 def _head_lines(file_path: Path, n: int) -> str:
-    """Return the first n lines of a file as a single lowercased string."""
+    """Return the first n lines of a file as a single lowercased string.
+
+    For PDFs (where reading raw bytes returns binary garbage), pulls text
+    from the first one or two pages via pdfplumber so that
+    ``required_strings`` checks like "Unrealized Gain" can match a Schwab
+    PDF statement the same way they match the CSV equivalent (P0.8).
+    """
+    if file_path.suffix.lower() == '.pdf':
+        try:
+            import pdfplumber  # type: ignore
+            text_parts: List[str] = []
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages[:2]:
+                    text_parts.append(page.extract_text() or '')
+            joined = '\n'.join(text_parts)
+            # Cap at ~n lines so behavior matches the text-file branch.
+            return '\n'.join(joined.splitlines()[:n]).lower()
+        except Exception:
+            return ''
+
     lines: List[str] = []
     try:
         with open(file_path, encoding='utf-8', errors='replace') as fh:

@@ -13,7 +13,7 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 import shutil
 
-from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File, status, Request
+from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File, status, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,6 +77,7 @@ from models.schemas import (
     NotesRequest,
     FollowupRequest,
     NoteResponse,
+    ExtractMeetingNotesRequest,
     SaveNoteRequest,
     SaveNoteResponse,
     RedactionDryRunRequest,
@@ -1352,6 +1353,18 @@ async def chat_stream_endpoint(
                     yield f"data: {_json.dumps({'type':'tool_end','tool':ev['tool'],'result':ev.get('result') or {}})}\n\n"
                 elif t == "text_delta":
                     yield f"data: {_json.dumps({'type':'text_delta','delta':ev.get('delta','')})}\n\n"
+                elif t == "citation":
+                    citation_payload = {
+                        "type": "citation",
+                        "document_id": ev.get("document_id"),
+                        "chunk_id": ev.get("chunk_id"),
+                        "page_number": ev.get("page_number"),
+                        "filename": ev.get("filename"),
+                        "cited_text": ev.get("cited_text"),
+                        "start_char": ev.get("start_char"),
+                        "end_char": ev.get("end_char"),
+                    }
+                    yield f"data: {_json.dumps(citation_payload)}\n\n"
                 elif t == "done":
                     usage = ev.get("usage", usage)
                 elif t == "error":
@@ -3658,6 +3671,156 @@ async def generate_brief_endpoint(
     return brief
 
 
+@app.post(
+    "/api/collections/{collection_id}/tlh",
+    tags=["chat"],
+    summary="Build a household-aware Tax-Loss Harvesting plan",
+)
+async def generate_tlh_plan_endpoint(
+    collection_id: str,
+    household_collection_ids: list[str] | None = Body(default=None),
+    min_loss: float = Body(default=500.0),
+    min_loss_pct: float | None = Body(default=None),
+    max_candidates: int = Body(default=25),
+):
+    """
+    Build a Tax-Loss Harvesting plan for *collection_id*.
+
+    Composes scan_unrealized_losses (taxable accounts only, ST-first ordering),
+    gain_loss_budget (offset capacity), suggest_replacements (non-substantially-
+    identical swaps), and check_wash_sale (household-wide — including any
+    `household_collection_ids` passed in) into a single plan with explicit
+    guardrails. Calls the primitives directly, no LLM token cost.
+    """
+    from services.financial.tlh import build_harvest_plan
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        primary_store = indexer.vector_store.holdings_store
+    except AttributeError:
+        raise HTTPException(status_code=422, detail="No structured store found for this collection.")
+
+    household_stores = [primary_store]
+    seen_ids = {collection_id}
+    for cid in (household_collection_ids or []):
+        if cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        try:
+            extra_indexer = get_indexer(cid)
+            household_stores.append(extra_indexer.vector_store.holdings_store)
+        except (ValueError, AttributeError) as exc:
+            logger.warning("TLH: skipping household collection %s: %s", cid, exc)
+
+    try:
+        plan = build_harvest_plan(
+            primary_store,
+            collection_id=collection_id,
+            household_stores=household_stores,
+            min_loss=min_loss,
+            min_loss_pct=min_loss_pct,
+            max_candidates=max_candidates,
+        )
+    except Exception as e:
+        logger.error("TLH plan failed for collection %s: %s", collection_id, e)
+        raise HTTPException(status_code=500, detail=f"TLH plan failed: {e}")
+
+    return {
+        "collection_id": plan.collection_id,
+        "generated_at": plan.generated_at,
+        "candidates": plan.candidates,
+        "budget": plan.budget,
+        "wash_sale_warnings": plan.wash_sale_warnings,
+        "guardrails": plan.guardrails,
+        "totals": plan.totals,
+    }
+
+
+@app.post(
+    "/api/collections/{collection_id}/meetings/extract",
+    tags=["chat"],
+    summary="Run the v4.5 structured-extraction pass on a transcript",
+)
+async def extract_meeting_notes_endpoint(
+    collection_id: str,
+    body: ExtractMeetingNotesRequest,
+    x_ai_key: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """Run a single LLM extraction pass on a transcript and persist the notes.
+
+    The background trigger in upload_service runs automatically when a stored
+    agent API key is present, but BYO-key users (the default) need an explicit
+    request. The frontend calls this endpoint from the post-transcription
+    nudge banner so the advisor can choose when (and with which provider) to
+    spend the tokens.
+    """
+    from services.meeting_notes import (
+        extract_meeting_notes as _extract,
+        transcript_text_from_chunks,
+    )
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        provider = _build_ai_provider_from_headers(
+            body.provider, x_ai_key,
+            x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
+            x_ai_base_url,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
+
+    try:
+        chunks = indexer.vector_store.metadata_store.get_chunks_by_document(body.document_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load transcript: {e}")
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail=f"No chunks found for document {body.document_id}")
+
+    transcript_text = transcript_text_from_chunks(chunks)
+    if not transcript_text:
+        raise HTTPException(status_code=422, detail="Transcript has no extractable text.")
+
+    notes = _extract(
+        transcript_text,
+        collection_id=collection_id,
+        provider=provider,
+        document_id=body.document_id,
+        model=getattr(provider, "QUALITY_MODEL", None),
+    )
+
+    store = indexer.vector_store.meeting_notes_store
+    try:
+        store.save(
+            document_id=body.document_id,
+            collection_id=collection_id,
+            notes=notes,
+        )
+    except Exception as e:
+        logger.error("Failed to save meeting notes for %s: %s", body.document_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to persist notes: {e}")
+
+    record = store.get(body.document_id)
+    return {
+        "collection_id": collection_id,
+        "document_id": body.document_id,
+        "notes": record,
+    }
+
+
 @app.get(
     "/api/collections/{collection_id}/summary",
     tags=["collections"],
@@ -3691,14 +3854,28 @@ async def get_collection_summary(
     except AttributeError:
         return {
             "collection_id": collection_id,
+            "kind": "general",
             "positions": 0,
             "accounts": 0,
             "most_recent_export_iso": None,
             "source_files": [],
+            "financial_table_count": 0,
+            "transcript_count": 0,
+            "document_count": 0,
         }
 
     from services.collection_summary import compute_collection_summary
-    return compute_collection_summary(store, collection_id)
+    from services.collection_context import detect_collection_kind
+
+    summary = compute_collection_summary(store, collection_id)
+    ctx = detect_collection_kind(indexer, collection_id)
+    summary.update({
+        "kind": ctx.kind,
+        "financial_table_count": ctx.financial_table_count,
+        "transcript_count": ctx.transcript_count,
+        "document_count": ctx.document_count,
+    })
+    return summary
 
 
 @app.get(
@@ -4703,6 +4880,16 @@ async def get_diagnostics_chat_events(limit: int = 100) -> dict:
     from services.diagnostics import get_buffer
     buf = get_buffer()
     return {"events": buf.recent_events(limit=limit)}
+
+
+@app.get(
+    "/api/diagnostics/cache",
+    summary="Cumulative Anthropic prompt-cache token totals + hit rate",
+    tags=["diagnostics"],
+)
+async def get_diagnostics_cache() -> dict:
+    from services.diagnostics import get_buffer
+    return get_buffer().cache_stats()
 
 
 @app.post(
