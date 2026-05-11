@@ -1718,7 +1718,7 @@ const loadCollectionKind = async () => {
     return
   }
   try {
-    const response = await axios.get(`${apiUrl}/api/collections/${collectionId}/summary`)
+    const response = await axios.get(apiUrl(`/api/collections/${collectionId}/summary`))
     collectionKind.value = response.data?.kind || 'general'
   } catch (err) {
     // Non-fatal — fall back to "general" so chips just stay hidden.

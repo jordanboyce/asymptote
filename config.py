@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     enable_multi_user: bool = False  # Set to True for per-user data isolation
     default_user_id: str = "default"  # User ID used in single-user mode
 
+    # Hosted-deployment mode: delete original uploads after indexing so only
+    # chunks + embeddings + metadata persist. Breaks re-indexing (needs the
+    # original) and breaks "open original" from search results. Intended for
+    # shared-cloud hosting where retaining advisor PDFs/CSVs is undesirable.
+    discard_originals_after_index: bool = False
+
     # OCR configuration
     enable_ocr: bool = False  # Enable OCR for scanned PDFs
     ocr_max_pages: int = 25  # Skip OCR for PDFs with more pages than this (0 = no limit)

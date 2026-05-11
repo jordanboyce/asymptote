@@ -68,6 +68,13 @@ class PreparedChat:
     # Whether structured tables are inlined as JSONL (helps endpoint decide
     # if the response should advertise the "structured_tools" feature flag).
     has_executed_tools: bool = False
+    # Engine routing: True → run_rag_synthesis (single streamed call over
+    # pre-retrieved chunks, no tool loop). False → run_agentic (tool-use
+    # loop). General/meetings collections have nothing useful to call tools
+    # *for* — search has already happened in _run_search and no SQL tools
+    # apply — so the agentic loop is pure overhead. Financial/mixed keep
+    # agentic so the model can reach query_table / compute_portfolio_metric.
+    use_simple_rag: bool = False
 
 
 def build_chat_turn(
@@ -103,11 +110,22 @@ def build_chat_turn(
             ai_service, latest_query, context_results, chat_request.top_k,
         )
 
+    # Auto-inline structured tables into the system prompt only for *holdings*
+    # tables. Generic typed tables (PDF-extracted keyword/symbol tables, log
+    # dumps) also live in the HoldingsStore but inlining them adds tokens and
+    # latency without helping prose-question answering. The model can still
+    # reach non-holdings tables via list_tables → get_table_rows on demand.
+    from services.collection_context import is_holdings_table
+
     structured_tables, structured_stores = collect_structured_tables([collection_id])
     if doc_filter is not None and structured_tables:
         structured_tables = [
             t for t in structured_tables if t.get("document_id") in doc_filter
         ]
+    structured_tables = [
+        t for t in structured_tables
+        if is_holdings_table(t.get("financial_roles"))
+    ]
     if structured_tables:
         structured_ctx = build_structured_context(structured_tables, structured_stores)
     else:
@@ -203,11 +221,23 @@ def build_chat_turn(
         allowed_tool_names=allowed_tool_names,
     )
 
+    # Pick the engine path. Simple RAG when the collection has no domain-
+    # specific tools the model could productively call: search has already
+    # run, no holdings tables to query, no financial-tool surface to expose.
+    # If we ever leave large structured tables for the agentic loop
+    # (``tool_tables`` non-empty), keep agentic regardless of kind — those
+    # need SQL queries the simple path can't issue.
+    use_simple_rag = (
+        collection_ctx.kind in ("general", "meetings")
+        and not tool_tables
+    )
+
     return PreparedChat(
         turn=turn,
         filtered_results=filtered_results,
         rerank_usage=rerank_usage,
         has_executed_tools=bool(tool_tables),
+        use_simple_rag=use_simple_rag,
     )
 
 
@@ -360,6 +390,22 @@ def _build_base_framing(
     "use COLLECTION OVERVIEW for meta-questions" rule, with the actor noun
     swapped (advisor → user) so the prose reads naturally.
     """
+    # Shared across both modes: keep answers tight and minimise tool-loop
+    # fan-out. Without this, the agentic loop tends to issue 4–6 broad
+    # searches and synthesise long-form essays even on questions answered by
+    # a single citation, which is the largest cause of slow chat turns.
+    search_economy = (
+        "Be efficient: one or two well-chosen searches almost always suffice. "
+        "Stop searching as soon as the retrieved context can answer the "
+        "question — do not fan out exploratory queries after a good hit."
+    )
+    answer_economy = (
+        "Be concise: lead with the answer, no preamble, no restatement of the "
+        "question, no closing summary. Prefer direct quotation with citations "
+        "over narrative paraphrase. Length should fit the question — a one-line "
+        "answer for a one-line question."
+    )
+
     if is_financial:
         retrieved_phrase = (
             "Answer the advisor's question using the COLLECTION OVERVIEW, "
@@ -382,17 +428,16 @@ def _build_base_framing(
             retrieved_phrase,
             "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base "
             "itself (file counts, available documents, date ranges).",
+            search_economy,
+            answer_economy,
             "If the question cannot be answered from the data in this collection — "
             "for example, the COLLECTION OVERVIEW shows no relevant documents, the "
             "STRUCTURED TABLES lack the column the question requires, or a tool "
             "call returns no rows — say so explicitly. Begin the answer with "
             "\"I don't have …\" and name the missing piece (e.g. \"I don't have "
             "cost-basis data for this collection\", \"I don't have account-level "
-            "tagging in this export\", \"I don't have any holdings files indexed "
-            "yet\"). Do NOT guess, do NOT estimate from chunk text, and do NOT "
-            "invent positions, account numbers, or dollar figures. Suggest the "
-            "next concrete step the advisor could take (upload a different "
-            "export, switch collections, etc.) only when one is obvious.",
+            "tagging in this export\"). Do NOT guess, do NOT estimate from chunk "
+            "text, and do NOT invent positions, account numbers, or dollar figures.",
         ]
     # General / meetings — chat with documents. Neutral framing, no portfolio
     # pitch, no advisor-vs-client distinction.
@@ -403,22 +448,17 @@ def _build_base_framing(
            else "RETRIEVED CONTEXT below.")
     )
     return [
-        "You are a helpful assistant that helps the user understand and reason "
-        "about the documents in this collection. Treat the collection as the "
-        "user's own working set of files — research notes, contracts, papers, "
-        "manuals, transcripts, anything they have uploaded — and answer their "
-        "questions about what is in it.",
+        "You help the user reason about the documents in this collection — "
+        "research notes, papers, manuals, transcripts, anything they uploaded.",
         retrieved_phrase,
         "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base "
         "itself (file counts, available documents, date ranges).",
-        "If the question cannot be answered from the documents in this collection "
-        "— for example, the COLLECTION OVERVIEW shows no relevant documents or "
-        "a search returns no matches — say so explicitly. Begin the answer with "
-        "\"I don't have …\" or \"I couldn't find …\" and name the missing piece. "
-        "Do NOT guess, do NOT invent facts, dates, or names that aren't in the "
-        "documents, and do NOT fill in plausible-sounding detail to sound "
-        "complete. Suggest the next concrete step (upload a different document, "
-        "rephrase the question) only when one is obvious.",
+        search_economy,
+        answer_economy,
+        "If the answer is not in the documents, say so. Begin with \"I don't have "
+        "…\" or \"I couldn't find …\" and name what's missing. Do NOT guess, do "
+        "NOT invent facts, dates, or names that aren't in the documents, and do "
+        "NOT fill in plausible-sounding detail to sound complete.",
     ]
 
 

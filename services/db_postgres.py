@@ -657,7 +657,7 @@ class PostgresBackend(DatabaseBackend):
             if field in kwargs and kwargs[field] is not None:
                 updates.append(f"{field} = %s")
                 params.append(kwargs[field])
-        if kwargs.get("status") in ("completed", "failed"):
+        if kwargs.get("status") in ("completed", "failed", "cancelled"):
             updates.append("completed_at = %s")
             params.append(datetime.utcnow().isoformat())
         if not updates:
@@ -672,7 +672,12 @@ class PostgresBackend(DatabaseBackend):
             self._put(conn)
 
     def _reindex_query(self):
-        return "SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error FROM reindex_jobs"
+        # config_snapshot included so callers can recover collection_id.
+        return (
+            "SELECT id, status, started_at, completed_at, total_documents, "
+            "processed_documents, current_file, error, config_snapshot "
+            "FROM reindex_jobs"
+        )
 
     def get_reindex_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         conn = self._conn()
@@ -700,6 +705,33 @@ class PostgresBackend(DatabaseBackend):
                 return self._fetchone_dict(cur)
         finally:
             self._put(conn)
+
+    def mark_stale_jobs_as_orphaned(
+        self, reason: str = "Orphaned: backend restarted before job completed"
+    ) -> Dict[str, List[int]]:
+        """Sweep pending/running rows in upload_jobs + reindex_jobs at startup."""
+        timestamp = datetime.utcnow().isoformat()
+        cleaned: Dict[str, List[int]] = {"upload_jobs": [], "reindex_jobs": []}
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE upload_jobs SET status = 'failed', error = %s, completed_at = %s "
+                    "WHERE status IN ('pending', 'running') RETURNING id",
+                    (reason, timestamp),
+                )
+                cleaned["upload_jobs"] = [r[0] for r in cur.fetchall()]
+
+                cur.execute(
+                    "UPDATE reindex_jobs SET status = 'failed', error = %s, completed_at = %s "
+                    "WHERE status IN ('pending', 'running') RETURNING id",
+                    (reason, timestamp),
+                )
+                cleaned["reindex_jobs"] = [r[0] for r in cur.fetchall()]
+            conn.commit()
+        finally:
+            self._put(conn)
+        return cleaned
 
     # ── AI Preferences ───────────────────────────────────────
 

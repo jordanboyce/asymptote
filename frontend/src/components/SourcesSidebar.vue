@@ -73,6 +73,16 @@
         <div v-show="addSectionOpen" class="px-3 pb-3 space-y-2">
           <!-- File/folder/record buttons -->
           <div class="flex gap-1.5">
+            <!-- Hidden input used only in hosted/browser mode. Triggered by
+                 the visible "Files" button below when window.finn is absent
+                 (i.e. not running inside Electron). -->
+            <input
+              ref="browserFileInputRef"
+              type="file"
+              multiple
+              class="hidden"
+              @change="handleBrowserFileSelection"
+            />
             <button
               @click="openFilePicker"
               class="btn btn-primary btn-xs flex-1 gap-1"
@@ -82,7 +92,12 @@
               <FileText :size="12" />
               Files
             </button>
-            <button v-if="isExpertMode" @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
+            <button
+              v-if="isExpertMode && !isHostedMode"
+              @click="openFolderPicker"
+              class="btn btn-outline btn-xs flex-1 gap-1"
+              :disabled="indexing || isRecording"
+            >
               <FolderOpen :size="12" />
               Folder
             </button>
@@ -518,6 +533,17 @@ function openPiiReview(doc) {
 const addSectionOpen = ref(true)
 const advancedOpen = ref(false)
 
+// Hosted/browser mode detection. window.finn.apiUrl is injected by the
+// Electron preload script; when it's absent we're running in a plain
+// browser (Vite dev or FastAPI-served static build, including Docker /
+// Railway / Render). In hosted mode the server-side native file picker
+// has no display, so we use a real <input type="file"> instead.
+const isHostedMode = computed(() => {
+  if (typeof window === 'undefined') return true
+  return !window.finn?.apiUrl
+})
+const browserFileInputRef = ref(null)
+
 // Source code mode
 const isSourceCode = ref(false)
 const includeDocumentation = ref(true)
@@ -644,10 +670,22 @@ const getFilename = (path) => {
   return path.split(/[/\\]/).pop()
 }
 
-// Open native file picker via backend API
+// Open file picker. In hosted/browser mode (Docker, Railway, etc.) this
+// triggers a hidden <input type="file"> and uploads via multipart. In
+// desktop/Electron mode it asks the backend to pop a native tkinter
+// dialog, which then returns server-side paths that get indexed in-place.
 const openFilePicker = async () => {
+  indexError.value = ''
+
+  if (isHostedMode.value) {
+    if (browserFileInputRef.value) {
+      browserFileInputRef.value.value = ''  // allow re-picking the same file
+      browserFileInputRef.value.click()
+    }
+    return
+  }
+
   try {
-    indexError.value = ''
     const response = await axios.post('/api/file-picker', null, {
       params: { multiple: true, include_sizes: true }
     })
@@ -668,6 +706,60 @@ const openFilePicker = async () => {
   } catch (err) {
     console.error('File picker error:', err)
     indexError.value = friendlyError(err, { expert: isExpertMode.value, fallback: 'Failed to open file picker' })
+  }
+}
+
+// Hosted-mode upload: take File objects from the hidden <input>, build
+// a multipart request, and post to /documents/upload-async. The backend
+// stages the files into a tempdir and runs the same UploadService job
+// that the desktop flow uses, so progress tracking via
+// backgroundJobsStore works identically.
+//
+// Note: we deliberately skip the PII review queue here. PII review
+// expects a server-side path, and these files have only just arrived
+// from the browser. Per-collection PII redaction still runs at index
+// time on the backend.
+const handleBrowserFileSelection = async (event) => {
+  const files = Array.from(event.target?.files || [])
+  if (files.length === 0) return
+
+  const collectionId = collectionStore.currentCollectionId
+  if (!collectionId) {
+    indexError.value = 'Pick a collection before uploading.'
+    return
+  }
+
+  indexing.value = true
+  indexProgress.value = 0
+  indexProgressPercent.value = 0
+  currentIndexingFile.value = files.length === 1 ? files[0].name : `${files.length} files`
+  indexSuccess.value = false
+  indexError.value = ''
+
+  try {
+    const form = new FormData()
+    for (const file of files) {
+      form.append('files', file, file.name)
+    }
+
+    const response = await axios.post('/documents/upload-async', form, {
+      params: { collection_id: collectionId },
+    })
+
+    backgroundJobsStore.addUploadJob(response.data)
+    emit('background-job-started')
+
+    indexSuccess.value = true
+    indexResult.value = { count: files.length, chunks: 0, background: true }
+  } catch (err) {
+    console.error('Browser upload failed:', err)
+    indexError.value = friendlyError(err, {
+      expert: isExpertMode.value,
+      fallback: 'Upload failed — try again.',
+    })
+  } finally {
+    indexing.value = false
+    currentIndexingFile.value = ''
   }
 }
 

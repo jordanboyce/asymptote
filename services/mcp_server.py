@@ -852,11 +852,28 @@ def search_collection(
     # host LLM the full authoritative rows for numeric questions and (b)
     # drop the corresponding chunks from the `results` array — otherwise
     # the LLM might prefer the partial excerpts over the full data.
+    #
+    # Only *holdings* tables (ticker/account/value/quantity/cost columns)
+    # get auto-inlined. Generic typed tables — PDF table extracts, log
+    # dumps, anything tabular without holdings semantics — also live in
+    # the HoldingsStore but blowing them all into every search result
+    # tanks latency without helping the model. Previously a 16-document
+    # SAPHIRE PRA collection (zero holdings, ~20 extracted PDF tables) was
+    # injecting hundreds of KB of irrelevant keyword/symbol tables into
+    # every search_collection response, pushing one tool call from ~2 s
+    # to ~24 s. If the user genuinely asks about a non-holdings table the
+    # model can still reach it via list_tables → get_table_rows.
     structured_tables_payload: list[dict[str, Any]] = []
     inlined_filenames: set[str] = set()
     if resolved_inline_row_threshold > 0:
         try:
+            from services.collection_context import is_holdings_table
+
             s_tables, s_stores = collect_structured_tables([resolved_collection])
+            s_tables = [
+                t for t in s_tables
+                if is_holdings_table(t.get("financial_roles"))
+            ]
             if s_tables:
                 ctx = build_structured_context(
                     s_tables,

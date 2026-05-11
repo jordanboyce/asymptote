@@ -69,6 +69,42 @@ _FINANCIAL_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# A table counts as "financial" only if it carries at least one Position-
+# defining role — ticker/cusip/isin or a holdings measure or an account
+# segmentation. Generic typed tables (PRA rule catalogs, log exports, code
+# metrics) also live in the HoldingsStore and may have date/notes roles
+# assigned, but they shouldn't tip the Collection into kind="financial".
+# This is the single source of truth used by:
+#   - detect_collection_kind below (chat tool gating)
+#   - services.collection_summary (Studio Positions counter)
+#   - services.mcp_server.search_collection (search-result auto-inline)
+#   - services.chat.context.build_chat_inputs (system-prompt auto-inline)
+HOLDINGS_ROLES: frozenset[str] = frozenset({
+    "ticker", "cusip", "isin",
+    "market_value", "quantity", "cost_basis",
+    "unrealized_gain", "unrealized_loss",
+    "account",
+})
+
+
+def is_holdings_table(roles: dict | None) -> bool:
+    """True iff *roles* contains at least one Position-defining role.
+
+    Pass either a per-column ``{sql_name: role}`` dict (the canonical shape
+    on ``store.list_tables()`` entries) or any other dict whose values are
+    role strings — only the value side is consulted.
+    """
+    if not roles:
+        return False
+    return any(role in HOLDINGS_ROLES for role in roles.values())
+
+
+# Internal aliases kept for the existing call site in this module. New code
+# should use the public names above.
+_HOLDINGS_ROLES = HOLDINGS_ROLES
+_is_holdings_table = is_holdings_table
+
+
 CollectionKind = str  # Literal["financial", "meetings", "general", "mixed"]
 
 
@@ -104,7 +140,7 @@ def detect_collection_kind(indexer: Any, collection_id: str) -> CollectionContex
         try:
             for table in store.list_tables():
                 roles = table.get("financial_roles") or {}
-                if roles:
+                if _is_holdings_table(roles):
                     financial_table_count += 1
         except Exception as exc:
             logger.debug(
@@ -253,18 +289,18 @@ def system_prompt_addendum(context: CollectionContext) -> str:
             "in the portfolio."
         )
     # general — no holdings, no transcripts. Could be compliance docs,
-    # code, free-form text, or just an empty collection.
+    # code, free-form text, or just an empty collection. Persona-neutral
+    # copy: the empty case can be hit on a brand-new install with no advisor
+    # context at all, so don't push brokerage-specific suggestions.
     if context.document_count == 0:
         return (
-            "This collection is EMPTY. Tell the advisor no documents are "
-            "indexed yet and suggest they upload a brokerage export, a "
-            "meeting recording, or whichever source they want to ask about."
+            "This collection is EMPTY — no documents indexed yet. Tell the user "
+            "nothing has been uploaded and suggest they add a file to get started."
         )
     return (
-        "This collection is a GENERAL document collection — it contains "
-        f"{context.document_count} document(s) with no detected brokerage "
-        "holdings and no meeting transcripts. Use search_documents and "
-        "get_document_context to answer content questions about whatever "
-        "the user has uploaded — research papers, contracts, manuals, "
-        "notes, anything else."
+        f"This collection is a GENERAL document collection — {context.document_count} "
+        "document(s), no detected brokerage holdings, no meeting transcripts. "
+        "Use search_documents and get_document_context for content questions; "
+        "answer concisely with direct quotes rather than narrative summaries, "
+        "and skip any financial/advisor framing — this is plain document Q&A."
     )

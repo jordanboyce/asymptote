@@ -135,6 +135,26 @@ async def lifespan(app: FastAPI):
     async with mcp_server_lifespan():
         logger.info("Initializing Finn API...")
 
+        # Sweep abandoned indexing jobs from the last process. Upload threads
+        # die with the interpreter (daemon=False keeps them only as long as
+        # the process lives) and reindex asyncio tasks die outright, so any
+        # row still marked pending/running at startup is orphaned. Without
+        # this, the UI would forever show a phantom job that has no worker.
+        try:
+            from services.app_database import app_db as _startup_app_db
+            cleaned = _startup_app_db.mark_stale_jobs_as_orphaned()
+            upload_orphans = cleaned.get("upload_jobs", [])
+            reindex_orphans = cleaned.get("reindex_jobs", [])
+            if upload_orphans or reindex_orphans:
+                logger.warning(
+                    "Orphan recovery: marked %d upload job(s) %s and %d reindex job(s) %s "
+                    "as failed (backend restarted before they completed)",
+                    len(upload_orphans), upload_orphans,
+                    len(reindex_orphans), reindex_orphans,
+                )
+        except Exception as e:
+            logger.error(f"Failed to sweep orphaned jobs on startup: {e}")
+
         # Initialize default collection's indexer to pre-load embedding model
         logger.info("Loading default collection indexer...")
         try:
@@ -1271,7 +1291,7 @@ async def chat_stream_endpoint(
     import json as _json
     import uuid as _uuid
     from services.chat.context import build_chat_turn
-    from services.chat.engine import run_agentic
+    from services.chat.engine import run_agentic, run_rag_synthesis
     from services.diagnostics import record_chat_event as _record_diag
 
     # Stable per-turn id so the diagnostics view can group all events that
@@ -1323,13 +1343,22 @@ async def chat_stream_endpoint(
                 "provider": chat_request.provider,
                 "messages": len(chat_request.messages or []),
                 "collection_id": collection_id,
+                "engine": "rag_synthesis" if prepared.use_simple_rag else "agentic",
             })
 
             executed_results: list[dict] = []
             usage = {"input_tokens": 0, "output_tokens": 0, "model": None}
             pending_args: dict[str, dict] = {}
 
-            async for ev in run_agentic(prepared.turn):
+            # Engine selection: general/meetings collections with no large
+            # structured tables skip the tool loop and stream a single
+            # completion over the chunks ChatContext already retrieved. The
+            # event stream below handles both shapes — run_rag_synthesis
+            # simply never yields tool_start/tool_end/thinking, so those
+            # branches stay dormant on the simple path.
+            engine_fn = run_rag_synthesis if prepared.use_simple_rag else run_agentic
+
+            async for ev in engine_fn(prepared.turn):
                 t = ev.get("type")
                 if t == "thinking":
                     executed_results.append({
@@ -2940,6 +2969,72 @@ async def start_collection_reindex(collection_id: str):
         )
 
 
+@app.post(
+    "/api/reindex/{job_id}/cancel",
+    summary="Cancel a running re-indexing job",
+    tags=["admin"],
+)
+async def cancel_reindex_job(job_id: int):
+    """Request cancellation of an in-flight re-indexing job.
+
+    Best-effort: the current document finishes before cancellation takes
+    effect (otherwise we'd risk leaving the metadata SQLite torn). The job
+    is marked ``cancelled`` and the partial index is persisted to disk.
+    """
+    from services.app_database import app_db
+
+    job = app_db.get_reindex_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Re-index job {job_id} not found",
+        )
+    if job["status"] not in ("pending", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Job {job_id} is not active (status: {job['status']})",
+        )
+
+    cancelled = reindex_service.cancel_job(job_id)
+    if cancelled:
+        return {
+            "message": f"Cancellation requested for re-index job {job_id}",
+            "job_id": job_id,
+            "status": "cancelling",
+        }
+
+    # Job exists in DB as running but the in-process task is gone (likely
+    # an orphan that startup recovery missed, or a race). Mark it cancelled
+    # directly so the UI doesn't sit forever.
+    logger.warning(f"Reindex job {job_id} active task not found, force-marking as cancelled")
+    app_db.update_reindex_job(
+        job_id,
+        status="cancelled",
+        error="Force cancelled (no active task — likely orphaned)",
+    )
+    return {
+        "message": f"Job {job_id} force-cancelled (no active task was found)",
+        "job_id": job_id,
+        "status": "cancelled",
+    }
+
+
+@app.get(
+    "/api/jobs/active",
+    summary="Get every active indexing job (upload + local-index + reindex)",
+    tags=["admin"],
+)
+async def get_active_indexing_jobs_endpoint():
+    """Single source of truth for "is any indexing happening right now?"
+
+    Returns a flat list in a uniform shape so the UI can disable both the
+    upload and reindex controls based on one query.
+    """
+    from services.indexing_lock import get_active_indexing_jobs
+    jobs = get_active_indexing_jobs()
+    return {"jobs": jobs, "count": len(jobs)}
+
+
 @app.get(
     "/api/reindex/status",
     summary="Get re-indexing job status",
@@ -2980,9 +3075,21 @@ async def get_reindex_status(job_id: int = None):
     else:
         progress = 0
 
+    # Surface collection_id at the top level — the UI uses it to decide
+    # which collection's sidebar to refresh on completion.
+    snapshot = job.get("config_snapshot")
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except json.JSONDecodeError:
+            snapshot = {}
+    snapshot = snapshot or {}
+
     return {
         **job,
-        "progress_percent": round(progress, 1)
+        "config_snapshot": snapshot,
+        "collection_id": snapshot.get("collection_id"),
+        "progress_percent": round(progress, 1),
     }
 
 

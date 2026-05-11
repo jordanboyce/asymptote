@@ -492,4 +492,58 @@ def test_unknown_kind_defaults_to_neutral_framing():
         kind="something-new",
     )
     assert "financial advisor" not in text.lower()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Search-economy + answer-economy directives
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Regression: a default-collection turn on a SAPHIRE PDF set ran 5 searches
+# and emitted ~6500 output tokens to answer "what's a DET". The agentic loop
+# defaults to fanning out searches and writing long-form essays unless the
+# system prompt says otherwise. Pin the two directives that throttle this
+# so future prompt edits can't silently bring the verbosity back.
+
+@pytest.mark.parametrize("is_financial", [True, False])
+def test_base_framing_tells_model_to_stop_searching_after_a_good_hit(is_financial):
+    parts = _build_base_framing(
+        is_financial=is_financial, native_citations=False,
+    )
+    text = " ".join(parts).lower()
+    # Look for both the "few searches" and "stop when grounded" halves so the
+    # rule can't degrade into "search a lot, but stop eventually".
+    assert "one or two" in text and "searches" in text, (
+        "Search-economy directive missing — model will fan out searches"
+    )
+    assert "stop searching" in text, (
+        "Stop-searching directive missing — model won't terminate the loop"
+    )
+
+
+@pytest.mark.parametrize("is_financial", [True, False])
+def test_base_framing_tells_model_to_be_concise(is_financial):
+    parts = _build_base_framing(
+        is_financial=is_financial, native_citations=False,
+    )
+    text = " ".join(parts).lower()
+    assert "concise" in text, (
+        "Concise-answer directive missing — output will balloon"
+    )
+    # Length-fits-the-question is the key qualifier that makes "concise" not
+    # mean "always one sentence". Pin it so future edits don't drop it and
+    # accidentally muzzle long-form answers when they're warranted.
+    assert "fit the question" in text
+
+
+def test_neutral_addendum_avoids_financial_advisor_framing():
+    """The general-kind addendum used to suggest 'upload a brokerage export'
+    on empty collections — wrong default when the user is a researcher who
+    just installed the app. Should stay persona-neutral."""
+    empty_ctx = CollectionContext(
+        collection_id="c1", kind="general",
+        financial_table_count=0, transcript_count=0, document_count=0,
+    )
+    text = system_prompt_addendum(empty_ctx)
+    assert "brokerage" not in text.lower()
+    assert "advisor" not in text.lower()
     assert "wash-sale" not in text.lower()

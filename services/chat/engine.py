@@ -338,6 +338,70 @@ async def run_agentic(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
     }
 
 
+async def run_rag_synthesis(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
+    """Single streamed completion over pre-retrieved chunks — no tool loop.
+
+    Use this for collection kinds (``general`` / ``meetings``) where the chunks
+    already in ``turn.documents`` / ``turn.system_text`` are sufficient and the
+    only tools we could expose are ``search_documents`` (already pre-run by
+    ``ChatContext._run_search``) and meta-tools that don't help simple Q&A. The
+    agentic loop in :func:`run_agentic` would just re-call ``search_documents``
+    a few times before producing the same answer — ~5× the latency, no quality
+    win. Restoring the classic RAG path here gets us back to one model call.
+
+    Emits the same event vocabulary as :func:`run_agentic` (``text_delta`` /
+    ``done`` / ``error`` / Anthropic citation events) so the SSE pipeline at
+    ``/api/chat/stream`` doesn't need to special-case which engine ran.
+
+    Differs from :func:`run_one_shot`: that path is for drafting endpoints
+    (/notes /followup /ask) which call ``provider.stream(prompt=...)`` with a
+    flat prompt string. This path keeps the chat-shaped messages and passes
+    ``documents`` through so Anthropic native citations work.
+    """
+    is_anthropic = isinstance(turn.provider, AnthropicProvider)
+    enable_thinking = bool(turn.extended_thinking) and is_anthropic
+
+    stream_kwargs: dict[str, Any] = {
+        "messages": list(turn.messages),
+        "max_tokens": turn.max_tokens,
+        "model": turn.model,
+        "system": turn.system_text,
+    }
+    if is_anthropic and turn.documents:
+        stream_kwargs["documents"] = turn.documents
+    if enable_thinking:
+        stream_kwargs["extended_thinking"] = True
+
+    streamed_text, streamed_usage = "", None
+    try:
+        async for ev in _drive_provider_stream(
+            turn.provider.stream_chat(**stream_kwargs),
+            document_metadata=turn.document_metadata,
+        ):
+            if ev["type"] == "_done":
+                streamed_text = ev["text"]
+                streamed_usage = ev["usage"]
+            else:
+                yield ev
+    except Exception as e:
+        logger.exception("[engine] rag-synthesis streaming failed")
+        yield {"type": "error", "message": f"Provider call failed: {e}"}
+        return
+
+    response_text = streamed_text.strip()
+    usage = streamed_usage or {}
+
+    yield {
+        "type": "done",
+        "usage": {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "model": usage.get("model", turn.model),
+        },
+        "response_text": response_text,
+    }
+
+
 async def run_one_shot(turn: ChatTurn) -> AsyncIterator[dict[str, Any]]:
     """Drive a single completion, streaming the result as text_delta events.
 

@@ -855,10 +855,37 @@
           <span>{{ reindexError }}</span>
         </div>
 
-        <div class="card-actions justify-end">
-          <button class="btn btn-warning" @click="startReindex" :disabled="reindexing || reindexInProgress">
+        <!-- When an upload/index is running we can't safely start a reindex
+             (both write to the same FAISS index + metadata SQLite). Surface
+             *why* the button is disabled so the user isn't left guessing. -->
+        <div v-if="blockedByUpload" class="alert alert-info text-sm">
+          <span>An upload or indexing job is currently running. Wait for it to finish (or cancel it from the status bar) before re-indexing.</span>
+        </div>
+
+        <!-- In-progress reindex: live counter + cancel control. -->
+        <div v-if="reindexInProgress" class="text-xs text-base-content/60 flex items-center justify-end gap-3">
+          <span v-if="reindexProgressLabel">{{ reindexProgressLabel }}</span>
+          <span v-if="reindexCancelling" class="text-warning">Cancelling…</span>
+        </div>
+
+        <div class="card-actions justify-end gap-2">
+          <button
+            v-if="reindexInProgress"
+            class="btn btn-ghost btn-sm"
+            @click="cancelReindex"
+            :disabled="reindexCancelling"
+          >
+            {{ reindexCancelling ? 'Cancelling…' : 'Cancel Re-indexing' }}
+          </button>
+          <button
+            class="btn btn-warning"
+            @click="startReindex"
+            :disabled="reindexing || reindexInProgress || blockedByUpload"
+          >
             <span v-if="reindexing || reindexInProgress" class="loading loading-spinner"></span>
-            {{ reindexing ? 'Starting...' : (reindexInProgress ? 'Re-indexing...' : 'Re-index All Documents') }}
+            {{ reindexing
+              ? 'Starting...'
+              : (reindexInProgress ? 'Re-indexing...' : 'Re-index All Documents') }}
           </button>
         </div>
       </div>
@@ -1171,11 +1198,53 @@ const reindexing = ref(false)
 const reindexSuccess = ref(false)
 const reindexCompleted = ref(false)
 const reindexError = ref('')
+const reindexCancelling = ref(false)
 
 const reindexInProgress = computed(() => {
   const job = backgroundJobsStore.reindexJob
   return job && (job.status === 'pending' || job.status === 'running')
 })
+
+// Mutual exclusion: uploads and reindexes share the same on-disk index, so
+// either kind running blocks the other. The reindex button needs to know
+// whether the active job is an *upload* specifically (so we can tell the
+// user why it's disabled — "Re-indexing..." is wrong if a CSV upload is the
+// thing blocking it).
+const blockedByUpload = computed(() => {
+  if (reindexInProgress.value) return false
+  return backgroundJobsStore.uploadJobs.some(
+    j => j.status === 'pending' || j.status === 'running'
+  )
+})
+
+const reindexProgressLabel = computed(() => {
+  const job = backgroundJobsStore.reindexJob
+  if (!job) return ''
+  const total = job.total_documents ?? 0
+  const done = job.processed_documents ?? 0
+  if (total > 0) {
+    return job.current_file
+      ? `${done}/${total} — ${job.current_file}`
+      : `${done}/${total} documents`
+  }
+  return job.current_file || 'Preparing…'
+})
+
+const cancelReindex = async () => {
+  const job = backgroundJobsStore.reindexJob
+  if (!job?.id) return
+  reindexCancelling.value = true
+  try {
+    await backgroundJobsStore.cancelReindexJob(job.id)
+  } catch (err) {
+    reindexError.value = err.response?.data?.detail || 'Failed to cancel re-indexing'
+    trackTimeout(() => { reindexError.value = '' }, 8000)
+  } finally {
+    // Leave the cancelling flag on briefly so the button stays in the
+    // "Cancelling…" state until the polling loop catches the new status.
+    trackTimeout(() => { reindexCancelling.value = false }, 2000)
+  }
+}
 
 // Chunk settings (per-collection)
 const chunkSize = ref(600)
@@ -1227,6 +1296,14 @@ watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {
   if (newStatus === 'completed' && oldStatus && oldStatus !== 'completed') {
     reindexCompleted.value = true
     trackTimeout(() => { reindexCompleted.value = false }, 8000)
+  }
+  if (newStatus === 'cancelled' && oldStatus && oldStatus !== 'cancelled') {
+    reindexCancelling.value = false
+    reindexError.value = 'Re-indexing was cancelled. Already-processed documents stayed indexed.'
+    trackTimeout(() => { reindexError.value = '' }, 8000)
+  }
+  if (newStatus === 'failed' && oldStatus && oldStatus !== 'failed') {
+    reindexCancelling.value = false
   }
 })
 

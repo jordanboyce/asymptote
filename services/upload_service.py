@@ -19,9 +19,15 @@ from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
+from config import settings
 from services.app_database import app_db
 from services.indexer_manager import indexer_manager
 from services.collection_service import collection_service
+from services.indexing_lock import (
+    IndexingBusyError,
+    acquire_start_lock,
+    raise_if_any_active,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,31 +207,31 @@ class UploadService:
             Job ID for tracking progress
 
         Raises:
-            RuntimeError: If an upload job is already running for this collection
+            IndexingBusyError: If any indexing job (upload, local-index, or
+                reindex) is already in flight.
         """
-        # Check if already running for this collection
-        active_job = app_db.get_active_upload_job(collection_id)
-        if active_job:
-            raise RuntimeError(
-                f"Upload job {active_job['id']} is already running for collection '{collection_id}'"
+        # Single system-wide guard — uploads and reindexes share the same
+        # vector store, so we serialise at the indexing-job level rather than
+        # the per-collection level.
+        with acquire_start_lock():
+            raise_if_any_active("upload")
+
+            # Create job record with job_type='upload' for browser uploads
+            job_id = app_db.create_upload_job(collection_id, len(staged_files), job_type="upload")
+
+            # Initialize cancellation flag
+            self._cancel_flags[job_id] = False
+
+            # Start background thread (daemon=False so it survives even if main thread ends)
+            thread = threading.Thread(
+                target=self._run_upload,
+                args=(job_id, staged_files, collection_id),
+                name=f"upload-job-{job_id}",
+                daemon=False,  # Keep running even if main thread ends
             )
 
-        # Create job record with job_type='upload' for browser uploads
-        job_id = app_db.create_upload_job(collection_id, len(staged_files), job_type="upload")
-
-        # Initialize cancellation flag
-        self._cancel_flags[job_id] = False
-
-        # Start background thread (daemon=False so it survives even if main thread ends)
-        thread = threading.Thread(
-            target=self._run_upload,
-            args=(job_id, staged_files, collection_id),
-            name=f"upload-job-{job_id}",
-            daemon=False,  # Keep running even if main thread ends
-        )
-
-        with self._lock:
-            self._active_threads[job_id] = thread
+            with self._lock:
+                self._active_threads[job_id] = thread
 
         thread.start()
         logger.info(f"Started upload thread for job {job_id}")
@@ -393,6 +399,19 @@ class UploadService:
                     results["total_pages"] += doc_metadata.total_pages
                     results["total_chunks"] += doc_metadata.total_chunks
                     results["document_ids"].append(doc_metadata.document_id)
+
+                    # Hosted-deployment mode: drop the original file once
+                    # indexing succeeded. Chunks + embeddings + metadata
+                    # remain in the vector store; the source file does not
+                    # persist on the server.
+                    if settings.discard_originals_after_index and final_path.exists():
+                        try:
+                            final_path.unlink()
+                            logger.info(f"Discarded original after index: {filename}")
+                        except Exception as exc:
+                            logger.warning(
+                                f"Could not discard original {filename}: {exc}"
+                            )
 
                     # Update progress after each file
                     app_db.update_upload_job(
@@ -563,29 +582,25 @@ class UploadService:
         Returns:
             Job ID for tracking progress
         """
-        # Check if already running for this collection
-        active_job = app_db.get_active_upload_job(collection_id)
-        if active_job:
-            raise RuntimeError(
-                f"Upload job {active_job['id']} is already running for collection '{collection_id}'"
+        with acquire_start_lock():
+            raise_if_any_active("local-index")
+
+            # Create job record with job_type='index' for local file indexing
+            job_id = app_db.create_upload_job(collection_id, len(file_paths), job_type="index")
+
+            # Initialize cancellation flag
+            self._cancel_flags[job_id] = False
+
+            # Start background thread
+            thread = threading.Thread(
+                target=self._run_local_index,
+                args=(job_id, file_paths, collection_id, copy_to_library),
+                name=f"local-index-job-{job_id}",
+                daemon=False,
             )
 
-        # Create job record with job_type='index' for local file indexing
-        job_id = app_db.create_upload_job(collection_id, len(file_paths), job_type="index")
-
-        # Initialize cancellation flag
-        self._cancel_flags[job_id] = False
-
-        # Start background thread
-        thread = threading.Thread(
-            target=self._run_local_index,
-            args=(job_id, file_paths, collection_id, copy_to_library),
-            name=f"local-index-job-{job_id}",
-            daemon=False,
-        )
-
-        with self._lock:
-            self._active_threads[job_id] = thread
+            with self._lock:
+                self._active_threads[job_id] = thread
 
         thread.start()
         logger.info(f"Started local index thread for job {job_id}: {len(file_paths)} files")
@@ -902,27 +917,23 @@ class UploadService:
         if not files_to_index:
             raise ValueError(f"No matching files found in {repo_path}")
 
-        # Check if already running
-        active_job = app_db.get_active_upload_job(collection_id)
-        if active_job:
-            raise RuntimeError(
-                f"Job {active_job['id']} is already running for collection '{collection_id}'"
+        with acquire_start_lock():
+            raise_if_any_active("repo-index")
+
+            # Create job record
+            job_id = app_db.create_upload_job(collection_id, len(files_to_index), job_type="index")
+            self._cancel_flags[job_id] = False
+
+            # Start background thread
+            thread = threading.Thread(
+                target=self._run_repo_index,
+                args=(job_id, files_to_index, repo_path, collection_id),
+                name=f"repo-index-job-{job_id}",
+                daemon=False,
             )
 
-        # Create job record
-        job_id = app_db.create_upload_job(collection_id, len(files_to_index), job_type="index")
-        self._cancel_flags[job_id] = False
-
-        # Start background thread
-        thread = threading.Thread(
-            target=self._run_repo_index,
-            args=(job_id, files_to_index, repo_path, collection_id),
-            name=f"repo-index-job-{job_id}",
-            daemon=False,
-        )
-
-        with self._lock:
-            self._active_threads[job_id] = thread
+            with self._lock:
+                self._active_threads[job_id] = thread
 
         thread.start()
         logger.info(f"Started repo index job {job_id}: {len(files_to_index)} files from {repo_path}")

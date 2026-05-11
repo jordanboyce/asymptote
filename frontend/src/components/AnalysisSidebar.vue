@@ -40,6 +40,7 @@
       <BookOpen :size="14" />
     </button>
     <button
+      v-if="hasFinancialData"
       class="btn btn-ghost btn-sm btn-square"
       @click="openSection('metrics')"
       title="Portfolio Metrics"
@@ -251,8 +252,11 @@
         </div>
       </section>
 
-      <!-- Portfolio Metrics -->
-      <section class="border-b border-base-300">
+      <!-- Portfolio Metrics — only meaningful when the Collection has typed
+           holdings tables. Hiding it on general/meetings collections keeps
+           the canned-metric buttons (which the model would otherwise be
+           told to "run") off-screen for non-financial workspaces. -->
+      <section v-if="hasFinancialData" class="border-b border-base-300">
         <button
           class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
           @click="open.metrics = !open.metrics"
@@ -403,6 +407,21 @@ const loadSummary = async () => {
     console.warn('Failed to load collection summary:', err)
   }
 }
+
+// Studio panels declare what they need. Portfolio Metrics + the snapshot
+// header only make sense once the Collection has at least one typed
+// holdings table — otherwise the canned metric buttons just invite the LLM
+// to "run total_market_value" against tables that have no symbol or price
+// columns. Driven off the summary endpoint's financial_table_count, which
+// is computed with the same role criterion as the chat engine's kind
+// classifier (services.collection_context._is_holdings_table).
+const hasFinancialData = computed(() => {
+  const s = summary.value
+  if (!s) return false
+  if ((s.financial_table_count ?? 0) > 0) return true
+  // Fallback for older backend responses that didn't include the count.
+  return (s.positions ?? 0) > 0
+})
 
 const formatExportDate = (iso) => {
   if (!iso) return ''
