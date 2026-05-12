@@ -39,19 +39,19 @@
       <!-- ── Stage 1: welcome / privacy ──────────────────────────────────── -->
       <div v-if="stage === 'welcome'" class="space-y-5">
         <div class="bg-base-100 rounded-lg p-5 space-y-4 text-sm leading-relaxed">
-          <p class="font-medium text-base">Your client data stays on this device.</p>
+          <p class="font-medium text-base">How Finn handles your data.</p>
           <ul class="space-y-2 text-base-content/75">
             <li class="flex gap-2">
               <span class="text-primary font-semibold">·</span>
-              <span>Brokerage exports, transcripts, and notes are stored locally — never uploaded to a server.</span>
+              <span>Brokerage exports, transcripts, and notes are uploaded so Finn can index them — originals can be discarded once chunks and embeddings are stored.</span>
             </li>
             <li class="flex gap-2">
               <span class="text-primary font-semibold">·</span>
-              <span>Names, account numbers, and other PII are redacted on-device before any AI call.</span>
+              <span>Names, account numbers, and other identifiers are redacted before any AI call leaves Finn.</span>
             </li>
             <li class="flex gap-2">
               <span class="text-primary font-semibold">·</span>
-              <span>The AI provider only ever sees redacted text — never the raw data.</span>
+              <span>Your AI provider only ever sees redacted text — never the raw client data.</span>
             </li>
           </ul>
         </div>
@@ -65,7 +65,7 @@
         <div class="text-center">
           <h2 class="text-xl font-semibold">Choose an AI provider</h2>
           <p class="text-sm text-base-content/60 mt-2">
-            Pick one and paste your key. You can change this later in Settings.
+            We recommend Anthropic Claude — deepest reasoning and the richest tool-use. You can change this later in Settings.
           </p>
         </div>
 
@@ -85,7 +85,13 @@
               :disabled="validating"
             />
             <div class="flex-1 text-sm">
-              <div class="font-medium">{{ p.name }}</div>
+              <div class="flex items-center gap-2">
+                <span class="font-medium">{{ p.name }}</span>
+                <span
+                  v-if="p.recommended"
+                  class="badge badge-primary badge-sm font-medium"
+                >Recommended</span>
+              </div>
               <div class="text-xs text-base-content/55 mt-0.5">{{ p.tagline }}</div>
             </div>
           </label>
@@ -221,7 +227,7 @@
 
       <!-- Trust copy footer -->
       <div class="mt-10 text-center text-[11px] text-base-content/45 leading-relaxed">
-        Your documents stay on this device. PII is redacted on-device before any AI call.
+        Documents are uploaded for indexing only; originals can be discarded after indexing. PII is redacted before any AI call.
       </div>
     </div>
   </div>
@@ -254,10 +260,11 @@ const PROVIDER_OPTIONS = [
   {
     id: 'anthropic',
     name: 'Anthropic Claude',
-    tagline: 'Best reasoning. Bring your own key from console.anthropic.com.',
+    tagline: 'Best reasoning, biggest context, richest tool-use — the most capable experience in Finn. Bring your own key from console.anthropic.com.',
     keyPlaceholder: 'sk-ant-...',
     keyLink: 'https://console.anthropic.com/settings/keys',
     defaultModel: 'claude-sonnet-4-6',
+    recommended: true,
   },
   {
     id: 'openai',
