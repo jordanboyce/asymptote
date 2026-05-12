@@ -120,6 +120,25 @@ class DocumentIndexer:
                 progress_callback=progress_callback,
             )
 
+        # v4.1 P0.8 — PDF table extraction runs alongside text extraction.
+        # Tables flow into the typed HoldingsStore so compute_portfolio_metric
+        # / aggregate_table / query_table work against PDF-sourced holdings;
+        # the prose text path below catches the rest of the document.
+        if source_format == "pdf":
+            try:
+                pdf_sheets = self.document_extractor.extract_pdf_tables(document_path)
+            except Exception as e:
+                logger.warning(f"PDF table extraction error for {filename}: {e}")
+                pdf_sheets = []
+            if pdf_sheets:
+                report(
+                    "extracting", 0,
+                    f"Detected {len(pdf_sheets)} table(s) in {filename}",
+                )
+                self._register_pdf_tables_in_holdings_store(
+                    pdf_sheets, document_id, filename
+                )
+
         # Phase 1: Extract text from document
         report("extracting", 0, f"Extracting text from {filename}")
         logger.debug(f"Extracting text from {filename}")
@@ -230,6 +249,64 @@ class DocumentIndexer:
         )
         return metadata
 
+    def _register_pdf_tables_in_holdings_store(
+        self,
+        sheets: List[dict],
+        document_id: str,
+        filename: str,
+    ) -> int:
+        """Sanitize and register PDF-extracted sheets as typed SQL tables (P0.8).
+
+        PDF tables go through the same PII pre-flight + ``HoldingsStore.create_table``
+        boundary as CSV/XLSX, so a Schwab PDF statement and its CSV equivalent
+        land identically in the typed store. Row chunks for free-text search
+        come from the regular text-extraction path that runs alongside this —
+        the pdfplumber prose extraction already includes the table cells.
+
+        Returns the number of sheets successfully registered.
+        """
+        if not sheets:
+            return 0
+
+        if getattr(settings, "enable_pii_redaction", False):
+            try:
+                from services.privacy.column_sanitizer import sanitize_tabular_sheet
+                from services.privacy.collection_blacklist import get_blacklist
+                blacklist = get_blacklist(self.collection_id)
+                for sheet in sheets:
+                    sanitize_tabular_sheet(sheet, blacklist=blacklist)
+            except Exception as e:
+                logger.warning(
+                    f"PDF tabular PII sanitization failed for {filename}: {e}. "
+                    "Aborting ingest to avoid persisting unredacted PII."
+                )
+                raise
+
+        registered = 0
+        for sheet in sheets:
+            try:
+                self.vector_store.holdings_store.create_table(
+                    document_id=document_id,
+                    filename=filename,
+                    columns=sheet['columns'],
+                    rows=sheet['rows'],
+                    sheet_name=sheet['sheet_name'],
+                    role_overrides=sheet.get('role_overrides') or {},
+                    type_overrides=sheet.get('type_overrides') or {},
+                    collection_id=self.collection_id,
+                )
+                registered += 1
+            except Exception as e:
+                logger.warning(
+                    f"PDF structured table creation failed for {filename} "
+                    f"(sheet='{sheet.get('sheet_name', '?')}'): {e}"
+                )
+        if registered:
+            logger.info(
+                f"PDF {filename}: registered {registered} typed table(s) in HoldingsStore"
+            )
+        return registered
+
     def _index_tabular_document(
         self,
         document_path: Path,
@@ -307,6 +384,7 @@ class DocumentIndexer:
                     sheet_name=sheet_name,
                     role_overrides=sheet.get('role_overrides') or {},
                     type_overrides=sheet.get('type_overrides') or {},
+                    collection_id=self.collection_id,
                 )
             except Exception as e:
                 logger.warning(

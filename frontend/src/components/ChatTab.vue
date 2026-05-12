@@ -703,6 +703,31 @@
                   </div>
                 </div>
 
+                <!-- Native-citation pills: structured citations Anthropic
+                     emitted alongside the answer. Clicking jumps the
+                     SourcesSidebar to the cited chunk. -->
+                <div
+                  v-if="msg.citations && msg.citations.length > 0"
+                  class="flex flex-wrap gap-1 mt-2"
+                  role="list"
+                  aria-label="Citations"
+                >
+                  <button
+                    v-for="(c, ci) in msg.citations"
+                    :key="`${index}-cit-${ci}`"
+                    type="button"
+                    class="badge badge-xs badge-outline gap-1 cursor-pointer hover:badge-primary transition-colors"
+                    :title="c.citedText ? `${c.filename || 'Source'} — p.${c.pageNumber || '?'}\n${c.citedText.slice(0, 240)}${c.citedText.length > 240 ? '…' : ''}` : `${c.filename || 'Source'} — p.${c.pageNumber || '?'}`"
+                    :aria-label="`Open citation ${ci + 1}${c.filename ? ' from ' + c.filename : ''}`"
+                    @click="openCitation(c)"
+                    role="listitem"
+                  >
+                    <span class="font-mono text-[10px]">{{ ci + 1 }}</span>
+                    <span class="truncate max-w-[12rem]">{{ c.filename || 'Source' }}</span>
+                    <span v-if="c.pageNumber" class="text-base-content/60">p.{{ c.pageNumber }}</span>
+                  </button>
+                </div>
+
                 <!-- Footer row: provider badges + copy button -->
                 <div
                   v-if="!msg.streaming && (msg.aiUsage || msg.content)"
@@ -772,8 +797,10 @@
       <!-- Input area -->
       <div class="flex-shrink-0 pt-3">
 
-        <!-- Quick-action chips (only shown when chat is empty + provider configured) -->
-        <div v-if="messages.length === 0 && hasAnyProvider && props.documentCount > 0" class="flex flex-wrap gap-1.5 mb-2">
+        <!-- Quick-action chips (only shown when chat is empty + provider configured)
+             Financial chips (Brief, TLH) appear only on collections detected as
+             holding brokerage data — kind == 'financial' or 'mixed'. -->
+        <div v-if="messages.length === 0 && hasAnyProvider && props.documentCount > 0 && hasFinancialData" class="flex flex-wrap gap-1.5 mb-2">
           <button
             class="btn btn-xs btn-outline btn-primary gap-1 rounded-full"
             :disabled="loading"
@@ -782,6 +809,15 @@
           >
             <FileText :size="11" />
             Generate Meeting Brief
+          </button>
+          <button
+            class="btn btn-xs btn-outline btn-primary gap-1 rounded-full"
+            :disabled="loading"
+            @click="runTlhCommand"
+            title="Find tax-loss harvest candidates with household-wide wash-sale check"
+          >
+            <TrendingDown :size="11" />
+            Find Tax-Loss Candidates
           </button>
         </div>
 
@@ -793,6 +829,7 @@
             ref="slashPickerRef"
             :show="slashPickerOpen"
             :model-value="inputMessage"
+            :collection-kind="collectionKind"
             @select="onSlashSelect"
             @close="slashPickerOpen = false"
           />
@@ -892,7 +929,8 @@
             </button>
           </div>
         </div>
-        <p v-if="isExpertMode" class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /tools, /stats, /docs, /help</p>
+        <p v-if="isExpertMode && hasFinancialData" class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /tlh, /tools, /stats, /docs, /help</p>
+        <p v-else-if="isExpertMode" class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /tools, /stats, /docs, /help</p>
         <p v-else class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line</p>
       </div>
 
@@ -917,7 +955,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic, TrendingDown } from 'lucide-vue-next'
 import { useSpeechRecognition } from '../composables/useSpeechRecognition.js'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
@@ -1135,23 +1173,44 @@ const deleteSession = (sessionId) => {
   }
 }
 
-const suggestions = [
+// Suggestions match the kind of collection we're chatting with. Financial /
+// mixed collections see portfolio-flavoured prompts; general / meetings
+// collections see neutral document prompts. Empty collections get
+// upload-oriented hints.
+const _FINANCIAL_SUGGESTIONS = [
   'Top 10 holdings by market value',
   'Top 5 positions by concentration',
   'Sector allocation breakdown',
   'Largest unrealized gains and losses',
 ]
+const _MEETINGS_SUGGESTIONS = [
+  'Summarize the most recent meeting',
+  'What action items are still open?',
+  'What did the client say about their goals?',
+  'Any decisions made across these meetings?',
+]
+const _GENERAL_SUGGESTIONS = [
+  'Summarize the key points of this collection',
+  'What topics do these documents cover?',
+  'Find passages about [topic]',
+  'Compare what the documents say about [X]',
+]
+const suggestions = computed(() => {
+  if (hasFinancialData.value) return _FINANCIAL_SUGGESTIONS
+  if (collectionKind.value === 'meetings') return _MEETINGS_SUGGESTIONS
+  return _GENERAL_SUGGESTIONS
+})
 
 const emptyStateHeading = computed(() => {
   if (!hasAnyProvider.value) return 'Set up an AI provider to start'
-  if (props.documentCount === 0) return 'Upload portfolio files to begin'
+  if (props.documentCount === 0) return 'Upload documents to begin'
   const name = collectionStore.currentCollection?.name
-  return name ? `Ready to analyze ${name}` : 'Ready when you are'
+  return name ? `Ready to chat with ${name}` : 'Ready when you are'
 })
 
 const emptyStateSubtext = computed(() => {
   if (!hasAnyProvider.value) return 'Add an Anthropic, OpenAI, or Ollama key in Settings.'
-  if (props.documentCount === 0) return 'Drag a CSV, PDF, or transcript into Sources to index it.'
+  if (props.documentCount === 0) return 'Drag a PDF, CSV, transcript, or any document into Sources to index it.'
   return 'Try a question, or pick a suggestion below.'
 })
 
@@ -1278,6 +1337,21 @@ const ensureValidProvider = () => {
 const scrollToBottom = async () => {
   await nextTick()
   messagesEnd.value?.scrollIntoView({ behavior: 'smooth' })
+}
+
+// Citation pill click — broadcast to SourcesSidebar so it can open and
+// highlight the cited chunk. CustomEvent on window matches the existing
+// finn:* event bus pattern used for transcript-saved / prefill-chat.
+const openCitation = (citation) => {
+  if (!citation || !citation.documentId) return
+  window.dispatchEvent(new CustomEvent('finn:open-citation', {
+    detail: {
+      documentId: citation.documentId,
+      chunkId: citation.chunkId,
+      pageNumber: citation.pageNumber,
+      filename: citation.filename,
+    },
+  }))
 }
 
 // ── Copy answer to clipboard ─────────────────────────────────────────────
@@ -1538,6 +1612,8 @@ const sendMessage = async () => {
         } else if (event.type === 'text_delta') {
           chatStore.appendStreamingText(collectionId, event.delta || '')
           await scrollToBottom()
+        } else if (event.type === 'citation') {
+          chatStore.addStreamingCitation(collectionId, event)
         } else if (event.type === 'sources') {
           // Sources will be committed in 'done'
         } else if (event.type === 'done') {
@@ -1594,6 +1670,14 @@ const runBriefCommand = async () => {
   inputMessage.value = ''
 }
 
+// One-click TLH button — same as typing `/tlh` and hitting Enter
+const runTlhCommand = async () => {
+  if (loading.value) return
+  inputMessage.value = '/tlh'
+  await runInlineSlashCommand('/tlh')
+  inputMessage.value = ''
+}
+
 // Persist options
 watch(topK, (v) => localStorage.setItem('chat_top_k', String(v)))
 watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
@@ -1622,11 +1706,44 @@ const onProvidersChanged = () => {
   rerank.value = localStorage.getItem('chat_rerank') === 'true'
 }
 
+// Per-Collection context kind — drives which quick-action chips appear in the
+// empty-state. Financial chips (Brief, TLH) only show on collections that
+// actually have brokerage data. Fetched from /summary, which carries the
+// detected kind alongside the existing positions/accounts snapshot.
+const collectionKind = ref('general')
+const loadCollectionKind = async () => {
+  const collectionId = collectionStore.currentCollectionId
+  if (!collectionId) {
+    collectionKind.value = 'general'
+    return
+  }
+  try {
+    const response = await axios.get(apiUrl(`/api/collections/${collectionId}/summary`))
+    collectionKind.value = response.data?.kind || 'general'
+  } catch (err) {
+    // Non-fatal — fall back to "general" so chips just stay hidden.
+    collectionKind.value = 'general'
+  }
+}
+const hasFinancialData = computed(() =>
+  collectionKind.value === 'financial' || collectionKind.value === 'mixed',
+)
+watch(
+  () => collectionStore.currentCollectionId,
+  () => { loadCollectionKind() },
+  { immediate: true },
+)
+watch(
+  () => props.documentCount,
+  () => { loadCollectionKind() },
+)
+
 onMounted(() => {
   ensureValidProvider()
   scrollToBottom()
   loadPrivacyStatus()
   loadRedactionSummary()
+  loadCollectionKind()
   window.addEventListener('finn:prefill-chat', handlePrefill)
   window.addEventListener('finn:providers-changed', onProvidersChanged)
 })

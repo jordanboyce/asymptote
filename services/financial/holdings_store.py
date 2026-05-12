@@ -96,6 +96,7 @@ class HoldingsStore:
         sheet_name: str = '',
         role_overrides: Optional[Dict[str, str]] = None,
         type_overrides: Optional[Dict[str, str]] = None,
+        collection_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a typed table + schema entry for an ingested tabular file.
 
@@ -110,6 +111,10 @@ class HoldingsStore:
             (``'real'``, ``'currency'``, ``'percent'``, ``'date'``, etc.).
             Overrides the heuristic ``infer_column_type`` result. Supplied
             by the Vendor Profile system.
+        collection_id:
+            Owning collection ID. Forwarded to LLM role inference so
+            per-collection Presidio profiles apply when sample values are
+            redacted before the LLM call.
         """
         if not columns:
             raise ValueError('Cannot create structured table with no columns')
@@ -187,7 +192,7 @@ class HoldingsStore:
                     from services.llm_role_inference import infer_roles_with_llm
                     llm_roles = infer_roles_with_llm(
                         unmapped_columns=unmapped_cols,
-                        collection_id=None,
+                        collection_id=collection_id,
                     )
                     for c in col_infos:
                         if not c['role'] and c['name'] in llm_roles:

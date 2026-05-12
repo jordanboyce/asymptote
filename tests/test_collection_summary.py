@@ -67,3 +67,50 @@ def test_empty_store_returns_zeros(tmp_path):
         "most_recent_export_iso": None,
         "source_files": [],
     }
+
+
+def test_non_financial_table_does_not_inflate_positions(tmp_path):
+    """Generic tabular data — PDF tables, log dumps, anything without a
+    ticker/account/holdings-measure column — also lives in HoldingsStore but
+    must not count toward Position totals.
+
+    Regression: a 16-document SAPHIRE PRA collection (technical PDFs with
+    extracted rule-keyword and cut-set tables) was reporting "407 positions"
+    in the Collection card, because compute_collection_summary fell back to
+    raw row_count for every typed table regardless of whether it carried
+    holdings roles. The Studio's Portfolio snapshot then offered to
+    "Generate Meeting Brief" against a Collection that had no holdings at all.
+    """
+    from services.financial.holdings_store import HoldingsStore
+
+    store = HoldingsStore(tmp_path / "metadata.db")
+
+    # Engineering-style table: looks tabular, has many rows, but no column
+    # the role detector recognises as a holdings field.
+    store.create_table(
+        document_id="doc-pra-1",
+        filename="saphire_rule_keywords.csv",
+        columns=["rule_id", "keyword", "category"],
+        rows=[
+            {"rule_id": f"R{i}", "keyword": f"kw_{i}", "category": "logic"}
+            for i in range(50)
+        ],
+        sheet_name="",
+    )
+
+    summary = compute_collection_summary(store, collection_id="col-saphire")
+
+    assert summary["positions"] == 0, (
+        "Non-holdings tables (no ticker/account/value role) must not "
+        "contribute to the Position count"
+    )
+    assert summary["accounts"] == 0
+    # most_recent_export_iso is meant to answer 'when was the last brokerage
+    # export?' — a generic PDF table ingest shouldn't set it.
+    assert summary["most_recent_export_iso"] is None
+    # The file should still appear in source_files so downstream UI knows
+    # the collection has tabular data, just not financial tabular data.
+    assert any(
+        f["filename"] == "saphire_rule_keywords.csv"
+        for f in summary["source_files"]
+    )

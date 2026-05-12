@@ -460,6 +460,238 @@ def generate_meeting_brief(
 
 
 @_finn_mcp.tool()
+def find_tax_loss_candidates(
+    collection_id: str | None = None,
+    household_collection_ids: list[str] | None = None,
+    min_loss: float = 500.0,
+    min_loss_pct: float | None = None,
+    max_candidates: int = 25,
+) -> dict[str, Any]:
+    """Build a household-aware Tax-Loss Harvesting plan for a collection.
+
+    Composes four primitives — underwater-position scan, realized-gain budget,
+    replacement suggestions, and household-wide wash-sale check — into a
+    single plan the advisor can take into a client review or directly into
+    a trade ticket.
+
+    Why use this instead of generate_meeting_brief's tax_loss_candidates list:
+    the brief surfaces underwater positions across ALL accounts (taxable and
+    tax-deferred) without scoring offset capacity, replacements, or wash-sale
+    risk. This tool restricts to TAXABLE accounts (losses inside an IRA / Roth
+    / 401(k) produce no offset), ranks short-term losses first (they offset
+    higher ordinary-income tax rates), pairs each candidate with a non-
+    substantially-identical replacement ETF, and flags symbols already held
+    elsewhere in the household — including spousal IRA / Roth — which is the
+    biggest source of accidental wash-sale violations in single-account TLH
+    tools.
+
+    Parameters:
+      - collection_id: The household's collection. Defaults to the server's
+        default collection.
+      - household_collection_ids: Additional collections to include in the
+        wash-sale scan only. Use when the household is split across multiple
+        Finn collections (e.g. spouse's separately-titled brokerage). The
+        candidate scan still uses `collection_id` alone.
+      - min_loss: Minimum unrealized loss (dollars) to surface a candidate.
+        Default 500. Below this, transaction costs likely exceed the offset.
+      - min_loss_pct: Optional. Minimum loss as a percentage of cost basis
+        (e.g. 10.0 for "down 10% or more").
+      - max_candidates: Cap on candidates returned (default 25). The plan is
+        sorted with short-term losses first, then by absolute loss size.
+
+    Returns a dict with:
+      - collection_id, generated_at
+      - candidates: list of {symbol, name, account, market_value, cost_basis,
+        unrealized_loss, loss_pct, holding_period (short_term/long_term/
+        unknown), acquisition_date?, source, replacements: [{symbol, name,
+        rationale, similarity}], wash_sale: {status (clear/potential/
+        confirmed), accounts_holding, note}}
+      - budget: realized YTD ST/LT gains and offset capacity. Source is
+        'transactions' when realized columns were detected, 'unknown'
+        otherwise — see the budget.note for guidance.
+      - wash_sale_warnings: candidates flagged 'potential' or 'confirmed'.
+      - guardrails: hard rules to surface to the advisor — wash-sale scope,
+        gross-vs-net savings, basis-reset semantics, $3k ordinary-income cap.
+      - totals: candidate_count, total_unrealized_loss, short_term_loss,
+        long_term_loss, unknown_period_loss.
+
+    When NOT to use this tool:
+      - For a one-line "do I have any losers?" → use generate_meeting_brief.
+      - For full portfolio rebalancing including TLH → use the upcoming
+        rebalance_portfolio tool.
+    """
+    _ensure_enabled()
+
+    from services.financial.tlh import build_harvest_plan
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    primary_store = _get_structured_store(resolved_collection)
+
+    household_stores = [primary_store]
+    extra_ids = household_collection_ids or []
+    seen_ids = {resolved_collection}
+    for cid in extra_ids:
+        if cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        try:
+            household_stores.append(_get_structured_store(cid))
+        except Exception as exc:  # bad collection id, missing store, etc.
+            logger.warning("find_tax_loss_candidates: skipping household collection %s: %s", cid, exc)
+
+    try:
+        plan = build_harvest_plan(
+            primary_store,
+            collection_id=resolved_collection,
+            household_stores=household_stores,
+            min_loss=min_loss,
+            min_loss_pct=min_loss_pct,
+            max_candidates=max_candidates,
+        )
+    except Exception as exc:
+        raise ValueError(f"Tax-loss harvest plan failed: {exc}") from exc
+
+    response: dict[str, Any] = {
+        'collection_id': plan.collection_id,
+        'generated_at': plan.generated_at,
+        'candidates': plan.candidates,
+        'budget': plan.budget,
+        'wash_sale_warnings': plan.wash_sale_warnings,
+        'guardrails': plan.guardrails,
+        'totals': plan.totals,
+    }
+    return _redact(response, "find_tax_loss_candidates")
+
+
+def _get_meeting_notes_store(collection_id: str):
+    indexer = indexer_manager.get_indexer(collection_id)
+    return indexer.vector_store.meeting_notes_store
+
+
+@_finn_mcp.tool()
+def get_meeting_notes(
+    collection_id: str | None = None,
+    document_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
+    """Return structured notes extracted from one or more meeting transcripts.
+
+    Meeting notes are produced by an LLM extraction pass that runs after a
+    transcript document indexes (v4.5). Each record bundles client concerns,
+    decisions, action items, follow-up questions, and a brief sentiment
+    summary — extracted conservatively from the transcript only, never
+    fabricated.
+
+    Parameters:
+      - collection_id: The client's collection. Defaults to the server's
+        default collection.
+      - document_id: Optional — return only the notes for this specific
+        transcript. Use when you know which meeting the advisor is asking
+        about.
+      - since / until: Optional ISO timestamps; filter records by the
+        ``extracted_at`` field (when extraction ran, which is also a good
+        proxy for "when the meeting was uploaded"). Useful for *"summarize
+        every meeting since the last review"*-style questions.
+
+    Returns a dict with:
+      - collection_id
+      - notes: list of records, each {document_id, extracted_at,
+        client_concerns, decisions, action_items, follow_up_questions,
+        sentiment_notes}
+      - count: convenience total
+      - note: a human-readable hint when the list is empty (e.g. "no
+        transcripts have been extracted yet")
+
+    Use ``list_action_items`` when you want a flat cross-meeting view of
+    open work rather than per-meeting structure.
+    """
+    _ensure_enabled()
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    try:
+        store = _get_meeting_notes_store(resolved_collection)
+    except Exception as exc:
+        raise ValueError(f"Meeting notes store unavailable: {exc}") from exc
+
+    if document_id:
+        record = store.get(document_id)
+        records = [record] if record else []
+    else:
+        records = store.list_for_collection(
+            resolved_collection, since=since, until=until,
+        )
+
+    response: dict[str, Any] = {
+        "collection_id": resolved_collection,
+        "count": len(records),
+        "notes": records,
+    }
+    if not records:
+        response["note"] = (
+            "No structured meeting notes found for this collection. Upload "
+            "an audio meeting (or trigger extraction explicitly via "
+            "POST /api/collections/{id}/meetings/extract) and try again."
+        )
+    return _redact(response, "get_meeting_notes")
+
+
+@_finn_mcp.tool()
+def list_action_items(
+    collection_id: str | None = None,
+    status: str | None = "open",
+    assignee: str | None = None,
+) -> dict[str, Any]:
+    """List action items across every meeting in a collection.
+
+    This is the cross-meeting flat view of "what's outstanding for this
+    client." It traverses the meeting notes for the collection and flattens
+    each meeting's ``action_items`` array, optionally filtered by status and
+    assignee. The headline use case is *"show me every open action item
+    across all my Henderson meetings"* — answered deterministically, no
+    free-text search over transcripts required.
+
+    Parameters:
+      - collection_id: The client's collection. Defaults to the server's
+        default collection.
+      - status: "open" (default), "closed", or null for all. The extraction
+        prompt biases toward "open" because most action items captured in a
+        meeting are forward-looking.
+      - assignee: Optional case-insensitive substring match. "advisor",
+        "client", or a person's name.
+
+    Returns a dict with:
+      - collection_id
+      - filters: echoes the requested status/assignee
+      - count: total action items returned
+      - items: list of {description, assignee, due_date, status,
+        document_id, extracted_at}
+
+    Use ``get_meeting_notes`` when you need per-meeting context (decisions,
+    concerns, sentiment) alongside the action items.
+    """
+    _ensure_enabled()
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    try:
+        store = _get_meeting_notes_store(resolved_collection)
+    except Exception as exc:
+        raise ValueError(f"Meeting notes store unavailable: {exc}") from exc
+
+    items = store.list_action_items(
+        resolved_collection, status=status, assignee=assignee,
+    )
+
+    response = {
+        "collection_id": resolved_collection,
+        "filters": {"status": status, "assignee": assignee},
+        "count": len(items),
+        "items": items,
+    }
+    return _redact(response, "list_action_items")
+
+
+@_finn_mcp.tool()
 def get_collection_info(
     collection_id: str | None = None,
     detail: Literal["counts", "with_documents"] = "with_documents",
@@ -620,11 +852,28 @@ def search_collection(
     # host LLM the full authoritative rows for numeric questions and (b)
     # drop the corresponding chunks from the `results` array — otherwise
     # the LLM might prefer the partial excerpts over the full data.
+    #
+    # Only *holdings* tables (ticker/account/value/quantity/cost columns)
+    # get auto-inlined. Generic typed tables — PDF table extracts, log
+    # dumps, anything tabular without holdings semantics — also live in
+    # the HoldingsStore but blowing them all into every search result
+    # tanks latency without helping the model. Previously a 16-document
+    # SAPHIRE PRA collection (zero holdings, ~20 extracted PDF tables) was
+    # injecting hundreds of KB of irrelevant keyword/symbol tables into
+    # every search_collection response, pushing one tool call from ~2 s
+    # to ~24 s. If the user genuinely asks about a non-holdings table the
+    # model can still reach it via list_tables → get_table_rows.
     structured_tables_payload: list[dict[str, Any]] = []
     inlined_filenames: set[str] = set()
     if resolved_inline_row_threshold > 0:
         try:
+            from services.collection_context import is_holdings_table
+
             s_tables, s_stores = collect_structured_tables([resolved_collection])
+            s_tables = [
+                t for t in s_tables
+                if is_holdings_table(t.get("financial_roles"))
+            ]
             if s_tables:
                 ctx = build_structured_context(
                     s_tables,

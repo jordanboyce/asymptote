@@ -37,13 +37,19 @@ import { filterCommands } from '../utils/slashCommands'
 const props = defineProps({
   show: { type: Boolean, default: false },
   modelValue: { type: String, default: '' },
+  // Per-Collection kind from /api/collections/{id}/summary. Drives which
+  // financial-only commands (/brief, /tlh) the picker offers. Defaults to
+  // null → no filtering → all commands surface (back-compat).
+  collectionKind: { type: String, default: null },
 })
 
 const emit = defineEmits(['select', 'close'])
 
 const activeIndex = ref(0)
 
-const filtered = computed(() => filterCommands(props.modelValue))
+const filtered = computed(() =>
+  filterCommands(props.modelValue, { collectionKind: props.collectionKind }),
+)
 
 watch(
   () => props.modelValue,

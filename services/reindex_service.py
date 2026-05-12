@@ -18,10 +18,19 @@ from services.embedder import EmbeddingService
 from services.vector_store import VectorStore
 from services.metadata_store import MetadataStore
 from services.indexing.indexer import DocumentIndexer
+from services.indexing_lock import (
+    IndexingBusyError,
+    acquire_start_lock,
+    raise_if_any_active,
+)
 from models.schemas import ChunkMetadata
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class ReindexCancelled(Exception):
+    """Raised inside the reindex loop when the user has requested cancellation."""
 
 
 class ReindexService:
@@ -32,6 +41,29 @@ class ReindexService:
         self.current_collection_id: Optional[str] = None
         self.is_running = False
         self.reload_callback: Optional[Callable[[str], None]] = None  # Takes collection_id
+        # Cancellation flags keyed by job_id. Mirrors UploadService's pattern;
+        # set by cancel_job(), read by the document loop between files.
+        self._cancel_flags: Dict[int, bool] = {}
+
+    def cancel_job(self, job_id: int) -> bool:
+        """Request cancellation of an in-flight reindex job.
+
+        Best-effort: the loop checks the flag between documents, so the
+        current document finishes before cancellation takes effect.
+
+        Returns True if the job is active and a cancel was requested.
+        """
+        job = app_db.get_reindex_job(job_id)
+        if not job:
+            return False
+        if job["status"] not in ("pending", "running"):
+            return False
+        self._cancel_flags[job_id] = True
+        logger.info(f"Cancellation requested for reindex job {job_id}")
+        return True
+
+    def _is_cancelled(self, job_id: int) -> bool:
+        return self._cancel_flags.get(job_id, False)
 
     async def start_collection_reindex(
         self,
@@ -60,24 +92,23 @@ class ReindexService:
         Raises:
             RuntimeError: If a re-indexing job is already running
         """
-        # Check if already running
-        active_job = app_db.get_active_reindex_job()
-        if active_job:
-            raise RuntimeError(
-                f"Re-indexing job {active_job['id']} is already running"
-            )
+        # Cross-cutting lock: blocks if any upload/index/reindex is in flight.
+        with acquire_start_lock():
+            raise_if_any_active("reindex")
 
-        # Create job record with collection info
-        config_snapshot = {
-            "collection_id": collection_id,
-            "embedding_model": embedding_model,
-            "chunk_size": chunk_size,
-            "chunk_overlap": chunk_overlap,
-        }
+            # Create job record with collection info
+            config_snapshot = {
+                "collection_id": collection_id,
+                "embedding_model": embedding_model,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+            }
 
-        job_id = app_db.create_reindex_job(config_snapshot)
+            job_id = app_db.create_reindex_job(config_snapshot)
+            self._cancel_flags[job_id] = False
 
-        # Start background task
+        # Start background task (outside the lock — it only needs to guard
+        # the check+insert window, not the long-running work).
         asyncio.create_task(self._run_collection_reindex(
             job_id=job_id,
             collection_id=collection_id,
@@ -184,7 +215,14 @@ class ReindexService:
             vector_store.clear_index()
 
             # Process each document
+            processed_count = 0
             for idx, doc_info in enumerate(document_list, 1):
+                # Cancellation is best-effort and only takes effect between
+                # documents — the in-flight one finishes so we don't leave
+                # the metadata SQLite in a torn state.
+                if self._is_cancelled(job_id):
+                    raise ReindexCancelled()
+
                 doc_path = doc_info["path"]
                 source_type = doc_info.get("source_type", "upload")
                 source_path = doc_info.get("source_path")
@@ -211,11 +249,14 @@ class ReindexService:
                             source_type=source_type,
                         )
 
+                    processed_count = idx
                     logger.info(
                         f"Indexed {doc_path.name}: "
                         f"{metadata.total_pages} pages, {metadata.total_chunks} chunks"
                     )
 
+                except ReindexCancelled:
+                    raise
                 except Exception as e:
                     logger.error(f"Failed to process {doc_path.name}: {e}")
                     continue
@@ -245,6 +286,29 @@ class ReindexService:
                 except Exception as e:
                     logger.error(f"Failed to reload indexer for collection {collection_id}: {e}")
 
+        except ReindexCancelled:
+            # User cancelled. Save whatever we have so the partial index is
+            # consistent on disk, then mark the job. Already-processed docs
+            # stay indexed; the cleared-but-not-reindexed remainder will be
+            # picked up on the next reindex.
+            logger.info(f"Re-indexing job {job_id} for collection {collection_id} cancelled by user")
+            try:
+                vector_store.save()
+            except Exception as save_err:
+                logger.warning(f"Failed to persist partial index after cancel: {save_err}")
+            app_db.update_reindex_job(
+                job_id,
+                status="cancelled",
+                processed_documents=processed_count,
+                error="Cancelled by user",
+                current_file=None,
+            )
+            if self.reload_callback:
+                try:
+                    self.reload_callback(collection_id)
+                except Exception as e:
+                    logger.error(f"Failed to reload indexer after cancel: {e}")
+
         except Exception as e:
             logger.error(f"Re-indexing job {job_id} failed: {e}")
             app_db.update_reindex_job(
@@ -257,6 +321,7 @@ class ReindexService:
             self.is_running = False
             self.current_job_id = None
             self.current_collection_id = None
+            self._cancel_flags.pop(job_id, None)
 
     def _get_documents_to_reindex(
         self,
@@ -366,23 +431,18 @@ class ReindexService:
         Raises:
             RuntimeError: If a re-indexing job is already running
         """
-        # Check if already running
-        active_job = app_db.get_active_reindex_job()
-        if active_job:
-            raise RuntimeError(
-                f"Re-indexing job {active_job['id']} is already running"
-            )
+        with acquire_start_lock():
+            raise_if_any_active("reindex")
 
-        # Create job record
-        config_snapshot = {
-            "embedding_model": embedding_model,
-            "chunk_size": chunk_size,
-            "chunk_overlap": chunk_overlap,
-        }
+            config_snapshot = {
+                "embedding_model": embedding_model,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+            }
 
-        job_id = app_db.create_reindex_job(config_snapshot)
+            job_id = app_db.create_reindex_job(config_snapshot)
+            self._cancel_flags[job_id] = False
 
-        # Start background task
         asyncio.create_task(self._run_reindex(
             job_id=job_id,
             documents_dir=documents_dir,
@@ -476,7 +536,11 @@ class ReindexService:
             vector_store.clear_index()
 
             # Process each document
+            processed_count = 0
             for idx, doc_info in enumerate(document_list, 1):
+                if self._is_cancelled(job_id):
+                    raise ReindexCancelled()
+
                 doc_path = doc_info["path"]
                 source_type = doc_info.get("source_type", "upload")
                 source_path = doc_info.get("source_path")
@@ -503,11 +567,14 @@ class ReindexService:
                             source_type=source_type,
                         )
 
+                    processed_count = idx
                     logger.info(
                         f"Indexed {doc_path.name}: "
                         f"{metadata.total_pages} pages, {metadata.total_chunks} chunks"
                     )
 
+                except ReindexCancelled:
+                    raise
                 except Exception as e:
                     logger.error(f"Failed to process {doc_path.name}: {e}")
                     continue
@@ -536,6 +603,25 @@ class ReindexService:
                 except Exception as e:
                     logger.error(f"Failed to reload main indexer: {e}")
 
+        except ReindexCancelled:
+            logger.info(f"Re-indexing job {job_id} cancelled by user")
+            try:
+                vector_store.save()
+            except Exception as save_err:
+                logger.warning(f"Failed to persist partial index after cancel: {save_err}")
+            app_db.update_reindex_job(
+                job_id,
+                status="cancelled",
+                processed_documents=processed_count,
+                error="Cancelled by user",
+                current_file=None,
+            )
+            if self.reload_callback:
+                try:
+                    self.reload_callback()
+                except Exception as e:
+                    logger.error(f"Failed to reload main indexer after cancel: {e}")
+
         except Exception as e:
             logger.error(f"Re-indexing job {job_id} failed: {e}")
             app_db.update_reindex_job(
@@ -547,6 +633,7 @@ class ReindexService:
         finally:
             self.is_running = False
             self.current_job_id = None
+            self._cancel_flags.pop(job_id, None)
 
     def get_job_status(self, job_id: int) -> Optional[dict]:
         """Get status of a re-indexing job.

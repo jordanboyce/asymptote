@@ -196,6 +196,7 @@ export const useChatStore = defineStore('chat', () => {
       streaming: true,
       structuredResults: [],
       sources: [],
+      citations: [],
       aiUsage: null,
       timestamp: Date.now(),
     })
@@ -214,6 +215,29 @@ export const useChatStore = defineStore('chat', () => {
   const appendStreamingText = (collectionId, delta) => {
     const msg = _lastAssistantMsg(collectionId)
     if (msg) msg.content += delta
+  }
+
+  // Native-citation event from /api/chat/stream — Anthropic's structured
+  // citations land here while text deltas are still streaming. Each citation
+  // already carries the document_id / chunk_id mapping the engine resolved,
+  // so the UI can deep-link to the source span without further lookup.
+  const addStreamingCitation = (collectionId, citation) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (!msg) return
+    if (!Array.isArray(msg.citations)) msg.citations = []
+    msg.citations.push({
+      // contentLength is captured at arrival time so the renderer can place
+      // the inline pill where the model emitted the citation, even though
+      // text continues to stream after this event.
+      contentOffset: typeof msg.content === 'string' ? msg.content.length : 0,
+      documentId: citation.document_id || null,
+      chunkId: citation.chunk_id || null,
+      pageNumber: citation.page_number || null,
+      filename: citation.filename || null,
+      citedText: citation.cited_text || '',
+      startChar: citation.start_char ?? null,
+      endChar: citation.end_char ?? null,
+    })
   }
 
   const addStreamingToolCall = (collectionId, tool, args) => {
@@ -372,6 +396,7 @@ export const useChatStore = defineStore('chat', () => {
     // Streaming
     addStreamingMessage,
     appendStreamingText,
+    addStreamingCitation,
     addStreamingToolCall,
     resolveStreamingToolCall,
     addStreamingThinking,

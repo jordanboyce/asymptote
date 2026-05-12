@@ -125,6 +125,29 @@ def compute_financial_metric(
     row_count = schema.get('row_count', 0)
     limit = max(1, min(int(limit), 1000))
 
+    # R1.3: short-circuit when no financial roles were detected on the table.
+    # Without roles, every metric except row_count/summary_statistics needs a
+    # column we can't resolve. Return a structured signal so the calling LLM
+    # falls back to query_table / aggregate_table on the raw columns instead
+    # of guessing or seeing a red error bar.
+    _ROLE_AGNOSTIC_METRICS = {'row_count', 'summary_statistics'}
+    if not role_to_col and metric.lower() not in _ROLE_AGNOSTIC_METRICS:
+        return {
+            'metric': metric,
+            'filename': schema['filename'],
+            'table_name': base_table,
+            'applicable': False,
+            'error': 'no_role_detected',
+            'message': (
+                f"No financial column roles were detected in {schema['filename']}, "
+                f"so '{metric}' cannot be computed. Use query_table or aggregate_table "
+                f"on the raw column names instead — call get_table_schema first to see "
+                f"the available columns."
+            ),
+            'detected_roles': [],
+            'available_columns': [c['sql_name'] for c in schema['columns']],
+        }
+
     # P0.3: prefer the __by_symbol rollup view when it exists
     table = base_table
     if group_by_symbol and any(r in role_to_col for r in ('ticker', 'cusip', 'isin')):

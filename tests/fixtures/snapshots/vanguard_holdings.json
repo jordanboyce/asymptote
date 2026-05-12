@@ -1,0 +1,60 @@
+{
+  "aggregate_metric": "total_market_value",
+  "aggregate_value": 190438,
+  "column_count": 11,
+  "column_names": [
+    "Account",
+    "Investment Name",
+    "Symbol",
+    "Shares",
+    "Share Price",
+    "Total Value",
+    "% of Total Portfolio",
+    "Return YTD (%)",
+    "Average Cost Basis",
+    "Unrealized Gain/Loss",
+    "Asset Class"
+  ],
+  "column_types": {
+    "Account": "text",
+    "Asset_Class": "text",
+    "Average_Cost_Basis": "currency",
+    "Investment_Name": "text",
+    "Return_YTD": "percent",
+    "Share_Price": "real",
+    "Shares": "real",
+    "Symbol": "text",
+    "Total_Value": "currency",
+    "Unrealized_Gain_Loss": "currency",
+    "of_Total_Portfolio": "percent"
+  },
+  "filename": "vanguard_holdings.csv",
+  "role_sources": {
+    "Account": "profile",
+    "Asset_Class": "profile",
+    "Average_Cost_Basis": "profile",
+    "Investment_Name": "profile",
+    "Return_YTD": "profile",
+    "Share_Price": "profile",
+    "Shares": "profile",
+    "Symbol": "profile",
+    "Total_Value": "profile",
+    "Unrealized_Gain_Loss": "profile",
+    "of_Total_Portfolio": "profile"
+  },
+  "roles": {
+    "Account": "account",
+    "Asset_Class": "asset_class",
+    "Average_Cost_Basis": "cost_basis",
+    "Investment_Name": "name",
+    "Return_YTD": "return",
+    "Share_Price": "price",
+    "Shares": "quantity",
+    "Symbol": "ticker",
+    "Total_Value": "market_value",
+    "Unrealized_Gain_Loss": "pnl",
+    "of_Total_Portfolio": "weight"
+  },
+  "row_count": 7,
+  "vendor_profile": "Vanguard — Holdings"
+}

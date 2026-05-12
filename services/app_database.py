@@ -232,39 +232,9 @@ class SQLiteBackend(DatabaseBackend):
                 ON collection_share_users(user_id)
             """)
 
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_collections_owner
-                ON collections(owner_id)
-            """)
-
-            # ── v5: Expertise Library ─────────────────────────
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS expertise_packs (
-                    id          TEXT PRIMARY KEY,
-                    name        TEXT NOT NULL,
-                    description TEXT,
-                    body        TEXT NOT NULL,
-                    created_at  TEXT NOT NULL,
-                    updated_at  TEXT NOT NULL
-                )
-            """)
-
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS collection_expertise (
-                    collection_id TEXT NOT NULL,
-                    pack_id       TEXT NOT NULL,
-                    attached_at   TEXT NOT NULL,
-                    PRIMARY KEY (collection_id, pack_id),
-                    FOREIGN KEY (pack_id) REFERENCES expertise_packs(id) ON DELETE CASCADE
-                )
-            """)
-
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_collection_expertise_collection
-                ON collection_expertise(collection_id)
-            """)
-
             # ── Migrations for existing databases ────────────
+            # MUST run before any index that references a migrated column
+            # (e.g. idx_collections_owner below depends on owner_id).
             # Add owner_id to collections if missing
             try:
                 conn.execute("ALTER TABLE collections ADD COLUMN owner_id TEXT DEFAULT 'default'")
@@ -297,6 +267,38 @@ class SQLiteBackend(DatabaseBackend):
                     conn.execute(f"ALTER TABLE upload_jobs ADD COLUMN {col} {default}")
                 except sqlite3.OperationalError:
                     pass
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_collections_owner
+                ON collections(owner_id)
+            """)
+
+            # ── v5: Expertise Library ─────────────────────────
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS expertise_packs (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    description TEXT,
+                    body        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS collection_expertise (
+                    collection_id TEXT NOT NULL,
+                    pack_id       TEXT NOT NULL,
+                    attached_at   TEXT NOT NULL,
+                    PRIMARY KEY (collection_id, pack_id),
+                    FOREIGN KEY (pack_id) REFERENCES expertise_packs(id) ON DELETE CASCADE
+                )
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_collection_expertise_collection
+                ON collection_expertise(collection_id)
+            """)
 
             # Ensure default collection exists
             cursor = conn.execute("SELECT id FROM collections WHERE id = 'default'")
@@ -748,7 +750,7 @@ class SQLiteBackend(DatabaseBackend):
                 updates.append(f"{field} = ?")
                 params.append(kwargs[field])
         status = kwargs.get("status")
-        if status in ("completed", "failed"):
+        if status in ("completed", "failed", "cancelled"):
             updates.append("completed_at = ?")
             params.append(datetime.utcnow().isoformat())
         if not updates:
@@ -763,12 +765,18 @@ class SQLiteBackend(DatabaseBackend):
         row = conn.execute(query, params or ()).fetchone()
         return dict(row) if row else None
 
+    # config_snapshot is included so callers (indexing_lock, orphan recovery,
+    # /api/jobs/active) can recover the collection_id without a second query.
+    _REINDEX_COLS = (
+        "id, status, started_at, completed_at, total_documents, "
+        "processed_documents, current_file, error, config_snapshot"
+    )
+
     def get_reindex_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
-                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
-                   FROM reindex_jobs WHERE id = ?""",
+                f"SELECT {self._REINDEX_COLS} FROM reindex_jobs WHERE id = ?",
                 (job_id,)
             )
 
@@ -776,17 +784,58 @@ class SQLiteBackend(DatabaseBackend):
         with sqlite3.connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
-                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
-                   FROM reindex_jobs ORDER BY id DESC LIMIT 1"""
+                f"SELECT {self._REINDEX_COLS} FROM reindex_jobs ORDER BY id DESC LIMIT 1"
             )
 
     def get_active_reindex_job(self) -> Optional[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
-                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
-                   FROM reindex_jobs WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1"""
+                f"SELECT {self._REINDEX_COLS} FROM reindex_jobs "
+                "WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1"
             )
+
+    # ── Orphan recovery ──────────────────────────────────────
+    # On backend startup, sweep any rows still marked pending/running. Upload
+    # threads die with the process (daemon=False keeps them only as long as
+    # the interpreter lives); reindex asyncio tasks die outright. Either way,
+    # the DB row would otherwise be stuck in 'running' forever.
+
+    def mark_stale_jobs_as_orphaned(
+        self, reason: str = "Orphaned: backend restarted before job completed"
+    ) -> Dict[str, List[int]]:
+        """Mark every still-pending/running upload + reindex job as failed.
+
+        Returns the IDs of jobs that were cleaned up, keyed by table, so the
+        caller can log a single summary line.
+        """
+        timestamp = datetime.utcnow().isoformat()
+        cleaned: Dict[str, List[int]] = {"upload_jobs": [], "reindex_jobs": []}
+        with sqlite3.connect(self.db_path) as conn:
+            upload_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM upload_jobs WHERE status IN ('pending', 'running')"
+            ).fetchall()]
+            if upload_ids:
+                conn.execute(
+                    "UPDATE upload_jobs SET status = 'failed', error = ?, completed_at = ? "
+                    "WHERE status IN ('pending', 'running')",
+                    (reason, timestamp)
+                )
+                cleaned["upload_jobs"] = upload_ids
+
+            reindex_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM reindex_jobs WHERE status IN ('pending', 'running')"
+            ).fetchall()]
+            if reindex_ids:
+                conn.execute(
+                    "UPDATE reindex_jobs SET status = 'failed', error = ?, completed_at = ? "
+                    "WHERE status IN ('pending', 'running')",
+                    (reason, timestamp)
+                )
+                cleaned["reindex_jobs"] = reindex_ids
+
+            conn.commit()
+        return cleaned
 
     # ── AI Preferences ───────────────────────────────────────
 

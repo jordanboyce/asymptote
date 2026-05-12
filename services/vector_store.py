@@ -10,6 +10,7 @@ from models.schemas import ChunkMetadata, SearchResult
 from services.metadata_store import MetadataStore
 from services.bm25_service import BM25Index
 from services.financial.holdings_store import HoldingsStore
+from services.meeting_notes import MeetingNotesStore
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,10 @@ class VectorStore:
         # metadata). Used to answer numeric/aggregation questions over
         # ingested brokerage CSV/XLSX sources.
         self.holdings_store = HoldingsStore(self.metadata_db_path)
+
+        # Per-Collection structured meeting notes (v4.5). Same metadata.db;
+        # extraction runs after a Whisper-transcribed document indexes.
+        self.meeting_notes_store = MeetingNotesStore(self.metadata_db_path)
 
         # BM25 keyword search index
         self.bm25_index = BM25Index(self.bm25_db_path)

@@ -27,6 +27,7 @@ from services.chat.engine import (
     complete_one_shot,
     run_agentic,
     run_one_shot,
+    run_rag_synthesis,
 )
 from tests._fake_ai_provider import FakeAIProvider
 
@@ -303,6 +304,70 @@ def test_one_shot_propagates_provider_error():
     )
     events = _drain(run_one_shot(turn))
     assert events[-1]["type"] == "error"
+
+
+# -- run_rag_synthesis -----------------------------------------------------
+#
+# Simple RAG path used for kind=general / kind=meetings collections — one
+# streamed completion over pre-retrieved chunks, no tool loop. Must (a) make
+# exactly one provider call, (b) go through stream_chat (not stream) so
+# native-citation `documents` flow through, (c) emit the same event shape
+# the SSE pipeline already handles.
+
+def test_rag_synthesis_makes_one_stream_chat_call_no_tool_loop():
+    fake = FakeAIProvider()
+    fake.queue_stream_chat_chunks(["The answer ", "is in the docs."])
+
+    turn = ChatTurn(
+        provider=fake, system_text="sys",
+        messages=[{"role": "user", "content": "what is a DET?"}],
+        model="fake-fast",
+    )
+    events = _drain(run_rag_synthesis(turn))
+
+    # Exactly one stream_chat call — no detection pass, no agentic loop.
+    assert len(fake.stream_chat_calls) == 1, (
+        "rag_synthesis must not loop — one streamed call only"
+    )
+    # Must not have touched complete_with_tools (the agentic detection API).
+    assert len(getattr(fake, "tools_calls", [])) == 0
+
+    deltas = [e["delta"] for e in events if e["type"] == "text_delta"]
+    assert deltas == ["The answer ", "is in the docs."]
+    done = [e for e in events if e["type"] == "done"][0]
+    assert done["response_text"] == "The answer is in the docs."
+
+
+def test_rag_synthesis_propagates_provider_error():
+    fake = FakeAIProvider()
+    fake.queue_stream_chat_error(ConnectionError("down"))
+
+    turn = ChatTurn(
+        provider=fake, system_text="",
+        messages=[{"role": "user", "content": "q"}],
+        model="fake-fast",
+    )
+    events = _drain(run_rag_synthesis(turn))
+    assert events[-1]["type"] == "error"
+
+
+def test_rag_synthesis_never_emits_tool_events():
+    """The SSE handler at /api/chat/stream branches on event type. The simple
+    path must not surface tool_start / tool_end / thinking events the loop
+    would otherwise produce, so consumers can treat them as agentic-only."""
+    fake = FakeAIProvider()
+    fake.queue_stream_chat_chunks(["x"])
+
+    turn = ChatTurn(
+        provider=fake, system_text="",
+        messages=[{"role": "user", "content": "q"}],
+        model="fake-fast",
+    )
+    events = _drain(run_rag_synthesis(turn))
+    types = {e["type"] for e in events}
+    assert "tool_start" not in types
+    assert "tool_end" not in types
+    assert "thinking" not in types
 
 
 # -- collect ---------------------------------------------------------------

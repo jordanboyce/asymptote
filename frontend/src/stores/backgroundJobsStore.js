@@ -269,6 +269,27 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
     }
   }
 
+  // Reindex cancel mirrors upload cancel. Best-effort on the backend — the
+  // current document finishes before the job flips to 'cancelled'. The
+  // polling loop will pick up the new status; we also update locally so the
+  // button state reacts immediately if the backend force-cancels.
+  async function cancelReindexJob(jobId) {
+    try {
+      const response = await axios.post(`/api/reindex/${jobId}/cancel`)
+      if (response.data.status === 'cancelled' && reindexJob.value?.id === jobId) {
+        reindexJob.value = {
+          ...reindexJob.value,
+          status: 'cancelled',
+          error: response.data.message,
+        }
+        stopPollingIfNoActiveJobs()
+      }
+    } catch (err) {
+      console.error(`Failed to cancel reindex job ${jobId}:`, err)
+      throw err
+    }
+  }
+
   function setReindexJob(jobData) {
     reindexJob.value = jobData
     if (jobData && (jobData.status === 'pending' || jobData.status === 'running')) {
@@ -380,6 +401,7 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
     updateUploadJob,
     removeUploadJob,
     cancelUploadJob,
+    cancelReindexJob,
     setReindexJob,
     clearReindexJob,
     pollAllJobs,

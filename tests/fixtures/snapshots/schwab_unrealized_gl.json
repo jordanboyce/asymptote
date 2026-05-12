@@ -1,0 +1,56 @@
+{
+  "aggregate_metric": "total_market_value",
+  "aggregate_value": 289280,
+  "column_count": 10,
+  "column_names": [
+    "Symbol",
+    "Description",
+    "Qty",
+    "Price",
+    "Mkt Val",
+    "Cost Basis",
+    "Gain/Loss $",
+    "Gain/Loss %",
+    "% of Account",
+    "Security Type"
+  ],
+  "column_types": {
+    "Cost_Basis": "currency",
+    "Description": "text",
+    "Gain_Loss": "currency",
+    "Gain_Loss_2": "percent",
+    "Mkt_Val": "currency",
+    "Price": "real",
+    "Qty": "real",
+    "Security_Type": "text",
+    "Symbol": "text",
+    "of_Account": "percent"
+  },
+  "filename": "schwab_unrealized_gl.csv",
+  "role_sources": {
+    "Cost_Basis": "profile",
+    "Description": "profile",
+    "Gain_Loss": "profile",
+    "Gain_Loss_2": "profile",
+    "Mkt_Val": "profile",
+    "Price": "profile",
+    "Qty": "profile",
+    "Security_Type": "profile",
+    "Symbol": "profile",
+    "of_Account": "profile"
+  },
+  "roles": {
+    "Cost_Basis": "cost_basis",
+    "Description": "name",
+    "Gain_Loss": "pnl",
+    "Gain_Loss_2": "return",
+    "Mkt_Val": "market_value",
+    "Price": "price",
+    "Qty": "quantity",
+    "Security_Type": "asset_class",
+    "Symbol": "ticker",
+    "of_Account": "weight"
+  },
+  "row_count": 9,
+  "vendor_profile": "Schwab — Unrealized Gain/Loss"
+}

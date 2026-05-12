@@ -86,6 +86,8 @@ desktop.ini
 
 # Docker
 .docker/
+# Local dev override for docker-compose (bind mounts, --reload, etc.)
+docker-compose.override.yml
 
 # SSL Certificates
 certs/

@@ -16,6 +16,9 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Set
 
 
+from services.collection_context import is_holdings_table
+
+
 def compute_collection_summary(store: Any, collection_id: str) -> Dict[str, Any]:
     tables = store.list_tables()
     positions = 0
@@ -35,6 +38,23 @@ def compute_collection_summary(store: Any, collection_id: str) -> Dict[str, Any]
         for tbl in tables:
             base_table = tbl["table_name"]
             roles_map = tbl.get("financial_roles") or {}
+
+            # Skip non-holdings tables entirely. Generic typed tables — PDF
+            # tables, CSV exports of non-financial data — also live in the
+            # HoldingsStore but have no holdings roles assigned, and rolling
+            # their row counts into "positions" produced phantom totals on
+            # non-financial collections (a 16-doc SAPHIRE PRA collection was
+            # reporting "407 positions").
+            if not is_holdings_table(roles_map):
+                created_at = created_at_by_table.get(base_table)
+                source_files.append({
+                    "filename": tbl.get("filename"),
+                    "document_id": tbl.get("document_id"),
+                    "row_count": tbl.get("row_count"),
+                    "created_at": created_at,
+                })
+                continue
+
             symbol_col = next(
                 (sql_name for sql_name, role in roles_map.items()
                  if role in ("ticker", "cusip", "isin")),
@@ -65,6 +85,9 @@ def compute_collection_summary(store: Any, collection_id: str) -> Dict[str, Any]
                     accounts.add(str(row[0]).strip())
 
             created_at = created_at_by_table.get(base_table)
+            # most_recent_export_iso should reflect the last *brokerage*
+            # export, not the last generic table ingest — only update it for
+            # holdings tables.
             if created_at and (
                 most_recent_export_iso is None or created_at > most_recent_export_iso
             ):

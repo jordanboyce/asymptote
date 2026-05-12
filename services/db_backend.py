@@ -187,6 +187,13 @@ class DatabaseBackend(ABC):
     def get_active_reindex_job(self) -> Optional[Dict[str, Any]]:
         ...
 
+    @abstractmethod
+    def mark_stale_jobs_as_orphaned(
+        self, reason: str = "Orphaned: backend restarted before job completed"
+    ) -> Dict[str, List[int]]:
+        """Sweep stale pending/running upload_jobs + reindex_jobs at startup."""
+        ...
+
     # ── AI Preferences ───────────────────────────────────────
 
     @abstractmethod

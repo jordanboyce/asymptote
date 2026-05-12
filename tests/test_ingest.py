@@ -563,6 +563,60 @@ class TestNetX360HoldingsByInvestor:
 
 
 # ---------------------------------------------------------------------------
+# Snapshot regression suite (P0.7) — frozen pipeline outputs per fixture
+# ---------------------------------------------------------------------------
+
+# (header_row, column_count, column_names, role map, role sources, type map,
+#  vendor profile, one canonical aggregate) are pinned to a snapshot JSON.
+# Drift in any of these surfaces a loud failure; intentional changes are
+# reseeded with `UPDATE_SNAPSHOTS=1 pytest tests/test_ingest.py`.
+
+_SNAPSHOT_FIXTURES = [
+    ("schwab_unrealized_gl.csv", "total_market_value"),
+    ("fidelity_positions.csv", "total_market_value"),
+    ("pershing_unrealized_gl.csv", "total_market_value"),
+    ("vanguard_holdings.csv", "total_market_value"),
+    ("netx360_holdings_by_investor.csv", "total_market_value"),
+]
+
+
+@pytest.mark.parametrize("filename,metric", _SNAPSHOT_FIXTURES)
+def test_fixture_snapshot(filename: str, metric: str) -> None:
+    from services.financial.metrics import compute_financial_metric
+    from services.ingest_profiles import detect_profile
+    from tests._snapshot_helper import assert_snapshot, build_snapshot
+
+    csv_path = FIXTURES / filename
+    assert csv_path.exists(), f"Fixture {filename} missing"
+    store = _ingest_csv(csv_path)
+    schema = _get_schema(store, filename)
+
+    # Vendor profile detection runs alongside header detection; it's not
+    # surfaced through the schema, so re-derive it from the fixture
+    # (the profile detection itself is deterministic and side-effect-free).
+    profile = detect_profile(filename, [c["name"] for c in schema["columns"]], csv_path)
+    profile_name = profile.get("display_name") if profile else None
+
+    aggregate_value: Any = None
+    if metric:
+        try:
+            result = compute_financial_metric(store, filename, metric)
+            if result.get("error") is None:
+                aggregate_value = result.get("value")
+        except Exception:
+            aggregate_value = None
+
+    snapshot = build_snapshot(
+        schema,
+        aggregate_metric=metric,
+        aggregate_value=aggregate_value,
+        vendor_profile=profile_name,
+    )
+    snapshot_name = filename.replace(".csv", "")
+    assert_snapshot(snapshot_name, snapshot)
+
+
+# ---------------------------------------------------------------------------
 # Unit tests for _parse_number
 # ---------------------------------------------------------------------------
 

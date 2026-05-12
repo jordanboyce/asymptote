@@ -13,7 +13,7 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 import shutil
 
-from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File, status, Request
+from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File, status, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,6 +77,7 @@ from models.schemas import (
     NotesRequest,
     FollowupRequest,
     NoteResponse,
+    ExtractMeetingNotesRequest,
     SaveNoteRequest,
     SaveNoteResponse,
     RedactionDryRunRequest,
@@ -133,6 +134,26 @@ async def lifespan(app: FastAPI):
 
     async with mcp_server_lifespan():
         logger.info("Initializing Finn API...")
+
+        # Sweep abandoned indexing jobs from the last process. Upload threads
+        # die with the interpreter (daemon=False keeps them only as long as
+        # the process lives) and reindex asyncio tasks die outright, so any
+        # row still marked pending/running at startup is orphaned. Without
+        # this, the UI would forever show a phantom job that has no worker.
+        try:
+            from services.app_database import app_db as _startup_app_db
+            cleaned = _startup_app_db.mark_stale_jobs_as_orphaned()
+            upload_orphans = cleaned.get("upload_jobs", [])
+            reindex_orphans = cleaned.get("reindex_jobs", [])
+            if upload_orphans or reindex_orphans:
+                logger.warning(
+                    "Orphan recovery: marked %d upload job(s) %s and %d reindex job(s) %s "
+                    "as failed (backend restarted before they completed)",
+                    len(upload_orphans), upload_orphans,
+                    len(reindex_orphans), reindex_orphans,
+                )
+        except Exception as e:
+            logger.error(f"Failed to sweep orphaned jobs on startup: {e}")
 
         # Initialize default collection's indexer to pre-load embedding model
         logger.info("Loading default collection indexer...")
@@ -1270,7 +1291,7 @@ async def chat_stream_endpoint(
     import json as _json
     import uuid as _uuid
     from services.chat.context import build_chat_turn
-    from services.chat.engine import run_agentic
+    from services.chat.engine import run_agentic, run_rag_synthesis
     from services.diagnostics import record_chat_event as _record_diag
 
     # Stable per-turn id so the diagnostics view can group all events that
@@ -1322,13 +1343,22 @@ async def chat_stream_endpoint(
                 "provider": chat_request.provider,
                 "messages": len(chat_request.messages or []),
                 "collection_id": collection_id,
+                "engine": "rag_synthesis" if prepared.use_simple_rag else "agentic",
             })
 
             executed_results: list[dict] = []
             usage = {"input_tokens": 0, "output_tokens": 0, "model": None}
             pending_args: dict[str, dict] = {}
 
-            async for ev in run_agentic(prepared.turn):
+            # Engine selection: general/meetings collections with no large
+            # structured tables skip the tool loop and stream a single
+            # completion over the chunks ChatContext already retrieved. The
+            # event stream below handles both shapes — run_rag_synthesis
+            # simply never yields tool_start/tool_end/thinking, so those
+            # branches stay dormant on the simple path.
+            engine_fn = run_rag_synthesis if prepared.use_simple_rag else run_agentic
+
+            async for ev in engine_fn(prepared.turn):
                 t = ev.get("type")
                 if t == "thinking":
                     executed_results.append({
@@ -1352,6 +1382,18 @@ async def chat_stream_endpoint(
                     yield f"data: {_json.dumps({'type':'tool_end','tool':ev['tool'],'result':ev.get('result') or {}})}\n\n"
                 elif t == "text_delta":
                     yield f"data: {_json.dumps({'type':'text_delta','delta':ev.get('delta','')})}\n\n"
+                elif t == "citation":
+                    citation_payload = {
+                        "type": "citation",
+                        "document_id": ev.get("document_id"),
+                        "chunk_id": ev.get("chunk_id"),
+                        "page_number": ev.get("page_number"),
+                        "filename": ev.get("filename"),
+                        "cited_text": ev.get("cited_text"),
+                        "start_char": ev.get("start_char"),
+                        "end_char": ev.get("end_char"),
+                    }
+                    yield f"data: {_json.dumps(citation_payload)}\n\n"
                 elif t == "done":
                     usage = ev.get("usage", usage)
                 elif t == "error":
@@ -2927,6 +2969,72 @@ async def start_collection_reindex(collection_id: str):
         )
 
 
+@app.post(
+    "/api/reindex/{job_id}/cancel",
+    summary="Cancel a running re-indexing job",
+    tags=["admin"],
+)
+async def cancel_reindex_job(job_id: int):
+    """Request cancellation of an in-flight re-indexing job.
+
+    Best-effort: the current document finishes before cancellation takes
+    effect (otherwise we'd risk leaving the metadata SQLite torn). The job
+    is marked ``cancelled`` and the partial index is persisted to disk.
+    """
+    from services.app_database import app_db
+
+    job = app_db.get_reindex_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Re-index job {job_id} not found",
+        )
+    if job["status"] not in ("pending", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Job {job_id} is not active (status: {job['status']})",
+        )
+
+    cancelled = reindex_service.cancel_job(job_id)
+    if cancelled:
+        return {
+            "message": f"Cancellation requested for re-index job {job_id}",
+            "job_id": job_id,
+            "status": "cancelling",
+        }
+
+    # Job exists in DB as running but the in-process task is gone (likely
+    # an orphan that startup recovery missed, or a race). Mark it cancelled
+    # directly so the UI doesn't sit forever.
+    logger.warning(f"Reindex job {job_id} active task not found, force-marking as cancelled")
+    app_db.update_reindex_job(
+        job_id,
+        status="cancelled",
+        error="Force cancelled (no active task — likely orphaned)",
+    )
+    return {
+        "message": f"Job {job_id} force-cancelled (no active task was found)",
+        "job_id": job_id,
+        "status": "cancelled",
+    }
+
+
+@app.get(
+    "/api/jobs/active",
+    summary="Get every active indexing job (upload + local-index + reindex)",
+    tags=["admin"],
+)
+async def get_active_indexing_jobs_endpoint():
+    """Single source of truth for "is any indexing happening right now?"
+
+    Returns a flat list in a uniform shape so the UI can disable both the
+    upload and reindex controls based on one query.
+    """
+    from services.indexing_lock import get_active_indexing_jobs
+    jobs = get_active_indexing_jobs()
+    return {"jobs": jobs, "count": len(jobs)}
+
+
 @app.get(
     "/api/reindex/status",
     summary="Get re-indexing job status",
@@ -2967,9 +3075,21 @@ async def get_reindex_status(job_id: int = None):
     else:
         progress = 0
 
+    # Surface collection_id at the top level — the UI uses it to decide
+    # which collection's sidebar to refresh on completion.
+    snapshot = job.get("config_snapshot")
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except json.JSONDecodeError:
+            snapshot = {}
+    snapshot = snapshot or {}
+
     return {
         **job,
-        "progress_percent": round(progress, 1)
+        "config_snapshot": snapshot,
+        "collection_id": snapshot.get("collection_id"),
+        "progress_percent": round(progress, 1),
     }
 
 
@@ -3658,6 +3778,156 @@ async def generate_brief_endpoint(
     return brief
 
 
+@app.post(
+    "/api/collections/{collection_id}/tlh",
+    tags=["chat"],
+    summary="Build a household-aware Tax-Loss Harvesting plan",
+)
+async def generate_tlh_plan_endpoint(
+    collection_id: str,
+    household_collection_ids: list[str] | None = Body(default=None),
+    min_loss: float = Body(default=500.0),
+    min_loss_pct: float | None = Body(default=None),
+    max_candidates: int = Body(default=25),
+):
+    """
+    Build a Tax-Loss Harvesting plan for *collection_id*.
+
+    Composes scan_unrealized_losses (taxable accounts only, ST-first ordering),
+    gain_loss_budget (offset capacity), suggest_replacements (non-substantially-
+    identical swaps), and check_wash_sale (household-wide — including any
+    `household_collection_ids` passed in) into a single plan with explicit
+    guardrails. Calls the primitives directly, no LLM token cost.
+    """
+    from services.financial.tlh import build_harvest_plan
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        primary_store = indexer.vector_store.holdings_store
+    except AttributeError:
+        raise HTTPException(status_code=422, detail="No structured store found for this collection.")
+
+    household_stores = [primary_store]
+    seen_ids = {collection_id}
+    for cid in (household_collection_ids or []):
+        if cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        try:
+            extra_indexer = get_indexer(cid)
+            household_stores.append(extra_indexer.vector_store.holdings_store)
+        except (ValueError, AttributeError) as exc:
+            logger.warning("TLH: skipping household collection %s: %s", cid, exc)
+
+    try:
+        plan = build_harvest_plan(
+            primary_store,
+            collection_id=collection_id,
+            household_stores=household_stores,
+            min_loss=min_loss,
+            min_loss_pct=min_loss_pct,
+            max_candidates=max_candidates,
+        )
+    except Exception as e:
+        logger.error("TLH plan failed for collection %s: %s", collection_id, e)
+        raise HTTPException(status_code=500, detail=f"TLH plan failed: {e}")
+
+    return {
+        "collection_id": plan.collection_id,
+        "generated_at": plan.generated_at,
+        "candidates": plan.candidates,
+        "budget": plan.budget,
+        "wash_sale_warnings": plan.wash_sale_warnings,
+        "guardrails": plan.guardrails,
+        "totals": plan.totals,
+    }
+
+
+@app.post(
+    "/api/collections/{collection_id}/meetings/extract",
+    tags=["chat"],
+    summary="Run the v4.5 structured-extraction pass on a transcript",
+)
+async def extract_meeting_notes_endpoint(
+    collection_id: str,
+    body: ExtractMeetingNotesRequest,
+    x_ai_key: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+):
+    """Run a single LLM extraction pass on a transcript and persist the notes.
+
+    The background trigger in upload_service runs automatically when a stored
+    agent API key is present, but BYO-key users (the default) need an explicit
+    request. The frontend calls this endpoint from the post-transcription
+    nudge banner so the advisor can choose when (and with which provider) to
+    spend the tokens.
+    """
+    from services.meeting_notes import (
+        extract_meeting_notes as _extract,
+        transcript_text_from_chunks,
+    )
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        provider = _build_ai_provider_from_headers(
+            body.provider, x_ai_key,
+            x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
+            x_ai_base_url,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
+
+    try:
+        chunks = indexer.vector_store.metadata_store.get_chunks_by_document(body.document_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load transcript: {e}")
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail=f"No chunks found for document {body.document_id}")
+
+    transcript_text = transcript_text_from_chunks(chunks)
+    if not transcript_text:
+        raise HTTPException(status_code=422, detail="Transcript has no extractable text.")
+
+    notes = _extract(
+        transcript_text,
+        collection_id=collection_id,
+        provider=provider,
+        document_id=body.document_id,
+        model=getattr(provider, "QUALITY_MODEL", None),
+    )
+
+    store = indexer.vector_store.meeting_notes_store
+    try:
+        store.save(
+            document_id=body.document_id,
+            collection_id=collection_id,
+            notes=notes,
+        )
+    except Exception as e:
+        logger.error("Failed to save meeting notes for %s: %s", body.document_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to persist notes: {e}")
+
+    record = store.get(body.document_id)
+    return {
+        "collection_id": collection_id,
+        "document_id": body.document_id,
+        "notes": record,
+    }
+
+
 @app.get(
     "/api/collections/{collection_id}/summary",
     tags=["collections"],
@@ -3691,14 +3961,28 @@ async def get_collection_summary(
     except AttributeError:
         return {
             "collection_id": collection_id,
+            "kind": "general",
             "positions": 0,
             "accounts": 0,
             "most_recent_export_iso": None,
             "source_files": [],
+            "financial_table_count": 0,
+            "transcript_count": 0,
+            "document_count": 0,
         }
 
     from services.collection_summary import compute_collection_summary
-    return compute_collection_summary(store, collection_id)
+    from services.collection_context import detect_collection_kind
+
+    summary = compute_collection_summary(store, collection_id)
+    ctx = detect_collection_kind(indexer, collection_id)
+    summary.update({
+        "kind": ctx.kind,
+        "financial_table_count": ctx.financial_table_count,
+        "transcript_count": ctx.transcript_count,
+        "document_count": ctx.document_count,
+    })
+    return summary
 
 
 @app.get(
@@ -4703,6 +4987,16 @@ async def get_diagnostics_chat_events(limit: int = 100) -> dict:
     from services.diagnostics import get_buffer
     buf = get_buffer()
     return {"events": buf.recent_events(limit=limit)}
+
+
+@app.get(
+    "/api/diagnostics/cache",
+    summary="Cumulative Anthropic prompt-cache token totals + hit rate",
+    tags=["diagnostics"],
+)
+async def get_diagnostics_cache() -> dict:
+    from services.diagnostics import get_buffer
+    return get_buffer().cache_stats()
 
 
 @app.post(

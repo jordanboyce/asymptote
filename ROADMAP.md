@@ -22,17 +22,9 @@ Financial advisors are the first wedge, but the architecture is general — any 
 
 ---
 
-## Why this batch is reordered (read first if picking this up cold)
+## Origin (historical context)
 
-Three advisor sessions against a real Schwab unrealized-gain/loss CSV surfaced bugs that make the previous batch order wrong:
-
-- **CSV header row was not detected.** The file had 8 preamble rows (`Quote Type`, `Cash Included`, `As Of`, blanks); real headers were on row 9. [services/document_extractor.py:550](services/document_extractor.py#L550) calls `pd.read_csv(csv_path)` with no header sniffing, so all 20 columns landed as `Unrealized_Gain_Loss`, `Unnamed__1`, …, `Unnamed__19`. Every downstream metric in `compute_portfolio_metric` is dead for that file because role detection has nothing to match against.
-- **Numeric values came in as strings with commas.** `"1,591.20"` stored as TEXT, then `CAST(... AS DOUBLE)` silently coerces to a small integer. The agent's lot-rollup query reported market values like `1`, `2`, `14` for positions worth thousands of dollars — and showed those numbers to the advisor with no warning.
-- **`REPLACE` was in `_FORBIDDEN_KEYWORDS`** (a SQLite string function) so the agent couldn't strip commas as a workaround. **Fixed** in [services/structured_store.py:224](services/structured_store.py#L224).
-- **No lot rollup primitive.** PKST appeared 16 times because every tax lot is a row. The agent had to GROUP BY by hand and produced wrong sums (see above).
-- **Questions like "what's in a downtrend?" and "growth vs value?"** can't be answered correctly from the file alone — they require external data feeds Finn doesn't expose. The agent fell back to "loss vs cost basis" and "guess from ticker name." Both gave the right shape of answer but neither was actually right.
-
-Conclusion: ingestion fidelity and enrichment feeds are the only thing that matters until the demo above can be re-run and produce correct numbers without manual workaround SQL. Meeting capture, client profiles, and analytics are still on the roadmap, but they sit on top of this foundation.
+The original v4.1 batch came out of three advisor sessions against a real Schwab unrealized-gain/loss CSV that surfaced silent-wrongness bugs: undetected header rows landed columns as `Unnamed__N`, comma-separated numerics stored as TEXT then `CAST` to wrong values, no lot-rollup so per-symbol sums double-counted. P0.1–P0.7 are the response. The lesson is universal: **never silently wrong** — degrade to raw-data tools and surface uncertainty rather than collapse it.
 
 ---
 
@@ -51,252 +43,49 @@ Quality bar: **any tabular export from any tool should land as a clean, typed, r
 | P0.2 — Numeric coercion | ✅ Shipped | `_parse_generic_number` (commas, parens, K/M/B), `_parse_date_like`, 80% threshold, `__raw` sibling columns |
 | P0.3 — Lot rollup | ✅ Shipped | Auto-created `<table>__by_symbol` VIEW; `compute_portfolio_metric` uses it when `group_by_symbol=True` |
 | P0.4 — Vendor profiles | ✅ Shipped | Profile framework + YAMLs for Pershing / Schwab / Fidelity / Vanguard / NetX360; Pershing UGL column hints corrected; NetX360 HBIL hierarchical preprocessor (`services/ingest_profiles/netx360.py`) flattens multi-account exports |
-| P0.5 — LLM role inference | 🟡 Partial — close-out planned in [`next-batch.md`](.kiro/specs/next-batch.md) §R1 | `services/llm_role_inference.py` exists; `collection_id` threading, role-agnostic tool audit, and the structured no-role-detected error path are the remaining items |
+| P0.5 — LLM role inference | ✅ Shipped | `services/llm_role_inference.py` + `collection_id` threading + structured `no_role_detected` error path on `compute_portfolio_metric`. Role-agnostic-tool audit complete (`query_table`, `get_table_rows`, `aggregate_table`, `search_collection`, `get_document_context` all role-agnostic). Provenance per column (`role_source`: profile / heuristic / llm / null) surfaced through `get_table_schema`. 13 regression tests in [tests/test_role_provenance.py](tests/test_role_provenance.py) |
 | P0.6 — Numeric sanity guards | ❌ Open | Not implemented |
-| P0.7 — Regression suite | 🟡 Partial — snapshot assertions planned in [`next-batch.md`](.kiro/specs/next-batch.md) §R2 | 5 of 5 fixtures + [tests/test_ingest.py](tests/test_ingest.py) green (57/57 passing). NetX360 HBIL fixture added. Remaining: per-fixture snapshot JSONs in `tests/fixtures/snapshots/` + diff helper |
-| P0.8 — PDF table extraction | ❌ Open — planned in [`next-batch.md`](.kiro/specs/next-batch.md) §R3 | pdfplumber `page.extract_tables()` path; routes through existing header detection / numeric coercion / vendor profile pipeline; Docling secondary pass when pdfplumber yields low-confidence tables |
+| P0.7 — Regression suite | ✅ Shipped | 5 of 5 fixtures + snapshot diff helper at [tests/_snapshot_helper.py](tests/_snapshot_helper.py); per-fixture snapshots in [tests/fixtures/snapshots/](tests/fixtures/snapshots/) capture column count, headers, role map, role provenance, type map, vendor profile, canonical aggregate. Drift fails loudly; `UPDATE_SNAPSHOTS=1` to refresh |
+| P0.8 — PDF table extraction | ✅ Shipped | `DocumentExtractor.extract_pdf_tables` walks `pdfplumber.page.extract_tables()` per page, runs results through the same header detection (`_detect_header_row`) / numeric coercion / vendor profile pipeline as CSV/XLSX, and returns sheet dicts shaped identically to `extract_tabular_sheets`. Indexer wires PDFs through a `_register_pdf_tables_in_holdings_store` branch alongside the regular text-extraction path so a PDF with both tables and prose lands in `HoldingsStore` *and* searchable text chunks. `_head_lines` in [services/ingest_profiles/__init__.py](services/ingest_profiles/__init__.py) extracts PDF body text via pdfplumber so vendor profiles' `required_strings` checks match a Schwab PDF the same way they match the CSV equivalent. 21 regression tests in [tests/test_pdf_table_extraction.py](tests/test_pdf_table_extraction.py) (programmatically-generated reportlab fixtures cover extraction, role mapping, accounting-negative coercion, lot-rollup VIEW creation, vendor profile activation). Docling secondary pass for low-confidence tables left for follow-up — pdfplumber-only meets P0.8 acceptance |
 
 ### P0.0 — PII Redaction Layer (Presidio) — ✅ Shipped
 
-**Priority:** Highest — this is a prerequisite for shipping anything to production. No identifiable data can leave Finn when content is sent to external LLM providers (Claude, ChatGPT, Google, or any other). This is especially critical for financial data, which routinely contains account numbers, Social Security numbers, names, and other highly sensitive identifiers.
+**Why it's P0.0:** every MCP tool response, every search result, every chunk in chat context is a potential PII leak. Without this, regulated users (financial advisors, federal contractors, healthcare, legal) cannot use any external LLM against their data at all. Redaction happens at the **output boundary** — the unredacted data stays local; only redacted strings cross to external LLMs.
 
-**Why this is P0.0 and not later:**
-- Every MCP tool response, every search result, and every chunk of context that reaches the calling LLM is a potential PII leak.
-- Financial advisors upload real client data — real account numbers, real names, real balances. Any of that reaching an external model is a compliance violation and a trust violation.
-- Presidio is open-source (MIT license), runs 100% locally, and requires no cloud service for detection. There is no legitimate reason to defer this.
+**What lives in [services/privacy/](services/privacy/):**
+- `redaction_engine.py` — Presidio wrapper (analyzer + anonymizer) with standard recognizers (PERSON, EMAIL, PHONE, SSN, IBAN, etc.) + custom recognizers in `custom_recognizers/` for financial-specific IDs (`FinancialAccountRecognizer`, `RoutingNumberRecognizer`, `CUSIPInContextRecognizer`).
+- `redaction_middleware.py` — wraps every MCP tool response before it exits [services/mcp_server.py](services/mcp_server.py).
+- `redaction_config.py` — per-collection profiles: style (`[ENTITY_TYPE]`, `consistent_pseudonym`, `partial_mask`, etc.), allow-list, score threshold, strict-mode.
+- `redaction_log.py` — local SQLite audit log; `original_text` stored locally only, never crosses the boundary.
+- `pii_preflight.py` + `collection_blacklist.py` — pre-flight review on tabular uploads (v4.4.3 §9).
 
-**What counts as PII — be exhaustive, not approximate:**
+**MCP surface:** `get_recent_redactions`, `get_redaction_config` (called from [services/mcp_server.py](services/mcp_server.py)). HTTP endpoints `GET /api/redactions/{summary,log}` + `POST /api/redactions/dry-run` ([main.py](main.py)) feed the chat-tab PII pill and the Note of Record dry-run preview.
 
-Finn must redact (at minimum) all of the following before any content leaves to an LLM:
-
-| Category | Examples |
-|---|---|
-| Personal identifiers | Full name, first name, last name, initials used as identifiers |
-| Government IDs | SSN, EIN, ITIN, driver's license number, passport number, national ID |
-| Financial account identifiers | Account number, routing number, IBAN, credit card number, debit card number, brokerage account ID |
-| Contact information | Phone number, email address, mailing address, ZIP+4, PO Box |
-| Digital identifiers | IP address, MAC address, username, user ID, device ID, cookie/session token |
-| Biometric data | Any text reference to biometric identifiers (fingerprint ID, face ID hash) |
-| Medical / health identifiers | Medical record number, health plan beneficiary number, diagnosis code when paired with a name |
-| Dates linked to individuals | Date of birth, date of death, admission/discharge dates |
-| Social media | Handles, profile URLs, screen names |
-| Financial-specific PII | CUSIP when appearing in context with account owner info, brokerage-specific client IDs, relationship manager IDs, rep codes tied to individuals |
-| Free-text PII | Any of the above embedded in notes, memos, or document chunks |
-
-When in doubt, redact. False positives (redacting something that wasn't PII) are far less harmful than false negatives (leaking something that was).
-
-**Architecture — new module: `services/privacy/`**
-
-```
-services/privacy/
-  __init__.py
-  redaction_engine.py     # Core Presidio wrapper — analyze + anonymize
-  redaction_middleware.py # Wraps all MCP tool output before it exits Finn
-  redaction_config.py     # Per-collection profiles, allow-lists, custom recognizers
-  redaction_log.py        # Audit log writer and reader
-  custom_recognizers/
-    financial_account.py  # Custom PatternRecognizer for brokerage-specific IDs
-    cusip_in_context.py   # CUSIP + account owner = PII; CUSIP alone = not PII
-```
-
-**Core implementation — `redaction_engine.py`:**
-
-- Wrap `presidio_analyzer.AnalyzerEngine` and `presidio_anonymizer.AnonymizerEngine`.
-- Configure the analyzer with all standard Presidio recognizers (covers PERSON, EMAIL_ADDRESS, PHONE_NUMBER, CREDIT_CARD, IBAN_CODE, IP_ADDRESS, US_SSN, US_DRIVER_LICENSE, US_PASSPORT, US_BANK_NUMBER, DATE_TIME, LOCATION, NRP, and more).
-- Add custom `PatternRecognizer` instances for financial-specific identifiers not in the default set (see `custom_recognizers/`).
-- `redact_text(text: str, collection_id: str | None = None) -> RedactionResult` — analyzes and anonymizes a string, returns both the redacted string and the full list of `RecognizerResult` instances (entity type, start, end, score, replacement token).
-- `redact_structured(rows: list[dict], collection_id: str | None = None) -> RedactionResult` — walks every string-valued field in every row, applies `redact_text` cell by cell, returns the redacted rows alongside a per-cell audit trail.
-
-**Redaction is at the OUTPUT boundary, not at ingest:**
-
-- The original unredacted data lives in the local store on the user's machine. It is never transmitted anywhere.
-- Redaction happens in `redaction_middleware.py`, which wraps the return value of every MCP tool response and every chunk of context assembled for the calling LLM.
-- The call site is immediately before data exits `mcp_server.py` — not inside `structured_store.py` or `document_extractor.py`. This preserves the ability to run exact-match SQL and full-text search against the real data locally, while guaranteeing nothing identifiable escapes outward.
-- Hook point: `redaction_middleware.py` integrates with the existing plugin/hook pattern in `structured_store.py`. Any tool response that passes through the MCP layer is automatically intercepted.
-
-**Configurable redaction styles (per-collection, per-entity-type):**
-
-| Style | Example output | When to use |
-|---|---|---|
-| `[REDACTED]` | `[REDACTED]` | Default — maximum anonymity, opaque |
-| `[ENTITY_TYPE]` | `[ACCOUNT_NUMBER]`, `[PERSON]` | Default for most financial use cases — tells the agent *what* was removed without revealing the value |
-| `consistent_pseudonym` | `John Smith` → always `Alex Morgan` within a session | When the agent needs to reason about relationships ("the same person") without seeing real names |
-| `partial_mask` | `****1234` for account numbers | Useful for human review UIs where the last 4 digits confirm context |
-| `synthetic_placeholder` | Replaced with a random-but-valid-format value | For testing pipelines end-to-end with realistic-looking fake data |
-
-The active style is configured in the collection's redaction profile (`redaction_config.py`). Financial collections default to `[ENTITY_TYPE]`; general-document collections default to `[REDACTED]`.
-
-**Auditability — every redaction is logged:**
-
-Each redaction event writes a structured log entry to a local SQLite table (`redaction_log`):
-
-```
-redaction_log
-  id            INTEGER PRIMARY KEY
-  timestamp     DATETIME
-  session_id    TEXT       -- groups all redactions in one agent session
-  collection_id TEXT       -- which collection the data came from
-  tool_name     TEXT       -- which MCP tool produced the output
-  document_id   TEXT       -- source document, if traceable
-  entity_type   TEXT       -- e.g. ACCOUNT_NUMBER, PERSON, US_SSN
-  original_text TEXT       -- the actual PII that was found (stored locally only)
-  replacement   TEXT       -- what it was replaced with
-  start_char    INTEGER    -- character offset in the source text
-  end_char      INTEGER    -- character offset in the source text
-  score         REAL       -- Presidio confidence score
-```
-
-`original_text` is stored in the local audit log so users can review exactly what was redacted. It never leaves the machine.
-
-**Redaction preview mode:**
-
-Before sending any tool response to the LLM, Finn can surface a preview of what will be redacted. This is exposed as:
-
-1. A "review before sending" flag in the collection settings — when enabled, the MCP tool response is held and the redaction summary is surfaced in the frontend (collection settings panel) before the response is released to the calling agent.
-2. An MCP tool/resource `get_recent_redactions(session_id, limit=50)` that returns the redaction log for the current session in human-readable form — entity types found, replacements applied, which tool and document they came from. The calling agent (or the user reviewing the agent session) can inspect this at any time.
-
-**MCP exposure:**
-
-- `get_recent_redactions(session_id: str | None = None, collection_id: str | None = None, limit: int = 50) -> list[RedactionSummary]` — MCP tool returning what was redacted in this session. Agents can call this to self-verify: "confirm what PII was removed before I proceed."
-- `get_redaction_config(collection_id: str) -> RedactionProfile` — returns the active redaction profile for a collection (style, allow-list, active recognizers).
-- Optionally, expose `redaction://session/{session_id}` as an MCP resource for host UIs that want to render a live redaction feed.
-
-**Per-collection redaction profiles (`redaction_config.py`):**
-
-Each collection can define:
-- `redaction_style` — which replacement style (see above)
-- `entity_types_enabled` — which Presidio entity types to enforce (default: all; can restrict for non-financial collections)
-- `allow_list` — strings that match PII patterns but are known safe (e.g., `"Fidelity"` matches a person-name pattern; firm names, fund names, and ticker symbols that look like abbreviations go here)
-- `custom_recognizers` — additional `PatternRecognizer` instances for this collection's domain (e.g., a specific CRM's internal ID format)
-- `minimum_score_threshold` — Presidio confidence floor before a match is treated as PII (default: 0.5; financial collections should use 0.4 to be conservative)
-- `strict_mode` — when `true`, any Presidio match above the threshold is redacted even at low confidence; when `false`, only high-confidence matches are redacted. Default `true` for financial collections.
-
-**Custom recognizers for financial-specific PII:**
-
-Presidio's default recognizer set covers common US/EU PII well, but financial workflows have identifiers not in the default set:
-
-- `FinancialAccountRecognizer` — regex + context clues for brokerage account numbers (typically 8–12 digits, often preceded by "Account #", "Acct", or a custodian name)
-- `RoutingNumberRecognizer` — 9-digit ABA routing numbers; distinct from SSNs (same digit count) by context and checksum
-- `CUSIPInContextRecognizer` — CUSIP alone (9-char alphanumeric) is a security identifier, not PII; CUSIP appearing within N tokens of an account holder name or account number is treated as PII-adjacent and redacted in that context
-- `BrokerageClientIdRecognizer` — configurable per-vendor regex (e.g., Pershing's rep code + client number format); added via collection profile's `custom_recognizers`
-
-**Presidio runs locally — no cloud dependency:**
-
-- `presidio-analyzer` and `presidio-anonymizer` install as Python packages (`pip install presidio-analyzer presidio-anonymizer`).
-- The default NLP model is `en_core_web_lg` from spaCy — downloaded once on first run, cached locally.
-- No network call is made during analysis or anonymization. PII detection is fully air-gapped from the redaction engine's perspective.
-- Add `presidio-analyzer`, `presidio-anonymizer`, and `spacy` (with `en_core_web_lg`) to `requirements.txt` / `pyproject.toml`.
-
-**Integration checklist:**
-- [ ] `services/privacy/` module scaffolded with the structure above
-- [ ] `redaction_engine.py` wrapping Presidio with all standard + custom recognizers
-- [ ] `redaction_middleware.py` intercepting all MCP tool responses before they exit `mcp_server.py`
-- [ ] `redaction_log` SQLite table created and populated on every redaction event
-- [ ] `get_recent_redactions` MCP tool implemented and tested
-- [ ] Per-collection redaction profiles with allow-list and style configuration
-- [ ] Custom financial recognizers (account numbers, routing numbers, CUSIP-in-context)
-- [ ] Redaction preview mode wired into the frontend collection settings panel
-- [ ] `en_core_web_lg` added to setup/install instructions
-- [ ] Regression test: a fixture containing known PII (fake but realistic) runs through the full MCP path and none of the PII appears in the tool response
+**Regression coverage:** [tests/test_pii_redaction.py](tests/test_pii_redaction.py), [tests/test_redaction_http.py](tests/test_redaction_http.py).
 
 ### P0.1 — Smart header detection — ✅ Shipped
 
-**Problem:** Brokerage/bank/CRM exports almost always have N preamble rows before the actual header. Current importer assumes row 1 is the header.
-
-**Implementation:**
-- In [services/document_extractor.py:550](services/document_extractor.py#L550) (and the two other `pd.read_csv` call sites at lines ~613 and ~721), wrap the read in a header-sniffing pass.
-- Heuristic: read the first ~30 rows raw. Find the first row where (a) most cells are non-empty, (b) cells are short strings without numeric/currency formatting, (c) the row immediately below has predominantly numeric/date values. Promote that row to header, drop the rows above as preamble metadata.
-- Preserve the dropped preamble as `document_metadata` (`as_of_date`, `currency`, `view_type`, etc.) — useful context for the agent.
-- Fall back to `pd.read_csv` defaults if no candidate row is found.
-- Same logic applies to XLSX sheets.
+Header-sniffing pass in [services/document_extractor.py](services/document_extractor.py) scans up to 30 raw rows, finds the first text-label row followed by a data-like row, drops preamble rows, and surfaces the dropped preamble as `document_metadata`. Wired into all 5 tabular read sites (`_extract_csv`, `extract_csv_rows`, `extract_tabular_sheets` CSV + XLSX branches, `_extract_xlsx`).
 
 ### P0.2 — Numeric coercion for currency / accounting strings — ✅ Shipped
 
-**Problem:** `"1,591.20"`, `"$1,591.20"`, `"(123.45)"`, `"1.5K"` all currently land as TEXT. Downstream `CAST(... AS DOUBLE)` silently coerces to wrong values.
-
-**Implementation:**
-- During structured ingest in [services/structured_store.py](services/structured_store.py), after header detection, for each column attempt a numeric coercion pass: strip currency symbols, thousands separators, accounting-negative parens, common suffixes (`K`, `M`, `B`). If ≥80% of non-null values coerce cleanly, store the column as REAL not TEXT.
-- Record the original raw string in a sibling `_raw` column (or in the column's metadata) so the agent can still see the source if needed.
-- Apply the same pass to date-like columns (`Trade Date`, `Settle Date`, `Maturity`) → ISO date strings or DATE.
+`_parse_generic_number` strips `$`, commas, accounting parens, K/M/B suffixes; `_parse_date_like` normalizes dates. Per-column 80% threshold: ≥80% coerced cleanly → store as REAL/DATE; sibling `__raw` column preserves the original string. Lives in [services/financial/type_hints.py](services/financial/type_hints.py) + [services/tabular/inference.py](services/tabular/inference.py).
 
 ### P0.3 — Lot / row rollup as a first-class concept — ✅ Shipped
 
-**Problem:** Every brokerage file represents a single position as N rows (one per tax lot). Lots are an implementation detail; no human or agent should care about them.
-
-**Implementation:**
-- When a `Symbol` / `CUSIP` / `Security ID` role is detected, automatically expose a logical view alongside the raw table: `<table_name>__by_symbol` (or `positions_by_symbol`) that aggregates market value, cost basis, quantity, gain/loss, and weighted-average unit cost.
-- Add a `group_by_symbol: bool = True` parameter to `compute_portfolio_metric` that rolls up lots before computing.
-- The raw lot-level table stays available for tax/cost-basis questions that genuinely need it.
+When a `Symbol` / `CUSIP` / `ISIN` role is detected, [services/financial/holdings_store.py](services/financial/holdings_store.py) auto-creates a `<table>__by_symbol` SQLite VIEW that aggregates market value, cost basis, quantity, gain/loss, weighted-average unit cost. `compute_portfolio_metric` uses it when `group_by_symbol=True` (the default).
 
 ### P0.4 — Known-vendor schema profiles — 🟡 Partial
 
-**Problem:** Schwab, Fidelity, Vanguard, Pershing, Raymond James, etc. each export the same logical concepts under different column names and layouts. Heuristic role detection works on common cases but misses the long tail.
+**Shipped:** Profile framework in [services/ingest_profiles/](services/ingest_profiles/) — per-vendor YAML profiles declaring file signatures, header-row offset, column→role map, type overrides. At ingest time, profile detection runs first; on match, applies deterministically; otherwise falls back to P0.1/P0.2 heuristics. Profiles ship for **Pershing** (flat Unrealized G/L), **Schwab** (Holdings, Unrealized G/L), **Fidelity** (Positions), **Vanguard** (Holdings), and **NetX360 HBIL** (hierarchical multi-account format with a Python preprocessor in [services/ingest_profiles/netx360.py](services/ingest_profiles/netx360.py) that flattens nested account sections into a single table with added `Account Name` / `Number` / `Type` columns).
 
-**Implementation:**
-- New `services/ingest_profiles/` directory containing per-vendor YAML/JSON profiles. Each profile declares: file signature (filename glob, presence of telltale strings, distinctive column set), preamble row count, header row offset, column → semantic role map, type overrides, doc-level metadata extractors.
-- At ingest time, run profile detection first. If a profile matches, apply it deterministically. Otherwise fall back to P0.1/P0.2/role-from-name heuristics.
-- Ship initial profiles for **Pershing first** (see below), then Schwab (Holdings, Unrealized G/L, Realized G/L, Transactions), Fidelity (Positions, History), and Vanguard (Holdings, Activity).
-- Profiles are plain data files — easy for users (or future you) to add new vendors without code changes.
+**Open:** Long-tail vendors — Raymond James, LPL, Edward Jones, Morgan Stanley, custom CRMs. Add as customer pull demands; no value in pre-building speculative profiles. Profiles are plain YAML, so future advisors (or future you) can add new vendors without code changes.
 
-#### Pershing / NetX360 profiles (first priority — first advisor customer)
+### P0.5 — LLM-assisted column role inference (narrow, deterministic-aggregation only) — ✅ Shipped
 
-Two distinct export formats analyzed from real advisor files:
+LLM inference earns its keep in one narrow place: when `compute_portfolio_metric` has to act on column semantics deterministically without an LLM in the loop. Every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `search_collection`, `get_document_context`) is role-agnostic — raw headers pass through untouched and the calling LLM handles semantics.
 
-**Pershing Unrealized Gain/Loss (flat CSV)**
-- Exported as `Unrealized+Gain+Loss_<account>.xlsx - ExportExcel.csv`
-- 9 preamble rows: title, blanks, single-cell "Key: Value" metadata (`Quote Type`, `Cash Included`, `View type`, `All values in USD`, `As Of` timestamp)
-- Header at row 9: 20 columns — `Security Description`, `Security Identifier`, `Quantity`, `Projected Annual Income`, `Current Yield`, `Gain/Loss`, `Gain/Loss %`, `Trade Date`, `Unit Cost`, `Last Price`, `Market Value`, `Tax`, `Current Total Cost`, `Security Type`, `% of Portfolio`, `Symbol`, `Original Quantity`, `Original Total Cost`, `Original Adjusted Cost`, `Interest`
-- P0.1 header detection already handles this correctly. Profile adds: column → semantic role map, type overrides, sentinel detection.
-- **Numeric quirks (P0.2):** comma-thousands (`"1,591.20"`), parenthetical negatives (`"(408.80)"`), `"-"` for unavailable, `"Provide"` for missing cost basis
-- **Lot-level rows:** same symbol appears N times (one per tax lot); rolled-up rows use `"Multiple"` as trade date
-- **Footer:** `TOTAL` row followed by blank rows and multi-paragraph `Disclaimers` section — must be stripped before ingest
-- File signature: first row contains `"Unrealized Gain Loss"`, or filename matches `Unrealized*Gain*Loss*`
-
-**NetX360 "Holdings by Investor" (hierarchical CSV — needs pre-processor)**
-- Exported as `HBIL<id>.csv` from NetX360 platform
-- **Not flat tabular data.** Hierarchical multi-account report that repeats per account:
-  1. `Account Name,,,Account Number,,Account Type` row
-  2. Optional insurance/annuity metadata block: product name, carrier, status, policy values (Cost Basis, Death Benefit, Surrender Value, FWA, etc.), policy dates (issue, maturity, surrender expiration), party info (SSN, DOB, address), beneficiaries
-  3. `ASSET,,,,,,,,TICKER,,ASSET TYPE,,MGT. NAME,,QUANTITY,,PRICE ($),VALUE ($)` header row
-  4. Asset data rows (position-level, no tax lots)
-  5. `Account Total:,,,,,,,,,,,,,,,,,,"$X"` row
-- Final `total` row at bottom
-- Account types observed: Transfer On Death (Individual), IRA, General, Trusts, Trust, Retirement Account IRA
-- Insurance products: variable annuities (Lincoln, Forethought), equity indexed annuities (Pacific Life)
-- P0.1's flat header detection **cannot handle this** — multiple `ASSET` header rows interspersed with account metadata
-- **Profile must implement a pre-processing step** that:
-  1. Detects the NetX360 signature: row 0 contains `"Report Type"`, row 1 contains `"Holdings by Investor"`
-  2. Iterates account sections by scanning for `Account Name` rows
-  3. Extracts account metadata (name, number, type) and optionally insurance/policy info
-  4. Collects asset rows from each section
-  5. Flattens into a single table with added columns: `Account Name`, `Account Number`, `Account Type`
-  6. Strips `Account Total` and final `total` rows
-- File signature: filename matches `HBIL*`, or first two rows contain `"Report Type"` and `"Holdings by Investor"`
-- Test fixture: `tests/fixtures/ingest/netx360_holdings_by_investor.csv`
-
-### P0.5 — LLM-assisted column role inference (narrow, for deterministic aggregation only) — 🟡 Partial
-
-> **Blocked on P0.0.** This feature sends column names and sample cell values to an external LLM. Sample values may contain PII/CUI (account numbers embedded in column headers, names in the first data row, etc.). P0.0's redaction layer must be applied to the sample values before they leave Finn. Do not ship P0.5 until P0.0 is verified end-to-end.
-
-> **Scope reframed:** Original plan called for an upload UI where the user accepts/edits/rejects LLM-proposed role mappings. That's been **cut** — see reasoning below.
-
-**What this is for and what it isn't:**
-
-The calling LLM (Claude, ChatGPT) will translate cryptic column headers on its own when it sees the data. `Hldg_USD` → "market value in USD" is trivial for a frontier model; we don't need to pre-solve that for it. Role inference earns its keep in exactly one narrow place: when an MCP tool in Finn has to act on column semantics deterministically without an LLM in the loop — specifically `compute_portfolio_metric` and any future aggregation primitives that take a metric name (`top_holdings`, `breakdown_by_sector`, etc.) rather than raw SQL.
-
-For every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `search_collection`), raw column headers go through untouched and the calling LLM handles semantics. That surface is already role-agnostic — [mcp_server.py:803-809](services/mcp_server.py#L803-L809) already instructs the LLM to fall back to `aggregate_table`/`query_table` when `financial_roles` is absent.
-
-**Implementation (revised):**
-- Keep the existing ingest-time LLM inference pass at [services/llm_role_inference.py](services/llm_role_inference.py), gated behind `enable_llm_schema_inference` (already done). Runs only when ≥threshold of columns are still unmapped after vendor profiles and heuristics.
-- Presidio-redact all sample values before transmission (already done) — wire `collection_id` through from [services/structured_store.py:596](services/structured_store.py#L596) so per-collection Presidio profiles apply.
-- **No accept/edit/reject UI.** Users don't review role mappings. If the LLM guesses wrong, the only blast radius is `compute_portfolio_metric` returning wrong numbers for that table — which is unacceptable, so instead:
-- **Confidence-gated application with fail-closed semantics.** When confidence is below threshold or inference fails, leave `role` null for that column. `compute_portfolio_metric` already checks for required roles and returns a structured error when absent — the calling LLM falls back to `query_table` and computes the metric itself from raw data. This is the "degrade to raw-data tools, never guess and pretend" rule from the strategic frame.
-- **Surface inferred-vs-detected provenance in `get_table_schema`.** Each role should carry a source: `"profile"`, `"heuristic"`, `"llm"`, or null. The calling LLM can then choose to trust or discount LLM-inferred roles when deciding whether to call `compute_portfolio_metric`.
-- Profile bootstrapping (LLM resolutions becoming candidate profiles for future files) is deferred — only revisit if long-tail unknown vendors become a real usage pattern.
-
-**Audit task before declaring P0.5 done:**
-- Confirm every MCP tool other than `compute_portfolio_metric` returns correct data when `financial_roles` is empty. `query_table`, `get_table_rows`, `aggregate_table`, `search_collection`, `get_document_context` should all be role-agnostic. Any place that silently depends on a role is a bug.
-- Add a test that ingests a file with completely unknown headers and verifies (a) `query_table` returns correct rows with raw headers, (b) `compute_portfolio_metric` returns a structured "no role detected, use query_table" error rather than an empty result or a wrong number.
+[services/llm_role_inference.py](services/llm_role_inference.py) runs only when ≥threshold of columns are still unmapped after vendor profiles and heuristics. Sample values are Presidio-redacted before transmission via the per-collection profile (`collection_id` threaded through from [services/indexing/indexer.py](services/indexing/indexer.py)). Confidence-gated and fail-closed: low-confidence → leave `role` null → `compute_portfolio_metric` returns a structured `{"error": "no_role_detected", ...}` and the calling LLM falls back to `query_table`. Each role carries a `role_source` (`profile` / `heuristic` / `llm` / null) surfaced in `get_table_schema` so callers can discount LLM-inferred roles. Regression coverage: 13 tests in [tests/test_role_provenance.py](tests/test_role_provenance.py).
 
 ### P0.6 — Numeric sanity guards on aggregates — ❌ Open
 
@@ -307,277 +96,242 @@ For every other tool (`query_table`, `get_table_rows`, `aggregate_table`, `searc
 - On failure, attach `warnings: ["aggregation_likely_lost_precision: column X looks numeric but is stored as TEXT"]` to the response. Don't suppress the result, but never ship it without the warning.
 - Same guard fires inside the SQL execution path in [services/structured_store.py](services/structured_store.py) — if a query SUMs a TEXT column that contains digit+comma values, warn.
 
-### P0.7 — Regression suite of real exports — 🟡 Partial (tests green; NetX360 HBIL fixture still missing)
+### P0.7 — Regression suite of real exports — ✅ Shipped
 
-**Problem:** Without test fixtures of real broker/bank exports, every fix to the ingestion path risks breaking another vendor's format.
+Five anonymized fixtures in [tests/fixtures/ingest/](tests/fixtures/ingest/) (Pershing, Schwab, Fidelity, Vanguard, NetX360 HBIL); frozen snapshots in [tests/fixtures/snapshots/](tests/fixtures/snapshots/) capture column count, headers, types, role map, role provenance, vendor profile, and `total_market_value`. Diff helper at [tests/_snapshot_helper.py](tests/_snapshot_helper.py); reseed via `UPDATE_SNAPSHOTS=1 pytest`. Parametrized `test_fixture_snapshot` in [tests/test_ingest.py](tests/test_ingest.py).
 
-**Implementation:**
-- Create `tests/fixtures/ingest/` with at least one anonymized export per supported vendor. Real-shaped data, fake names/account numbers.
-- **Already started:** `tests/fixtures/ingest/pershing_unrealized_gl.csv` (Pershing flat G/L). Next: NetX360 Holdings by Investor, Schwab Unrealized G/L, Fidelity Positions, Vanguard Holdings.
-- For each fixture, snapshot the expected: detected header row, column count, role map, type map, and a few canonical aggregates from `compute_portfolio_metric`.
-- CI runs the full ingestion path against every fixture and asserts the snapshot. Any drift requires explicit acceptance.
-- This is the only thing keeping the "never silently wrong" bar honest over time.
+### P0.8 — PDF table extraction — ✅ Shipped
 
-### P0.8 — PDF table extraction (promoted from old v4.3) — ❌ Open
+Many custodians ship statements as PDF, not CSV. Before P0.8 there was no path from a PDF statement to `HoldingsStore`; advisors who only had the PDF couldn't use `compute_portfolio_metric` or `query_table` against their own data.
 
-**Problem:** Many custodians ship statements as PDF, not CSV. Today there's no path from a PDF statement to `structured_store`.
+**What shipped:**
+- New `DocumentExtractor.extract_pdf_tables(pdf_path)` in [services/document_extractor.py](services/document_extractor.py) walks every page calling `pdfplumber.page.extract_tables()`, normalizes ragged rows, runs the same `_detect_header_row` / preamble metadata sniffing as CSV/XLSX, and folds each table through `_dataframe_to_sheet` so PDF cells get the same NaN handling, repeated-header skipping, numeric inference, and `row_texts` formatting as the tabular paths. Output shape is identical to `extract_tabular_sheets()` (`columns`, `rows`, `row_texts`, `document_metadata`, `role_overrides`, `type_overrides`, `vendor_profile`).
+- Indexer wiring in [services/indexing/indexer.py](services/indexing/indexer.py): for `.pdf` inputs, `index_document_with_progress` calls `extract_pdf_tables` *before* falling through to the text-extraction path. Detected sheets flow through a new `_register_pdf_tables_in_holdings_store` helper that mirrors the PII pre-flight + `HoldingsStore.create_table` boundary used by CSV/XLSX. Prose text continues to chunk through the regular text path — both outputs land under one document record (acceptance criterion: tables AND text are not mutually exclusive).
+- Vendor profile activation works for PDFs: `_head_lines` in [services/ingest_profiles/__init__.py](services/ingest_profiles/__init__.py) detects `.pdf` and reads body text via pdfplumber, so the Schwab Unrealized profile's `required_strings: ["Unrealized Gain"]` check matches a PDF statement the same way it matches the CSV. Schwab/Pershing/Fidelity/Vanguard PDFs with the same column shape as their CSV cousins land identically.
+- Low-confidence guard: tables with fewer than 2 columns OR 2 data rows after header detection are skipped. Prose-only PDFs return an empty sheet list and the indexer falls through cleanly — no regression on text-only PDFs.
+- 21 regression tests in [tests/test_pdf_table_extraction.py](tests/test_pdf_table_extraction.py) using a programmatically-generated reportlab fixture: extraction shape, role mapping (ticker / market_value / cost_basis / pnl), currency string coercion (`$21,900.00` → REAL), accounting-negative round-trip (`($3,885.00)` → -3885.00), lot-rollup VIEW auto-creation, vendor profile activation, and the indexer's helper short-circuiting on prose-only PDFs.
 
-**Implementation:**
-- Detect tables in PDFs (candidate libraries: `camelot`, `tabula-py`, or an LLM vision pass) and route them through the same header-detection / numeric-coercion / role-mapping pipeline as CSV.
-- Same vendor profiles apply — a Schwab PDF statement should land identically to a Schwab CSV.
-- Charts/figure extraction stays out of scope for now.
-
-### Status of items already in the previous v4.1 batch
-
-The collection-guide / `find_in_documents` / `rows_jsonl` / `identifier` disambiguation / `suggested_next_tools` items are still valid and pair naturally with the new ingestion work, but they move to **v4.3 (MCP surface polish)** below. None of them matter if the underlying data is wrong.
-
-**Already shipped:**
-- `REPLACE` removed from `_FORBIDDEN_KEYWORDS` ([services/structured_store.py:224](services/structured_store.py#L224)) so agents can use SQLite string functions to clean numeric strings as a workaround until P0.2 lands.
-- **P0.1 (Smart header detection):** Implemented in [services/document_extractor.py](services/document_extractor.py). Header-sniffing pass using `csv` stdlib scans up to 30 raw rows, finds the first row that looks like text labels followed by a data-like row. Wired into all 5 tabular read sites (`_extract_csv`, `extract_csv_rows`, `extract_tabular_sheets` CSV + XLSX branches, `_extract_xlsx`). Preamble metadata extracted as key/value pairs (supports both `Key,Value` two-cell and `Key: Value` single-cell styles) and surfaced as `document_metadata` on the sheet dict. Verified against Pershing Unrealized G/L (header at row 9) and clean CSVs (no regression). First test fixture saved at `tests/fixtures/ingest/pershing_unrealized_gl.csv`.
+**Follow-up (out of P0.8 scope):** Docling secondary pass when pdfplumber yields low-confidence tables. pdfplumber-only meets the P0.8 acceptance bar; Docling layer adds value for scanned-statement PDFs (OCR-required) and lands when a customer hits a real low-confidence case.
 
 ---
 
 ## v4.2 — Enrichment data feeds as MCP tools — ✅ Shipped
 
-Most advisor questions ("what's in a downtrend?", "growth vs value?", "any CEO changes?") fundamentally need data Finn doesn't have. Each missing feed becomes a small, contained MCP tool.
+Pluggable `MarketDataProvider` interface (default: yfinance) with four read-only MCP tools — all live in [services/market_data/](services/market_data/) and [services/mcp_server.py](services/mcp_server.py):
 
-### `get_price_history(symbol, start, end, interval='1d')`
+- `get_price_history(symbol, start, end, interval)` — time-series; caches by `(symbol, start, end, interval)` with TTL
+- `get_security_classification(symbol)` — sector / industry / asset class / mkt cap bucket
+- `get_corporate_events(symbol, since, types)` — SEC EDGAR filings + dividend/split/earnings
+- `enrich_holdings(collection_id)` — composite; walks the holdings table, calls the three above per distinct symbol, returns a joined view
 
-- Backed by `yfinance` initially (free, no auth). Swappable to Polygon / Tiingo / Alpha Vantage behind a backend setting once a paying user needs intraday or longer history.
-- Returns a small JSON time series. Caches by `(symbol, start, end, interval)` in the existing app DB with a TTL.
-- Unblocks: "what's in a downtrend?", momentum screens, drawdown analysis, "show me the chart" questions.
-
-### `get_security_classification(symbol)`
-
-- Returns sector, industry, market cap bucket, country, asset class, and (where available) Morningstar-style box. Backed by `yfinance` `info` initially; can layer a static reference file for higher quality.
-- Unblocks: "growth vs value?", sector breakdowns that don't depend on the source file having a sector column, concentration analysis.
-
-### `get_corporate_events(symbol, since, types=['8-K', 'dividend', 'split', 'merger'])`
-
-- Pulls SEC EDGAR (free, no key) for filings; pulls dividend/split/earnings calendars from `yfinance`.
-- Unblocks: CEO changes, M&A exposure, dividend cut detection. The CEO-changes question that previously required a 42-ticker web search subagent becomes a single tool call.
-
-### `enrich_holdings(collection_id)` — composite convenience tool
-
-- Walks the holdings table for a collection, calls the three tools above for every distinct symbol, returns a joined view.
-- This is the killer because it makes every existing portfolio file *vastly* more answerable without changing how files come in.
-- Caches aggressively — re-running the same collection after an hour should be near-instant.
-
-### Design notes
-
-- All four tools are read-only, free-tier-backed by default, and contained. No tool requires a paid API key to ship the first version.
-- Each tool's docstring explicitly tells the calling agent when to use it (e.g. `get_price_history`: "use when the user asks about trends, momentum, drawdowns, or any time-series question that requires data beyond the current snapshot in the collection").
-- Costs (when paid feeds are wired up) go in a per-collection budget setting so a runaway agent can't blow through an API quota.
+Provider abstraction lets v5 swap to Polygon / Tiingo / Alpha Vantage behind a setting without touching tool docstrings or schemas.
 
 ---
 
-## v4.3 — MCP surface polish (shipped)
+## v4.3 — MCP surface polish — ✅ Shipped
 
-All five items below shipped together — small, contained improvements to the calling-LLM experience. Regression coverage: [tests/test_v43_mcp_polish.py](tests/test_v43_mcp_polish.py).
+Five contained improvements to the calling-LLM experience, all in [services/mcp_server.py](services/mcp_server.py) + [services/structured_chat.py](services/structured_chat.py); regression coverage in [tests/test_v43_mcp_polish.py](tests/test_v43_mcp_polish.py):
 
-### Per-collection guide memory — shipped
-
-User-editable markdown blob per collection. Stored on the `collections` table in a new `guide TEXT` column (migration in both SQLite and Postgres backends). Full text returned by `get_collection_info()`; a ≤500-char summary is inlined into every `search_collection` response as `collection_summary.guide_summary` so it travels with retrieval. Frontend textarea wired into the existing Edit Collection modal in [frontend/src/App.vue](frontend/src/App.vue).
-
-**Why it paid off:** agents using Claude Desktop lose context between sessions. A guide that travels with every tool response is the cheapest way to give Finn durable memory. Next improvement (deferred): default-template seeding on collection creation.
-
-**Cross-link with v4.6:** the client profile object below is the structured cousin of this. The guide is freeform markdown ("how to think about this collection"); the profile is typed fields ("risk_tolerance: moderate"). They coexist — the guide is for narrative, the profile is for primitives.
-
-### `find_in_documents(pattern, case_sensitive=False, collection_id=None, max_results=20)` — shipped
-
-New MCP tool at [services/mcp_server.py](services/mcp_server.py). Does a literal substring scan against every indexed chunk via `metadata_store.get_all_chunks_ordered()`. Returns filename, page, chunk_id, character offset, and an excerpt with the match wrapped in `«…»`. Docstring positions it as the right tool for exact strings, ticker symbols, CUSIPs, identifiers, and quoted phrases — contrasted against `search_collection` for concepts. The `literal` parameter is reserved for future regex support (currently always literal).
-
-### `rows_jsonl` → structured `rows` output — shipped
-
-`search_collection` now emits `structured_tables[].columns` + `structured_tables[].rows` (list of lists, display-name headers) for every inlined small table. `rows_jsonl` is kept as a fallback for inlined tables with more than 50 rows so very wide × tall tables don't bloat the response when a JSONL representation is more compact. Helper: new `render_table_as_rows()` in [services/structured_chat.py](services/structured_chat.py), used by the existing `render_table_as_jsonl()`.
-
-### Disambiguate the overloaded `identifier` parameter — shipped
-
-`get_table_schema`, `get_table_rows`, `compute_portfolio_metric`, and `aggregate_table` all now accept `identifier_type: Literal["table_name", "filename", "document_id"] | None = None`. When provided, `StructuredStore.get_schema` restricts the SQL lookup to that one column instead of searching all three. Default (`None`) is auto-detect — fully backwards compatible.
-
-### `suggested_next_tools` hints in responses — shipped
-
-`search_collection` detects numeric intent (`total`, `sum`, `average`, `mean`, `count`, `top N`, `breakdown`, etc. matched on word boundaries so "summarize" doesn't trigger "sum") and exact-match intent (double-quoted substrings, `verbatim`, `literal`, `exact`) in the query string. When detected, the response includes `suggested_next: [{tool, reason}, ...]` pointing at `list_tables` for numeric questions and `find_in_documents` for verbatim lookups. Pure bonus signal — hosts that ignore it still work.
+- **Per-collection guide memory** — user-editable markdown stored on `collections.guide`. Full text via `get_collection_info()`; ≤500-char summary auto-inlined into every `search_collection` response as `collection_summary.guide_summary` so it travels with retrieval. The freeform cousin of v4.6's typed client-profile object.
+- **`find_in_documents`** — literal substring scan across indexed chunks for exact identifiers, tickers, CUSIPs, quoted phrases. Returns filename, page, chunk_id, offset, and an excerpt with the match wrapped in `«…»`.
+- **`rows_jsonl` → structured `rows`** — `search_collection` emits `structured_tables[].columns` + `rows` (list of lists, display headers); `rows_jsonl` kept as a fallback for tables > 50 rows.
+- **`identifier_type` disambiguation** — `get_table_schema` / `get_table_rows` / `compute_portfolio_metric` / `aggregate_table` accept an optional `identifier_type: "table_name" | "filename" | "document_id"`; default is auto-detect (backwards compatible).
+- **`suggested_next` hints** — `search_collection` detects numeric / exact-match intent in the query and emits `suggested_next: [{tool, reason}]` pointing at `list_tables` or `find_in_documents`. Bonus signal; hosts that ignore it still work.
 
 ---
 
 ## v4.4 — In-app chat surface (primary product surface) — ✅ Shipped
 
-The wedge that turns Finn from "data layer behind an MCP endpoint" into "the tool advisors actually open every morning." Until this shipped, every demo required Claude Desktop or Cursor — a setup step that killed trial-to-usage conversion more than once.
+The wedge that turned Finn from "data layer behind an MCP endpoint" into "the tool advisors open every morning." `POST /api/chat/stream` (SSE) runs the provider's native tool-use loop (Anthropic + OpenAI, up to 8 iterations) and emits `tool_start` / `tool_end` / `thinking` / `text_delta` / `sources` / `done` events. Live tool-call cards in the chat bubble, streaming text, redaction summary panel, BYO-key settings, per-collection tool scoping, unified tool registry across in-app chat + MCP clients. `/brief` slash command + "Generate Meeting Brief" quick action via `POST /api/collections/{id}/brief`.
 
-**Non-goal: build a chat app.** We do not compete with Claude Desktop or ChatGPT on branching, regeneration, artifact rendering, image analysis, or any other chat-UX surface. We build the smallest possible chat that lets an advisor point at their collection and get the Finn tool set through a frontier model.
+**Acceptance test:** the full Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) runs end-to-end in Finn's chat tab, no Claude Desktop required.
 
-### Architecture
-
-- **Backend chat adapter** (new module, `services/chat_adapter.py` or similar). Runs the provider's native tool-use loop:
-  1. Take the conversation (list of messages) + a `tools` array derived from the existing MCP tool registry.
-  2. Call the provider API (Anthropic Messages API or OpenAI Responses API, depending on which key the user configured).
-  3. When the provider asks for a tool call, dispatch it to the existing tool function — same path, same redaction middleware.
-  4. Append the tool result and loop until the provider stops asking for tools.
-  5. Stream tokens back to the frontend via SSE.
-- **No reimplementation of conversation state, streaming, or tool-call orchestration.** The `anthropic` and `openai` SDKs already ship these. Our job is the tool-registry translator and the dispatcher.
-- **Conversation memory** = the messages array the provider consumes. No new storage format. If we later want conversation history beyond one session, persist the messages array as-is.
-- **Per-collection tool scoping.** When a conversation is bound to a collection, the tool list filters to that collection's tables/documents. Smaller provider-side context; clearer tool-call behavior.
-- **Unified tool registry.** Both surfaces (in-app chat and external MCP client) call into the same set of primitives. No forking, no feature drift.
-
-### Configuration
-
-- BYO-key settings panel in the frontend: Anthropic API key, OpenAI API key, default provider, default model, default collection.
-- Keys stored locally (OS keyring or encrypted `.env`), never sent anywhere except the configured provider.
-- Provider selection is per-conversation with a sensible default; switching providers mid-conversation is not supported in v1.
-
-### UI
-
-- Extend the existing chat tab in [frontend/src/App.vue](frontend/src/App.vue) rather than building a new page.
-- Streaming tokens, tool-call indicators (cheap "calling `search_collection`..." status), and a collapsible redaction-summary panel so the advisor can see what was stripped before each outbound call.
-- No thread branching, no regeneration, no message editing in v1 — these are chat-app features, not data-layer features.
-
-### What shipped (2026-04-17)
-
-- **`POST /api/chat/stream`** — SSE streaming endpoint that emits `tool_start`, `tool_end`, `thinking`, `text_delta`, `sources`, and `done` events as the agent works. The full native tool-use loop (Anthropic + OpenAI, up to 8 iterations) runs in this path with real-time feedback; Ollama/ReAct path also emits tool-start/end events.
-- **Live tool-call cards** — As each tool fires, a card appears in the chat bubble with a spinning indicator and "running…" label. The card resolves with results when the call returns.
-- **Streaming text** — The final response streams word-by-word into the bubble instead of appearing all at once after a 15–30 second wait.
-- **Streaming cursor** — Blinking cursor at the end of in-flight text.
-- **`POST /api/collections/{id}/brief`** — Dedicated REST endpoint calling `brief_generator.py` directly (no token cost).
-- **`/brief` slash command** — Type `/brief` or click "Generate Meeting Brief" to instantly generate a structured one-page portfolio summary (household snapshot, accounts, top positions, tax-loss candidates, concentration alerts, cash drag, sector allocation).
-- **"Generate Meeting Brief" quick-action button** — Surfaces on the empty-chat state as a one-click shortcut to the brief.
-
-### Acceptance test
-
-The full Henderson walkthrough in [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) runs end-to-end entirely inside Finn's chat tab, no Claude Desktop required. Live tool-call indicators visible during every query. /brief produces the one-page meeting brief in under 30 seconds.
-
-### Out of scope (stays in the MCP endpoint path)
-
-- MCP client config generators (Claude Desktop JSON, Cursor `.vscode/mcp.json`) stay for power users but stop being the hero path. Moves to v4.7 (Distribution).
-- Any feature that duplicates provider UX (artifact rendering, image input, voice, file attachments beyond the existing upload flow).
+**Non-goals (stay in MCP path / out of scope):** chat-app features (branching, regeneration, artifact rendering, voice, image input). MCP client config generators (Claude Desktop JSON, Cursor `.vscode/mcp.json`) move to v4.7.
 
 ---
 
-## v4.4.1 — Chat orchestration deepening (in progress)
+## v4.4.1 — Chat orchestration deepening — ✅ Mostly shipped
 
-The orchestration loop that drives `/api/chat/stream` was extracted from `main.py` (where it had been duplicated across a streaming and non-streaming endpoint, ~920 LOC of god-endpoint) into a focused [services/chat/](services/chat/) package. The remaining work is the Phase 2 follow-ups that the deepening unlocks. Use this section as the cold-pickup point for chat-engine work.
-
-### Status snapshot
+Orchestration loop extracted from `main.py` (~920 LOC of god-endpoint) into a focused [services/chat/](services/chat/) package — `engine.py` (`AgenticEngine`, `OneShotEngine`, `ChatTurn`, `collect`), `context.py` (`build_chat_turn`), `think_tags.py`. Five items shipped + one deferred:
 
 | Item | Status | Notes |
 |---|---|---|
-| Engine + context extraction | ✅ Shipped | `services/chat/engine.py` (`AgenticEngine`, `OneShotEngine`, `ChatTurn`, `collect`, `complete_one_shot`) + `services/chat/context.py` (`build_chat_turn`). `/api/chat` (non-streaming) deleted; `/api/chat/stream` rewritten as 113-LOC shell; `/api/ask`, `/api/notes`, `/api/followup` all route through `complete_one_shot`. CONTEXT.md gained the chat orchestration glossary. |
-| Real provider token streaming | ✅ Shipped | `AIProvider.stream_chat` / `AIProvider.stream` with real implementations on Anthropic (`messages.stream`), OpenAI (`stream=True` + `include_usage`), and Ollama (`/api/chat stream=true`). All other providers inherit OpenAI's. Engine re-issues the final-answer turn through `stream_chat` so tokens arrive at the model's actual generation rate; thinking-text fallback when streaming fails mid-flight. |
-| Engine unit tests | ✅ Shipped | `tests/_fake_ai_provider.py` + `tests/test_chat_engine.py` (15 tests). Cover natural termination, iteration cap → forced streaming pass, forced-pass failure fallback, thinking fallback when streaming dies, provider error propagation, usage accumulation, ReAct path, one-shot streaming, collect() drainage, and the AIProvider non-streaming default. |
-| SSE for slash commands | ✅ Shipped | `/api/collections/{id}/notes/stream` and `/api/collections/{id}/followup/stream` forward `run_one_shot` events as SSE. ChatTab swaps the streamed preview for the redacted final on `done`. JSON variants kept for non-UI callers (SearchTab, external scripts). |
-| Whole-loop streaming | ❌ Phase 3 — deferred | Model emits `tool_calls` and `text` mid-stream so long tool sequences feel alive, not just the final answer. Only meaningful once users complain about long tool sequences feeling frozen — until then the real per-token streaming on the final answer is enough. |
-
-### Real provider token streaming — ✅ Shipped
-
-[services/chat/engine.py](services/chat/engine.py) now consumes real provider streaming via `AIProvider.stream_chat` (chat-history, no tools) and `AIProvider.stream` (single-prompt). Implementations:
-
-- `AnthropicProvider.stream_chat` — `client.messages.stream`; `text_stream` for deltas, `get_final_message().usage` for token counts.
-- `OpenAIProvider.stream_chat` — `chat.completions.create(stream=True, stream_options={"include_usage": True})`; tolerates compat providers that reject `stream_options` by retrying without it. All sub-providers (Grok, Google, GitHub Models, Ollama Cloud, OpenAICompatible) inherit it.
-- `OllamaProvider.stream` — native `/api/chat stream=true` over chunked JSON.
-- The base `AIProvider.stream_chat` / `stream` ship a non-streaming default that emits one full-text delta + `done`, so any provider that hasn't been upgraded still works (no per-token feedback, but the call doesn't break).
-
-**Decision point resolved:** the agentic loop keeps `complete_with_tools` for tool-call iterations and re-issues a single streaming `stream_chat` call for the final-answer turn — one extra LLM call per chat turn (the non-streaming detection call from the loop is the safety net if streaming fails mid-flight). Whole-loop streaming stays Phase 3.
-
-**Acceptance test:** advisor sees tokens arrive at the model's actual generation rate. Engine unit tests in [tests/test_chat_engine.py](tests/test_chat_engine.py) cover the streaming path against a `FakeAIProvider`; the Henderson walkthrough is the manual smoke test.
-
-### SSE for slash commands — ✅ Shipped
-
-Backend: [main.py](main.py) exposes `POST /api/collections/{id}/notes/stream` and `POST /api/collections/{id}/followup/stream` alongside the JSON variants. Both call shared prompt helpers (`_build_notes_prompt`, `_build_followup_prompt`) and a shared SSE generator (`_stream_one_shot_with_redaction`) that drives `run_one_shot`. The wire vocabulary matches `/api/chat/stream` — `text_delta`, `done`, `error` — and the `done` event carries the redacted final text under `content` so PII scrubbing still happens at the output boundary even though raw deltas streamed through.
-
-Frontend: [frontend/src/utils/slashCommands.js](frontend/src/utils/slashCommands.js) gained `isStreamingSlashCommand` + `streamSlashCommand` (callback-shaped: `onDelta`, `onDone`, `onError`). `runInlineSlashCommand` in [frontend/src/components/ChatTab.vue](frontend/src/components/ChatTab.vue) routes `/notes` and `/followup` through the streaming path; other commands stay on the existing JSON path. `chatStore.finalizeStreamingMessage` accepts an optional `content` overwrite so the saved bubble swaps from the raw stream to the redacted final.
-
-JSON variants are retained for non-UI callers (SearchTab keeps using them, as do external scripts hitting the API directly).
-
-### Whole-loop streaming — ❌ Phase 3 (deferred)
-
-Drive the entire agentic loop on streaming primitives so `tool_calls` and `text` flow as the model produces them — lets the UI render "calling `query_table`…" before the model even finishes deciding. Largest change in the engine; the OpenAI/Anthropic streaming SDKs both expose mid-stream tool-call accumulation but the wiring is non-trivial.
-
-**Defer until users feel pain.** With real per-token streaming on the final answer (above) the slow path is already addressed. The remaining gap — slight delay before tool-call cards appear during multi-tool turns — is only worth fixing if advisors complain about long tool sequences feeling frozen. Until then, the extra complexity isn't earned.
-
-### Engine unit tests — ✅ Shipped
-
-[tests/test_chat_engine.py](tests/test_chat_engine.py) drives the engine against [tests/_fake_ai_provider.py](tests/_fake_ai_provider.py), a scriptable `AIProvider` that queues responses for `complete_with_tools` / `complete` / `stream_chat` / `stream`. 15 tests covering:
-
-- Native-tools loop terminating on a no-tool turn (with streaming final answer).
-- Thinking events emitted alongside tool calls.
-- Iteration cap hit → forced streaming final-answer pass with the "Do not call any more tools" suffix.
-- Forced pass failure → deterministic "couldn't settle on a final answer" fallback.
-- Streaming failure mid-natural-termination → falls back to the non-streaming detection call's text.
-- Provider error during the loop → `error` event propagated cleanly.
-- Usage accumulation across iterations + the streaming pass.
-- ReAct fallback for non-native-tool providers.
-- One-shot streaming + error propagation.
-- `collect()` drainage of all event types into the legacy response shape.
-- The `AIProvider` non-streaming default (one delta + done) for `stream_chat` and `stream`.
+| Engine + context extraction | ✅ Shipped | `/api/chat/stream` rewritten as a 113-LOC shell; `/api/ask`, `/api/notes`, `/api/followup` route through `complete_one_shot` |
+| Real provider token streaming | ✅ Shipped | `AIProvider.stream_chat` / `.stream` with real impls on Anthropic (`messages.stream`), OpenAI (`stream=True + include_usage`), Ollama (`/api/chat stream=true`); base class ships a non-streaming default so any provider works |
+| SSE for slash commands | ✅ Shipped | `/api/collections/{id}/notes/stream` + `/followup/stream` forward `run_one_shot` events; `done` event carries redacted final text so PII scrubbing still happens at the output boundary |
+| Engine unit tests | ✅ Shipped | [tests/test_chat_engine.py](tests/test_chat_engine.py) — 15 tests against [tests/_fake_ai_provider.py](tests/_fake_ai_provider.py); covers natural termination, iteration cap, forced streaming pass, fallback paths, ReAct, one-shot streaming, error propagation |
+| Whole-loop streaming | ❌ Phase 3 — deferred | Mid-stream `tool_calls` + text. Defer until users complain about long tool sequences feeling frozen — real per-token streaming on the final answer is enough today |
 
 ---
 
-## v4.4.2 — Provider capability clarity (urgent — test users this week)
+## v4.4.2 — Provider capability clarity — ✅ Shipped
 
-The provider abstraction had one capability bit (`supports_native_tools()`) and three implicit ones (vision via `try/except`, streaming via fallback, context window not modeled). Failures surfaced as opaque mid-chat 404s and `model "" not found` errors instead of clear, upfront refusals — see the empty-model bug fixed in [services/chat/context.py:148](services/chat/context.py#L148) for the worst case. With Bank of America visibly building the same shape of product internally, the time to land a clean BYO-key experience for outside test users is now, not after v4.5.
-
-### Status snapshot
-
-| Item | Status | Notes |
-|---|---|---|
-| `ProviderCapabilities` dataclass + `KNOWN_MODELS` map | ✅ Shipped | Central source of truth at [services/ai_service.py](services/ai_service.py) — tools/vision/streaming/context_window per model id. Unknown models surface as `null` rather than guessed `True`. |
-| `capabilities()` on every provider | ✅ Shipped | Anthropic / OpenAI / Grok / Google / GitHub / OllamaCloud → tools=True (looked up). Ollama local → tools=False (ReAct fallback). OpenAICompatible → tools=`null` until probed. |
-| `probe_capabilities()` — live tool-call ping | ✅ Shipped | Anthropic + OpenAI providers fire a one-shot `ping` tool call against the configured model during validate. Sets `probed=True` + `tools=true/false` based on the actual response. Catches the "claims OpenAI-compat, can't actually do tools" trap. |
-| Engine refuses unsupported configurations | ✅ Shipped | [services/chat/engine.py](services/chat/engine.py) `run_agentic` checks `turn.model` and `capabilities().tools` upfront; emits a clear `error` event before the first provider call instead of letting it 404 mid-loop. |
-| Capability surfacing in settings UI | ✅ Shipped | [frontend/src/components/SettingsTab.vue](frontend/src/components/SettingsTab.vue) shows a per-provider capability strip after validate: ✓/✗/? for tools, vision, streaming, plus context window and notes. Tool-incapable models get an inline warning that chat falls back to ReAct. |
-| Empty-model bug | ✅ Fixed | [services/chat/context.py:148](services/chat/context.py#L148) sets `model=provider.QUALITY_MODEL` on `ChatTurn`. Prior to fix, `/api/chat/stream` against any OpenAI-compatible provider hit `model "" not found` 404s. |
-| Smoke test against tool-incapable + capable models | 🟡 In progress | Verifying upfront refusal vs successful chat against (a) a known-good Anthropic key, (b) a deliberately-capable openai_compatible model, (c) Ollama local (ReAct path). |
-
-### What this gives test users
-
-1. **Plug a key, see what you get.** Settings panel shows ✓ tool calling / ✓ vision / ✓ streaming / ctx 200k *as soon as the key validates* — not after a chat fails three minutes later.
-2. **Clear refusal up front.** A model that can't do tool calling is rejected with a sentence the advisor can act on, not a stack trace.
-3. **Honest unknowns.** OpenAI-compatible custom endpoints surface `?` for unprobed capabilities and a note explaining what validation will discover.
-
-### Future work (not blocking test users)
-
-- **Streaming probe.** Currently we only probe `tools`. A streaming probe would catch endpoints that return 200 on `stream=True` but never send a delta. Defer until we see one in the wild.
-- **Per-tool capability gating.** Right now we have one `tools: bool`. Some models support function calling but not parallel tool calls; `compute_portfolio_metric` works fine on either, but a future composite tool might not. Add `parallel_tools: bool` only when a tool needs it.
-- **Model presets registry.** A small JSON file mapping known model ids → recommended role (chat-with-tools, rerank-fast, vision). The settings UI could offer curated picks. Worth doing once `KNOWN_MODELS` outgrows the dict in `ai_service.py` (~30 entries).
+Central `ProviderCapabilities` + `KNOWN_MODELS` map at [services/ai_service.py](services/ai_service.py); `capabilities()` on every provider; `probe_capabilities()` fires a one-shot `ping` tool-call against the configured model during validate to catch "claims OpenAI-compat, can't actually do tools." Engine refuses unsupported configurations upfront with a clear `error` event. Settings panel shows ✓/✗/? for tools / vision / streaming + context window per provider after validate.
 
 ---
 
 ## v4.4.3 — Advisor desktop UX (pilot-ready wrapper) — ✅ Shipped
 
-Spec lives at [`.kiro/specs/advisor-desktop-ux/`](.kiro/specs/advisor-desktop-ux/) — 10 requirements (R1–R10) + frontend rebrand sweep (§11) + pilot stability (§12). Tasks 1–12 shipped; only §13 manual e2e signoff remains, and that requires an interactive browser session (mic permission, print dialog) so it's an at-machine task, not an automatable one.
+Wired the existing backend primitives (vendor profiles, brief generator, Note of Record, redaction engine, Whisper transcription, expert/basic-mode flag) into a coherent pilot-ready advisor flow. Tasks 1–12 shipped; only §13 manual e2e signoff remains (at-machine — mic permission, print dialog).
 
-This is the layer that turns the v4.4 streaming chat + v4.5 transcription path into something a non-technical advisor can pick up on day one. The backend primitives existed; this batch wired them into coherent advisor workflows — onboarding, brief modal, Note of Record, recording from the header, Basic Mode, PII surfacing, error boundary, welcome-back card. Without it, every demo required hand-holding through Settings, Sources, and the chat surface.
+**What shipped:**
 
-### Status snapshot
+- **R1 — Onboarding:** 4-stage takeover ([WelcomeOnboarding.vue](frontend/src/components/WelcomeOnboarding.vue) + [validateKey.js](frontend/src/utils/validateKey.js)) with banner re-entry when no provider configured.
+- **R2 — Provider config in Settings:** Active badge, Test connection, auto-promote on success in [SettingsTab.vue](frontend/src/components/SettingsTab.vue); 401/403 chat banner.
+- **R3 — Collection summary card:** [services/collection_summary.py](services/collection_summary.py) + rollup-aware positions/accounts/most-recent-export display.
+- **R4 — Meeting Brief modal:** [BriefModal.vue](frontend/src/components/BriefModal.vue) with threshold strip, print stylesheet (`@media print` strips chrome, page-break-inside: avoid), source/freshness footer, labelled empty states.
+- **R5 — Chat polish:** Basic Mode tool suppression, missing-data rule, per-collection threads. Coverage in [tests/test_chat_tools_audit.py](tests/test_chat_tools_audit.py).
+- **R6 — Header-level recording:** [useMeetingRecorder.js](frontend/src/composables/useMeetingRecorder.js) composable + favicon/title swap + audio file-picker filter.
+- **R7 — Note of Record drafting:** [NoteOfRecordModal.vue](frontend/src/components/NoteOfRecordModal.vue) with redaction summary panel, post-transcription nudge banner, footer stamp via `_build_redaction_footer`.
+- **R8 — Basic Mode hardening:** Card-level visibility hides in Settings, [friendlyError.js](frontend/src/utils/friendlyError.js) 9-bucket error classifier, expert-only tabs ([tests/test_basic_mode_ui.py](tests/test_basic_mode_ui.py) pins shape).
+- **R9 — Privacy surfacing:** `GET /api/redactions/{summary,log}` + `POST /api/redactions/dry-run`; PII pill in chat + dry-run preview in Note of Record. Coverage in [tests/test_redaction_http.py](tests/test_redaction_http.py).
+- **R10 — Pilot stability:** [ErrorBoundary.vue](frontend/src/components/ErrorBoundary.vue), `/api/version` update banner, [WelcomeBackCard.vue](frontend/src/components/WelcomeBackCard.vue) (`days_since_last_active >= 7`).
+- **§11 — Frontend rebrand Phase 2:** preload bridge `'finn'`, CustomEvents `finn:prefill-chat` / `finn:providers-changed` / `finn:transcript-saved`, 11+ localStorage keys migrated in [storage.js](frontend/src/utils/storage.js) under the `finn_storage_migrated` sentinel.
+- **§13 — Manual e2e signoff:** 🟡 Open. Procedure below.
 
-| Requirement | Status | Where it landed |
-|---|---|---|
-| R1 — First-run onboarding (4 stages: welcome → provider → collection → done) | ✅ Shipped | [WelcomeOnboarding.vue](frontend/src/components/WelcomeOnboarding.vue), [validateKey.js](frontend/src/utils/validateKey.js); banner returns when no provider configured |
-| R2 — Provider config in Settings (Active badge, Test connection, auto-promote on success) | ✅ Shipped | [SettingsTab.vue](frontend/src/components/SettingsTab.vue); 401/403 chat banner in [ChatTab.vue](frontend/src/components/ChatTab.vue) |
-| R3 — Collection summary card (positions / accounts / most-recent-export) | ✅ Shipped | [services/collection_summary.py](services/collection_summary.py), [SourcesSidebar.vue](frontend/src/components/SourcesSidebar.vue); `__by_symbol` rollup-aware; [tests/test_collection_summary.py](tests/test_collection_summary.py) |
-| R4 — Meeting Brief modal (print stylesheet, threshold strip, source/freshness footer, labelled empty states) | ✅ Shipped | [BriefModal.vue](frontend/src/components/BriefModal.vue); 500ms debounce on threshold edits; `@media print` strips chrome and forces page-break-inside: avoid |
-| R5 — Chat polish (Basic Mode tool suppression, missing-data rule, per-collection threads) | ✅ Shipped | [ChatTab.vue](frontend/src/components/ChatTab.vue), `_assemble_system_prompt` in [services/chat/context.py](services/chat/context.py); regression coverage in [tests/test_chat_tools_audit.py](tests/test_chat_tools_audit.py) |
-| R6 — Recording at the header level (composable + favicon/title swap + audio file picker filter) | ✅ Shipped | [useMeetingRecorder.js](frontend/src/composables/useMeetingRecorder.js), [App.vue](frontend/src/App.vue); pre-flight rejection of `.aac/.wma/.aiff/.amr/.opus/.ac3` with friendly copy |
-| R7 — Note of Record drafting (modal + redaction summary panel + post-transcription nudge) | ✅ Shipped | [NoteOfRecordModal.vue](frontend/src/components/NoteOfRecordModal.vue); `_build_redaction_footer` stamp on saved notes in [main.py](main.py); per-transcript dismissal banner in [SourcesSidebar.vue](frontend/src/components/SourcesSidebar.vue) |
-| R8 — Basic Mode hardening (settings card hides, friendlyError mapping, expert-only tabs) | ✅ Shipped | [SettingsTab.vue](frontend/src/components/SettingsTab.vue), [friendlyError.js](frontend/src/utils/friendlyError.js); 9-bucket error classifier wired into chat + uploads; [tests/test_basic_mode_ui.py](tests/test_basic_mode_ui.py) |
-| R9 — Privacy surfacing (3 HTTP endpoints, PII pill in chat, dry-run preview in Note of Record) | ✅ Shipped | `GET /api/redactions/{summary,log}`, `POST /api/redactions/dry-run` in [main.py](main.py); [RedactionLog.summarize()](services/privacy/redaction_log.py); pill drawer in [ChatTab.vue](frontend/src/components/ChatTab.vue); [tests/test_redaction_http.py](tests/test_redaction_http.py) |
-| R10 — Pilot stability (ErrorBoundary, `/api/version` + update banner, welcome-back card) | ✅ Shipped | [ErrorBoundary.vue](frontend/src/components/ErrorBoundary.vue), [WelcomeBackCard.vue](frontend/src/components/WelcomeBackCard.vue), `app_version` in [config.py](config.py), `_write_latest_known_marker` + `data/latest_known.json` in [desktop/finn_desktop.py](desktop/finn_desktop.py) |
-| §11 — Frontend rebrand sweep (Phase 2 — preload bridge, CustomEvents, localStorage) | ✅ Shipped | `'finn'` bridge in [electron/preload.js](electron/preload.js); 11+ keys migrated in [storage.js](frontend/src/utils/storage.js) under `finn_storage_migrated` sentinel; CustomEvents `finn:prefill-chat`, `finn:providers-changed`, `finn:transcript-saved` |
-| §13 — Manual e2e signoff | 🟡 Open | Procedure in [desktop/DESKTOP_BUILD.md](desktop/DESKTOP_BUILD.md) "Pilot Smoke Check"; requires at-machine browser session |
+### §13 — Pilot smoke check (advisor end-to-end)
 
-### What this unlocks
+The signoff procedure for §13. Run twice — once with the Pershing fixture, once with the NetX360 fixture (substitute step 3). Requires at-machine browser session (microphone permission, print dialog, manual key entry).
 
-- **Pilot rollout is now possible.** Every gating risk for a non-technical advisor on day one is closed: onboarding works without docs, brief renders correctly when cost basis is missing, errors don't dump stack traces, and PII handling is visible in the chat surface.
-- **`/brief` got a real UI.** The v4.4 slash command produces structured JSON; v4.4.3 wraps it in [BriefModal.vue](frontend/src/components/BriefModal.vue) with threshold strip, print stylesheet, source/freshness footer, and labelled empty states. The **v4.6.1 brief format upgrade builds on this modal surface** — performance attribution / allocation drift / agenda scaffold / proactive recommendations all land as new sections inside the same modal.
-- **Note of Record drafting is end-to-end.** Streamed draft, redaction summary in the same modal, dry-run preview gated on a per-advisor toggle, post-transcription nudge that reminds the advisor to draft the note while the meeting is fresh. The footer stamp gives compliance a defensible per-entity-type redaction trail on every saved note.
-- **Three new HTTP endpoints expose the audit log to the frontend.** `GET /api/redactions/summary`, `GET /api/redactions/log`, `POST /api/redactions/dry-run`. The MCP `get_recent_redactions` tool already exposed the same data; v4.4.3 surfaces it to the frontend for the chat-tab PII pill and the Note of Record preview.
-- **Frontend rebrand is Phase 2 complete.** Preload bridge → `'finn'`, three CustomEvents flipped atomically, 11+ localStorage keys migrated under one sentinel. The PyInstaller spec, Inno Setup installer, and Electron `productName`/`appId` stay on `Asymptote` until the desktop installer milestone (out of pilot scope per the spec's §11 OOS list).
+1. **Reset state.** Move `data/` aside (rename to `data.backup/`); clear localStorage in browser DevTools → Application → Local Storage. Confirm the `finn_storage_migrated` sentinel is gone.
+2. **Launch + onboarding.** Start the desktop launcher (or `python main.py`). Onboarding takeover should render. Walk through welcome → provider (paste a real API key, hit Test connection — must show ✓) → first collection → done. Confirm chat tab loads with no banners.
+3. **Upload fixture.** Drop [tests/fixtures/ingest/pershing_unrealized_gl.csv](tests/fixtures/ingest/pershing_unrealized_gl.csv) (or `netx360_holdings_by_investor.csv` on the second pass) via Sources sidebar. Confirm the collection summary card populates with positions / accounts / most-recent-export within ~5s.
+4. **Generate brief.** Click the primary "Meeting Brief" action on the collection view. BriefModal renders. Verify: threshold strip, source/freshness footer, and at least one labelled empty state (no cost basis or similar). Hit Print — print dialog opens; preview shows chrome stripped, page-break-inside: avoid honored.
+5. **Record + transcribe.** Click Record in the header, capture 30s of audio (talk about anything), Stop. Confirm the recording lands as a transcript document in Sources. Wait for transcription to complete (favicon/title swap during, plain icon after).
+6. **Draft Note of Record.** With the transcript indexed, the post-transcription nudge banner should appear. Click "Draft Note of Record". Modal opens with a streamed draft and a redaction summary panel. Toggle the dry-run preview to confirm what will be redacted before save. Save the note; confirm the footer stamp is appended.
+7. **Update banner (§12.2).** With banner quiet by default, manually edit `data/latest_known.json` to a higher version (`{"version": "9.9.9"}`), refresh, and confirm the **Reload to update** banner appears above the tab content. Dismiss; confirm it stays gone for the session.
+8. **Welcome-back card (§12.3).** Backdate `last_active_at` in `data/app.db` by 8+ days (`UPDATE config SET value=? WHERE key='last_active_at'`). Refresh; the welcome-back overlay should render with the three primary workflow links. Dismiss; confirm it's gone for the session.
+9. **Sanity.** `pytest -q` reports green. `cd frontend && npm run build` produces a clean bundle (no console errors).
 
 ### What's next on the desktop-UX track
 
-- **§13 manual e2e signoff** against fresh `data/` + Pershing and NetX360 fixtures. Procedure already documented in [desktop/DESKTOP_BUILD.md](desktop/DESKTOP_BUILD.md).
-- **The next batch is planned in [`.kiro/specs/next-batch.md`](.kiro/specs/next-batch.md)** (2026-05-05): v4.1 close-out (P0.5 audit, P0.7 snapshot assertions, P0.8 PDF tables) + v4.5 audio → structured notes (the LLM extraction pass on top of the already-shipped transcription path). That spec is the live planning doc; ROADMAP.md status entries on those items should track it.
-- v4.6.1 (TLH / Rebalance / brief format upgrade / untrusted-content guardrail) and v4.6.2 (agent-task eval suite) sit on top of all of this.
+- **§13 manual e2e signoff** above — Pershing pass, then NetX360 pass.
+- **v4.1 close-out (P0.5 audit ✅, P0.7 snapshot assertions ✅, P0.8 PDF tables ✅, P0.6 numeric sanity guards ❌)** — see v4.1 status snapshot above. Only P0.6 remains open.
+- **v4.4.4 — Anthropic API alignment** (prompt caching, citations, extended thinking, model-default refresh, compaction). Below — competitively urgent.
+- **v4.5 audio → structured notes** — ✅ shipped (`MeetingNotes` / `ActionItem` extraction, `MeetingNotesStore`, two MCP tools, HTTP trigger, best-effort post-indexing background trigger).
+- v4.6.1 (TLH ✅ shipped 2026-05-09 / Rebalance / brief format upgrade / untrusted-content guardrail) and v4.6.2 (agent-task eval suite) sit on top of all of this.
+
+---
+
+## v4.4.4 — Anthropic API alignment (competitively urgent) — ❌ Open
+
+**Why now:** Finn has a short window. Anthropic's [Financial Services launch](https://www.anthropic.com/news/finance-agents) (2026-05-05) put Claude squarely in advisor workflows; Claude for Excel is the real competitive surface. Every week Finn ships without prompt caching, native citations, and the latest model defaults is a week advisors paying out of pocket for BYO-key tokens see a worse cost-per-question than they could. The five items below are exactly the ones that make Finn's chat surface measurably better and cheaper without changing the data-layer thesis.
+
+**What's deliberately not on this list (and why):** Files API ↔ bypasses Finn's PII boundary; code-execution tool ↔ undoes the deterministic-primitives mandate; computer use ↔ out of scope for advisors; web_search ↔ yfinance covers it and routing queries through Anthropic leaks advisor intent; Anthropic Agent SDK migration ↔ Finn supports OpenAI/Ollama/Grok/Google as first-class and the SDK is Anthropic-only. Memory tool ↔ Anthropic-hosted memory conflicts with local-first; Expertise packs + Collection guides already cover the same job locally.
+
+### Status snapshot
+
+| Item | Status | Notes |
+|---|---|---|
+| Prompt caching (`cache_control`) | ✅ Shipped | `AnthropicProvider.complete_with_tools` + `stream_chat` wrap the system prompt with `cache_control: ephemeral` — render order tools→system→messages means a marker on system caches both. `usage` surfaces `cache_creation_input_tokens` / `cache_read_input_tokens`; cumulative totals + hit-rate exposed at `GET /api/diagnostics/cache` via [services/diagnostics.py](services/diagnostics.py). Coverage in [tests/test_anthropic_prompt_caching.py](tests/test_anthropic_prompt_caching.py) (6 tests, mocked SDK). Real-world ~48% input-token savings observed on a 12-request sample. Two non-blocking follow-ups for separate prioritization: (a) move PRE-RETRIEVED CONTEXT out of the system prompt in [services/chat/context.py](services/chat/context.py) to enable cross-turn caching for varied questions; (b) cache hit-rate tile in [DiagnosticsTab.vue](frontend/src/components/DiagnosticsTab.vue) |
+| Native Citations API | ✅ Shipped | `AnthropicProvider._inject_documents` in [services/ai_service.py](services/ai_service.py) prepends `{type: "document", citations: {enabled: True}}` blocks onto the first user message; both `complete_with_tools` and `stream_chat` route through it. `_parse_citation_block` extracts `char_location` citations off response text blocks and the engine enriches each citation with `document_id` / `chunk_id` / `page_number` / `filename` via a parallel metadata array. `services.chat.context` builds documents+metadata from `filtered_results` and routes them through `ChatTurn`; non-Anthropic providers fall back to the prose RETRIEVED CONTEXT block (backwards compatible). 10 unit + integration tests in [tests/test_native_citations.py](tests/test_native_citations.py) |
+| Extended thinking on Opus 4.7 | ✅ Shipped | Per-turn opt-in via `ChatRequest.extended_thinking`; threaded through `ChatTurn` → `AgenticEngine.run_agentic` + `OneShotEngine.run_one_shot`. `AnthropicProvider.complete_with_tools` / `stream_chat` apply `thinking={"type":"enabled","budget_tokens":8000}` only when the configured model has `thinking: True` in `KNOWN_MODELS` (Claude 4 family); silently ignored otherwise. `max_tokens` auto-bumped past the budget so the visible answer still has room. `thinking` and `redacted_thinking` content blocks round-tripped into `assistant_message` for multi-iteration tool-loop replay; `thinking_delta` stream events surface as engine `thinking` SSE events. 14 regression tests in [tests/test_extended_thinking.py](tests/test_extended_thinking.py). Interleaved thinking (between tool calls) deferred until a slash command needs it — non-interleaved is enough for v1 |
+| Refresh model defaults | ✅ Shipped | `AnthropicProvider.QUALITY_MODEL` bumped to `claude-sonnet-4-6` and new `OPUS_MODEL = "claude-opus-4-7"` constant added in [services/ai_service.py](services/ai_service.py). Frontend selectors ([aiProviders.js](frontend/src/utils/aiProviders.js), [SettingsTab.vue](frontend/src/components/SettingsTab.vue), [WelcomeOnboarding.vue](frontend/src/components/WelcomeOnboarding.vue)) bumped to match. Routing of long-context paths through `OPUS_MODEL` will land alongside v4.6.1 (`/tlh`, `/rebalance`) and v4.5 (`prep_for_meeting`) — no current LLM call site for `/brief` |
+| Conversation compaction | ❌ Open | Long client-review chats grow past 200K. Anthropic's automatic compaction keeps the window from blowing up; opt-in flag in `AnthropicProvider.stream_chat` and the agentic loop |
+
+### Prompt caching — ❌ Open
+
+The chat system prompt assembled in [services/chat/context.py](services/chat/context.py) (base advisor framing → Expertise pack → Collection overview → inlined-tables JSONL) already aligns with Anthropic's caching model — long static prefix, short variable suffix.
+
+- Add `cache_control={"type": "ephemeral"}` at the boundary between system prompt and user turn in `AnthropicProvider.complete_with_tools` + `stream_chat` ([services/ai_service.py](services/ai_service.py)). Cache tool definitions too.
+- Cache the structured-tables JSONL only when document set is stable (skip when user just uploaded).
+- Track cache hit rate in [services/diagnostics.py](services/diagnostics.py); surface in [DiagnosticsTab.vue](frontend/src/components/DiagnosticsTab.vue).
+- Test: same question twice → assert `cache_creation_input_tokens > 0` on turn 1, `cache_read_input_tokens > 0` on turn 2.
+
+### Native Citations API — ✅ Shipped
+
+Replaces prose-parsing of sources with Anthropic's structured `citations` blocks. Finn already had `document_id` + `chunk_id` + `page_number` on every retrieved chunk; the wiring lifts that to provider-native citation pills.
+
+- `AnthropicProvider._inject_documents` in [services/ai_service.py](services/ai_service.py) prepends `{type:"document", citations:{enabled:true}, title, source}` blocks onto the first user message; `complete_with_tools` and `stream_chat` both route through it.
+- `AnthropicProvider._parse_citation_block` extracts `char_location` citations off response text blocks; the engine enriches each citation with `document_id` / `chunk_id` / `page_number` / `filename` via a parallel metadata array threaded through `ChatTurn`.
+- `services.chat.context` builds the documents + parallel metadata from `filtered_results`; non-Anthropic providers fall back to the prose RETRIEVED CONTEXT block, backwards compatible.
+- Frontend rendering of inline citation pills in [ChatTab.vue](frontend/src/components/ChatTab.vue) and click-through to [SourcesSidebar.vue](frontend/src/components/SourcesSidebar.vue) at the right chunk lands when the v4.6.2 eval suite stress-tests citation faithfulness.
+- Coverage: 10 unit + integration tests in [tests/test_native_citations.py](tests/test_native_citations.py) — provider-level injection and parsing, context-level documents+metadata build, engine-level citation enrichment, non-Anthropic fallback path.
+
+### Extended thinking / interleaved thinking — ✅ Shipped
+
+Per-turn opt-in on Anthropic thinking-capable models (Claude 4 family). Chat default opts out — the per-turn cost balloons on trivial questions; specific slash commands (TLH wash-sale checks, rebalance trade ordering, future Monte Carlo) opt in by setting `extended_thinking=true` on the chat request.
+
+**What shipped:**
+- `extended_thinking: bool = False` on `ChatTurn` ([services/chat/engine.py](services/chat/engine.py)); threaded into `complete_with_tools` / `stream_chat` kwargs on every iteration of the tool loop, the streaming final-answer pass, and the iteration-cap forced pass. Same flag flows through `OneShotEngine.run_one_shot` for `/notes`, `/followup`, `/ask`.
+- `AnthropicProvider._apply_thinking` ([services/ai_service.py](services/ai_service.py)) gates the kwarg by reading `thinking: True` off the configured model's `KNOWN_MODELS` entry — unknown / unrecognised model IDs are explicitly *not* opted in (Anthropic 422s when the model can't reason). `max_tokens` is auto-bumped past the 8000-token budget so the visible answer still fits.
+- `thinking` and `redacted_thinking` content blocks are round-tripped verbatim (with `signature` / `data`) into the assistant message for multi-iteration tool-loop replay, so the model can resume its earlier reasoning across tool calls.
+- `thinking_delta` stream events surface as engine `thinking` SSE events ahead of the visible answer.
+- `ChatRequest.extended_thinking: bool = False` ([models/schemas.py](models/schemas.py)) is the wire-level toggle; `services.chat.context.build_chat_turn` reads it and forwards onto the `ChatTurn`.
+- 14 regression tests in [tests/test_extended_thinking.py](tests/test_extended_thinking.py) cover provider pass-through, model gating, max-tokens bump, thinking-block replay, redacted-thinking replay, stream-delta yield, non-Anthropic ignore, and engine kwarg forwarding.
+
+**Deferred to follow-up:**
+- Interleaved thinking (between tool calls) requires the `interleaved-thinking-2025-05-14` beta header. Land when a slash command demonstrates need (the typical TLH path is short enough that pre-loop thinking suffices).
+- Frontend "Reasoning" pill on the chat bubble — the SSE payload is in the engine's `thinking` events; rendering lands alongside the v4.6.2 eval suite stress-test.
+
+### Refresh model defaults — ❌ Open
+
+[services/ai_service.py:269-270](services/ai_service.py#L269-L270): `QUALITY_MODEL` → `"claude-sonnet-4-6"`. Add `OPUS_MODEL = "claude-opus-4-7"` and route long-context paths (`/brief`, `/tlh`, `/rebalance`, `prep_for_meeting`) through it when the provider has Opus access.
+
+### Conversation compaction — ❌ Open
+
+Track per-thread token budget in [services/chat/engine.py](services/chat/engine.py); when next-turn estimated input > 80% of context, flip `compact_on_next_turn`. Anthropic's automatic compaction is the path of least resistance; for OpenAI/Ollama, fall back to manual "summarize prior 10 turns" pass.
+
+### Sequencing
+
+1. ✅ **Refresh model defaults** — shipped.
+2. ✅ **Prompt caching** — shipped.
+3. ✅ **Native Citations** — shipped (frontend pills land with the v4.6.2 eval suite).
+4. ✅ **Extended thinking** — shipped (opt-in per-turn via `ChatRequest.extended_thinking`; UI control lands when a slash command needs it).
+5. **Compaction** — 1 day. Lowest priority until multi-hour client-review chats become common.
+
+**Why this fits the frame:** the "make the configured LLM work better against Finn's data" lever — caching makes BYO-key affordable, citations make answers verifiable, extended thinking makes hard analysis correct. None of it touches the data-layer mandate; every turn just gets cheaper, more accurate, more auditable. The delta shows up as Finn lift in the v4.6.2 eval suite.
+
+---
+
+## v4.4.5 — Provider tier strategy (compliance & cost positioning) — 🟡 Partial
+
+**The product question this answers:** "Can I make Ollama Cloud my main LLM provider and stay compliant in financial-sector restrictions?" Short answer — **yes for solo / small RIAs, no for mid-market and enterprise** without paperwork they don't have. Finn's BYO-key model means the right answer isn't a single provider — it's a tier story the advisor and their compliance officer can pick from at onboarding.
+
+This section is half-shipped already. [services/ai_service.py](services/ai_service.py) registers Anthropic, OpenAI, Ollama (local), Ollama Cloud, Grok, Google, GitHub, OpenAI-compatible. What's missing is **explicit positioning** — telling the advisor which tier matches their firm size + compliance posture, and adding AWS Bedrock when a real customer with FedRAMP / HIPAA / IL5 requirements pulls.
+
+### The four tiers
+
+| Tier | Provider | Strength | Compliance gap | Aimed at |
+|---|---|---|---|---|
+| **Default** | Ollama Cloud (gpt-oss, qwen3, kimi-k2) | Cheapest tool-use-capable models; "no training" + transient processing committed in [Privacy Policy](https://ollama.com/privacy) and [Terms](https://ollama.com/terms) | No published SOC 2, no DPA, no SLA, partial subprocessor list. Acceptable when paired with Finn's PII redaction (P0.0) — redacted strings are what crosses the boundary, not client identifiers. **Compliance officer must document residual risk in the firm's written info-security program (Reg S-P / FTC Safeguards Rule).** | Solo RIAs, small advisor shops, anyone testing Finn before signing on |
+| **Quality** | Anthropic API direct (Claude Sonnet 4.6 / Opus 4.7) | Best-in-class on tool-use accuracy + prompt caching (v4.4.4) + native Citations (v4.4.4) + extended thinking on Opus 4.7 | SOC 2, signed DPA, named subprocessors. Missing FedRAMP / HIPAA-eligible status. | Mid-market RIAs ($100M–$1B AUM), advisors who care more about answer quality than per-token cost |
+| **Enterprise** | AWS Bedrock (Anthropic models, Llama, Mistral) — ❌ Open | FedRAMP High, HIPAA-eligible, ISO 27001/17/18, BAA available, IRAP, IL5, AWS Artifact for compliance docs | Higher per-token cost than direct Anthropic; deployment latency to add a new model | $1B+ AUM, broker-dealer affiliates, anyone with federal contracting exposure or healthcare-adjacent client base |
+| **Sovereignty** | Self-hosted Ollama (any model) — ✅ Shipped | Zero data leaves the firm's hardware. The "no data exfiltration possible" answer for paranoid firms or international jurisdictions with strict sovereignty laws | Quality drop vs frontier — local 70B-class models lag Sonnet 4.6 on tool-use. Hardware cost. | Firms with absolute data-residency requirements, international advisors in jurisdictions where US data transfer is restricted |
+
+### Status snapshot
+
+| Item | Status | Notes |
+|---|---|---|
+| Default + Quality + Sovereignty providers | ✅ Shipped | All wired in [services/ai_service.py](services/ai_service.py) with capability probing (v4.4.2) |
+| AWS Bedrock provider | ❌ Open — gated on real customer pull | New `BedrockProvider` in [services/ai_service.py](services/ai_service.py); Anthropic models via Bedrock have a different API shape than direct Anthropic. **Don't build pre-pull** — building it before a paying enterprise customer asks is the wrong order |
+| Tier-aware onboarding copy | ❌ Open | [WelcomeOnboarding.vue](frontend/src/components/WelcomeOnboarding.vue) currently presents Ollama Cloud as the default with a single "paste API key" step. Add a "What's your firm's compliance posture?" question that maps to a tier and pre-selects the matching provider |
+| Compliance one-pager | ✅ Shipped | [COMPLIANCE.md](COMPLIANCE.md) at the repo root — written for an RIA's compliance officer. Covers Finn's local-first data flow + redaction-at-the-output-boundary architecture, the four LLM-provider tiers (Default / Quality / Enterprise / Sovereignty) with per-tier vendor commitments and known gaps, regulatory mapping for SEC Reg S-P (incl. 2024 amendments) and the FTC Safeguards Rule (16 CFR Part 314), a copy-pasteable WISP supplement template, an FAQ, and links into `services/privacy/` so the CCO can verify any claim against source. Caveats verbatim quotes — directs CCO to verify vendor language at the cited URLs since policies change |
+| Provider switching from settings | ✅ Shipped | [SettingsTab.vue](frontend/src/components/SettingsTab.vue) capability strip already shows ✓/✗/? for tools/vision/streaming per provider. The pattern works; the missing piece is *positioning* |
+
+### Why a tier story (not "pick one provider")
+
+Three reasons:
+
+1. **Finn's BYO-key thesis says the advisor picks.** Hard-coding a single provider undoes the whole architecture. The right Finn move is to make every tier work well and let the advisor + their compliance officer choose.
+2. **Compliance review is the real friction, not technical capability.** Every RIA's CCO asks the same questions: where does the data go, who else touches it, can we get a SOC 2, can we sign a DPA, what's the retention policy. Providing tier-specific answers to those questions ships faster than building a new provider.
+3. **Pricing tells a story too.** Ollama Cloud's gpt-oss-120b at a fraction of Sonnet 4.6's cost is genuinely competitive for solo advisors who'd otherwise be priced out of BYO-key entirely. Losing that tier means losing the bottom of the market.
+
+### What about Hermes Agent?
+
+Nous Research's [Hermes Agent](https://docs.ollama.com/integrations/hermes) is a **competing agent shell**, not a tool to embed. Same category as Claude Desktop or Cursor — a Hermes user could point it at Finn's MCP endpoint exactly like a Claude Desktop user does today. **No Finn-side work needed.** That secondary-surface path is already documented in the strategic frame.
+
+The Nous Research **Hermes models** (Hermes 3 / Hermes 4 weights) are a different thing — open-weights models tuned for tool-use-heavy agentic workflows, pullable via the standard Ollama model library. Finn's chat engine already runs any Ollama model that reports tool-use capability ([services/ai_service.py](services/ai_service.py) `OllamaCloudProvider` + the local `OllamaProvider`), so this is a model choice the advisor makes — no roadmap work.
+
+### Sequencing
+
+1. ✅ **Compliance one-pager** — shipped as [COMPLIANCE.md](COMPLIANCE.md).
+2. **Tier-aware onboarding copy** — 1 day. Add the "compliance posture" question to [WelcomeOnboarding.vue](frontend/src/components/WelcomeOnboarding.vue) and route to the matching provider's setup step.
+3. **AWS Bedrock provider** — 2-3 days, **only when a real customer asks.** Bedrock's Anthropic API has a slightly different shape than direct Anthropic; the wrapper is straightforward but not zero work.
+
+### Why this fits the strategic frame
+
+The pitch isn't "Finn picks the best LLM" — it's "Finn makes the LLM the advisor already trusts work correctly against the advisor's data." Provider tiers are the visible expression of that. Pair this with v4.4.4 (Anthropic API alignment) and the message lands: Finn is the data layer that gets cheaper, more accurate, and more compliant on every tier the advisor chooses.
 
 ---
 
@@ -587,39 +341,42 @@ The first feature that turns Finn from "data layer" into "advisor workflow tool.
 
 ### Audio ingest — ✅ Shipped (transcript layer)
 
-The transcription path is live and works against **any** audio file from any source:
+In-app recording (MediaRecorder → `/documents/upload`) + uploads from any source (Zoom/Teams/Otter/Fireflies/iPhone Voice Memos). [services/document_extractor.py](services/document_extractor.py) detects audio by extension (`.mp3 .wav .m4a .webm .ogg .flac .mp4 .mpeg .mpga`), routes through faster-whisper, chunks transcripts into ~4-minute pages, indexes through the normal pipeline. Same pipeline serves chat + MCP — transcripts are searchable like any other document.
 
-- **In-app live recording** via the Record button in [frontend/src/components/SourcesSidebar.vue](frontend/src/components/SourcesSidebar.vue) (browser MediaRecorder → `/documents/upload`).
-- **Uploads from external devices.** Zoom (`.m4a` / `.mp4`), Teams (`.mp4`), Otter / Fireflies exports (`.mp3`), iPhone Voice Memos (`.m4a`), Android recorders, desktop screen recorders (`.wav`), etc. — drop them via the Files button or a folder scan; [services/document_extractor.py](services/document_extractor.py) detects audio by extension and routes any file matching `AUDIO_EXTENSIONS` ([services/audio_transcriber.py:17](services/audio_transcriber.py#L17): `.mp3 .wav .m4a .webm .ogg .flac .mp4 .mpeg .mpga`) to faster-whisper, chunks the transcript into ~4-minute pages, and indexes through the normal pipeline.
-- Same pipeline serves both surfaces — in-app chat and external MCP clients can search transcripts the same way they search any other document.
-- UI hint copy in the Sources sidebar tells advisors that past recordings are welcome (was previously invisible).
+### Audio → structured notes — ✅ Shipped (extraction + storage + MCP read path)
 
-### Audio → structured notes — ❌ Open (planned in [`next-batch.md`](.kiro/specs/next-batch.md))
+Transcription gives us text. The shipped extraction pass turns that text into typed, queryable structure: `client_concerns`, `decisions`, `action_items[]` (description / assignee / due_date / status), `follow_up_questions`, and a brief `sentiment_notes`. Advisors can now ask *"show me every open action item across all my Henderson meetings"* and get a deterministic answer via the new `list_action_items` MCP tool — no free-text search over transcript prose required.
 
-Transcription gives us text. The remaining work is the LLM pass that turns that text into typed, queryable structure. **Live spec at [`.kiro/specs/next-batch.md`](.kiro/specs/next-batch.md) §R4** — `MeetingNotes` / `ActionItem` dataclasses, a new `meeting_notes` table in the collection metadata DB, background extraction triggered after transcript indexing, two MCP tools (`get_meeting_notes`, `list_action_items`).
+**What shipped:**
 
-- LLM extraction pass over the transcript producing: client concerns, decisions made, action items (with assignee + due date), follow-up questions, sentiment notes.
-- Structured notes stored as a row in a per-client collection alongside the original audio + transcript, so action items become a first-class queryable thing rather than free-text inside a transcript chunk.
-- Until this lands, advisors can find a transcript by content (it's just a document) but can't ask *"show me every open action item across all my Henderson meetings"* and get a deterministic answer.
+- [services/meeting_notes.py](services/meeting_notes.py) — `ActionItem` / `MeetingNotes` dataclasses, `MeetingNotesStore` (per-Collection SQLite in the same `metadata.db` as `MetadataStore` and `HoldingsStore`), `extract_meeting_notes(transcript_text, *, collection_id, provider, document_id, model)` pure function (one `provider.complete(...)` call with a conservative JSON-output prompt), and a `try_extract_after_indexing(...)` post-indexing helper.
+- Extraction prompt is conservative — empty list / null on anything not directly grounded in the transcript, explicit *"do not invent action items or decisions"* line, and a prompt-injection guardrail (treats transcript as untrusted data). Output framing is advisor-POV per the project-wide chat framing rule.
+- `meeting_notes` table created via `MeetingNotesStore._init_db()` with `UNIQUE(document_id)` so re-extraction overwrites rather than duplicates. JSON-encoded array columns + a `raw_json` audit blob, indexed on `collection_id`.
+- `VectorStore.__init__` now constructs `meeting_notes_store` alongside `holdings_store` ([services/vector_store.py](services/vector_store.py)).
+- **Best-effort background trigger** in [services/upload_service.py](services/upload_service.py): after `index_document_with_progress` returns a `DocumentMetadata` with `extraction_method == "whisper"`, a daemon thread runs `try_extract_after_indexing(...)`. The worker reads the stored agent API key via `app_db.get_agent_api_key("anthropic")` (falling back to `"openai"`), constructs a provider, loads transcript text from `MetadataStore.get_chunks_by_document`, runs extraction, and persists the row. Failures log only — they never bubble up into the upload job. **BYO-key reality:** when no key is stored (the default until the advisor pastes one in Settings), the trigger logs and skips — the HTTP endpoint below is the explicit path.
+- `POST /api/collections/{id}/meetings/extract` ([main.py](main.py)) — synchronous user-triggered extraction. Provider comes from the standard `x-ai-provider` / `x-ai-key` header set the rest of the chat endpoints already use; uses `provider.QUALITY_MODEL` (Sonnet 4.6 / Opus 4.7 / GPT-4.x) for the run. Frontend nudge banner (R7 of v4.4.3) is the natural call site.
+- MCP tools `get_meeting_notes(collection_id, document_id?, since?, until?)` and `list_action_items(collection_id, status="open", assignee?)` in [services/mcp_server.py](services/mcp_server.py). Both pass through `_redact(...)` so PII redaction applies on the way out — no extra wiring required.
+- 26 regression tests in [tests/test_meeting_notes.py](tests/test_meeting_notes.py) — dataclass round-trip / status normalisation, `FakeAIProvider`-driven extraction happy path, markdown-fence stripping, unparseable-JSON degradation, top-level-array rejection, empty-transcript short-circuit, provider-exception swallowing, string→object action-item coercion, prompt guardrail assertions (untrusted-content language present, advisor framing present), `MeetingNotesStore` insert / upsert / per-collection isolation / `has_notes` / `list_action_items` status + assignee filters / cross-meeting flatten, and an end-to-end extract → save → list path. Full suite green (411 passed, 2 skipped).
 
-### Meeting as a first-class doctype
+**Deferred to a follow-up (not in scope here):**
+- Frontend "Draft Meeting Notes" button + post-transcription nudge banner wiring to the new endpoint. The MCP path is sufficient for the wedge per the v4.5 spec.
+- `prep_for_meeting(client, when)` composite tool — depends on `get_meeting_notes` and `list_action_items` (both now available) plus v4.6 client profile + v4.2 corporate events. See the section below.
+- `meetings` first-class doctype — separate from the per-document `meeting_notes` row; useful once a client has 10+ recorded meetings and ad-hoc cross-meeting search becomes a thing.
 
-- New `meetings` table in `structured_store` (or a typed view over a generic `events` table). Columns: client, date, attendees, duration, transcript_doc_id, notes_doc_id, action_items (list), decisions (list).
-- Action items become their own queryable thing — open vs closed, assigned to whom, overdue.
+### Meeting as a first-class doctype — ❌ Open (follow-on)
 
-### `prep_for_meeting(client, when)` MCP tool
+The per-document `meeting_notes` row covers "one transcript, one notes record." A `meetings` first-class doctype would add cross-meeting structure (client, date, attendees, duration) and make action items queryable independent of which transcript they came from. Useful once a client has 10+ recorded meetings; the current row-per-transcript shape is enough for the v4.5 wedge.
 
-- Single highest-leverage advisor tool. Bundles into one response:
-  - Last meeting notes (decisions, open action items)
-  - Recent portfolio activity since last meeting (drift, new positions, P&L moves)
-  - Any flags from the firm's attached expertise pack (see [EXPERTISE_ROADMAP.md](EXPERTISE_ROADMAP.md))
-  - Upcoming corporate events on held symbols (from `get_corporate_events`)
-- Output is a one-page brief the advisor reads on the way to the meeting.
-- The demo sentence: advisor opens Claude Desktop, says *"prep me for my 2pm with the Hendersons"*, gets a brief in 10 seconds.
+### `prep_for_meeting(client, when)` MCP tool — ❌ Open (follow-on)
 
-### `get_meeting_notes(client, date_range)` and `list_action_items(client, status)`
+Single highest-leverage advisor tool. Bundles into one response:
 
-- Smaller utility tools the agent can compose. Used by `prep_for_meeting` internally and by ad-hoc questions.
+  - Last meeting notes (decisions, open action items) — `get_meeting_notes` + `list_action_items` are shipped, can compose now
+  - Recent portfolio activity since last meeting (drift, new positions, P&L moves) — `compute_portfolio_metric` (v4.1) + `get_price_history` (v4.2)
+  - Any flags from the firm's attached expertise pack ([EXPERTISE_ROADMAP.md](EXPERTISE_ROADMAP.md))
+  - Upcoming corporate events on held symbols — `get_corporate_events` (v4.2)
+
+Output is a one-page brief the advisor reads on the way to the meeting. Demo sentence: advisor opens Claude Desktop, says *"prep me for my 2pm with the Hendersons"*, gets a brief in 10 seconds. Now unblocked since v4.5 extraction shipped.
 
 ---
 
@@ -666,7 +423,7 @@ This section ports the highest-leverage pieces, adapts them to Finn's storage an
 |---|---|---|
 | Untrusted-content guardrail | ❌ Open | One paragraph added to chat system prompt in [services/chat/context.py](services/chat/context.py). Afternoon-sized, zero dependencies, ship first. |
 | Brief format upgrade (client-review pattern) | ❌ Open | [services/brief_generator.py](services/brief_generator.py) — performance attribution table, allocation drift table, 5-section agenda template, proactive-recommendations footer |
-| Tax-Loss Harvesting skill | ❌ Open | New `services/financial/tlh.py` + MCP tool + `/tlh` slash command. Household-aware wash-sale check is the moat over standalone single-account tools |
+| Tax-Loss Harvesting skill | ✅ Shipped | [services/financial/tlh.py](services/financial/tlh.py) — four primitives + `build_harvest_plan` composer; `find_tax_loss_candidates` MCP tool; `POST /api/collections/{id}/tlh`; `/tlh` slash command + `formatTlh()` text block; "Find Tax-Loss Candidates" quick-action chip in [ChatTab.vue](frontend/src/components/ChatTab.vue); 57 tests in [tests/test_tlh.py](tests/test_tlh.py). Household-wide wash-sale check (incl. spousal IRA/Roth) is the moat over single-account tools |
 | Portfolio Rebalance skill | ❌ Open | New `services/financial/rebalance.py` + MCP tool + `/rebalance` slash command. Gated on v4.6 IPS targets |
 
 ### Untrusted-content guardrail — ❌ Open
@@ -690,19 +447,23 @@ This section ports the highest-leverage pieces, adapts them to Finn's storage an
   3. **5-section agenda scaffold** — Market overview / Performance / Allocation / Planning updates / Action items. Template, not generated content; the advisor edits in place.
   4. **Proactive recommendations footer** — surfaces TLH candidates (below), drift exceeding IPS band, Roth-conversion eligibility, beneficiary review reminders. Each recommendation cites the source check.
 
-### Tax-Loss Harvesting skill — ❌ Open
+### Tax-Loss Harvesting skill — ✅ Shipped (2026-05-09)
 
 **Problem:** Solo RIAs pay $300–600/yr/seat for standalone TLH tools (Holistiplan, 55ip). Finn has every input — cost basis, accounts, household, market values, asset classifications via v4.2 — and zero output for this workflow.
 
-**Implementation:**
-- New `services/financial/tlh.py` with four primitives:
-  - `scan_unrealized_losses(collection_id, min_loss_pct=None) -> list[Candidate]` — walks **taxable accounts only**, returns positions with unrealized loss, sorted by absolute loss size with short-term losses ranked first (offset higher ordinary-income rate).
-  - `gain_loss_budget(collection_id, year=None) -> Budget` — realized ST/LT gains and losses YTD plus prior-year carryforward losses when transaction history is available; degrades to "unknown — provide a transactions export" otherwise.
-  - `suggest_replacements(symbol, asset_class) -> list[Replacement]` — uses `get_security_classification` (v4.2) to find similar-exposure non-substantially-identical securities. Prefer different-issuer ETFs of different indexes (SPY → IVV / VOO); fall back to broad sector ETFs when no clean swap exists.
-  - `check_wash_sale(symbol, household_collection_ids, lookback_days=30, forward_days=30) -> WashSaleStatus` — scans **all household accounts including spousal IRA/Roth** for substantially-identical purchases in the wash-sale window. The household scope is the moat over single-account tools.
-- MCP tool: `find_tax_loss_candidates(collection_id)` composes the four primitives and returns a complete harvest plan (candidates table, budget summary, replacement suggestions, wash-sale warnings).
-- Frontend: `/tlh` slash command in [frontend/src/utils/slashCommands.js](frontend/src/utils/slashCommands.js); routes to a streaming endpoint that renders the structured output as a meeting-ready table plus an Excel-exportable trade sheet.
-- Prompt guardrails: "wash sale rules apply across the household, not just one account"; "tax savings estimates are gross — transaction costs and tracking error reduce expected benefit"; "harvesting resets cost basis, deferring not eliminating tax".
+**Shipped:**
+- [services/financial/tlh.py](services/financial/tlh.py) — four primitives:
+  - `scan_unrealized_losses(store, ..., min_loss_pct=None, taxable_only=True)` — walks taxable accounts only (keyword-tagged: IRA / Roth / 401k / HSA / 529 / pension / annuity excluded), returns Candidate rows sorted with short-term losses first.
+  - `gain_loss_budget(store, year=None)` — auto-detects `realized_*` columns and aggregates ST/LT; degrades to `source='unknown'` with a 1099-B prompt when transaction history is absent.
+  - `suggest_replacements(symbol, ...)` — curated table for the common ETFs (SPY → VTI/ITOT/SCHB, never the substantially-identical IVV/VOO; QQQ → VGT/XLK; AGG ↔ BND; etc.); falls back through sector-proxy SPDRs (XLK/XLV/XLF/...) and asset-class proxies via `get_security_classification`.
+  - `check_wash_sale(symbol, stores, lookback_days=30, forward_days=30, transaction_lookup=None)` — scans every store in the household (including spousal IRA / Roth passed in via `household_collection_ids`); promotes `potential` → `confirmed` when a synthetic / future transaction lookup returns a date inside the window.
+- `build_harvest_plan` composer + `find_tax_loss_candidates` MCP tool in [services/mcp_server.py](services/mcp_server.py) (PII-redacted on the way out).
+- HTTP: `POST /api/collections/{id}/tlh` in [main.py](main.py), mirroring the `/brief` route shape; accepts `household_collection_ids` for split-household setups.
+- Frontend: `/tlh` slash command + `formatTlh()` text block in [frontend/src/utils/slashCommands.js](frontend/src/utils/slashCommands.js); "Find Tax-Loss Candidates" quick-action chip + `runTlhCommand` in [ChatTab.vue](frontend/src/components/ChatTab.vue); empty-state hint and `/tools` capability list updated.
+- Prompt guardrails: one-sentence household-scope + basis-reset reminder added to chat system prompt in [services/chat/context.py](services/chat/context.py); the four full guardrails (wash-sale household scope, gross-vs-net savings, basis reset / tax deferral, $3k ordinary-income cap) ride inside the tool-response payload so they only consume tokens when the model actually invokes the skill.
+- Tests: 57 in [tests/test_tlh.py](tests/test_tlh.py) — taxable-account detection, ST/LT classification, taxable-only filter, min-loss / min-loss-pct filters, the SPY-must-not-suggest-IVV/VOO rule, sector-proxy and asset-class fallbacks, the spousal-Roth wash-sale headline case, confirmed/potential/clear status promotion, budget degradation, and end-to-end plan composition.
+
+**Deferred to a follow-up:** Excel-exportable trade sheet (the spec called for it; the current `formatTlh()` block is meeting-ready but not a downloadable CSV). Pair with the same export work for `/rebalance`.
 
 ### Portfolio Rebalance skill — ❌ Open
 
@@ -723,24 +484,12 @@ This section ports the highest-leverage pieces, adapts them to Finn's storage an
 
 1. **Untrusted-content guardrail** — afternoon-sized, zero dependencies, ship first to close the prompt-injection surface.
 2. **Brief format upgrade** — depends only on shipped v4.2 enrichment feeds; allocation table degrades gracefully without v4.6 targets, so it doesn't block.
-3. **Tax-Loss Harvesting skill** — depends on shipped v4.1 (cost basis + lot rollup) and v4.2 (classification). No further blockers.
+3. **Tax-Loss Harvesting skill** — ✅ shipped 2026-05-09. Depended on shipped v4.1 (cost basis + lot rollup) and v4.2 (classification).
 4. **Portfolio Rebalance skill** — gated on v4.6 client profile. Either bundle the IPS form here or defer.
-
-### Why this fits the strategic frame
-
-TLH and Rebalance are **analytical primitives** in the v4.6 sense — they aggregate the user's own data deterministically and surface it through the same tool registry that serves both chat and external MCP. The brief format upgrade is packaging on a shipped feature. The guardrail is a free-tier security improvement that costs an afternoon. None of this is "build a chat app" or "compete with frontier models" — it's exactly the data-layer mandate, just expressed as workflow output instead of raw query primitives.
 
 ### Competitive read (post-2026-05-05 announcement)
 
-Anthropic's [Financial Services launch post](https://www.anthropic.com/news/finance-agents) (2026-05-05) clarifies the threat surface.
-
-**The institutional connector ecosystem is uniformly enterprise.** Every announced data partner (D&B, FactSet, Morningstar, S&P, LSEG, PitchBook, Moody's, Fiscal AI, FMP, Guidepoint, IBISWorld, SS&C Intralinks, Third Bridge, Verisk) requires a paid enterprise data subscription. Named customers (Citadel, Carlyle, BNY, Mizuho, FIS, Walleye, Hg) are buy-side, sell-side, or services giants. Solo RIAs and small wealth shops are not in this picture. The retail-custodian-export wedge (Pershing, Schwab, Fidelity, Vanguard, NetX360) Finn targets is open territory.
-
-**The real competitive surface for advisors is Claude for Excel.** Generally available; Citadel and Hg are quoted using it for coverage models and DD; most advisors live in Excel today. Finn's differentiation against it: ingests messy custodian CSVs/PDFs Excel agents can't parse; redacts PII at the boundary instead of sending cell contents to Anthropic's API; is household/collection-aware, not per-workbook; runs local-first by default. This story is now in [README.md](README.md) ("Where Finn fits") and [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) ("Why Finn vs. Claude for Excel?"). Keep both fresh as Anthropic's Excel surface evolves.
-
-**Vocabulary.** "Skills + Connectors + Subagents" is now Anthropic's official agent vocabulary. [CONTEXT.md](CONTEXT.md) maps Finn's architecture onto those terms so anyone arriving from `anthropics/financial-services` can navigate Finn's code without translation.
-
-**Speed.** The bar for *somebody else* shipping a Finn-shape product still dropped — the skill files are Apache-2.0 starter kits anyone can fork. Time to first paying advisor matters more this week than last week.
+Anthropic's [Financial Services launch](https://www.anthropic.com/news/finance-agents) (2026-05-05): institutional data partners (D&B, FactSet, Morningstar, S&P, LSEG, etc.) are uniformly enterprise-tier; named customers (Citadel, Carlyle, BNY, Mizuho, etc.) are buy-side/sell-side/services giants. **Solo RIAs and small wealth shops are not in this picture** — the retail-custodian-export wedge Finn targets is open territory. The real competitive surface for advisors is **Claude for Excel** — Finn's differentiation: ingests messy custodian CSVs/PDFs Excel agents can't parse, redacts PII at the boundary, household-aware, local-first. Story lives in [README.md](README.md) and [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md). [CONTEXT.md](CONTEXT.md) maps Finn onto Anthropic's Skills/Connectors/Subagents vocabulary. **Speed matters** — Anthropic's `anthropics/financial-services` skills are Apache-2.0 starter kits anyone can fork; time to first paying advisor matters more this week than last.
 
 ---
 
@@ -762,11 +511,9 @@ This section builds an internal eval suite that maps that taxonomy onto Finn-fla
 
 ### Why this matters
 
-1. **Regression coverage at the right layer.** v4.1 P0.7 covers ingestion correctness (file in → typed table out). This covers the layer above: tools + chat engine + system prompt → correct answer to an advisor question. Without it, every change to `services/chat/`, the system prompt, or a tool's docstring risks silent agent regressions.
-
-2. **A publishable comparison number.** The right metric isn't "Finn scores X%" — it's **Finn lift**: how much Finn's data layer + deterministic primitives improve agent accuracy *over the same model with no tools*. That delta is the data-layer thesis in numerical form. Anthropic publishes 64.37% (Vals); Finn publishes "+N% lift on advisor-task suite." Different number, same conversation.
-
-3. **Cost disclosure builds trust.** Vals reports cost-per-session as a Pareto axis, not a footnote. Advisors running BYO-key are watching the meter. Showing cost + accuracy together is an honest pitch.
+1. **Regression coverage at the right layer.** v4.1 P0.7 covers file → typed table; this covers tools + chat engine + system prompt → correct answer. Without it, every change to `services/chat/` or a tool's docstring risks silent agent regressions.
+2. **A publishable comparison number.** The publishable metric is **Finn lift** — agent accuracy with Finn's tools vs the same model with no tools. Anthropic publishes 64.37% (Vals); Finn publishes "+N% lift on advisor-task suite."
+3. **Cost disclosure builds trust.** BYO-key advisors are watching the meter. Cost + accuracy together is an honest pitch.
 
 ### Task taxonomy
 
@@ -794,10 +541,6 @@ Four categories, mapped to Finn-flavored advisor questions. Each category gets a
 3. Add the optional real-provider CI job. 0.5 day.
 4. Run the suite once with Anthropic + OpenAI; capture the Finn-lift number. Publish in [README.md](README.md) and on the landing page. 0.5 day.
 5. The forecasting category gates on v4.6 `run_monte_carlo` shipping. Skip in the v4.6.2 v1; revisit when v4.6 lands.
-
-### Why this fits the strategic frame
-
-The strategic frame says "never be silently wrong." This is the regression layer that enforces that across the agent surface, not just ingestion. Without it, "Finn doesn't return wrong numbers" is a claim. With it, it's a claim with a published number behind it.
 
 ---
 
@@ -890,19 +633,15 @@ Items that aren't funded yet but belong in the same direction of travel.
 
 ---
 
-## How to use this file
+## What to ship next (priority-ordered)
 
-- **v4.1 is the only thing that matters right now.** Don't start anything below it until P0.1–P0.7 are done. The advisor demo bugs above are the acceptance test: re-run those three questions against the same Schwab file and they should produce correct numbers without manual workaround SQL.
-- **v4.2 and v4.3 shipped** — enrichment feeds and MCP surface polish.
-- **v4.4 shipped** — streaming in-app chat with live tool indicators, `/brief` command, one-click "Generate Meeting Brief" button. The primary demo surface is now self-contained.
-- **v4.4.1 in progress** — chat orchestration extracted into `services/chat/`; real per-token streaming, engine unit tests, and SSE for slash commands have all shipped; only whole-loop streaming (Phase 3, deferred) remains.
-- **v4.4.3 shipped** (advisor desktop UX) — onboarding, BriefModal, NoteOfRecordModal, PII pill, Basic Mode hardening, ErrorBoundary, welcome-back card, frontend rebrand Phase 2. Tasks 1–12 of [`.kiro/specs/advisor-desktop-ux/tasks.md`](.kiro/specs/advisor-desktop-ux/tasks.md) complete; §13 manual e2e signoff is the only remaining item and is at-machine.
-- **Active live spec is [`.kiro/specs/next-batch.md`](.kiro/specs/next-batch.md)** — v4.1 close-out (P0.5 audit, P0.7 snapshot assertions, P0.8 PDF tables) + v4.5 audio → structured notes. Don't duplicate that planning here; cross-reference and let the Kiro spec drive.
-- **v4.5 / v4.6** are the advisor-workflow wedge (meeting capture + client profile) that turns this into a product, not a query layer.
-- **v4.6.1** ports four wealth-management workflow skills from Anthropic's `financial-services` reference repo (untrusted-content guardrail, brief format upgrade, TLH, rebalance). Picks up on shipped primitives — most of the value is unblocked already; rebalance is the one item gated on v4.6.
-- **v4.6.2** is the agent-task eval suite mapped onto Vals AI's Finance Agent taxonomy. Regression coverage at the agent layer plus a publishable "Finn lift" number to anchor positioning against the published 64.37% benchmark.
-- **v4.7 / v4.8** wait until there's daily usage at one firm.
-- **v5** is "don't build yet, but if someone asks, this is the shape."
-- **Technical debt** is background tax — chip away whenever touching adjacent code.
+1. **v4.4.4 — Anthropic API alignment** + **v4.4.5 — Provider tier strategy**, paired. Competitively urgent. Model-default refresh ✅, prompt caching ✅, native citations ✅, extended thinking ✅, compliance one-pager ✅ — remaining: conversation compaction, tier-aware onboarding copy. Bedrock provider stays gated on real customer pull.
+2. **v4.5 audio → structured notes.** ✅ shipped — `MeetingNotes` / `ActionItem` extraction, `MeetingNotesStore` per-collection, `get_meeting_notes` / `list_action_items` MCP tools, `POST /api/collections/{id}/meetings/extract` HTTP endpoint, best-effort background trigger in `upload_service` when an agent key is stored. Frontend nudge banner + `prep_for_meeting` composite are the natural follow-ons (see v4.5 above).
+3. **v4.6.1 untrusted-content guardrail.** Afternoon-sized prompt-injection close-out; ship before the brief format upgrade and TLH/Rebalance skills below it.
+4. **v4.4.3 §13 manual smoke check.** At-machine procedure; not automatable. Procedure inline in §v4.4.3 above.
+5. **v4.4.1 whole-loop streaming.** Deferred until users complain about long tool sequences feeling frozen.
+6. **v4.6** (client profile + analytics), **v4.6.1** TLH/Rebalance skills, **v4.6.2** Vals eval suite — bigger surface, ship after the v4.4.x batch.
+7. **v4.7** (distribution) and **v4.8** (URL/email/semantic-chunking ingestion) wait for daily usage at one firm.
+8. **v5** is "don't build yet, but if someone asks, this is the shape." **Technical debt** is background tax.
 
-**Last updated:** 2026-05-08 (v4.4.3 merged in — advisor desktop UX from `.kiro/specs/advisor-desktop-ux/` (tasks 1–12 shipped, §13 at-machine signoff open); v4.6.1 + v4.6.2 added (wealth-management workflow skills + agent-task eval suite); cross-references to `.kiro/specs/next-batch.md` from v4.1 P0.5/P0.7/P0.8 and v4.5 audio → structured notes; sharpened competitive read with Claude-for-Excel differentiation)
+**Last updated:** 2026-05-10 — v4.4.4 extended thinking shipped (per-turn opt-in via `ChatRequest.extended_thinking`, threaded through `ChatTurn` → `AgenticEngine` + `OneShotEngine` → `AnthropicProvider`; 14 regression tests in [tests/test_extended_thinking.py](tests/test_extended_thinking.py)). v4.4.5 compliance one-pager shipped as [COMPLIANCE.md](COMPLIANCE.md). Remaining v4.4.4 + v4.4.5 work: conversation compaction, tier-aware onboarding copy.

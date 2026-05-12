@@ -257,7 +257,7 @@ const PROVIDER_OPTIONS = [
     tagline: 'Best reasoning. Bring your own key from console.anthropic.com.',
     keyPlaceholder: 'sk-ant-...',
     keyLink: 'https://console.anthropic.com/settings/keys',
-    defaultModel: 'claude-sonnet-4-5-20250929',
+    defaultModel: 'claude-sonnet-4-6',
   },
   {
     id: 'openai',
