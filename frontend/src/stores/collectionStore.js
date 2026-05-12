@@ -6,7 +6,10 @@ import { useSearchStore } from './searchStore'
 export const useCollectionStore = defineStore('collection', () => {
   // State
   const collections = ref([])
-  const currentCollectionId = ref('default')
+  // No hard-coded default — in multi-user mode the "default" collection is
+  // owned by the single-user sentinel and not accessible to authenticated
+  // users. We populate this from localStorage or the first response.
+  const currentCollectionId = ref('')
   const loading = ref(false)
   const error = ref(null)
   const multiUser = ref(false)
@@ -52,10 +55,13 @@ export const useCollectionStore = defineStore('collection', () => {
       multiUser.value = response.data.multi_user || false
       userId.value = response.data.user_id || ''
 
-      // Ensure current collection still exists
+      // Ensure current collection still exists. If not, fall back to the
+      // first available — works for both single-user (where "default" is
+      // present) and multi-user (where the user's auto-provisioned starter
+      // collection has a UUID-style ID).
       const exists = collections.value.some(c => c.id === currentCollectionId.value)
-      if (!exists && collections.value.length > 0) {
-        currentCollectionId.value = 'default'
+      if (!exists) {
+        currentCollectionId.value = collections.value[0]?.id || ''
       }
     } catch (err) {
       error.value = err.response?.data?.detail || 'Failed to load collections'
@@ -110,9 +116,10 @@ export const useCollectionStore = defineStore('collection', () => {
       await axios.delete(`/api/collections/${collectionId}`)
       collections.value = collections.value.filter(c => c.id !== collectionId)
 
-      // If we deleted the current collection, switch to default
+      // If we deleted the current collection, switch to the first one left
+      // (or empty if the user has no more collections).
       if (currentCollectionId.value === collectionId) {
-        currentCollectionId.value = 'default'
+        currentCollectionId.value = collections.value[0]?.id || ''
       }
       return true
     } catch (err) {
