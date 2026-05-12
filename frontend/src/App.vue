@@ -127,6 +127,17 @@
         <span class="text-xs font-medium" :class="isExpertMode ? 'text-base-content' : 'text-base-content/40'">Expert</span>
       </label>
 
+      <!-- Help button -->
+      <button
+        class="btn btn-ghost btn-circle btn-sm"
+        @click="showHelp = true"
+        title="Quick start & help"
+        aria-label="Open help"
+        :aria-expanded="showHelp"
+      >
+        <CircleHelp :size="16" />
+      </button>
+
       <!-- Settings button -->
       <button
         class="btn btn-ghost btn-circle btn-sm"
@@ -891,6 +902,14 @@
       @dismiss="dismissWelcomeBack"
     />
 
+    <!-- Help panel — opened from the header (?) button. Always available so
+         advisors can rediscover slash commands, supported uploads, and
+         provider options without leaving their current tab. -->
+    <HelpPanel
+      :show="showHelp"
+      @close="showHelp = false"
+    />
+
     <!-- Meeting Brief modal (R4 — Advisor Desktop UX) -->
     <BriefModal
       ref="briefModal"
@@ -1044,7 +1063,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, FileSearch, MessageSquare, Hash, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, FileSearch, MessageSquare, Hash, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug, CircleHelp } from 'lucide-vue-next'
 import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
 import { useMeetingRecorder } from './composables/useMeetingRecorder.js'
 import { useThemeIcon } from './composables/useThemeIcon.js'
@@ -1087,6 +1106,7 @@ import FeedbackModal from './components/FeedbackModal.vue'
 import NoteOfRecordModal from './components/NoteOfRecordModal.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import WelcomeBackCard from './components/WelcomeBackCard.vue'
+import HelpPanel from './components/HelpPanel.vue'
 import { isUpdateAvailable } from './utils/version.js'
 import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
@@ -1311,6 +1331,8 @@ const latestKnownVersion = ref(null)
 const updateBannerDismissed = ref(false)
 const daysSinceLastActive = ref(null)
 const welcomeBackDismissed = ref(false)
+
+const showHelp = ref(false)
 
 const showUpdateBanner = computed(() => {
   if (updateBannerDismissed.value) return false
