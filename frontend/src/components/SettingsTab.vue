@@ -96,7 +96,7 @@
         <div class="rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
 
           <!-- Built-in Provider Rows -->
-          <div v-for="def in PROVIDER_DEFS" :key="def.id">
+          <div v-for="def in visibleProviderDefs()" :key="def.id">
             <!-- Row header -->
             <div
               class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
@@ -949,6 +949,7 @@ import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { isExpertMode, toggleExpertMode } from '../utils/expertMode.js'
 import {
   PROVIDER_DEFS,
+  visibleProviderDefs,
   getProvidersConfig,
   getProviderConfig,
   upsertProviderConfig,
