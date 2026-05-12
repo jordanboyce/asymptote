@@ -387,7 +387,7 @@ class SQLiteBackend(DatabaseBackend):
                 else:
                     conn.execute("UPDATE users SET last_seen_at = ? WHERE id = ?", (timestamp, user_id))
                 conn.commit()
-                return {"id": user_id, "display_name": display_name or existing[1], "first_seen_at": existing[2], "last_seen_at": timestamp}
+                result = {"id": user_id, "display_name": display_name or existing[1], "first_seen_at": existing[2], "last_seen_at": timestamp}
             else:
                 dname = display_name or user_id
                 conn.execute(
@@ -395,7 +395,31 @@ class SQLiteBackend(DatabaseBackend):
                     (user_id, dname, timestamp, timestamp)
                 )
                 conn.commit()
-                return {"id": user_id, "display_name": dname, "first_seen_at": timestamp, "last_seen_at": timestamp}
+                result = {"id": user_id, "display_name": dname, "first_seen_at": timestamp, "last_seen_at": timestamp}
+
+            # Multi-user mode: every authenticated user needs at least one
+            # owned collection. The bootstrap "default" collection is owned
+            # by "default" (single-user sentinel), so in multi-user mode each
+            # user gets their own starter collection on first sight.
+            # Cheap idempotent check — runs once per session in practice.
+            if settings.enable_multi_user:
+                owned = conn.execute(
+                    "SELECT 1 FROM collections WHERE owner_id = ? LIMIT 1",
+                    (user_id,),
+                ).fetchone()
+                if not owned:
+                    import uuid
+                    starter_id = uuid.uuid4().hex[:8]
+                    conn.execute(
+                        """
+                        INSERT INTO collections (id, name, description, color, embedding_model, owner_id, created_at, updated_at)
+                        VALUES (?, 'Default', 'Your starter collection', '#3b82f6', ?, ?, ?, ?)
+                        """,
+                        (starter_id, settings.embedding_model, user_id, timestamp, timestamp),
+                    )
+                    conn.commit()
+
+            return result
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
