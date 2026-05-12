@@ -127,6 +127,38 @@ def get_indexer(collection_id: str = "default") -> DocumentIndexer:
     return indexer_manager.get_indexer(collection_id)
 
 
+# Permission levels returned by sharing_service.check_collection_access.
+# "owner" > "readwrite" > "read".
+_WRITE_LEVELS = ("owner", "readwrite")
+
+
+def require_collection_access(collection_id: str, user_id: str, required: str = "read") -> str:
+    """Raise 403/404 unless ``user_id`` has at least ``required`` access on ``collection_id``.
+
+    In single-user mode (``enable_multi_user=False``) the sharing service always
+    returns "owner", so this is effectively a no-op. In multi-user mode it
+    enforces that the user owns the collection or has been granted a share at
+    the required permission level.
+
+    Returns the granted permission level so callers can branch on it if
+    needed (e.g. read-only views vs. owner-only settings).
+    """
+    access = sharing_service.check_collection_access(collection_id, user_id)
+    if not access:
+        # 404 rather than 403 so we don't leak the existence of collection
+        # IDs owned by other users.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Collection '{collection_id}' not found",
+        )
+    if required in _WRITE_LEVELS and access not in _WRITE_LEVELS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Write access required",
+        )
+    return access
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager - initialize and cleanup services."""
@@ -353,6 +385,7 @@ async def get_version():
 async def upload_documents(
     files: List[UploadFile] = File(...),
     collection_id: str = "default",
+    user_id: str = Depends(get_current_user_id),
 ) -> UploadResponse:
     """
     Upload one or more documents and automatically index their contents.
@@ -370,6 +403,8 @@ async def upload_documents(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files provided",
         )
+
+    require_collection_access(collection_id, user_id, required="readwrite")
 
     # Get indexer for the collection
     try:
@@ -516,6 +551,7 @@ async def upload_documents(
 async def upload_documents_async(
     files: List[UploadFile] = File(...),
     collection_id: str = "default",
+    user_id: str = Depends(get_current_user_id),
 ) -> UploadJobResponse:
     """
     Upload documents for background processing. Returns immediately with a job ID.
@@ -537,6 +573,8 @@ async def upload_documents_async(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files provided",
         )
+
+    require_collection_access(collection_id, user_id, required="readwrite")
 
     # Validate collection exists
     try:
@@ -900,6 +938,7 @@ async def cancel_upload_job(job_id: int):
 )
 async def upload_repository(
     request: RepoUploadRequest,
+    user_id: str = Depends(get_current_user_id),
 ) -> RepoUploadResponse:
     """
     Scan a local repository or folder and start indexing in the background.
@@ -940,6 +979,8 @@ async def upload_repository(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Path is not a directory: {request.path}",
         )
+
+    require_collection_access(request.collection_id, user_id, required="readwrite")
 
     # Verify collection exists
     try:
@@ -1008,6 +1049,7 @@ async def search_documents(
     x_openai_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ) -> SearchResponse:
     """
     Perform semantic similarity search over indexed documents.
@@ -1031,6 +1073,7 @@ async def search_documents(
         cross_collection = scope == "all"
 
         if not cross_collection:
+            require_collection_access(collection_id, user_id, required="read")
             # Validate the single-collection target up front; no-op for scope=all.
             try:
                 get_indexer(collection_id)
@@ -1081,7 +1124,9 @@ async def search_documents(
             # group/badge. Synthesis runs once over the merged top-K — same
             # privacy posture as single-collection synthesis (the AI
             # provider sees redacted chunk text), just over more collections.
-            all_cols = collection_service.get_all_collections()
+            # Filter by caller in multi-user mode so cross-collection search
+            # never spans households the user does not own.
+            all_cols = collection_service.get_all_collections(user_id=user_id)
             collection_names_by_id: Dict[str, str] = {}
             merged: list = []
             for col in all_cols:
@@ -1280,6 +1325,7 @@ async def chat_stream_endpoint(
     x_openai_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Streaming chat endpoint (SSE).
 
@@ -1288,6 +1334,7 @@ async def chat_stream_endpoint(
     matches what the frontend has been parsing all along (tool_start,
     tool_end, thinking, text_delta, sources, done, error).
     """
+    require_collection_access(collection_id, user_id, required="read")
     import json as _json
     import uuid as _uuid
     from services.chat.context import build_chat_turn
@@ -1886,7 +1933,10 @@ class IndexLocalRequest(BaseModel):
     summary="Index a local file without uploading",
     tags=["documents"],
 )
-async def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:
+async def index_local_file(
+    request: IndexLocalRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> DocumentMetadata:
     """
     Index a file directly from the local filesystem without copying it.
 
@@ -1931,6 +1981,8 @@ async def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported file type: {file_ext}. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, and code files",
         )
+
+    require_collection_access(request.collection_id, user_id, required="readwrite")
 
     # Get indexer for the collection
     try:
@@ -2011,7 +2063,10 @@ class IndexLocalAsyncRequest(BaseModel):
     summary="Index local files in background",
     tags=["documents"],
 )
-async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobResponse:
+async def index_local_files_async(
+    request: IndexLocalAsyncRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> UploadJobResponse:
     """
     Start a background job to index local files.
 
@@ -2055,6 +2110,8 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No valid files to index",
         )
+
+    require_collection_access(request.collection_id, user_id, required="readwrite")
 
     try:
         job_id = upload_service.start_local_index(
@@ -2187,6 +2244,7 @@ async def ask_question(
     x_openai_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Ask a question and get a synthesized answer from indexed documents.
@@ -2234,6 +2292,8 @@ async def ask_question(
       -d '{"question": "How do I configure the API?", "rerank": false}'
     ```
     """
+    require_collection_access(request.collection_id, user_id, required="read")
+
     from services.app_database import app_db
     import time
     start_time = time.time()
@@ -2606,8 +2666,12 @@ async def get_mcp_export(request: Request, collection_id: str = None):
     summary="Get collection-specific MCP export profile",
     tags=["mcp"],
 )
-async def get_collection_mcp_export_profile(collection_id: str):
+async def get_collection_mcp_export_profile(
+    collection_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
     """Get the saved MCP export profile for a collection."""
+    require_collection_access(collection_id, user_id, required="read")
     try:
         return get_collection_mcp_profile(collection_id)
     except ValueError as exc:
@@ -2622,8 +2686,13 @@ async def get_collection_mcp_export_profile(collection_id: str):
     summary="Update collection-specific MCP export profile",
     tags=["mcp"],
 )
-async def update_collection_mcp_export_profile(collection_id: str, updates: dict):
+async def update_collection_mcp_export_profile(
+    collection_id: str,
+    updates: dict,
+    user_id: str = Depends(get_current_user_id),
+):
     """Save MCP export defaults for a specific collection."""
+    require_collection_access(collection_id, user_id, required="readwrite")
     try:
         return save_collection_mcp_profile(collection_id, updates)
     except ValueError as exc:
@@ -2901,7 +2970,10 @@ async def start_reindex():
     summary="Start re-indexing a collection",
     tags=["collections"],
 )
-async def start_collection_reindex(collection_id: str):
+async def start_collection_reindex(
+    collection_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
     """
     Start a background re-indexing job for a specific collection.
 
@@ -2919,6 +2991,7 @@ async def start_collection_reindex(collection_id: str):
         - status: Initial job status
         - collection_id: Collection being reindexed
     """
+    require_collection_access(collection_id, user_id, required="readwrite")
     try:
         # Get collection settings
         collection = collection_service.get_collection(collection_id)
@@ -3257,6 +3330,7 @@ async def delete_collection(collection_id: str, user_id: str = Depends(get_curre
 )
 async def list_documents(
     collection_id: str = "default",
+    user_id: str = Depends(get_current_user_id),
 ) -> DocumentListResponse:
     """
     List all indexed documents with their metadata.
@@ -3266,6 +3340,7 @@ async def list_documents(
 
     Returns filename, page count, and chunk count for each document.
     """
+    require_collection_access(collection_id, user_id, required="read")
     try:
         # Get indexer for the collection
         try:
@@ -3342,6 +3417,7 @@ async def list_documents(
 async def get_pdf(
     document_id: str,
     collection_id: str = "default",
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Download the document file for a specific document.
@@ -3352,6 +3428,7 @@ async def get_pdf(
 
     For PDFs, the URL can include #page=N to open at a specific page in the browser.
     """
+    require_collection_access(collection_id, user_id, required="read")
     try:
         # Get indexer for the collection
         try:
@@ -3450,6 +3527,7 @@ async def get_document_chunks(
     collection_id: str = "default",
     include_fields: bool = True,
     max_chunks: int = 1000,
+    user_id: str = Depends(get_current_user_id),
 ) -> DocumentChunksResponse:
     """
     Return indexed chunks for a document, with optional OCR field/value extraction.
@@ -3460,6 +3538,7 @@ async def get_document_chunks(
         include_fields: If true, extract key/value fields for OCR/hybrid chunks
         max_chunks: Maximum number of chunks to return (safety limit)
     """
+    require_collection_access(collection_id, user_id, required="read")
     try:
         # Get indexer for the collection
         try:
@@ -3548,6 +3627,7 @@ async def get_document_chunks(
 async def delete_document(
     document_id: str,
     collection_id: str = "default",
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Remove a document and all its chunks from the index.
@@ -3562,6 +3642,7 @@ async def delete_document(
     - For uploaded files: the document file from the collection's documents directory
     - For local references: only the index (original file is NOT deleted)
     """
+    require_collection_access(collection_id, user_id, required="readwrite")
     try:
         # Get indexer for the collection
         try:
@@ -3742,6 +3823,7 @@ async def generate_brief_endpoint(
     concentration_pct: float = 10.0,
     cash_drag_min: float = 50000.0,
     top_n: int = 10,
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Generate a pre-meeting portfolio brief for *collection_id*.
@@ -3751,6 +3833,7 @@ async def generate_brief_endpoint(
     top_positions, tax_loss_candidates, concentration_alerts,
     cash_drag_alerts, sector_allocation, generated_at.
     """
+    require_collection_access(collection_id, user_id, required="read")
     from services.brief_generator import generate_meeting_brief as _gen_brief
 
     try:
@@ -3789,6 +3872,7 @@ async def generate_tlh_plan_endpoint(
     min_loss: float = Body(default=500.0),
     min_loss_pct: float | None = Body(default=None),
     max_candidates: int = Body(default=25),
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Build a Tax-Loss Harvesting plan for *collection_id*.
@@ -3799,6 +3883,7 @@ async def generate_tlh_plan_endpoint(
     `household_collection_ids` passed in) into a single plan with explicit
     guardrails. Calls the primitives directly, no LLM token cost.
     """
+    require_collection_access(collection_id, user_id, required="read")
     from services.financial.tlh import build_harvest_plan
 
     try:
@@ -3817,6 +3902,12 @@ async def generate_tlh_plan_endpoint(
         if cid in seen_ids:
             continue
         seen_ids.add(cid)
+        # Each additional household collection must also be accessible to
+        # the caller — without this check, a user with access to one
+        # collection could pull holdings from any UUID they guess.
+        if not sharing_service.check_collection_access(cid, user_id):
+            logger.warning("TLH: skipping household collection %s — no access", cid)
+            continue
         try:
             extra_indexer = get_indexer(cid)
             household_stores.append(extra_indexer.vector_store.holdings_store)
@@ -3861,6 +3952,7 @@ async def extract_meeting_notes_endpoint(
     x_ollama_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Run a single LLM extraction pass on a transcript and persist the notes.
 
@@ -3870,6 +3962,7 @@ async def extract_meeting_notes_endpoint(
     nudge banner so the advisor can choose when (and with which provider) to
     spend the tokens.
     """
+    require_collection_access(collection_id, user_id, required="readwrite")
     from services.meeting_notes import (
         extract_meeting_notes as _extract,
         transcript_text_from_chunks,
@@ -4193,8 +4286,10 @@ async def generate_compliance_note(
     x_ollama_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Draft a structured compliance Note of Record using the most recent transcript + chat history."""
+    require_collection_access(collection_id, user_id, required="read")
     try:
         provider = _build_ai_provider_from_headers(
             body.provider, x_ai_key,
@@ -4236,8 +4331,10 @@ async def generate_followup_email(
     x_ollama_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Draft a PII-redacted client-safe follow-up email summarizing the meeting."""
+    require_collection_access(collection_id, user_id, required="read")
     try:
         provider = _build_ai_provider_from_headers(
             body.provider, x_ai_key,
@@ -4327,9 +4424,11 @@ async def stream_compliance_note(
     x_ollama_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """SSE variant of /notes — streams text_delta events as the LLM generates,
     then emits a `done` event carrying the redacted final content."""
+    require_collection_access(collection_id, user_id, required="read")
     import json as _json
 
     async def generate():
@@ -4375,9 +4474,11 @@ async def stream_followup_email(
     x_ollama_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """SSE variant of /followup — streams text_delta events as the LLM generates,
     then emits a `done` event carrying the redacted final content."""
+    require_collection_access(collection_id, user_id, required="read")
     import json as _json
 
     async def generate():
@@ -4471,7 +4572,11 @@ def _build_redaction_footer(
     tags=["chat"],
     summary="Persist an advisor-edited Note of Record into the collection",
 )
-async def save_note_of_record(collection_id: str, body: SaveNoteRequest):
+async def save_note_of_record(
+    collection_id: str,
+    body: SaveNoteRequest,
+    user_id: str = Depends(get_current_user_id),
+):
     """Write the edited Note of Record as a Markdown doc and index it.
 
     The advisor edits the streamed draft locally, then this endpoint commits
@@ -4479,6 +4584,7 @@ async def save_note_of_record(collection_id: str, body: SaveNoteRequest):
     flow, so the saved note appears alongside other documents and is
     immediately searchable / chat-addressable.
     """
+    require_collection_access(collection_id, user_id, required="readwrite")
     text = (body.content or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="content is empty")
@@ -4719,8 +4825,12 @@ async def delete_expertise_pack(pack_id: str):
     response_model=CollectionExpertiseResponse,
     tags=["expertise"],
 )
-async def get_collection_expertise(collection_id: str):
+async def get_collection_expertise(
+    collection_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
     """List all expertise packs attached to a collection."""
+    require_collection_access(collection_id, user_id, required="read")
     packs = expertise_store.get_packs_for_collection(collection_id)
     return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
 
@@ -4730,8 +4840,13 @@ async def get_collection_expertise(collection_id: str):
     response_model=CollectionExpertiseResponse,
     tags=["expertise"],
 )
-async def set_collection_expertise(collection_id: str, data: SetCollectionExpertiseRequest):
+async def set_collection_expertise(
+    collection_id: str,
+    data: SetCollectionExpertiseRequest,
+    user_id: str = Depends(get_current_user_id),
+):
     """Replace the full set of expertise packs attached to a collection."""
+    require_collection_access(collection_id, user_id, required="readwrite")
     expertise_store.set_packs_for_collection(collection_id, data.pack_ids)
     packs = expertise_store.get_packs_for_collection(collection_id)
     return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
@@ -4928,7 +5043,11 @@ async def pii_preflight(
     summary="Get custom PII blacklist for a collection",
     tags=["privacy"],
 )
-async def get_pii_blacklist(collection_id: str) -> dict:
+async def get_pii_blacklist(
+    collection_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> dict:
+    require_collection_access(collection_id, user_id, required="read")
     from services.privacy.collection_blacklist import get_blacklist
     return {"collection_id": collection_id, "terms": get_blacklist(collection_id)}
 
@@ -4941,7 +5060,9 @@ async def get_pii_blacklist(collection_id: str) -> dict:
 async def add_pii_blacklist_terms(
     collection_id: str,
     body: PiiBlacklistUpdateRequest,
+    user_id: str = Depends(get_current_user_id),
 ) -> dict:
+    require_collection_access(collection_id, user_id, required="readwrite")
     from services.privacy.collection_blacklist import add_terms
     updated = add_terms(collection_id, body.terms)
     return {"collection_id": collection_id, "terms": updated}
@@ -4955,7 +5076,9 @@ async def add_pii_blacklist_terms(
 async def remove_pii_blacklist_terms(
     collection_id: str,
     body: PiiBlacklistUpdateRequest,
+    user_id: str = Depends(get_current_user_id),
 ) -> dict:
+    require_collection_access(collection_id, user_id, required="readwrite")
     from services.privacy.collection_blacklist import remove_terms
     updated = remove_terms(collection_id, body.terms)
     return {"collection_id": collection_id, "terms": updated}
