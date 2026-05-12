@@ -128,6 +128,31 @@ export const PROVIDER_DEFS = [
 const CONFIG_KEY = 'ai_providers_config'
 const SETTINGS_KEY = 'ai_settings'
 
+/**
+ * Hosted/browser mode: window.finn.apiUrl is only injected by the Electron
+ * preload script. Its absence means we're running in a plain browser
+ * (Docker, Railway, Render, etc.), where local providers like Ollama have
+ * nothing serving them inside the container.
+ */
+function isHostedMode() {
+  if (typeof window === 'undefined') return true
+  return !window.finn?.apiUrl
+}
+
+/**
+ * Provider definitions that should be offered to the user for new setup.
+ * In hosted mode this drops `type: 'local'` providers (Ollama) since they
+ * can never resolve on a shared cloud host. Existing local configs are still
+ * recognized by the lookup helpers below — we just stop showing them as
+ * an option in pickers.
+ */
+export function visibleProviderDefs() {
+  if (isHostedMode()) {
+    return PROVIDER_DEFS.filter(def => def.type !== 'local')
+  }
+  return PROVIDER_DEFS
+}
+
 /** Return all provider configs (built-in + custom) from localStorage. */
 export function getProvidersConfig() {
   try {
@@ -323,15 +348,20 @@ export function migrateLegacySettings() {
     }
   }
 
-  const ollamaModel = localStorage.getItem('ollama_model')
-  if (!configs.find(c => c.id === 'ollama')) {
-    configs.push({
-      id: 'ollama',
-      model: ollamaModel || 'llama3.2',
-      baseUrl: 'http://localhost:11434',
-      available: false,
-    })
-    changed = true
+  // Skip the local-Ollama placeholder in hosted mode — there's nothing on
+  // localhost:11434 inside a cloud container, and surfacing a "detecting…"
+  // entry just confuses users into a dead end.
+  if (!isHostedMode()) {
+    const ollamaModel = localStorage.getItem('ollama_model')
+    if (!configs.find(c => c.id === 'ollama')) {
+      configs.push({
+        id: 'ollama',
+        model: ollamaModel || 'llama3.2',
+        baseUrl: 'http://localhost:11434',
+        available: false,
+      })
+      changed = true
+    }
   }
 
   if (changed) saveProvidersConfig(configs)
