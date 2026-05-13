@@ -28,6 +28,68 @@ The original v4.1 batch came out of three advisor sessions against a real Schwab
 
 ---
 
+## PRIORITY — Anthropic finance-agents release follow-ons (2026-05-12)
+
+The May 5 2026 Anthropic [Finance Agents launch](https://www.anthropic.com/news/finance-agents) shipped four things relevant to Finn: 10 advisor-adjacent **agent templates** as Claude Cowork plugins (incl. "Meeting preparer"), **Microsoft 365 add-ins** (Excel / PowerPoint / Word) with shared context, **eight new data connectors** (Financial Modeling Prep, Moody's MCP, etc.), and Claude Opus 4.7 leading Vals AI Finance Agent at 64.37%.
+
+v4.4.4 already absorbed the API-side items (prompt caching, native citations, extended thinking, Opus 4.7 default — all shipped). v4.6.1 already maps the Apache-2 [`anthropics/financial-services`](https://github.com/anthropics/financial-services) skills repo onto Finn's surfaces. v4.6.2 builds the eval suite against the Vals taxonomy.
+
+**Not yet covered** — the items below. Sequenced by ROI; (a) is the highest-leverage if confirmed.
+
+### (a) M365 add-in via MCP — distribution spike — ❌ Open (1 day spike)
+
+**Hypothesis:** Anthropic's Excel / PowerPoint / Word add-ins can connect to user-configured MCP servers. If true, Finn's existing `/mcp` endpoint becomes a path *to where advisors already live* (Excel) without any installation work. That reverses the recent "MCP is a dev tool, not an advisor surface" steer — the add-ins make MCP an advisor-facing distribution channel by transitive deployment.
+
+**Spike scope:**
+- Read Anthropic's M365 add-in docs and verify MCP server configuration is exposed to end users.
+- If yes: smoke-test [services/mcp_server.py](services/mcp_server.py) against the Excel add-in with one collection. Confirm the redaction middleware fires.
+- If yes: write the user-facing "Connect Finn to Claude in Excel" walkthrough (lives alongside v4.7 distribution flow). Promote MCP to a co-equal advisor surface in [README.md](README.md) and [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md).
+- If no: park the idea; the v4.7 "deferred until first paying advisor" framing stands.
+
+**Why this matters more than the rest of the items below:** the unit of distribution shifts from "advisor opens finn.cyberlion.dev" to "advisor opens Excel and Finn is already there." Closes the gap on the "advisors already live in Excel" reality without Finn needing to ship an Excel-native UI.
+
+### (b) "Meeting preparer" template interface inspection — ❌ Open (afternoon)
+
+The May 5 release shipped a **"Meeting preparer"** agent template as a Claude Cowork plugin — distinct from the `client-review` skill in v4.6.1's Apache-2 repo. This is the generic version of Finn's `/brief`. Two things to extract:
+
+- **Tool vocabulary:** what tools does the template expect? If it calls `get_holdings` / `get_account_summary` / `list_recent_transactions`, Finn should expose tools with the same names + shapes so an advisor in Cowork can swap in Finn for the brokerage-specific data layer. Conformance-as-distribution.
+- **Output shape:** what does the template produce? Compare to [services/brief_generator.py](services/brief_generator.py) output. Whatever's in the template that Finn's brief lacks (and is advisor-relevant) folds into the v4.6.1 brief-format upgrade backlog.
+
+**Acceptance:** a written comparison memo identifying (i) tool-name parity gaps, (ii) brief-content gaps. Drives concrete edits to the v4.6.1 brief upgrade.
+
+### (c) Financial Modeling Prep as a `MarketDataProvider` — ❌ Open (~2 days)
+
+One of the eight new Anthropic data connectors. Likely more reliable than yfinance for production advisor use (yfinance scrapes; FMP is an API with an SLA). [services/market_data/](services/market_data/) is already pluggable behind the `MarketDataProvider` interface — this is a swap, not a rewrite.
+
+- Register `FmpProvider` in [services/market_data/](services/market_data/) alongside yfinance.
+- Cover the four primitives v4.2 exposes: `get_price_history`, `get_security_classification`, `get_corporate_events`, `enrich_holdings`.
+- Default order: FMP when API key is configured, fallback to yfinance.
+- Track parity in [tests/](tests/) (snapshot for one symbol on both providers).
+
+### (d) Moody's MCP for bond enrichment — ❌ Open (~2 days, gated on bond holdings demand)
+
+Moody's MCP surfaces credit ratings on 600M+ companies. Useful when an advisor's client portfolio has meaningful fixed-income exposure — credit rating is a column advisors want to see in the brief / dashboard for any bond position.
+
+- Add a `get_credit_rating(symbol)` primitive to the holdings enrichment pipeline.
+- Surface rating in the holdings table column set and in `/brief` for any position with `asset_class == "Fixed Income"`.
+- Gate ship on a real customer holding bonds — don't pre-build; if the Pershing pilot's book is mostly equity ETFs, this is wasted.
+
+### Sequencing
+
+1. **(a) M365 add-in spike** — 1 day, high-information. Either reframes distribution strategy or proves the hypothesis wrong cheaply. Do first.
+2. **(b) Meeting preparer template inspection** — afternoon. Drives concrete edits to v4.6.1; cheap.
+3. **(c) FMP provider** — when a current customer hits a yfinance reliability issue, or pre-emptively if a Pershing pilot needs it.
+4. **(d) Moody's** — demand-driven; only when bond holdings show up in real customer data.
+
+### What this section explicitly is NOT
+
+- Not the API-side work (prompt caching, citations, extended thinking, Opus 4.7 default) — those are v4.4.4 and mostly shipped.
+- Not the skills work (TLH, rebalance, brief upgrade) — that's v4.6.1.
+- Not the eval suite — that's v4.6.2.
+- Not the agent SDK / Files API / Managed Agents migration — explicitly out of scope per v4.4.4's "What's deliberately not on this list" paragraph.
+
+---
+
 ## v4.1 — Ingestion fidelity & arbitrary-sheet handling (P0, urgent)
 
 Quality bar: **any tabular export from any tool should land as a clean, typed, role-mapped table without manual cleanup.** Nothing else ships until this is solid.
@@ -227,6 +289,7 @@ The signoff procedure for §13. Run twice — once with the Pershing fixture, on
 | Native Citations API | ✅ Shipped | `AnthropicProvider._inject_documents` in [services/ai_service.py](services/ai_service.py) prepends `{type: "document", citations: {enabled: True}}` blocks onto the first user message; both `complete_with_tools` and `stream_chat` route through it. `_parse_citation_block` extracts `char_location` citations off response text blocks and the engine enriches each citation with `document_id` / `chunk_id` / `page_number` / `filename` via a parallel metadata array. `services.chat.context` builds documents+metadata from `filtered_results` and routes them through `ChatTurn`; non-Anthropic providers fall back to the prose RETRIEVED CONTEXT block (backwards compatible). 10 unit + integration tests in [tests/test_native_citations.py](tests/test_native_citations.py) |
 | Extended thinking on Opus 4.7 | ✅ Shipped | Per-turn opt-in via `ChatRequest.extended_thinking`; threaded through `ChatTurn` → `AgenticEngine.run_agentic` + `OneShotEngine.run_one_shot`. `AnthropicProvider.complete_with_tools` / `stream_chat` apply `thinking={"type":"enabled","budget_tokens":8000}` only when the configured model has `thinking: True` in `KNOWN_MODELS` (Claude 4 family); silently ignored otherwise. `max_tokens` auto-bumped past the budget so the visible answer still has room. `thinking` and `redacted_thinking` content blocks round-tripped into `assistant_message` for multi-iteration tool-loop replay; `thinking_delta` stream events surface as engine `thinking` SSE events. 14 regression tests in [tests/test_extended_thinking.py](tests/test_extended_thinking.py). Interleaved thinking (between tool calls) deferred until a slash command needs it — non-interleaved is enough for v1 |
 | Refresh model defaults | ✅ Shipped | `AnthropicProvider.QUALITY_MODEL` bumped to `claude-sonnet-4-6` and new `OPUS_MODEL = "claude-opus-4-7"` constant added in [services/ai_service.py](services/ai_service.py). Frontend selectors ([aiProviders.js](frontend/src/utils/aiProviders.js), [SettingsTab.vue](frontend/src/components/SettingsTab.vue), [WelcomeOnboarding.vue](frontend/src/components/WelcomeOnboarding.vue)) bumped to match. Routing of long-context paths through `OPUS_MODEL` will land alongside v4.6.1 (`/tlh`, `/rebalance`) and v4.5 (`prep_for_meeting`) — no current LLM call site for `/brief` |
+| Haiku/Opus per-turn routing | ❌ Open | Add `quality_tier: "cheap" \| "deep"` flag on `ChatTurn`. Cheap turns (`/ask`, follow-up rephrasing, format-only) use `HAIKU_MODEL = "claude-haiku-4-5"`; deep turns (`/brief`, `/tlh`, `/rebalance`, full agentic chat) use `OPUS_MODEL = "claude-opus-4-7"`. Same prompt caching + thinking + citations apply to both — only the model swap. Decided 2026-05-12 in lieu of cross-provider routing (see "Why not cross-provider routing" below) |
 | Conversation compaction | ❌ Open | Long client-review chats grow past 200K. Anthropic's automatic compaction keeps the window from blowing up; opt-in flag in `AnthropicProvider.stream_chat` and the agentic loop |
 
 ### Prompt caching — ❌ Open
@@ -268,6 +331,22 @@ Per-turn opt-in on Anthropic thinking-capable models (Claude 4 family). Chat def
 
 [services/ai_service.py:269-270](services/ai_service.py#L269-L270): `QUALITY_MODEL` → `"claude-sonnet-4-6"`. Add `OPUS_MODEL = "claude-opus-4-7"` and route long-context paths (`/brief`, `/tlh`, `/rebalance`, `prep_for_meeting`) through it when the provider has Opus access.
 
+### Haiku/Opus per-turn routing — ❌ Open
+
+**Why now:** Beta cost is being absorbed by the project owner (see v4.4.5 "Beta status" note). Combined with prompt caching (~48% input-token savings already measured), Haiku-for-cheap-turns should keep per-user spend in absorbable territory and is the highest-leverage cost lever still on the table.
+
+**Implementation:**
+- Add `HAIKU_MODEL = "claude-haiku-4-5"` constant alongside the existing `QUALITY_MODEL` / `OPUS_MODEL` in [services/ai_service.py](services/ai_service.py).
+- Add `quality_tier: Literal["cheap", "deep"] = "deep"` field on `ChatTurn` ([services/chat/engine.py](services/chat/engine.py)) and `ChatRequest` ([models/schemas.py](models/schemas.py)).
+- `AnthropicProvider.complete_with_tools` / `stream_chat` pick the model by `quality_tier`: `"cheap"` → Haiku, `"deep"` → Opus. Existing non-Anthropic providers ignore the tier.
+- Per-endpoint defaults: `/ask`, `/notes`, `/followup` default to `"cheap"`; `/api/chat/stream`, `/brief`, `/tlh`, `/rebalance` default to `"deep"`. Per-turn override available via `ChatRequest.quality_tier`.
+- Prompt caching, native citations, extended thinking all apply to both tiers unchanged — only the model swap differs.
+- Acceptance test: identical question routed at `"cheap"` and `"deep"` returns plausibly-similar outputs (Haiku may be terser); verify `model` field in response usage reflects the routed choice.
+
+### Why not cross-provider routing
+
+Considered and rejected 2026-05-12: routing financial queries to Anthropic and non-financial to Ollama Cloud / Gemma. The cross-provider approach (a) requires a classifier (latency + cost), (b) breaks tool-use parity (non-Anthropic tool calling is rougher than Claude's, so any turn that might invoke a tool can't safely route away), (c) causes context drift mid-conversation, and (d) the "non-financial" surface in an advisor app is too small to justify the complexity. Stay inside Anthropic for routing; use the v4.4.5 tier picker for session-level provider selection. See memory `feedback_model_routing_anthropic_only.md`.
+
 ### Conversation compaction — ❌ Open
 
 Track per-thread token budget in [services/chat/engine.py](services/chat/engine.py); when next-turn estimated input > 80% of context, flip `compact_on_next_turn`. Anthropic's automatic compaction is the path of least resistance; for OpenAI/Ollama, fall back to manual "summarize prior 10 turns" pass.
@@ -278,15 +357,55 @@ Track per-thread token budget in [services/chat/engine.py](services/chat/engine.
 2. ✅ **Prompt caching** — shipped.
 3. ✅ **Native Citations** — shipped (frontend pills land with the v4.6.2 eval suite).
 4. ✅ **Extended thinking** — shipped (opt-in per-turn via `ChatRequest.extended_thinking`; UI control lands when a slash command needs it).
-5. **Compaction** — 1 day. Lowest priority until multi-hour client-review chats become common.
+5. **Haiku/Opus per-turn routing** — ~1 day. Highest-leverage cost lever for the absorbed-beta-cost model.
+6. **Compaction** — 1 day. Lowest priority until multi-hour client-review chats become common.
 
-**Why this fits the frame:** the "make the configured LLM work better against Finn's data" lever — caching makes BYO-key affordable, citations make answers verifiable, extended thinking makes hard analysis correct. None of it touches the data-layer mandate; every turn just gets cheaper, more accurate, more auditable. The delta shows up as Finn lift in the v4.6.2 eval suite.
+**Why this fits the frame:** the "make the configured LLM work better against Finn's data" lever — caching makes per-turn cost affordable, citations make answers verifiable, extended thinking makes hard analysis correct, Haiku/Opus routing keeps the cheap slice cheap. None of it touches the data-layer mandate; every turn just gets cheaper, more accurate, more auditable. The delta shows up as Finn lift in the v4.6.2 eval suite.
 
 ---
 
 ## v4.4.5 — Provider tier strategy (compliance & cost positioning) — 🟡 Partial
 
-**The product question this answers:** "Can I make Ollama Cloud my main LLM provider and stay compliant in financial-sector restrictions?" Short answer — **yes for solo / small RIAs, no for mid-market and enterprise** without paperwork they don't have. Finn's BYO-key model means the right answer isn't a single provider — it's a tier story the advisor and their compliance officer can pick from at onboarding.
+### Per-user key mapping (beta_keys YAML) — 🟡 Mostly shipped, uncommitted
+
+The **per-user API key mapping is already built** in [services/beta_keys.py](services/beta_keys.py) (untracked) and wired through [middleware/user_context.py](middleware/user_context.py), [services/app_database.py](services/app_database.py) `user_api_keys` table, [main.py](main.py) discovery endpoint, and [frontend/src/utils/aiProviders.js](frontend/src/utils/aiProviders.js) boot-time fetch. A YAML file keyed by user email maps each user to operator-provisioned API keys (`anthropic`, `google`, `ollama_cloud`, ...); keys are seeded INSERT-ONLY into the `user_api_keys` table on first request; key values never cross to the client (only masked previews via `list_user_api_keys`). Path is controlled by `settings.beta_keys_file` env.
+
+**What's left to ship this:**
+- Commit the uncommitted work (currently 11 files / ~463 insertions sitting on `harden/collection-access-checks`).
+- Create `beta_keys.example.yml` at repo root showing the schema; add the real path to `.gitignore`.
+- End-to-end smoke test: set `BETA_KEYS_FILE=...`, log in as a YAML-listed user, verify chat works without touching Settings, verify the discovery endpoint marks providers as `source: "beta_file"`.
+- One paragraph in [README.md](README.md) / [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) documenting the closed-beta operator workflow.
+
+### Admin user-provisioning endpoint (Phase 1 of monetization migration) — ❌ Open
+
+**Why:** The YAML works for a 3-user closed beta but doesn't survive going past ~5–10 users. Editing a file (or a Railway env var) every time someone signs up is the friction the user already flagged. This item gets you off YAML editing forever while staying inside the "operator approves every user" trust model — no payments, no self-serve signup yet, just a clean admin path. Lands before user #5 to avoid that workflow becoming the bottleneck. See ROADMAP §v4.9 for the self-serve / payments phase that consumes this endpoint.
+
+**Implementation:**
+- `POST /api/admin/users` — gated by the same admin check used by the token-usage view (`OWNER_USER_ID` env). Body: `{email, providers: {anthropic: "sk-ant-...", ...}, budget_cap_usd?: number, note?: string}`. Writes directly to the existing `user_api_keys` table; mirrors the same INSERT-ONLY semantics as the YAML seeder so it can't accidentally clobber an existing key.
+- `DELETE /api/admin/users/{email}` — for offboarding. Soft-delete preferred (mark inactive, keep audit trail); hard-delete only on explicit owner action.
+- `GET /api/admin/users` — list seeded users with `{email, providers, budget_cap_usd, created_at, last_seen_at, last_30d_tokens}` so the owner has one place to see who's on the system.
+- Minimal admin UI (or a CLI script) — for 3–20 users a CLI is fine; a Vue tab lands when you're consistently >20 users.
+- Migration: YAML system stays as a fallback bootstrap path. If a row already exists in `user_api_keys` for `(user_id, provider)`, neither YAML nor the admin endpoint touches it.
+
+**Acceptance:** owner can add a user without editing the YAML / env var / restarting. Existing YAML-seeded users keep working unchanged. Non-owner gets 403.
+
+### Admin token-usage view (anomaly detection) — ❌ Open
+
+**Why:** With per-user keys + Anthropic-side budget caps in place, the spend ceiling is enforced at the source. What Finn still needs is a *light* admin-only view to catch anomalies (a user suddenly burning 10x baseline) before the budget cap is hit — that lets the owner intervene rather than the user discovering it via a hard fail. This is NOT a full cost dashboard; Anthropic's console is the source of truth for spend.
+
+**Implementation:**
+- New `usage_events` SQLite table populated by `AnthropicProvider` after every call: `{user_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, request_count, created_at}`. Cheap insert per request, rolled up on read.
+- New endpoint `GET /api/admin/usage` gated by an admin check (`OWNER_USER_ID` env, or extend the existing user-context middleware). Returns per-user 30-day rollup, sorted by total tokens descending, with a baseline-vs-current delta column.
+- Frontend `AdminUsageTab.vue` — visible only when the current user matches the owner ID. Plain table; no charts. NOT in the regular DiagnosticsTab — cost data must stay out of any user-visible surface.
+- Acceptance: a non-owner hitting `/api/admin/usage` gets 403; the owner sees per-user rollup; provisioned key values never appear in any response payload.
+
+---
+
+
+
+> **Beta status note (2026-05-12):** During beta, the project owner is footing Anthropic API costs. Each beta user is allocated **their own owner-provisioned Anthropic API key** with a **per-key budget cap set in the Anthropic console** — that gives per-user spend tracking (in Anthropic's console, no Finn dashboard needed) and runaway-cost protection (Anthropic enforces the ceiling) for free. Users never see the key; it's mapped server-side by user_id and routed through the existing `AnthropicProvider`. Onboarding does NOT demand key configuration; the chat surface works on first login. The four-tier BYO-key story below still applies to advisors who *want* their own key (compliance-driven, larger firms) or as the post-beta default, but tier selection is treated as a post-beta concern unless raised. See memory `project_beta_billing_model.md`. Cost levers that matter inside Finn: Haiku/Opus per-turn routing (v4.4.4) and prompt caching (shipped). Cost observability inside Finn is admin-only and light-touch (see "Admin token-usage view" item below).
+
+**The product question this answers:** "Can I make Ollama Cloud my main LLM provider and stay compliant in financial-sector restrictions?" Short answer — **yes for solo / small RIAs, no for mid-market and enterprise** without paperwork they don't have. Finn's BYO-key model (post-beta default) means the right answer isn't a single provider — it's a tier story the advisor and their compliance officer can pick from at onboarding.
 
 This section is half-shipped already. [services/ai_service.py](services/ai_service.py) registers Anthropic, OpenAI, Ollama (local), Ollama Cloud, Grok, Google, GitHub, OpenAI-compatible. What's missing is **explicit positioning** — telling the advisor which tier matches their firm size + compliance posture, and adding AWS Bedrock when a real customer with FedRAMP / HIPAA / IL5 requirements pulls.
 
@@ -574,6 +693,41 @@ PDF table extraction was promoted into v4.1 P0.8 because it's load-bearing for a
 ### Semantic / structure-aware chunking
 
 - Paragraph- or heading-bounded chunks for PDFs and markdown. Recursive chunking respecting document hierarchy. Topic-boundary chunking (LLM-driven, expensive, gated behind a setting).
+
+---
+
+## v4.9 — Self-serve monetization (Phase 2 of monetization migration)
+
+**Status:** ❌ Open. Gated on (a) v4.4.5 Phase 1 admin endpoint shipped, and (b) consistent inbound demand outpacing manual onboarding — not before. Premature self-serve infra is a real anti-pattern; you want to be on the phone with the first 10 paying users anyway.
+
+### Strategic decisions locked in this section
+
+- **Billing model: bundled, not BYO-key.** Users pay a flat (or tiered) subscription and Finn provisions their Anthropic key with a server-side budget cap. The "paste your API key" friction was the original adoption blocker; putting it back at checkout undoes the work. Bundled pricing also lets you compete on outcome (briefs, TLH plans), not Anthropic's per-token cost. Memory: `project_beta_billing_model.md` confirms the absorbed-cost model already in place.
+- **Identity: magic-link auth replaces Cloudflare Access OTP for the user surface.** CF Access is great for a closed allowlist; it doesn't handle "advisor heard about Finn on a podcast, wants to sign up." Magic links also avoid the "older advisor can't remember passwords" failure mode. CF Access stays around `/api/admin/*` routes if you want the owner-only gate to live at the network layer.
+- **Pricing anchor:** $79–149/mo per advisor seat. Based on rough Anthropic cost of $30–90/user/month with Haiku/Opus routing + caching, and competitive points (Holistiplan $25–50, ChatGPT Plus $20, niche RIA tools $50–200). $99/mo is the defensible round-number anchor for the first tier.
+
+### Status snapshot
+
+| Item | Status | Notes |
+|---|---|---|
+| Auth: magic-link (Clerk / Supabase / Stytch) | ❌ Open | Clerk has the cleaner DX + Stripe integration baked in; Supabase is the open-source path. Pick one before any other work in this section. Magic-link only; no password flows |
+| Payments: Stripe Checkout + Customer Portal | ❌ Open | Don't build subscription management. Stripe's hosted Customer Portal handles cancellation, plan changes, payment method updates. Webhooks: `checkout.session.completed` provisions, `customer.subscription.deleted` revokes |
+| Anthropic key auto-provisioning | ❌ Open | Anthropic Admin API supports programmatic key creation + budget caps at the workspace level. On Stripe webhook → create key with budget cap matching the tier → call the v4.4.5 admin endpoint internally to register the user. On cancellation → revoke key, mark user inactive |
+| Pricing tiers | ❌ Open | Start with one tier ($99/mo). Add a higher tier (Opus-allowed, more briefs/mo) only when usage data tells you who needs it. Don't over-design |
+| Landing page / signup flow | ❌ Open | Pricing page → Stripe Checkout → magic link email → onboarding into a working chat surface. The chat already works on first login (v4.4.5 beta_keys plumbing); the new path just adds a key-provisioning step upstream |
+| Migration from CF Access | ❌ Open | CF Access OTP stays for `/api/admin/*` (owner-only). User surface moves to magic-link auth. Existing beta users grandfathered: their `user_api_keys` rows persist; they just get a magic-link email next time |
+
+### Sequencing
+
+1. **Don't start this until v4.4.5 Phase 1 (admin endpoint) is shipped.** Phase 1 is the building block — Phase 2 just calls it from a Stripe webhook instead of a human.
+2. **Don't start this until you have 5+ users on Phase 1.** If you can still onboard manually, the highest-leverage work is product (briefs, dashboards) not signup infra.
+3. **Auth → payments → key auto-provisioning** is the natural sequence inside this section. Auth without payments lets you onboard waitlist users; payments without auto-provisioning means you still hand-provision keys (Phase 1 endpoint); auto-provisioning closes the loop.
+
+### What this section explicitly is NOT
+
+- Not an enterprise tier. Self-serve signup is for solo and small advisor shops. Compliance-bound firms ($100M+) still go through the v4.4.5 BYO-key path with their own Anthropic / Bedrock / sovereignty key.
+- Not a free tier. The target market is professional advisors with revenue; free tiers attract students, hobbyists, and abuse without converting at meaningful rates. Trial yes (7–14 days), free no.
+- Not an affiliate / referral program. Pre-PMF, that's a distraction. Revisit at >100 paying users.
 
 ---
 

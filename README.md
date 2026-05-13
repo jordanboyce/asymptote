@@ -371,6 +371,40 @@ Finn supports optional AI integration for enhanced search results:
 - **OpenAI**: https://platform.openai.com/api-keys
 - **INL HPC**: Use your INL HPC API key for `https://api.hpc.inl.gov/llm/v1`
 
+### Closed Beta: Operator-Provisioned Keys
+
+For closed-beta deployments where you (the operator) want to hand out access without making users configure anything, Finn supports server-side key seeding from a YAML file.
+
+**Two configuration paths depending on where you're running:**
+
+*Local dev (file on disk):*
+1. Copy `beta_keys.example.yml` → `beta_keys.yml` (gitignored) and fill in emails + API keys.
+2. Set `BETA_KEYS_FILE=./beta_keys.yml` in your `.env`.
+3. The file is read on first request per user and re-read on mtime change — edits hot-reload without restart.
+
+*Hosted (Railway / Fly / etc. — repo can't carry secrets):*
+1. Build the YAML content with your real keys (same schema as the example file).
+2. Paste it into the `BETA_KEYS_YAML` env var on your hosting platform.
+3. Redeploy. The env var is cached for the process lifetime — editing it requires another redeploy (acceptable for small closed betas).
+
+`BETA_KEYS_YAML` takes precedence over `BETA_KEYS_FILE` when both are set. Either path produces the same user-facing behavior: users authenticated by your identity layer (e.g. **Cloudflare Access OTP** on the hosted deployment) land in a working chat surface on first login without ever touching Settings.
+
+**Security:**
+- Keys are seeded INSERT-ONLY into the `user_api_keys` table; existing rows are never overwritten. To rotate a key, delete the row (or the user) and the next request re-seeds.
+- Key values never cross to the client. The discovery endpoint at `/api/user/keys` returns masked previews and a `source: "beta_file"` marker so the frontend can skip the onboarding takeover for pre-provisioned users.
+- Malformed YAML is logged and silently ignored — a typo in the file cannot lock anyone out of login.
+- The real `beta_keys.yml` is gitignored; only `beta_keys.example.yml` is committed.
+
+**Schema** (excerpt — full reference in `beta_keys.example.yml`):
+
+```yaml
+advisor@example.com:
+  anthropic: sk-ant-...
+  openai: sk-...        # optional, multiple providers per user supported
+```
+
+For implementation details see [services/beta_keys.py](services/beta_keys.py) and the seeding hook in [middleware/user_context.py](middleware/user_context.py).
+
 ---
 
 ### Corporate SSL Configuration

@@ -46,4 +46,13 @@ def get_current_user_id(request: Request) -> str:
     except Exception as e:
         logger.warning(f"Could not upsert user {user_id}: {e}")
 
+    # If beta_keys_file is configured, seed this user's API keys from the
+    # YAML (idempotent + memoized — see services.beta_keys). Kept best-effort
+    # so a malformed file can't lock anyone out.
+    try:
+        from services.beta_keys import ensure_seeded
+        ensure_seeded(user_id)
+    except Exception as e:
+        logger.warning(f"Beta-key seeding failed for {user_id}: {e}")
+
     return user_id

@@ -50,6 +50,11 @@ venv.bak/
 .env.*.local
 !.env.example
 !.env.*.example
+
+# Closed-beta API key seeding (services/beta_keys.py) — contains live secrets.
+# The committed example is `beta_keys.example.yml`; the real file is ignored.
+beta_keys.yml
+beta_keys.yaml
 # Data directory (contains uploaded PDFs and indexes)
 data/
 

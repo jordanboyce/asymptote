@@ -254,6 +254,28 @@ class DatabaseBackend(ABC):
     def get_agent_config(self) -> Dict[str, Any]:
         ...
 
+    # ── Per-User AI Provider Keys ────────────────────────────
+
+    @abstractmethod
+    def set_user_api_key(self, user_id: str, provider: str, api_key: str):
+        ...
+
+    @abstractmethod
+    def get_user_api_key(self, user_id: str, provider: str) -> Optional[str]:
+        ...
+
+    @abstractmethod
+    def delete_user_api_key(self, user_id: str, provider: str):
+        ...
+
+    @abstractmethod
+    def list_user_api_keys(self, user_id: str) -> List[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def user_api_key_exists(self, user_id: str, provider: str) -> bool:
+        ...
+
     # ── MCP Resources ────────────────────────────────────────
 
     @abstractmethod

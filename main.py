@@ -1361,6 +1361,7 @@ async def chat_stream_endpoint(
                     chat_request.provider, x_ai_key,
                     x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
                     x_ai_base_url,
+                    user_id=user_id,
                 )
             except Exception as e:
                 _diag("error", {"stage": "provider_init", "message": str(e)})
@@ -2319,7 +2320,15 @@ async def ask_question(
                 detail=f"Ollama not available: {e}",
             )
     else:
-        api_key = x_ai_key or app_db.get_agent_api_key(x_ai_provider)
+        # Lookup order matches the in-app chat resolver:
+        # explicit header > per-user beta-seeded key > legacy global agent key.
+        # The legacy fallback stays so that single-user / pre-multi-user deployments
+        # that still rely on /api/agent/config keep working until that path is retired.
+        api_key = (
+            x_ai_key
+            or app_db.get_user_api_key(user_id, x_ai_provider)
+            or app_db.get_agent_api_key(x_ai_provider)
+        )
         if not api_key and x_ai_provider != "openai_compatible":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -2614,6 +2623,45 @@ async def delete_agent_config(provider: str):
     app_db.delete_agent_api_key(provider)
     return {"success": True, "message": f"API key removed for {provider}"}
 
+
+@app.get(
+    "/api/user/ai-providers",
+    summary="List the AI providers the operator has provisioned for the current user",
+    tags=["agent"],
+)
+async def list_user_ai_providers(
+    user_id: str = Depends(get_current_user_id),
+):
+    """Return provider entries the current user can call without supplying a key.
+
+    Each entry is ``{provider, key_preview, updated_at, source}`` where
+    ``source`` is ``"db"`` for keys already persisted in ``user_api_keys`` and
+    ``"beta_file"`` for providers listed in ``beta_keys_file`` that haven't
+    been seeded yet for this session.
+
+    Designed for the frontend to render the chat-provider picker in closed
+    beta without exposing the underlying key. **Never returns the raw
+    api_key.** The endpoint is read-only and gated by the same Cf-Access /
+    X-User-ID identity middleware as every other per-user route.
+    """
+    from services.beta_keys import list_seeded_providers_for
+
+    entries = app_db.list_user_api_keys(user_id)
+    seen = {e["provider"] for e in entries}
+    for entry in entries:
+        entry["source"] = "db"
+
+    for provider in list_seeded_providers_for(user_id):
+        if provider in seen:
+            continue
+        entries.append({
+            "provider": provider,
+            "key_preview": "***",
+            "updated_at": None,
+            "source": "beta_file",
+        })
+
+    return {"providers": entries}
 
 
 @app.get(
@@ -3978,6 +4026,7 @@ async def extract_meeting_notes_endpoint(
             body.provider, x_ai_key,
             x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
             x_ai_base_url,
+            user_id=user_id,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
@@ -4120,13 +4169,33 @@ async def get_latest_transcript(
 
 # ── Meeting Capture endpoints (v4.5) ──────────────────────────────────────────
 
-def _build_ai_provider_from_headers(provider_name: str, ai_key: str, model: str, base_url: str):
-    """Shared helper to construct an AI provider from request headers."""
+def _build_ai_provider_from_headers(
+    provider_name: str,
+    ai_key: str,
+    model: str,
+    base_url: str,
+    user_id: Optional[str] = None,
+):
+    """Shared helper to construct an AI provider from request headers.
+
+    When ``ai_key`` is empty and ``user_id`` is provided, the resolver falls
+    back to the operator-provisioned key in ``user_api_keys`` for that user.
+    This is what lets closed-beta users hit chat / notes / brief without ever
+    touching the Settings tab — keys are seeded from ``beta_keys_file`` on
+    first login (see services.beta_keys).
+    """
     if provider_name == "ollama":
         extra: dict = {"model": model or "llama3.2"}
         if base_url:
             extra["base_url"] = base_url
         return create_provider("ollama", **extra)
+
+    if not ai_key and user_id and provider_name and provider_name != "openai_compatible":
+        try:
+            ai_key = app_db.get_user_api_key(user_id, provider_name) or ai_key
+        except Exception as exc:
+            logger.debug("Per-user key lookup failed for %s/%s: %s", user_id, provider_name, exc)
+
     extra = {}
     if model:
         extra["model"] = model
@@ -4295,6 +4364,7 @@ async def generate_compliance_note(
             body.provider, x_ai_key,
             x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
             x_ai_base_url,
+            user_id=user_id,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
@@ -4340,6 +4410,7 @@ async def generate_followup_email(
             body.provider, x_ai_key,
             x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
             x_ai_base_url,
+            user_id=user_id,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"AI provider error: {e}")
@@ -4437,6 +4508,7 @@ async def stream_compliance_note(
                 body.provider, x_ai_key,
                 x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
                 x_ai_base_url,
+                user_id=user_id,
             )
         except Exception as e:
             yield f"data: {_json.dumps({'type': 'error', 'message': f'AI provider error: {e}'})}\n\n"
@@ -4487,6 +4559,7 @@ async def stream_followup_email(
                 body.provider, x_ai_key,
                 x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
                 x_ai_base_url,
+                user_id=user_id,
             )
         except Exception as e:
             yield f"data: {_json.dumps({'type': 'error', 'message': f'AI provider error: {e}'})}\n\n"
@@ -4935,6 +5008,7 @@ async def stream_generate_expertise_pack(
     x_ollama_model: str = Header(None),
     x_ai_model: str = Header(None),
     x_ai_base_url: str = Header(None),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Stream an AI-drafted expertise pack body using prompt-engineering patterns.
 
@@ -4953,6 +5027,7 @@ async def stream_generate_expertise_pack(
                 body.provider, x_ai_key,
                 x_ai_model or x_anthropic_model or x_openai_model or x_ollama_model,
                 x_ai_base_url,
+                user_id=user_id,
             )
         except Exception as e:
             yield f"data: {_json.dumps({'type': 'error', 'message': f'AI provider error: {e}'})}\n\n"

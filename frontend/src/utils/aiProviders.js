@@ -139,18 +139,73 @@ function isHostedMode() {
   return !window.finn?.apiUrl
 }
 
+// Provider ids the server has pre-provisioned a key for on behalf of this
+// user (closed-beta path — see services.beta_keys on the backend). Populated
+// once on app boot via fetchServerManagedProviders(); empty in any deployment
+// where beta_keys_file is unset, which is the default.
+let _serverManagedProviders = []
+
+/**
+ * Fetch the list of providers the server has a key for on this user's
+ * behalf, cache it module-locally, and bootstrap an active provider if the
+ * user has none configured. Idempotent — safe to call again to refresh.
+ *
+ * Failures are swallowed silently because the legacy BYO-key flow is still
+ * the fallback; if the discovery endpoint is unreachable, Settings still
+ * lets the user paste a key.
+ */
+export async function fetchServerManagedProviders() {
+  try {
+    const res = await fetch('/api/user/ai-providers', { credentials: 'same-origin' })
+    if (!res.ok) {
+      _serverManagedProviders = []
+      return _serverManagedProviders
+    }
+    const data = await res.json()
+    _serverManagedProviders = (data?.providers || [])
+      .map(p => p?.provider)
+      .filter(Boolean)
+  } catch {
+    _serverManagedProviders = []
+  }
+
+  // Auto-pick an active provider when the user has nothing in localStorage
+  // yet — beta users land in the app without ever touching Settings, so chat
+  // would otherwise have no provider id to send.
+  if (_serverManagedProviders.length > 0 && !getActiveProvider()) {
+    setActiveProviderLS(_serverManagedProviders[0])
+  }
+
+  return _serverManagedProviders
+}
+
+export function getServerManagedProviders() {
+  return _serverManagedProviders.slice()
+}
+
+export function isServerManaged(providerId) {
+  return _serverManagedProviders.includes(providerId)
+}
+
 /**
  * Provider definitions that should be offered to the user for new setup.
  * In hosted mode this drops `type: 'local'` providers (Ollama) since they
- * can never resolve on a shared cloud host. Existing local configs are still
- * recognized by the lookup helpers below — we just stop showing them as
- * an option in pickers.
+ * can never resolve on a shared cloud host. Server-managed providers are
+ * also dropped — the operator owns those keys; users shouldn't see a card
+ * inviting them to enter or replace one.
+ *
+ * Existing local configs and server-managed providers are still recognized
+ * by the lookup helpers below; we just stop offering them in pickers.
  */
 export function visibleProviderDefs() {
+  let defs = PROVIDER_DEFS
   if (isHostedMode()) {
-    return PROVIDER_DEFS.filter(def => def.type !== 'local')
+    defs = defs.filter(def => def.type !== 'local')
   }
-  return PROVIDER_DEFS
+  if (_serverManagedProviders.length > 0) {
+    defs = defs.filter(def => !_serverManagedProviders.includes(def.id))
+  }
+  return defs
 }
 
 /** Return all provider configs (built-in + custom) from localStorage. */
@@ -263,6 +318,13 @@ export function getConfiguredProviderIds() {
     if (cfg.isCustom && cfg.baseUrl) result.push(cfg.id)
   }
 
+  // Server-managed providers (beta-seeded). Surfaced here so the rest of the
+  // UI — chat picker, AI-feature gates, etc. — treats them as configured
+  // even though there's nothing in localStorage.
+  for (const id of _serverManagedProviders) {
+    if (!result.includes(id)) result.push(id)
+  }
+
   return result
 }
 
@@ -274,22 +336,32 @@ export function getConfiguredProviderIds() {
 export function buildProviderHeaders(providerId, modelOverride = null) {
   const cfg = getProviderConfig(providerId)
   const headers = {}
-  if (!cfg) return headers
+  const serverManaged = isServerManaged(providerId)
 
-  const resolvedModel = (modelOverride && modelOverride.trim()) ? modelOverride.trim() : (cfg.model || '')
+  // Server-managed providers may have no localStorage entry at all — the
+  // backend resolves the key from user_api_keys. Forward only the model
+  // hint when there's one to forward.
+  if (!cfg && !serverManaged) return headers
 
-  if (cfg.isCustom) {
+  const resolvedModel = (modelOverride && modelOverride.trim())
+    ? modelOverride.trim()
+    : (cfg?.model || '')
+
+  if (cfg?.isCustom) {
     if (cfg.apiKey && cfg.apiKey !== 'none') headers['X-AI-Key'] = cfg.apiKey
     if (cfg.baseUrl) headers['X-AI-Base-URL'] = cfg.baseUrl
     if (resolvedModel) headers['X-AI-Model'] = resolvedModel
   } else if (providerId === 'ollama') {
-    const baseUrl = cfg.baseUrl || 'http://localhost:11434'
+    const baseUrl = cfg?.baseUrl || 'http://localhost:11434'
     if (baseUrl !== 'http://localhost:11434') headers['X-AI-Base-URL'] = baseUrl
     const model = resolvedModel || 'llama3.2'
     headers['X-Ollama-Model'] = model
     headers['X-AI-Model'] = model
   } else {
-    if (cfg.apiKey) headers['X-AI-Key'] = cfg.apiKey
+    // For server-managed providers we intentionally omit X-AI-Key so the
+    // backend falls back to the user's row in user_api_keys. Sending an
+    // empty/placeholder key would short-circuit that lookup.
+    if (cfg?.apiKey && !serverManaged) headers['X-AI-Key'] = cfg.apiKey
     if (resolvedModel) headers['X-AI-Model'] = resolvedModel
   }
 

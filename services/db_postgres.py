@@ -104,6 +104,15 @@ class PostgresBackend(DatabaseBackend):
                     )
                 """)
                 cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_api_keys (
+                        user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        provider   TEXT NOT NULL,
+                        api_key    TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (user_id, provider)
+                    )
+                """)
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS collections (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -920,6 +929,80 @@ class PostgresBackend(DatabaseBackend):
             else:
                 config["providers"][provider] = {"configured": False, "key_preview": None}
         return config
+
+    # ── Per-User AI Provider Keys ────────────────────────────
+
+    def set_user_api_key(self, user_id: str, provider: str, api_key: str):
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO user_api_keys (user_id, provider, api_key, updated_at)
+                           VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (user_id, provider) DO UPDATE SET
+                           api_key = EXCLUDED.api_key,
+                           updated_at = EXCLUDED.updated_at""",
+                    (user_id, provider, api_key, ts),
+                )
+            conn.commit()
+        finally:
+            self._put(conn)
+
+    def get_user_api_key(self, user_id: str, provider: str) -> Optional[str]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT api_key FROM user_api_keys WHERE user_id = %s AND provider = %s",
+                    (user_id, provider),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+        finally:
+            self._put(conn)
+
+    def delete_user_api_key(self, user_id: str, provider: str):
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM user_api_keys WHERE user_id = %s AND provider = %s",
+                    (user_id, provider),
+                )
+            conn.commit()
+        finally:
+            self._put(conn)
+
+    def list_user_api_keys(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return masked previews of a user's stored keys, never the raw key."""
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT provider, api_key, updated_at FROM user_api_keys WHERE user_id = %s",
+                    (user_id,),
+                )
+                rows = cur.fetchall()
+        finally:
+            self._put(conn)
+        out: List[Dict[str, Any]] = []
+        for provider, key, updated_at in rows:
+            masked = key[:8] + "..." + key[-4:] if key and len(key) > 12 else "***"
+            out.append({"provider": provider, "key_preview": masked, "updated_at": updated_at})
+        return out
+
+    def user_api_key_exists(self, user_id: str, provider: str) -> bool:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM user_api_keys WHERE user_id = %s AND provider = %s LIMIT 1",
+                    (user_id, provider),
+                )
+                return cur.fetchone() is not None
+        finally:
+            self._put(conn)
 
     # ── MCP Resources ────────────────────────────────────────
 

@@ -1,0 +1,77 @@
+# Closed-beta API key seeding for Finn (services/beta_keys.py).
+#
+# When config.beta_keys_file points at a copy of this file, the user_context
+# middleware seeds per-user API keys into the user_api_keys table on first
+# request. Beta users don't paste a key into Settings — chat / brief / TLH all
+# work out of the box on first login.
+#
+# Schema
+# ------
+# Top-level keys are user emails, case-insensitive. They're matched against the
+# user identity surfaced by middleware/user_context.py (Cf-Access-Authenticated-
+# User-Email / X-User-ID — Cloudflare Access OTP populates these in the hosted
+# deployment).
+#
+# Second-level keys are provider IDs (lowercase). Values are the literal API
+# key strings the operator hands out to that user.
+#
+# Lifecycle
+# ---------
+# - Seeding is INSERT-ONLY. An existing user_api_keys row is never overwritten.
+#   To rotate a key, delete the row from user_api_keys (or the whole user) and
+#   the next request re-seeds from this file.
+# - The file is re-read on mtime change; you can edit it without restarting.
+# - A malformed YAML is logged and silently ignored — it cannot lock anyone out
+#   of login.
+# - Key values never cross to the client. The /api/user/keys discovery endpoint
+#   returns only masked previews and the `source: "beta_file"` marker so the
+#   frontend can skip the onboarding takeover for pre-provisioned users.
+#
+# Setup — two paths depending on where you're running Finn
+# ---------------------------------------------------------
+#
+# Local dev (file path):
+#   1. Copy this file to `beta_keys.yml` (gitignored).
+#   2. Fill in real emails and live API keys.
+#   3. Set BETA_KEYS_FILE=./beta_keys.yml in your `.env`.
+#   4. Restart; edits hot-reload via mtime — no restart needed for changes.
+#
+# Hosted (Railway / Fly / etc. — file can't be committed):
+#   1. Build the YAML content matching this schema with your real keys.
+#   2. Paste it into the BETA_KEYS_YAML env var on your hosting platform.
+#   3. Redeploy. The env var is cached for the process lifetime — editing
+#      it requires another redeploy (acceptable for small closed betas).
+#
+# Either path produces the same user-facing behavior: users listed here get
+# their keys seeded on first login and never need to touch Settings.
+#
+# BETA_KEYS_YAML takes precedence over BETA_KEYS_FILE when both are set.
+#
+# DO NOT commit the real beta_keys.yml — it contains live secrets. The
+# .gitignore already excludes `beta_keys.yml` / `beta_keys.yaml`.
+
+jordan.boyce@cyberlion.dev:
+  anthropic: sk-ant-PLACEHOLDER
+
+advisor-one@example.com:
+  anthropic: sk-ant-PLACEHOLDER
+
+advisor-two@example.com:
+  anthropic: sk-ant-PLACEHOLDER
+
+# Other supported providers (lowercase IDs; see services/ai_service.py for the
+# full registry). Add any subset per user:
+#
+#   openai            sk-...
+#   google            AIza... (Gemini)
+#   ollama_cloud      Ollama Cloud key
+#   grok              xAI Grok key
+#   github            GitHub Models token
+#   openai_compatible API key for a self-hosted OpenAI-compatible endpoint
+#
+# Example of a multi-provider user:
+#
+# alice@example.com:
+#   anthropic: sk-ant-...
+#   openai: sk-...
+#   google: AIza...

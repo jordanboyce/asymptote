@@ -232,6 +232,23 @@ class SQLiteBackend(DatabaseBackend):
                 ON collection_share_users(user_id)
             """)
 
+            # ── Per-user AI provider keys ───────────────────
+            # Server-side storage for operator-provisioned beta keys; rows are
+            # seeded from beta_keys_file on first sight of each user (see
+            # services.beta_keys). Never logs or returns the raw api_key
+            # column through any API — only masked previews via
+            # list_user_api_keys.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_api_keys (
+                    user_id    TEXT NOT NULL,
+                    provider   TEXT NOT NULL,
+                    api_key    TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, provider),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            """)
+
             # ── Migrations for existing databases ────────────
             # MUST run before any index that references a migrated column
             # (e.g. idx_collections_owner below depends on owner_id).
@@ -1016,6 +1033,58 @@ class SQLiteBackend(DatabaseBackend):
             else:
                 config["providers"][provider] = {"configured": False, "key_preview": None}
         return config
+
+    # ── Per-User AI Provider Keys ────────────────────────────
+
+    def set_user_api_key(self, user_id: str, provider: str, api_key: str):
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """INSERT INTO user_api_keys (user_id, provider, api_key, updated_at)
+                       VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, provider) DO UPDATE SET
+                       api_key = excluded.api_key,
+                       updated_at = excluded.updated_at""",
+                (user_id, provider, api_key, timestamp),
+            )
+            conn.commit()
+
+    def get_user_api_key(self, user_id: str, provider: str) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT api_key FROM user_api_keys WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
+            ).fetchone()
+            return row[0] if row else None
+
+    def delete_user_api_key(self, user_id: str, provider: str):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM user_api_keys WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
+            )
+            conn.commit()
+
+    def list_user_api_keys(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return masked previews of a user's stored keys, never the raw key."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT provider, api_key, updated_at FROM user_api_keys WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for provider, key, updated_at in rows:
+            masked = key[:8] + "..." + key[-4:] if key and len(key) > 12 else "***"
+            out.append({"provider": provider, "key_preview": masked, "updated_at": updated_at})
+        return out
+
+    def user_api_key_exists(self, user_id: str, provider: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM user_api_keys WHERE user_id = ? AND provider = ? LIMIT 1",
+                (user_id, provider),
+            ).fetchone()
+            return row is not None
 
     # ── MCP Resources ────────────────────────────────────────
 

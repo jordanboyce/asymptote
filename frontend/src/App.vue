@@ -1108,7 +1108,7 @@ import ErrorBoundary from './components/ErrorBoundary.vue'
 import WelcomeBackCard from './components/WelcomeBackCard.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import { isUpdateAvailable } from './utils/version.js'
-import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider } from './utils/aiProviders.js'
+import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider, fetchServerManagedProviders } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
@@ -1721,8 +1721,13 @@ const cancelJob = async (jobId) => {
 }
 
 onMounted(async () => {
-  // Check whether we need the first-run onboarding takeover. Done first so
-  // the screen paints immediately — the rest of the boot continues behind it.
+  // Closed-beta: discover any providers the operator has pre-provisioned for
+  // this user via beta_keys_file. Awaited up front so the onboarding takeover
+  // below correctly skips when the operator has already supplied a key —
+  // otherwise beta users would see "configure your provider" on every load.
+  await fetchServerManagedProviders()
+
+  // Check whether we need the first-run onboarding takeover.
   checkOnboardingNeeded()
 
   // Existing-user backfill: if a provider is already configured but the

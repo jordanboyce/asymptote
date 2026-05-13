@@ -54,6 +54,22 @@ class Settings(BaseSettings):
     enable_multi_user: bool = False  # Set to True for per-user data isolation
     default_user_id: str = "default"  # User ID used in single-user mode
 
+    # Per-user AI key provisioning. If set, points at a YAML file mapping
+    # user email -> {provider: api_key}; on each request the middleware
+    # ensures the authenticated user has a row in user_api_keys for every
+    # provider the file lists for them. Existing rows are never overwritten —
+    # to rotate, delete the row and let the next request re-seed. Designed
+    # for closed beta where the operator hands out keys; never expose this
+    # file path through the API.
+    beta_keys_file: str = ""
+
+    # Inline YAML content (alternative to beta_keys_file). For hosted
+    # deployments where the file can't be committed (Railway, Fly, etc.)
+    # paste the YAML directly into BETA_KEYS_YAML. Same schema as the file.
+    # Takes precedence over beta_keys_file when both are set. No mtime
+    # hot-reload — editing the env var requires a redeploy.
+    beta_keys_yaml: str = ""
+
     # Hosted-deployment mode: delete original uploads after indexing so only
     # chunks + embeddings + metadata persist. Breaks re-indexing (needs the
     # original) and breaks "open original" from search results. Intended for
