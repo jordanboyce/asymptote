@@ -172,6 +172,42 @@ export function getProviderConfig(id) {
   return getProvidersConfig().find(p => p.id === id) || null
 }
 
+/**
+ * Bootstrap a server-managed provider config in localStorage. Called once on
+ * app mount when GET /api/managed-provider reports `available: true`. The
+ * resulting entry has `managed: true` and no `apiKey` — the server fills the
+ * key in when the request arrives (see `_build_ai_provider_from_headers` in
+ * main.py). Idempotent: re-running won't clobber an advisor's own key if
+ * they later paste one through Settings.
+ */
+export function bootstrapManagedProvider({ provider, model }) {
+  if (!provider) return
+  const existing = getProviderConfig(provider)
+  // Don't overwrite an advisor's BYO key if one is already stored.
+  if (existing && existing.apiKey) return
+  upsertProviderConfig(provider, {
+    managed: true,
+    apiKey: '',
+    model: model || '',
+  })
+  // Make managed provider the active one if no other provider is active yet.
+  if (!getActiveProvider()) {
+    setActiveProviderLS(provider)
+  }
+  bootstrapAIDefaultsOnFirstProvider()
+}
+
+/**
+ * Returns true when a provider entry was set up by `bootstrapManagedProvider`
+ * — i.e. it's the server-side fallback and the advisor hasn't supplied their
+ * own key. Used to render the Settings card as read-only and to skip sending
+ * the X-AI-Key header.
+ */
+export function isManagedProvider(id) {
+  const cfg = getProviderConfig(id)
+  return !!(cfg && cfg.managed && !cfg.apiKey)
+}
+
 /** Create or update a provider config entry. */
 export function upsertProviderConfig(id, data) {
   const configs = getProvidersConfig()
@@ -240,7 +276,7 @@ export function setActiveProviderLS(id) {
 
 /**
  * Returns ids of all providers that are considered "configured":
- *  - cloud provider: has a non-empty apiKey
+ *  - cloud provider: has a non-empty apiKey OR is server-managed (managed=true)
  *  - ollama: marked available=true
  *  - custom: has a non-empty baseUrl
  */
@@ -254,7 +290,7 @@ export function getConfiguredProviderIds() {
     if (def.type === 'local') {
       if (cfg.available) result.push(def.id)
     } else {
-      if (cfg.apiKey) result.push(def.id)
+      if (cfg.apiKey || cfg.managed) result.push(def.id)
     }
   }
 
@@ -289,6 +325,9 @@ export function buildProviderHeaders(providerId, modelOverride = null) {
     headers['X-Ollama-Model'] = model
     headers['X-AI-Model'] = model
   } else {
+    // Server-managed providers send no X-AI-Key — the backend fills it in
+    // from settings.fallback_api_key. Sending an empty header would short-
+    // circuit that fallback, so we omit the header entirely.
     if (cfg.apiKey) headers['X-AI-Key'] = cfg.apiKey
     if (resolvedModel) headers['X-AI-Model'] = resolvedModel
   }
