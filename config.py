@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     # shared-cloud hosting where retaining advisor PDFs/CSVs is undesirable.
     discard_originals_after_index: bool = False
 
+    # Server-side fallback key for hosted-deployment mode. When set, any
+    # advisor request that arrives without an X-AI-Key header (and without a
+    # stored key for the requested provider) is auto-routed through Ollama
+    # Cloud using this key — the beta-billing path where Jordan pays so
+    # advisors don't have to paste their own key. Ollama Cloud's
+    # gpt-oss-120b is the target model; cheap enough to subsidise free
+    # seats. Leave empty for self-host / Electron — BYO-key behaviour is
+    # unchanged when this is blank. Set via FALLBACK_API_KEY env var.
+    fallback_api_key: str = ""
+    fallback_model: str = "gpt-oss:120b"
+
     # OCR configuration
     enable_ocr: bool = False  # Enable OCR for scanned PDFs
     ocr_max_pages: int = 25  # Skip OCR for PDFs with more pages than this (0 = no limit)

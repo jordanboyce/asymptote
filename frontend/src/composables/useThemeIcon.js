@@ -73,3 +73,16 @@ export function useThemeIcon(lightSrc, darkSrc) {
   const src = computed(() => (scheme.value === 'dark' ? dark : light))
   return { src, scheme }
 }
+
+/**
+ * Track the active color scheme without picking an asset — for callers that
+ * need to feed `'light'`/`'dark'` into a JS API (chart themes, canvas colors)
+ * rather than swap an <img src>.
+ *
+ * @returns {{ scheme: import('vue').Ref<'light' | 'dark'> }}
+ */
+export function useColorScheme() {
+  onMounted(startWatching)
+  onBeforeUnmount(stopWatching)
+  return { scheme }
+}

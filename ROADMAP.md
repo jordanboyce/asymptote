@@ -6,11 +6,11 @@ Forward-looking work for Finn. Items that have already shipped are not listed he
 
 ## Strategic frame
 
-Finn's primary product surface is the **in-app chat** inside the Vue frontend. An advisor installs Finn, pastes an Anthropic or OpenAI API key into settings, uploads their files, and starts asking questions — no Claude Desktop, no Cursor, no MCP configuration. The MCP endpoint ([services/mcp_server.py](services/mcp_server.py)) stays supported as a secondary surface for power users who already live in an external MCP client.
+Finn's primary product surfaces inside the Vue frontend are the **in-app dashboard** (the daily-driver for advisors: glanceable allocation, drift, contributors/detractors, action items, recent meetings) and **in-app chat** (ad-hoc questions against the same data). An advisor installs Finn, pastes an Anthropic or OpenAI API key into settings, uploads their files, and gets both — no Claude Desktop, no Cursor, no MCP configuration. The MCP endpoint ([services/mcp_server.py](services/mcp_server.py)) stays supported as a secondary surface for power users who already live in an external MCP client. The dashboard work is scoped in **v4.9** below.
 
 **We do not rebuild the chat app.** The in-app chat is a thin adapter on top of the Anthropic Messages API (native tool use) and OpenAI Responses API (function calling). We reuse their SDKs for streaming, conversation state, and tool-call orchestration. Our job is to translate the existing tool registry into the provider's tool schema, run the standard tool-use loop on the backend, and stream tokens to the frontend. Every hour spent building chat primitives is an hour not spent on what Finn actually owns.
 
-**What Finn is:** the trustworthy, privacy-preserving data layer that makes a user's own documents usable by whatever LLM they already trust — reached through Finn's own chat UI by default, or through an external MCP client when the user prefers one. The intelligence layer lives upstream in Anthropic / OpenAI. Finn owns:
+**What Finn is:** the trustworthy, privacy-preserving data layer that makes a user's own documents usable by whatever LLM they already trust — surfaced through Finn's own dashboard and chat UI by default, or through an external MCP client when the user prefers one. The intelligence layer lives upstream in Anthropic / OpenAI. Finn owns:
 
 1. **Ingest arbitrary tabular and document data** from arbitrary tools (brokerages, banks, CRMs, planning software, internal systems) and make every file faithfully agent-queryable, regardless of vendor or column naming convention.
 2. **Return PII-free and CUI-free context.** Every tool response — whether served to the in-app chat or to an external MCP client — is redacted before it leaves the process (see P0.0). No personal identifier, no account number, no Controlled Unclassified Information element reaches an external LLM. This is the feature — without it, regulated users (financial advisors, federal contractors, healthcare, legal) cannot use any external LLM against their data at all.
@@ -577,6 +577,49 @@ PDF table extraction was promoted into v4.1 P0.8 because it's load-bearing for a
 
 ---
 
+## v4.9 — Dashboard + tool-result visualization
+
+**Strategic shift.** v4.4 made in-app chat the primary surface. That was right for "ad-hoc questions against a portfolio" but wrong for the advisor's actual workflow: glance, prep, walk into review. Finance is a visual job — drift bars, allocation rings, contributor/detractor lists, sparklines on positions. Chat becomes the *question layer*; a live dashboard becomes the *answer layer*. The data-layer thesis is unchanged — same tools, same redaction, same BYO-key, same MCP surface. Net-new is the *rendering*, not the *pipeline*.
+
+**Reuses primitives already shipped.** `compute_portfolio_metric` (v4.1), `enrich_holdings` / `get_price_history` (v4.2), `find_tax_loss_candidates` (v4.6.1), `list_action_items` (v4.5), `services.brief_generator.generate_meeting_brief`, the structured `tool_end` SSE event shapes. [AnalysisSidebar.vue](frontend/src/components/AnalysisSidebar.vue) is already a quasi-dashboard with seven canned metric buttons — v4.9 promotes that pattern into a first-class surface.
+
+### Status snapshot
+
+| Item | Status | Notes |
+|---|---|---|
+| Charting library | ✅ Shipped | `vue3-apexcharts` 1.11.1 + `apexcharts` 5.11.0 in [frontend/package.json](frontend/package.json); registered as a global plugin in [frontend/src/main.js](frontend/src/main.js) (`app.use(VueApexCharts)`). New `useColorScheme()` composable in [frontend/src/composables/useThemeIcon.js](frontend/src/composables/useThemeIcon.js) feeds the active `light`/`dark` scheme into chart `theme.mode` reactively so charts re-paint when the user flips the daisyUI theme |
+| Brief visualization (highest-leverage start) | ✅ Shipped | All six [BriefModal.vue](frontend/src/components/BriefModal.vue) sections converted to chart-first: sector → donut with total label, accounts → 100%-stacked horizontal bar with in-bar percentage labels, top positions → ranked horizontal bar, tax-loss candidates → horizontal bar in error red with a running total opportunity header (a magnitude bar + explicit total reads cleaner than a true cumulative-step waterfall), concentration → horizontal bar with a dashed threshold annotation, cash drag → horizontal bar. Each section wraps a `<details>` "Show numbers" with the original table for print / screen-reader / skeptical-advisor preservation. `printBrief()` force-opens every `<details>` in the clone, and the print stylesheet hides the summary chrome + Apex toolbar / tooltips so the printed page goes straight from chart → table. A shared `horizontalBarBase()` factory keeps the four bar charts to ~5 lines of overrides each |
+| Dashboard route — `Overview` tab | ✅ Shipped | New [OverviewTab.vue](frontend/src/components/OverviewTab.vue) wired into [App.vue](frontend/src/App.vue) as the default landing tab per collection (sits before Chat in the nav). KPI row (total market value / cost basis / unrealized P&L), open-action-items list with per-item Discuss button + a client-side .ics follow-up-invite generator (assembles a VEVENT with the open items as the agenda and triggers a download — advisor opens it in Outlook/Apple/Google and edits before sending), sector donut + top-positions bar with `dataPointSelection` events that emit `send-to-chat`, concentration alerts (click-to-discuss with prefilled prompt) + cash drag list, tax-loss snapshot with total opportunity. Footer reminds the advisor the overview is computed locally — no AI provider call. New backend endpoint `GET /api/collections/{id}/meetings/action-items` in [main.py](main.py) sources items from `MeetingNotesStore.list_action_items` and decorates each with `source_filename` so the card can label which transcript it came from |
+| Chat tool-result chart adapters | ❌ Open | When `tool_end` arrives with chartable shape, render an embedded chart card in the chat bubble. `{points: [...]}` (price history at [ChatTab.vue:617-658](frontend/src/components/ChatTab.vue#L617-L658)) → line / candlestick; `{groups: [...]}` → donut / bar; `{rows, columns}` with one numeric col → horizontal bar. Fall back to current table render when shape doesn't fit |
+| `chart_hint` on selected tools | ❌ Open | Add `chart_hint: "donut" \| "bar" \| "line" \| "waterfall" \| null` to the response payload of `compute_portfolio_metric` (breakdown variants), `get_price_history`, `find_tax_loss_candidates`. Backwards-compatible (null → current text/table render). Optional — shape-sniffing in the frontend is sufficient for v1 |
+| Promote `/brief` from modal → route | ❌ Open | Today the brief lives in a modal, opened from the Overview tab's "Open Meeting Brief" button. Make `/c/:id/brief` a first-class route reachable from the Overview tab + nav. Modal-mode stays as the "share / print snapshot" action |
+| Interleaved thinking (un-defer from v4.4.4) | ❌ Open | The dashboard's "given drift + TLH candidates + recent action items, what should the advisor do this quarter?" is the cross-card chain v4.4.4 said would un-defer interleaved thinking. Add `interleaved-thinking-2025-05-14` beta header on `AnthropicProvider`; engine round-trips for thinking blocks already in place since v4.4.4 |
+| Re-cast "primary surface" copy in README + ADVISOR_USE_CASE | ❌ Open | The strategic frame at the top of this roadmap was updated as part of v4.9. [README.md](README.md) and [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) still say chat is THE primary surface — re-cast now that the dashboard route is live |
+
+### Why this fits the strategic frame
+
+The data-layer thesis: Finn ingests, redacts, exposes deterministic primitives, never silently wrong. The dashboard is **the same primitives, surfaced visually instead of textually**. Every chart on the Overview tab is a deterministic computation against `HoldingsStore` — no LLM call, no PII leak. Charts are the rendering layer; the data layer is unchanged.
+
+Chat doesn't go away. It's still the right surface for "what did we discuss with the Hendersons about RMDs in the last meeting?" or "compose a 200-word client note explaining this quarter's underperformance." But it's no longer the only place an advisor looks — the workspace they open every morning is glanceable, not interrogative.
+
+### Sequencing
+
+1. ✅ **`vue3-apexcharts` + sector-allocation donut in `BriefModal.vue`** — shipped. Validated the dep + the per-section pattern (chart-first, `<details>` table fallback, print-friendly) on the cleanest data shape (`[{sector, market_value, pct_of_portfolio, position_count}]`).
+2. ✅ **Remaining five brief charts** — shipped. Concentration bar (with threshold annotation), top-positions bar, accounts 100%-stacked bar, tax-loss horizontal bar with running total, cash drag bar. Shared `horizontalBarBase()` factory keeps each variant to a handful of overrides.
+3. **Chat tool-result chart adapters** — 1–2 days. Three call sites in [ChatTab.vue](frontend/src/components/ChatTab.vue) (price history, group-by breakdowns, single-numeric-column rows). Shape-sniffing first; `chart_hint` later if needed.
+4. ✅ **Overview tab as a real route** — shipped as [OverviewTab.vue](frontend/src/components/OverviewTab.vue); default landing per collection in [App.vue](frontend/src/App.vue) with KPI row + action items + sector donut + top positions + concentration + cash drag + tax-loss snapshot. New `GET /api/collections/{id}/meetings/action-items` endpoint in [main.py](main.py) feeds the action-items card. Promoting `/brief` from modal → route (`/c/:id/brief`) is the remaining piece — Overview already opens the modal via "Open Meeting Brief".
+5. **Interleaved thinking** — 1 day. One-line header on `AnthropicProvider.complete_with_tools` + `stream_chat`; opt-in via the same `extended_thinking` toggle that already exists.
+6. **Re-cast strategic-frame copy** — 0.5 day. Touches [README.md](README.md), [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md).
+
+### Non-goals
+
+- **No new tool primitives.** Every chart maps to a tool that already exists. If a chart wants data nothing produces today, that's v4.6 territory, not v4.9.
+- **No chat-app feature creep.** Branching, regeneration, artifact rendering, voice — still out of scope (per v4.4 non-goals).
+- **No mobile-first refactor.** The advisor uses a 27" monitor at their desk. Mobile is post-v5.
+- **No backend changes for the brief charts.** `generate_meeting_brief` already returns every shape v4.9 steps 1–2 need; v4.9 is frontend-only through step 3.
+
+---
+
 ## v5 — Speculative, in rough priority
 
 Items that aren't funded yet but belong in the same direction of travel.
@@ -635,7 +678,8 @@ Items that aren't funded yet but belong in the same direction of travel.
 
 ## What to ship next (priority-ordered)
 
-1. **v4.4.4 — Anthropic API alignment** + **v4.4.5 — Provider tier strategy**, paired. Competitively urgent. Model-default refresh ✅, prompt caching ✅, native citations ✅, extended thinking ✅, compliance one-pager ✅ — remaining: conversation compaction, tier-aware onboarding copy. Bedrock provider stays gated on real customer pull.
+1. **v4.9 — Dashboard + tool-result visualization.** Re-framed the primary surface: dashboard as daily-driver, chat as ad-hoc-question layer. Charting library ✅, all six brief-modal charts ✅, Overview tab as default landing ✅, action-items endpoint ✅. Remaining: chat tool-result chart adapters (step 3), promote `/brief` from modal to route, interleaved thinking, re-cast README + ADVISOR_USE_CASE copy.
+2. **v4.4.4 — Anthropic API alignment** + **v4.4.5 — Provider tier strategy**, paired. Competitively urgent. Model-default refresh ✅, prompt caching ✅, native citations ✅, extended thinking ✅, compliance one-pager ✅ — remaining: conversation compaction, tier-aware onboarding copy. Bedrock provider stays gated on real customer pull. Interleaved thinking moves into v4.9 step 5.
 2. **v4.5 audio → structured notes.** ✅ shipped — `MeetingNotes` / `ActionItem` extraction, `MeetingNotesStore` per-collection, `get_meeting_notes` / `list_action_items` MCP tools, `POST /api/collections/{id}/meetings/extract` HTTP endpoint, best-effort background trigger in `upload_service` when an agent key is stored. Frontend nudge banner + `prep_for_meeting` composite are the natural follow-ons (see v4.5 above).
 3. **v4.6.1 untrusted-content guardrail.** Afternoon-sized prompt-injection close-out; ship before the brief format upgrade and TLH/Rebalance skills below it.
 4. **v4.4.3 §13 manual smoke check.** At-machine procedure; not automatable. Procedure inline in §v4.4.3 above.
@@ -644,4 +688,4 @@ Items that aren't funded yet but belong in the same direction of travel.
 7. **v4.7** (distribution) and **v4.8** (URL/email/semantic-chunking ingestion) wait for daily usage at one firm.
 8. **v5** is "don't build yet, but if someone asks, this is the shape." **Technical debt** is background tax.
 
-**Last updated:** 2026-05-10 — v4.4.4 extended thinking shipped (per-turn opt-in via `ChatRequest.extended_thinking`, threaded through `ChatTurn` → `AgenticEngine` + `OneShotEngine` → `AnthropicProvider`; 14 regression tests in [tests/test_extended_thinking.py](tests/test_extended_thinking.py)). v4.4.5 compliance one-pager shipped as [COMPLIANCE.md](COMPLIANCE.md). Remaining v4.4.4 + v4.4.5 work: conversation compaction, tier-aware onboarding copy.
+**Last updated:** 2026-05-13 — v4.9 dashboard + brief-charts shipped. `vue3-apexcharts` + `apexcharts` installed and globally registered; all six [BriefModal.vue](frontend/src/components/BriefModal.vue) sections converted to chart-first with `<details>` table fallbacks and a print stylesheet that hides the summary chrome + Apex toolbar so the printed page goes chart → table cleanly; new [OverviewTab.vue](frontend/src/components/OverviewTab.vue) is the default landing tab per collection (KPI row, open action items with .ics follow-up generator, sector donut, top positions, concentration alerts, cash drag, tax-loss snapshot — every chart and alert click-to-discuss); new `GET /api/collections/{id}/meetings/action-items` endpoint in [main.py](main.py) decorates each item with `source_filename`. Remaining v4.9: chat tool-result chart adapters (step 3), promote `/brief` modal → route, interleaved thinking, re-cast [README.md](README.md) + [ADVISOR_USE_CASE.md](ADVISOR_USE_CASE.md) primary-surface copy.
