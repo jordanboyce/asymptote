@@ -375,6 +375,33 @@ async def get_version():
     }
 
 
+@app.get(
+    "/api/managed-provider",
+    summary="Server-side fallback provider availability (Finn-managed)",
+    tags=["health"],
+)
+async def get_managed_provider():
+    """Reports whether a server-side fallback AI key is configured.
+
+    When `available=true`, the frontend bootstraps an `ollama_cloud` entry in
+    localStorage with no API key + `managed: true`, skips the onboarding key
+    prompt, hides the "Finish setting up your AI provider" banner, and renders
+    the provider in Settings as "Managed by Finn" without exposing the key.
+    The backend silently routes any keyless chat request through this fallback
+    (see `_build_ai_provider_from_headers`).
+
+    The key itself is **never** returned by this endpoint — only the capability
+    flag, provider name, and model. Self-host / Electron deployments with no
+    `FALLBACK_API_KEY` env var return `available=false` and the original
+    BYO-key onboarding shows as today.
+    """
+    return {
+        "available": bool(settings.fallback_api_key),
+        "provider": "ollama_cloud",
+        "model": settings.fallback_model or "gemma4:31b",
+    }
+
+
 @app.post(
     "/documents/upload",
     response_model=UploadResponse,

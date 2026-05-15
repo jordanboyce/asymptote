@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     # seats. Leave empty for self-host / Electron — BYO-key behaviour is
     # unchanged when this is blank. Set via FALLBACK_API_KEY env var.
     fallback_api_key: str = ""
-    fallback_model: str = "gpt-oss:120b"
+    fallback_model: str = "gemma4:31b"
 
     # OCR configuration
     enable_ocr: bool = False  # Enable OCR for scanned PDFs

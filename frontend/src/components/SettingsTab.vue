@@ -111,7 +111,17 @@
               </div>
               <div class="flex items-center gap-2 flex-shrink-0">
                 <span
-                  v-if="isProviderConfigured(def.id) && activeProviderId === def.id"
+                  v-if="isManagedProvider(def.id) && activeProviderId === def.id"
+                  class="badge badge-primary badge-xs"
+                  title="Provided by Finn — no key needed"
+                >Managed · Active</span>
+                <span
+                  v-else-if="isManagedProvider(def.id)"
+                  class="badge badge-info badge-xs"
+                  title="Provided by Finn — no key needed"
+                >Managed</span>
+                <span
+                  v-else-if="isProviderConfigured(def.id) && activeProviderId === def.id"
                   class="badge badge-primary badge-xs"
                   title="This is the provider used for chat right now"
                 >Active</span>
@@ -181,6 +191,75 @@
                     @click="removeProvider('ollama')"
                   >Remove</button>
                 </div>
+              </template>
+
+              <!-- Cloud provider config -->
+              <template v-else-if="isManagedProvider(def.id)">
+                <!-- Server-managed (FALLBACK_API_KEY set on the backend). The
+                     advisor never sees the key; the backend swaps it in on
+                     every request. They can still "Make active" or paste
+                     their own key to switch to BYO. -->
+                <div class="rounded-lg border border-info/30 bg-info/5 px-3 py-2 text-sm flex items-start gap-2">
+                  <span class="text-info text-base leading-none mt-0.5" aria-hidden="true">●</span>
+                  <div class="flex-1">
+                    <div class="font-medium">Managed by Finn — no key needed</div>
+                    <div class="text-xs text-base-content/65 mt-0.5">
+                      Chat, briefs, and meeting notes are routed through Finn's hosted Ollama Cloud account. Free for your beta; your client data is still PII-redacted before it leaves the box.
+                    </div>
+                  </div>
+                </div>
+                <div class="text-xs text-base-content/55">
+                  Model: <span class="font-mono">{{ editBuffer.model || 'gemma4:31b' }}</span>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <button
+                    v-if="activeProviderId !== def.id"
+                    class="btn btn-sm btn-ghost"
+                    @click="setActiveProvider(def.id)"
+                    title="Use this provider for chat"
+                  >Make active</button>
+                </div>
+                <details class="text-xs">
+                  <summary class="cursor-pointer text-base-content/55 hover:text-base-content select-none">
+                    Use my own key instead
+                  </summary>
+                  <div class="mt-3 space-y-3">
+                    <p class="text-base-content/65">
+                      Paste your own provider key to bypass the managed default. Useful if you want a different model or want to track your own usage on the provider's billing dashboard.
+                    </p>
+                    <div class="form-control">
+                      <label class="label p-0 pb-1" :for="`provider-apikey-${def.id}`">
+                        <span class="label-text font-medium">API Key</span>
+                        <a v-if="def.keyLink" :href="def.keyLink" target="_blank" rel="noopener" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
+                      </label>
+                      <div class="join w-full">
+                        <input
+                          :id="`provider-apikey-${def.id}`"
+                          v-model="editBuffer.apiKey"
+                          :type="showEditKey ? 'text' : 'password'"
+                          :placeholder="def.keyPlaceholder || 'API key…'"
+                          class="input input-bordered input-sm join-item flex-1"
+                          @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''; editBuffer.errorCode = ''"
+                        />
+                        <button
+                          class="btn btn-sm join-item"
+                          @click="showEditKey = !showEditKey"
+                          :aria-label="showEditKey ? 'Hide API key' : 'Show API key'"
+                        >
+                          {{ showEditKey ? 'Hide' : 'Show' }}
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      class="btn btn-sm btn-primary"
+                      @click="validateAndSave(def.id)"
+                      :disabled="validatingProvider === def.id || !editBuffer.apiKey?.trim()"
+                    >
+                      <span v-if="validatingProvider === def.id" class="loading loading-spinner loading-xs"></span>
+                      {{ validatingProvider === def.id ? 'Testing…' : 'Test connection &amp; save' }}
+                    </button>
+                  </div>
+                </details>
               </template>
 
               <!-- Cloud provider config -->
@@ -958,6 +1037,7 @@ import {
   getActiveProvider,
   setActiveProviderLS,
   getConfiguredProviderIds,
+  isManagedProvider,
   migrateLegacySettings,
   bootstrapAIDefaultsOnFirstProvider,
 } from '../utils/aiProviders.js'

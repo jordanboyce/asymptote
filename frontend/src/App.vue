@@ -1113,7 +1113,7 @@ import ErrorBoundary from './components/ErrorBoundary.vue'
 import WelcomeBackCard from './components/WelcomeBackCard.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import { isUpdateAvailable } from './utils/version.js'
-import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider } from './utils/aiProviders.js'
+import { getConfiguredProviderIds, bootstrapAIDefaultsOnFirstProvider, bootstrapManagedProvider } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
@@ -1725,7 +1725,28 @@ const cancelJob = async (jobId) => {
   }
 }
 
+async function loadManagedProvider() {
+  // Beta-billing path: when the backend has FALLBACK_API_KEY set, bootstrap
+  // an `ollama_cloud` entry in localStorage so advisors don't have to paste
+  // their own key during onboarding. The key never crosses the wire —
+  // /api/managed-provider only returns the capability flag + model name.
+  try {
+    const { data } = await axios.get('/api/managed-provider')
+    if (data?.available) {
+      bootstrapManagedProvider({ provider: data.provider, model: data.model })
+    }
+  } catch (err) {
+    // Non-fatal — onboarding falls back to BYO-key when this fails.
+    console.debug('Could not load /api/managed-provider:', err)
+  }
+}
+
 onMounted(async () => {
+  // Probe managed-provider availability first; if the server has a fallback
+  // key configured, this bootstraps the provider so `checkOnboardingNeeded()`
+  // sees it as already-configured and skips the takeover.
+  await loadManagedProvider()
+
   // Check whether we need the first-run onboarding takeover. Done first so
   // the screen paints immediately — the rest of the boot continues behind it.
   checkOnboardingNeeded()
