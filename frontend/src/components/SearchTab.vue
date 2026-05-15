@@ -165,6 +165,16 @@
       </div>
     </div>
 
+    <!-- No-sources notice — search is meaningless until something is indexed.
+         The Sources sidebar is always visible on the Search tab, so the
+         direction is "drop a file into the sidebar"; no nav button needed. -->
+    <div v-if="searchDisabled" class="alert alert-warning flex-shrink-0 py-2 mt-3" role="status">
+      <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+      <span class="text-sm">No data indexed in this collection. Add sources in the left sidebar before searching.</span>
+    </div>
+
     <!-- Search input area -->
     <div class="flex-shrink-0 pt-3">
       <div
@@ -261,11 +271,10 @@
         </div>
       </div>
 
-      <!-- Empty collection notice -->
-      <p v-if="searchDisabled" class="text-xs text-warning mt-1.5 text-center">
-        No data indexed in this collection. Add sources first.
-      </p>
-      <p v-else class="text-xs text-base-content/30 mt-1.5 text-center">Enter to search</p>
+      <!-- Submit hint — only show when the collection has indexed content;
+           the prominent "Add sources" alert above already covers the empty
+           case, so a second nudge here is just noise. -->
+      <p v-if="!searchDisabled" class="text-xs text-base-content/30 mt-1.5 text-center">Enter to search</p>
     </div>
 
     <!-- Loading indicator -->
