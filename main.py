@@ -2320,20 +2320,32 @@ async def ask_question(
             )
     else:
         api_key = x_ai_key or app_db.get_agent_api_key(x_ai_provider)
-        if not api_key and x_ai_provider != "openai_compatible":
+        use_fallback = (
+            not api_key
+            and x_ai_provider != "openai_compatible"
+            and settings.fallback_api_key
+        )
+        if not api_key and not use_fallback and x_ai_provider != "openai_compatible":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"No API key configured for {x_ai_provider}. "
                        f"Either pass X-AI-Key header or configure via /api/agent/config.",
             )
         try:
-            extra = {}
-            model = x_ai_model or x_anthropic_model or x_openai_model
-            if model:
-                extra["model"] = model
-            if x_ai_base_url:
-                extra["base_url"] = x_ai_base_url
-            provider = create_provider(x_ai_provider, api_key, **extra)
+            if use_fallback:
+                provider = create_provider(
+                    "ollama_cloud",
+                    settings.fallback_api_key,
+                    model=settings.fallback_model or None,
+                )
+            else:
+                extra = {}
+                model = x_ai_model or x_anthropic_model or x_openai_model
+                if model:
+                    extra["model"] = model
+                if x_ai_base_url:
+                    extra["base_url"] = x_ai_base_url
+                provider = create_provider(x_ai_provider, api_key, **extra)
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -3938,6 +3950,68 @@ async def generate_tlh_plan_endpoint(
     }
 
 
+@app.get(
+    "/api/collections/{collection_id}/meetings/action-items",
+    tags=["chat"],
+    summary="List action items extracted from this collection's meeting transcripts",
+)
+async def list_action_items_endpoint(
+    collection_id: str,
+    status: str | None = "open",
+    assignee: str | None = None,
+    limit: int = 50,
+    user_id: str = Depends(get_current_user_id),
+):
+    """List action items across every meeting in *collection_id*.
+
+    Cross-meeting flat view sourced from `MeetingNotesStore.list_action_items`.
+    Each item is decorated with `source_filename` (the transcript document the
+    item was extracted from) so the Overview card can label which meeting
+    each item came from. `status=None` returns every status; `assignee` is a
+    case-insensitive substring match. `limit` caps the response size.
+    """
+    require_collection_access(collection_id, user_id, required="read")
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        store = indexer.vector_store.meeting_notes_store
+    except AttributeError:
+        raise HTTPException(status_code=422, detail="Meeting notes store unavailable.")
+
+    items = store.list_action_items(
+        collection_id,
+        status=None if status in (None, "", "all") else status,
+        assignee=assignee,
+    )
+
+    # Decorate with source filename so the UI can show "from Henderson 2026-04-15.mp3"
+    # next to each action item without a follow-up round-trip.
+    filename_by_doc: dict[str, str] = {}
+    try:
+        for doc in indexer.vector_store.metadata_store.list_documents():
+            doc_id = doc.get("document_id")
+            if doc_id:
+                filename_by_doc[doc_id] = doc.get("filename") or ""
+    except Exception:
+        pass
+
+    decorated = [
+        {**item, "source_filename": filename_by_doc.get(item.get("document_id"), "")}
+        for item in items[:limit]
+    ]
+
+    return {
+        "collection_id": collection_id,
+        "count": len(decorated),
+        "total_available": len(items),
+        "items": decorated,
+    }
+
+
 @app.post(
     "/api/collections/{collection_id}/meetings/extract",
     tags=["chat"],
@@ -4121,12 +4195,32 @@ async def get_latest_transcript(
 # ── Meeting Capture endpoints (v4.5) ──────────────────────────────────────────
 
 def _build_ai_provider_from_headers(provider_name: str, ai_key: str, model: str, base_url: str):
-    """Shared helper to construct an AI provider from request headers."""
+    """Shared helper to construct an AI provider from request headers.
+
+    Hosted-deployment fallback: when the advisor hasn't supplied their own
+    key and the server is configured with `managed_ollama_cloud_api_key`,
+    silently swap the requested provider for `ollama_cloud` using the
+    managed key. Lets beta advisors chat without going through the
+    paste-an-API-key step. Local-Ollama and openai-compatible paths bypass
+    the swap because they have their own no-key code paths.
+    """
     if provider_name == "ollama":
         extra: dict = {"model": model or "llama3.2"}
         if base_url:
             extra["base_url"] = base_url
         return create_provider("ollama", **extra)
+
+    if not ai_key and provider_name != "openai_compatible" and settings.fallback_api_key:
+        # Server-side fallback — route through Ollama Cloud with the env-var key
+        # (FALLBACK_API_KEY on Railway). Strip any advisor-selected model since
+        # it likely belongs to a different provider (e.g. claude-sonnet-4-6) and
+        # would 404 against ollama.com.
+        return create_provider(
+            "ollama_cloud",
+            settings.fallback_api_key,
+            model=settings.fallback_model or None,
+        )
+
     extra = {}
     if model:
         extra["model"] = model

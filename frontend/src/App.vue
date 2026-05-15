@@ -513,6 +513,7 @@
 
             </div>
 
+            <OverviewTab v-if="activeTab === 'overview'" @open-brief="openBriefModal" @send-to-chat="handleSendToChat" />
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
             <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
@@ -1063,7 +1064,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, FileSearch, MessageSquare, Hash, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug, CircleHelp } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, FileSearch, MessageSquare, Hash, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug, CircleHelp, LayoutDashboard } from 'lucide-vue-next'
 import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
 import { useMeetingRecorder } from './composables/useMeetingRecorder.js'
 import { useThemeIcon } from './composables/useThemeIcon.js'
@@ -1077,7 +1078,10 @@ const { src: headerLogoSrc } = useThemeIcon('/icon_light.svg', '/icon_dark.svg')
 const searchTabEnabled = ref(true)
 
 const tabs = computed(() => {
-  const t = [{ id: 'chat', label: 'Chat', icon: MessageSquare }]
+  const t = [
+    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    { id: 'chat', label: 'Chat', icon: MessageSquare },
+  ]
   if (searchTabEnabled.value) t.push({ id: 'search', label: 'Search', icon: Search })
   if (isExpertMode.value) t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   return t
@@ -1089,6 +1093,7 @@ const toolTabs = [
   { id: 'tokenizer', label: 'Token Visualizer', icon: Hash },
   { id: 'diagnostics', label: 'Diagnostics', icon: Activity },
 ]
+import OverviewTab from './components/OverviewTab.vue'
 import SearchTab from './components/SearchTab.vue'
 import SourcesSidebar from './components/SourcesSidebar.vue'
 import AnalysisSidebar from './components/AnalysisSidebar.vue'
@@ -1167,7 +1172,7 @@ watch(meetingIsRecording, (recording) => {
   }
 })
 
-const activeTab = ref('chat')
+const activeTab = ref('overview')
 const currentTheme = ref('corporate')
 
 // In basic mode, expertise/MCP/OCR/tokenizer are hidden — bounce back to chat

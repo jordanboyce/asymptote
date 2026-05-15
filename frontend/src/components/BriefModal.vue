@@ -117,23 +117,38 @@
           <!-- Accounts -->
           <section>
             <h3 class="brief-section-title">Accounts</h3>
-            <div v-if="brief.accounts && brief.accounts.length > 0" class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th class="text-right">Market value</th>
-                    <th class="text-right">% of portfolio</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(acc, i) in brief.accounts" :key="i">
-                    <td class="truncate max-w-md">{{ acc.account || '—' }}</td>
-                    <td class="text-right tabular-nums">{{ fmtMoney(acc.market_value) }}</td>
-                    <td class="text-right tabular-nums text-base-content/60">{{ pctOfTotal(acc.market_value) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="brief.accounts && brief.accounts.length > 0">
+              <div class="rounded-lg border border-base-300 bg-base-100 px-2 py-3">
+                <apexchart
+                  type="bar"
+                  :height="brief.accounts.length > 1 ? 120 : 90"
+                  :options="accountsChartOptions"
+                  :series="accountsChartSeries"
+                />
+              </div>
+              <details class="mt-2">
+                <summary class="text-xs text-base-content/60 cursor-pointer select-none hover:text-base-content brief-no-print">
+                  Show numbers ({{ brief.accounts.length }} account{{ brief.accounts.length === 1 ? '' : 's' }})
+                </summary>
+                <div class="overflow-x-auto mt-2">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Account</th>
+                        <th class="text-right">Market value</th>
+                        <th class="text-right">% of portfolio</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(acc, i) in brief.accounts" :key="i">
+                        <td class="truncate max-w-md">{{ acc.account || '—' }}</td>
+                        <td class="text-right tabular-nums">{{ fmtMoney(acc.market_value) }}</td>
+                        <td class="text-right tabular-nums text-base-content/60">{{ pctOfTotal(acc.market_value) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             </div>
             <p v-else class="brief-empty">
               No account breakdown — exports don't tag positions by account.
@@ -143,36 +158,51 @@
           <!-- Top positions -->
           <section>
             <h3 class="brief-section-title">Top positions <span class="brief-section-meta">top {{ thresholds.top_n }}</span></h3>
-            <div v-if="brief.top_positions && brief.top_positions.length > 0" class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Position</th>
-                    <th class="text-right">Market value</th>
-                    <th class="text-right">% of portfolio</th>
-                    <th class="text-right">Unrealized P&amp;L</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(pos, i) in brief.top_positions" :key="i">
-                    <td>
-                      <div class="font-medium truncate max-w-sm">{{ positionLabel(pos) }}</div>
-                      <div v-if="pos.ticker && pos.name && pos.name !== pos.ticker && !isHeaderLiteral(pos.name)" class="text-xs text-base-content/55 truncate max-w-sm">
-                        {{ pos.name }}
-                      </div>
-                      <div v-if="pos.sector" class="text-[11px] text-base-content/50">{{ pos.sector }}</div>
-                    </td>
-                    <td class="text-right tabular-nums">{{ fmtMoney(pos.market_value) }}</td>
-                    <td class="text-right tabular-nums text-base-content/60">{{ pctOfTotal(pos.market_value) }}</td>
-                    <td class="text-right tabular-nums" :class="pnlToneClass(pos.unrealized_pnl)">
-                      <span v-if="pos.unrealized_pnl != null">
-                        {{ pnlPrefix(pos.unrealized_pnl) }}{{ fmtMoney(Math.abs(pos.unrealized_pnl)) }}
-                      </span>
-                      <span v-else class="text-base-content/30">—</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="brief.top_positions && brief.top_positions.length > 0">
+              <div class="rounded-lg border border-base-300 bg-base-100 px-2 py-3">
+                <apexchart
+                  type="bar"
+                  :height="Math.max(180, brief.top_positions.length * 26 + 60)"
+                  :options="topPositionsChartOptions"
+                  :series="topPositionsChartSeries"
+                />
+              </div>
+              <details class="mt-2">
+                <summary class="text-xs text-base-content/60 cursor-pointer select-none hover:text-base-content brief-no-print">
+                  Show numbers ({{ brief.top_positions.length }} position{{ brief.top_positions.length === 1 ? '' : 's' }})
+                </summary>
+                <div class="overflow-x-auto mt-2">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Position</th>
+                        <th class="text-right">Market value</th>
+                        <th class="text-right">% of portfolio</th>
+                        <th class="text-right">Unrealized P&amp;L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(pos, i) in brief.top_positions" :key="i">
+                        <td>
+                          <div class="font-medium truncate max-w-sm">{{ positionLabel(pos) }}</div>
+                          <div v-if="pos.ticker && pos.name && pos.name !== pos.ticker && !isHeaderLiteral(pos.name)" class="text-xs text-base-content/55 truncate max-w-sm">
+                            {{ pos.name }}
+                          </div>
+                          <div v-if="pos.sector" class="text-[11px] text-base-content/50">{{ pos.sector }}</div>
+                        </td>
+                        <td class="text-right tabular-nums">{{ fmtMoney(pos.market_value) }}</td>
+                        <td class="text-right tabular-nums text-base-content/60">{{ pctOfTotal(pos.market_value) }}</td>
+                        <td class="text-right tabular-nums" :class="pnlToneClass(pos.unrealized_pnl)">
+                          <span v-if="pos.unrealized_pnl != null">
+                            {{ pnlPrefix(pos.unrealized_pnl) }}{{ fmtMoney(Math.abs(pos.unrealized_pnl)) }}
+                          </span>
+                          <span v-else class="text-base-content/30">—</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             </div>
             <p v-else class="brief-empty">No positions found in this collection's holdings tables.</p>
           </section>
@@ -183,25 +213,49 @@
               Tax-loss candidates
               <span class="brief-section-meta">≥ {{ fmtMoney(thresholds.tax_loss_min) }} loss</span>
             </h3>
-            <div v-if="brief.tax_loss_candidates && brief.tax_loss_candidates.length > 0" class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Position</th>
-                    <th class="text-right">Market value</th>
-                    <th class="text-right">Cost basis</th>
-                    <th class="text-right">Unrealized loss</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(p, i) in brief.tax_loss_candidates" :key="i">
-                    <td class="truncate max-w-sm">{{ positionLabel(p) }}</td>
-                    <td class="text-right tabular-nums">{{ fmtMoney(p.market_value) }}</td>
-                    <td class="text-right tabular-nums">{{ fmtMoney(p.cost_basis) }}</td>
-                    <td class="text-right tabular-nums text-error">-{{ fmtMoney(Math.abs(p.unrealized_loss || 0)) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="brief.tax_loss_candidates && brief.tax_loss_candidates.length > 0">
+              <div class="rounded-lg border border-base-300 bg-base-100 px-2 py-3">
+                <div class="px-2 pb-2 text-[11px] text-base-content/60 flex items-baseline gap-3 flex-wrap">
+                  <span>Total opportunity:</span>
+                  <span class="text-error font-semibold tabular-nums text-sm">
+                    -{{ fmtMoney(totalTaxLossOpportunity) }}
+                  </span>
+                  <span class="text-base-content/45">
+                    across {{ brief.tax_loss_candidates.length }} position{{ brief.tax_loss_candidates.length === 1 ? '' : 's' }}
+                  </span>
+                </div>
+                <apexchart
+                  type="bar"
+                  :height="Math.max(180, brief.tax_loss_candidates.length * 26 + 60)"
+                  :options="taxLossChartOptions"
+                  :series="taxLossChartSeries"
+                />
+              </div>
+              <details class="mt-2">
+                <summary class="text-xs text-base-content/60 cursor-pointer select-none hover:text-base-content brief-no-print">
+                  Show numbers ({{ brief.tax_loss_candidates.length }} candidate{{ brief.tax_loss_candidates.length === 1 ? '' : 's' }})
+                </summary>
+                <div class="overflow-x-auto mt-2">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Position</th>
+                        <th class="text-right">Market value</th>
+                        <th class="text-right">Cost basis</th>
+                        <th class="text-right">Unrealized loss</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(p, i) in brief.tax_loss_candidates" :key="i">
+                        <td class="truncate max-w-sm">{{ positionLabel(p) }}</td>
+                        <td class="text-right tabular-nums">{{ fmtMoney(p.market_value) }}</td>
+                        <td class="text-right tabular-nums">{{ fmtMoney(p.cost_basis) }}</td>
+                        <td class="text-right tabular-nums text-error">-{{ fmtMoney(Math.abs(p.unrealized_loss || 0)) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             </div>
             <p v-else-if="hs.total_cost_basis == null" class="brief-empty">
               Tax-loss analysis requires cost-basis data — your export doesn't include it.
@@ -217,23 +271,38 @@
               Concentration alerts
               <span class="brief-section-meta">≥ {{ thresholds.concentration_pct }}% of portfolio</span>
             </h3>
-            <div v-if="brief.concentration_alerts && brief.concentration_alerts.length > 0" class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Position</th>
-                    <th class="text-right">Market value</th>
-                    <th class="text-right">% of portfolio</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(a, i) in brief.concentration_alerts" :key="i">
-                    <td class="truncate max-w-sm">{{ positionLabel(a) }}</td>
-                    <td class="text-right tabular-nums">{{ fmtMoney(a.market_value) }}</td>
-                    <td class="text-right tabular-nums text-warning">{{ a.pct_of_portfolio?.toFixed(1) }}%</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="brief.concentration_alerts && brief.concentration_alerts.length > 0">
+              <div class="rounded-lg border border-base-300 bg-base-100 px-2 py-3">
+                <apexchart
+                  type="bar"
+                  :height="Math.max(160, brief.concentration_alerts.length * 28 + 60)"
+                  :options="concentrationChartOptions"
+                  :series="concentrationChartSeries"
+                />
+              </div>
+              <details class="mt-2">
+                <summary class="text-xs text-base-content/60 cursor-pointer select-none hover:text-base-content brief-no-print">
+                  Show numbers ({{ brief.concentration_alerts.length }} alert{{ brief.concentration_alerts.length === 1 ? '' : 's' }})
+                </summary>
+                <div class="overflow-x-auto mt-2">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Position</th>
+                        <th class="text-right">Market value</th>
+                        <th class="text-right">% of portfolio</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(a, i) in brief.concentration_alerts" :key="i">
+                        <td class="truncate max-w-sm">{{ positionLabel(a) }}</td>
+                        <td class="text-right tabular-nums">{{ fmtMoney(a.market_value) }}</td>
+                        <td class="text-right tabular-nums text-warning">{{ a.pct_of_portfolio?.toFixed(1) }}%</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             </div>
             <p v-else class="brief-empty">
               No positions exceed {{ thresholds.concentration_pct }}% of the portfolio.
@@ -246,23 +315,38 @@
               Cash drag
               <span class="brief-section-meta">≥ {{ fmtMoney(thresholds.cash_drag_min) }}</span>
             </h3>
-            <div v-if="brief.cash_drag_alerts && brief.cash_drag_alerts.length > 0" class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Position</th>
-                    <th class="text-right">Market value</th>
-                    <th class="text-right">% of portfolio</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(c, i) in brief.cash_drag_alerts" :key="i">
-                    <td class="truncate max-w-md">{{ positionLabel(c) }}</td>
-                    <td class="text-right tabular-nums">{{ fmtMoney(c.market_value) }}</td>
-                    <td class="text-right tabular-nums text-base-content/60">{{ pctOfTotal(c.market_value) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="brief.cash_drag_alerts && brief.cash_drag_alerts.length > 0">
+              <div class="rounded-lg border border-base-300 bg-base-100 px-2 py-3">
+                <apexchart
+                  type="bar"
+                  :height="Math.max(140, brief.cash_drag_alerts.length * 28 + 60)"
+                  :options="cashDragChartOptions"
+                  :series="cashDragChartSeries"
+                />
+              </div>
+              <details class="mt-2">
+                <summary class="text-xs text-base-content/60 cursor-pointer select-none hover:text-base-content brief-no-print">
+                  Show numbers ({{ brief.cash_drag_alerts.length }} position{{ brief.cash_drag_alerts.length === 1 ? '' : 's' }})
+                </summary>
+                <div class="overflow-x-auto mt-2">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Position</th>
+                        <th class="text-right">Market value</th>
+                        <th class="text-right">% of portfolio</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(c, i) in brief.cash_drag_alerts" :key="i">
+                        <td class="truncate max-w-md">{{ positionLabel(c) }}</td>
+                        <td class="text-right tabular-nums">{{ fmtMoney(c.market_value) }}</td>
+                        <td class="text-right tabular-nums text-base-content/60">{{ pctOfTotal(c.market_value) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             </div>
             <p v-else class="brief-empty">
               No cash positions ≥ {{ fmtMoney(thresholds.cash_drag_min) }}.
@@ -272,27 +356,42 @@
           <!-- Sector allocation -->
           <section>
             <h3 class="brief-section-title">Sector allocation</h3>
-            <div v-if="brief.sector_allocation && brief.sector_allocation.length > 0" class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Sector</th>
-                    <th class="text-right">Market value</th>
-                    <th class="text-right">% of portfolio</th>
-                    <th class="text-right">Positions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(s, i) in brief.sector_allocation" :key="i">
-                    <td>{{ s.sector || '—' }}</td>
-                    <td class="text-right tabular-nums">{{ fmtMoney(s.market_value) }}</td>
-                    <td class="text-right tabular-nums text-base-content/60">
-                      {{ s.pct_of_portfolio != null ? s.pct_of_portfolio.toFixed(1) + '%' : pctOfTotal(s.market_value) }}
-                    </td>
-                    <td class="text-right tabular-nums text-base-content/60">{{ s.position_count }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="brief.sector_allocation && brief.sector_allocation.length > 0">
+              <div class="rounded-lg border border-base-300 bg-base-100 px-2 py-3 sector-chart-wrap">
+                <apexchart
+                  type="donut"
+                  height="280"
+                  :options="sectorChartOptions"
+                  :series="sectorChartSeries"
+                />
+              </div>
+              <details class="mt-2">
+                <summary class="text-xs text-base-content/60 cursor-pointer select-none hover:text-base-content brief-no-print">
+                  Show numbers ({{ brief.sector_allocation.length }} sector{{ brief.sector_allocation.length === 1 ? '' : 's' }})
+                </summary>
+                <div class="overflow-x-auto mt-2">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Sector</th>
+                        <th class="text-right">Market value</th>
+                        <th class="text-right">% of portfolio</th>
+                        <th class="text-right">Positions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(s, i) in brief.sector_allocation" :key="i">
+                        <td>{{ s.sector || '—' }}</td>
+                        <td class="text-right tabular-nums">{{ fmtMoney(s.market_value) }}</td>
+                        <td class="text-right tabular-nums text-base-content/60">
+                          {{ s.pct_of_portfolio != null ? s.pct_of_portfolio.toFixed(1) + '%' : pctOfTotal(s.market_value) }}
+                        </td>
+                        <td class="text-right tabular-nums text-base-content/60">{{ s.position_count }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
             </div>
             <p v-else class="brief-empty">
               Sector classification not available — exports don't include a sector column.
@@ -340,6 +439,7 @@
 import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import { FileText, Printer, X, AlertTriangle, ShieldCheck } from 'lucide-vue-next'
 import axios from 'axios'
+import { useColorScheme } from '../composables/useThemeIcon'
 
 const props = defineProps({
   collectionId: { type: String, default: '' },
@@ -359,6 +459,250 @@ const thresholds = reactive({
 })
 
 const hs = computed(() => brief.value?.household_summary || {})
+
+const { scheme } = useColorScheme()
+
+const sectorChartSeries = computed(
+  () => (brief.value?.sector_allocation || []).map((s) => s.market_value || 0),
+)
+
+const sectorChartOptions = computed(() => ({
+  chart: {
+    type: 'donut',
+    toolbar: { show: false },
+    fontFamily: 'inherit',
+    animations: { enabled: true, speed: 250 },
+  },
+  labels: (brief.value?.sector_allocation || []).map((s) => s.sector || 'Unclassified'),
+  theme: { mode: scheme.value },
+  legend: {
+    position: 'right',
+    fontSize: '12px',
+    itemMargin: { vertical: 3 },
+  },
+  dataLabels: { enabled: false },
+  stroke: { width: 2 },
+  tooltip: {
+    y: { formatter: (val) => fmtMoney(val) },
+  },
+  plotOptions: {
+    pie: {
+      donut: {
+        size: '62%',
+        labels: {
+          show: true,
+          name: { fontSize: '11px' },
+          value: {
+            fontSize: '16px',
+            fontWeight: 600,
+            formatter: (val) => fmtMoney(parseFloat(val)),
+          },
+          total: {
+            show: true,
+            showAlways: true,
+            label: 'Total',
+            fontSize: '11px',
+            formatter: (w) => fmtMoney(
+              w.globals.seriesTotals.reduce((a, b) => a + b, 0),
+            ),
+          },
+        },
+      },
+    },
+  },
+  responsive: [{
+    breakpoint: 640,
+    options: { legend: { position: 'bottom' } },
+  }],
+}))
+
+// ── Horizontal bar charts (top positions, tax-loss, concentration, cash drag) ──
+// All share the same skeleton: horizontal bars, value label at the bar tip,
+// short-form axis labels, dashed gridlines, no legend. The differences are
+// the y-axis category mapping, the value formatter, and a fixed color when
+// the section's semantics demand one (warning for concentration, error for
+// tax-loss). Building options inline ballooned the script; this factory
+// keeps each chart computed to ~5 lines of overrides.
+function horizontalBarBase({ valueFormatter, valueFormatterShort, color }) {
+  return {
+    chart: {
+      type: 'bar',
+      toolbar: { show: false },
+      fontFamily: 'inherit',
+      animations: { enabled: true, speed: 250 },
+    },
+    theme: { mode: scheme.value },
+    ...(color ? { colors: [color] } : {}),
+    plotOptions: {
+      bar: {
+        horizontal: true,
+        barHeight: '65%',
+        borderRadius: 2,
+        dataLabels: { position: 'top' },
+      },
+    },
+    dataLabels: {
+      enabled: true,
+      formatter: valueFormatterShort,
+      offsetX: 34,
+      style: { fontSize: '10px', colors: ['var(--fallback-bc, oklch(var(--bc)))'] },
+    },
+    xaxis: {
+      labels: { formatter: valueFormatterShort, style: { fontSize: '10px' } },
+    },
+    yaxis: { labels: { style: { fontSize: '11px' } } },
+    grid: { strokeDashArray: 3, padding: { right: 40 } },
+    tooltip: { y: { formatter: valueFormatter } },
+    legend: { show: false },
+  }
+}
+
+// Accounts — single 100%-stacked horizontal bar with one segment per account.
+// Shows household composition at a glance; legend below names the accounts.
+const accountsChartSeries = computed(() =>
+  (brief.value?.accounts || []).map((acc) => ({
+    name: acc.account || 'Unnamed account',
+    data: [acc.market_value || 0],
+  })),
+)
+
+const accountsChartOptions = computed(() => ({
+  chart: {
+    type: 'bar',
+    stacked: true,
+    stackType: '100%',
+    toolbar: { show: false },
+    fontFamily: 'inherit',
+    animations: { enabled: true, speed: 250 },
+  },
+  theme: { mode: scheme.value },
+  plotOptions: {
+    bar: { horizontal: true, barHeight: '38%' },
+  },
+  dataLabels: {
+    enabled: true,
+    formatter: (_val, opts) => {
+      const pct = opts?.w?.globals?.seriesPercent?.[opts.seriesIndex]?.[0]
+      if (pct == null) return ''
+      return pct >= 8 ? pct.toFixed(0) + '%' : ''
+    },
+    style: { fontSize: '11px', fontWeight: 600, colors: ['#ffffff'] },
+  },
+  xaxis: {
+    categories: ['Household'],
+    labels: { show: false },
+    axisBorder: { show: false },
+    axisTicks: { show: false },
+  },
+  yaxis: { labels: { show: false } },
+  grid: { show: false },
+  legend: {
+    position: 'bottom',
+    fontSize: '11px',
+    itemMargin: { vertical: 3, horizontal: 8 },
+  },
+  tooltip: { y: { formatter: (val) => fmtMoney(val) } },
+}))
+
+// Top positions — ranked horizontal bar.
+const topPositionsChartSeries = computed(() => [{
+  name: 'Market value',
+  data: (brief.value?.top_positions || []).map((p) => ({
+    x: positionLabel(p),
+    y: p.market_value || 0,
+  })),
+}])
+
+const topPositionsChartOptions = computed(() =>
+  horizontalBarBase({
+    valueFormatter: (val) => fmtMoney(val),
+    valueFormatterShort: (val) => fmtMoneyShort(val),
+  }),
+)
+
+// Tax-loss candidates — horizontal bar of unrealized losses (sorted by magnitude
+// by the backend), all rendered in error red. Header in the template shows the
+// running total opportunity above the chart so the advisor sees the bottom line
+// before scanning individual rows. Not a true waterfall (cumulative steps) —
+// the magnitude bars + explicit total convey the same answer with less ink.
+const taxLossChartSeries = computed(() => [{
+  name: 'Unrealized loss',
+  data: (brief.value?.tax_loss_candidates || []).map((p) => ({
+    x: positionLabel(p),
+    y: Math.abs(p.unrealized_loss || 0),
+  })),
+}])
+
+const totalTaxLossOpportunity = computed(() =>
+  (brief.value?.tax_loss_candidates || []).reduce(
+    (sum, p) => sum + Math.abs(p.unrealized_loss || 0),
+    0,
+  ),
+)
+
+const taxLossChartOptions = computed(() =>
+  horizontalBarBase({
+    valueFormatter: (val) => '-' + fmtMoney(val),
+    valueFormatterShort: (val) => '-' + fmtMoneyShort(val),
+    color: '#dc2626',
+  }),
+)
+
+// Concentration alerts — horizontal bar of percentages with a dashed annotation
+// at the threshold. The backend has already filtered to positions >= threshold,
+// so the marker sits at the left edge — useful as a visual reference, not as a
+// pass/fail line.
+const concentrationChartSeries = computed(() => [{
+  name: '% of portfolio',
+  data: (brief.value?.concentration_alerts || []).map((a) => ({
+    x: positionLabel(a),
+    y: a.pct_of_portfolio || 0,
+  })),
+}])
+
+const concentrationChartOptions = computed(() => {
+  const base = horizontalBarBase({
+    valueFormatter: (val) => val.toFixed(1) + '% of portfolio',
+    valueFormatterShort: (val) => val.toFixed(1) + '%',
+    color: '#f59e0b',
+  })
+  base.xaxis.labels.formatter = (val) => val.toFixed(0) + '%'
+  base.annotations = {
+    xaxis: [{
+      x: thresholds.concentration_pct,
+      borderColor: '#94a3b8',
+      strokeDashArray: 4,
+      label: {
+        text: `${thresholds.concentration_pct}% threshold`,
+        position: 'top',
+        offsetY: 4,
+        borderWidth: 0,
+        style: {
+          fontSize: '10px',
+          color: '#64748b',
+          background: 'transparent',
+        },
+      },
+    }],
+  }
+  return base
+})
+
+// Cash drag — simple horizontal bar of cash positions by market value.
+const cashDragChartSeries = computed(() => [{
+  name: 'Cash',
+  data: (brief.value?.cash_drag_alerts || []).map((c) => ({
+    x: positionLabel(c),
+    y: c.market_value || 0,
+  })),
+}])
+
+const cashDragChartOptions = computed(() =>
+  horizontalBarBase({
+    valueFormatter: (val) => fmtMoney(val),
+    valueFormatterShort: (val) => fmtMoneyShort(val),
+  }),
+)
 
 const sourceFilenames = computed(() => {
   const sources = brief.value?.household_summary?.sources || []
@@ -432,6 +776,10 @@ function printBrief() {
   const clone = root.cloneNode(true)
   clone.id = 'brief-print-region'
   clone.classList.remove('modal-box')
+  // Force every "Show numbers" <details> open so the underlying tables print
+  // alongside the charts. The summary itself is suppressed by the print
+  // stylesheet (brief-no-print on <summary>).
+  clone.querySelectorAll('details').forEach((d) => { d.open = true })
   document.body.appendChild(clone)
   document.body.classList.add('brief-printing')
   const cleanup = () => {
@@ -471,6 +819,15 @@ function fmtMoney(n) {
   const sign = n < 0 ? '-' : ''
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`
   return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+}
+
+function fmtMoneyShort(n) {
+  if (n == null || isNaN(n)) return '—'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}k`
+  return `${sign}$${abs.toFixed(0)}`
 }
 
 function pctOfTotal(value) {
@@ -617,6 +974,28 @@ defineExpose({ open, close })
   /* Header KPI grid — drop borders to a clean print look and wrap to 3 columns */
   #brief-print-region .grid {
     display: grid !important;
+  }
+  /* Charts: render the SVG at its natural aspect, no toolbars or controls. */
+  #brief-print-region .apexcharts-canvas {
+    max-width: 100% !important;
+    background: white !important;
+  }
+  #brief-print-region .apexcharts-canvas svg {
+    background: white !important;
+  }
+  #brief-print-region .apexcharts-toolbar,
+  #brief-print-region .apexcharts-menu,
+  #brief-print-region .apexcharts-zoom-icon,
+  #brief-print-region .apexcharts-tooltip,
+  #brief-print-region .apexcharts-xaxistooltip,
+  #brief-print-region .apexcharts-yaxistooltip {
+    display: none !important;
+  }
+  /* <details> "Show numbers" sections: printBrief() sets `open` on every
+     <details> in the clone, but the summary itself is just chrome — hide it
+     so the printed page goes straight from chart → table. */
+  #brief-print-region details > summary {
+    display: none !important;
   }
 }
 </style>
