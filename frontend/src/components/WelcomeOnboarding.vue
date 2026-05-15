@@ -32,7 +32,7 @@
           Welcome to Finn
         </h1>
         <p class="text-sm text-base-content/60 mt-3 max-w-sm mx-auto leading-relaxed">
-          Let's get you set up in three short steps.
+          {{ hasManagedProvider ? "Let's get you set up in two short steps." : "Let's get you set up in three short steps." }}
         </p>
       </div>
 
@@ -55,7 +55,19 @@
             </li>
           </ul>
         </div>
-        <button class="btn btn-primary w-full" @click="advance('provider')">
+        <div
+          v-if="hasManagedProvider"
+          class="rounded-lg border border-info/30 bg-info/5 px-4 py-3 text-sm flex items-start gap-2"
+        >
+          <span class="text-info text-base leading-none mt-0.5" aria-hidden="true">●</span>
+          <div class="flex-1">
+            <div class="font-medium">AI provider already set up</div>
+            <div class="text-xs text-base-content/65 mt-0.5">
+              Finn has provisioned Ollama Cloud for you — no API key needed. You can switch providers later in Settings.
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-primary w-full" @click="advance(hasManagedProvider ? 'collection' : 'provider')">
           Continue
         </button>
       </div>
@@ -235,7 +247,7 @@
 
 <script setup>
 import { ref, computed, nextTick, watch } from 'vue'
-import { upsertProviderConfig, setActiveProviderLS } from '../utils/aiProviders.js'
+import { upsertProviderConfig, setActiveProviderLS, isManagedProvider, getConfiguredProviderIds } from '../utils/aiProviders.js'
 import { validateProviderKey, validateErrorMessage } from '../utils/validateKey.js'
 import { useCollectionStore } from '../stores/collectionStore.js'
 import { useThemeIcon } from '../composables/useThemeIcon.js'
@@ -250,10 +262,22 @@ const emit = defineEmits(['complete', 'skip'])
 
 const collectionStore = useCollectionStore()
 
-// Step machine
-const STAGES = ['welcome', 'provider', 'collection', 'done']
+// True when the backend has provisioned a managed Ollama Cloud provider for
+// the advisor (FALLBACK_API_KEY set on the server). In that case we skip the
+// provider-key stage — the advisor doesn't need to paste anything to chat.
+const hasManagedProvider = computed(() =>
+  getConfiguredProviderIds().some(id => isManagedProvider(id)),
+)
+
+// Step machine. The provider stage is conditionally elided when the server
+// has bootstrapped a managed provider, so the displayed STAGES are computed.
+const STAGES = computed(() =>
+  hasManagedProvider.value
+    ? ['welcome', 'collection', 'done']
+    : ['welcome', 'provider', 'collection', 'done'],
+)
 const stage = ref('welcome')
-const stageIndex = computed(() => STAGES.indexOf(stage.value))
+const stageIndex = computed(() => STAGES.value.indexOf(stage.value))
 
 // Provider stage state
 const PROVIDER_OPTIONS = [
@@ -335,7 +359,7 @@ function advance(next) {
 function goBack() {
   const i = stageIndex.value
   if (i <= 0) return
-  stage.value = STAGES[i - 1]
+  stage.value = STAGES.value[i - 1]
 }
 
 async function handleProviderSubmit() {

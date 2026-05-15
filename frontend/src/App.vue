@@ -1380,12 +1380,14 @@ function refreshProviderBannerState() {
 }
 
 const checkOnboardingNeeded = () => {
-  // Show the takeover only when both (a) no provider is configured AND (b) the
-  // advisor has not yet seen onboarding. If they completed or explicitly
-  // skipped, we surface the persistent banner on Chat instead — never re-show
-  // the full-screen takeover on subsequent launches.
-  showOnboarding.value =
-    !hasCompletedOnboarding() && getConfiguredProviderIds().length === 0
+  // Show the takeover for any advisor who has not yet completed (or skipped)
+  // the welcome flow. We deliberately do NOT short-circuit on
+  // "is a provider configured" — when the backend has FALLBACK_API_KEY set
+  // we bootstrap a managed provider into localStorage on every boot, which
+  // would otherwise hide the takeover from every new advisor on the hosted
+  // deployment. The provider stage of the takeover handles the managed case
+  // by skipping its own key-paste step.
+  showOnboarding.value = !hasCompletedOnboarding()
   refreshProviderBannerState()
 }
 
