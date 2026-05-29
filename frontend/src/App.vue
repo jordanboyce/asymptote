@@ -514,6 +514,7 @@
             </div>
 
             <OverviewTab v-if="activeTab === 'overview'" @open-brief="openBriefModal" @send-to-chat="handleSendToChat" />
+            <MeetingsTab v-if="activeTab === 'meetings'" />
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
             <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
@@ -1081,6 +1082,7 @@ const tabs = computed(() => {
   const t = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'chat', label: 'Chat', icon: MessageSquare },
+    { id: 'meetings', label: 'Meetings', icon: Mic },
   ]
   if (searchTabEnabled.value) t.push({ id: 'search', label: 'Search', icon: Search })
   if (isExpertMode.value) t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
@@ -1094,6 +1096,7 @@ const toolTabs = [
   { id: 'diagnostics', label: 'Diagnostics', icon: Activity },
 ]
 import OverviewTab from './components/OverviewTab.vue'
+import MeetingsTab from './components/MeetingsTab.vue'
 import SearchTab from './components/SearchTab.vue'
 import SourcesSidebar from './components/SourcesSidebar.vue'
 import AnalysisSidebar from './components/AnalysisSidebar.vue'

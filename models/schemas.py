@@ -462,6 +462,109 @@ class ExtractMeetingNotesRequest(BaseModel):
     provider: str = Field("anthropic", description="AI provider")
 
 
+class CreateActionItemRequest(BaseModel):
+    """Request body for POST /api/collections/{id}/action-items.
+
+    Standalone action items (Slice C) are advisor-created from outside a
+    transcript — primarily the per-message "Save as action item" affordance
+    in the chat tab. Source fields tie the item back to the chat turn that
+    motivated it so the Meetings tab can show provenance.
+    """
+
+    description: str = Field(..., min_length=1, description="What needs to be done")
+    assignee: Optional[str] = Field(None, description="'advisor', 'client', a name, or null")
+    due_date: Optional[str] = Field(None, description="ISO date or natural-language ('next meeting')")
+    status: str = Field("open", description="'open' or 'closed'")
+    source_kind: str = Field("manual", description="'manual' or 'chat'")
+    source_session_id: Optional[str] = Field(None, description="Chat session ID if origin == 'chat'")
+    source_message_id: Optional[str] = Field(None, description="Chat message ID (client-local, optional)")
+    source_excerpt: Optional[str] = Field(None, description="Short snippet of the chat turn for provenance")
+
+
+class UpdateActionItemRequest(BaseModel):
+    """Request body for PATCH /api/collections/{id}/action-items/{item_id}.
+
+    All fields optional — pass only what you want to change. status accepts
+    'open' or 'closed'. For transcript-extracted items (item_id of the form
+    'meeting:<doc_id>:<idx>') only ``status`` is honored; the description /
+    assignee / due_date sit in the transcript JSON and aren't editable here.
+    """
+
+    description: Optional[str] = Field(None, min_length=1)
+    assignee: Optional[str] = None
+    due_date: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ActionItemResponse(BaseModel):
+    """One row from /api/collections/{id}/action-items.
+
+    ``item_id`` is either an integer (standalone items) or the synthetic
+    string ``"meeting:<document_id>:<index>"`` for transcript-extracted items.
+    ``origin`` is 'meeting' (transcript-extracted), 'chat' (saved from a
+    chat turn), or 'manual' (user-created from the Meetings tab).
+    """
+
+    item_id: Any = Field(..., description="Integer ID or synthetic 'meeting:<doc>:<idx>' string")
+    origin: str
+    description: str
+    assignee: Optional[str] = None
+    due_date: Optional[str] = None
+    status: str
+    document_id: Optional[str] = None
+    source_filename: Optional[str] = None
+    source_session_id: Optional[str] = None
+    source_message_id: Optional[str] = None
+    source_excerpt: Optional[str] = None
+    extracted_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ActionItemListResponse(BaseModel):
+    """Response from GET /api/collections/{id}/action-items (also /meetings/action-items)."""
+
+    collection_id: str
+    count: int
+    total_available: int
+    items: List[ActionItemResponse] = Field(default_factory=list)
+
+
+class MeetingSummary(BaseModel):
+    """One meeting from GET /api/collections/{id}/meetings."""
+
+    document_id: str
+    filename: Optional[str] = None
+    extracted_at: Optional[str] = None
+    client_concerns_count: int = 0
+    decisions_count: int = 0
+    action_items_count: int = 0
+    open_action_items_count: int = 0
+    follow_up_questions_count: int = 0
+    sentiment_notes: Optional[str] = None
+
+
+class MeetingListResponse(BaseModel):
+    """Response from GET /api/collections/{id}/meetings."""
+
+    collection_id: str
+    count: int
+    meetings: List[MeetingSummary] = Field(default_factory=list)
+
+
+class MeetingDetailResponse(BaseModel):
+    """Response from GET /api/collections/{id}/meetings/{document_id}."""
+
+    document_id: str
+    collection_id: str
+    filename: Optional[str] = None
+    extracted_at: Optional[str] = None
+    client_concerns: List[str] = Field(default_factory=list)
+    decisions: List[str] = Field(default_factory=list)
+    action_items: List[Dict[str, Any]] = Field(default_factory=list)
+    follow_up_questions: List[str] = Field(default_factory=list)
+    sentiment_notes: Optional[str] = None
+
+
 class SaveNoteRequest(BaseModel):
     """Request body for /notes/save — persist an edited Note of Record into the collection."""
 
@@ -556,3 +659,98 @@ class FeedbackResponse(BaseModel):
     ok: bool
     id: Optional[str] = None
     error: Optional[str] = None
+
+
+# ─── Weekly digest ───────────────────────────────────────────────────────
+
+
+class DigestPreferences(BaseModel):
+    """Per-user opt-in for the weekly advisor digest (services.digest)."""
+
+    enabled: bool = False
+    weekday: int = Field(4, ge=0, le=6, description="Mon=0 ... Sun=6 (default Friday)")
+    hour: int = Field(16, ge=0, le=23, description="24h, scheduler-local TZ")
+    email_override: Optional[str] = Field(
+        None,
+        description="Send-to address; defaults to the authenticated user_id (which is the verified email in hosted multi-user mode).",
+    )
+
+
+class DigestPreferencesResponse(BaseModel):
+    """Response from GET/PUT /api/digest/preferences — includes server-derived hints."""
+
+    preferences: DigestPreferences
+    effective_email: Optional[str] = Field(
+        None,
+        description="The address the next digest will be sent to (override if set, else user_id when it looks like an email).",
+    )
+    scheduler_timezone: str = Field(
+        ...,
+        description="IANA TZ the scheduler interprets weekday/hour in.",
+    )
+    last_sent_at: Optional[str] = Field(
+        None,
+        description="ISO timestamp of the most recent digest sent to this user, or null if never sent.",
+    )
+
+
+class DigestPreviewResponse(BaseModel):
+    """Response from POST /api/digest/preview — sends a sample to the caller."""
+
+    ok: bool
+    id: Optional[str] = None
+    error: Optional[str] = None
+    recipient: Optional[str] = None
+    summary: Optional[str] = Field(
+        None,
+        description="Human-readable summary of what the digest contained, for UI confirmation.",
+    )
+
+
+# ─── Morning brief ───────────────────────────────────────────────────────
+
+
+class MorningBriefPreferences(BaseModel):
+    """Per-user opt-in for the daily morning brief (services.morning_brief)."""
+
+    enabled: bool = False
+    hour: int = Field(7, ge=0, le=23, description="24h, scheduler-local TZ (default 7am)")
+    weekdays_only: bool = Field(
+        True,
+        description="If true, skip Saturday and Sunday. Advisors typically don't want a brief on weekends.",
+    )
+    email_override: Optional[str] = Field(
+        None,
+        description="Send-to address; defaults to the authenticated user_id (which is the verified email in hosted multi-user mode).",
+    )
+
+
+class MorningBriefPreferencesResponse(BaseModel):
+    """Response from GET/PUT /api/morning-brief/preferences — includes server-derived hints."""
+
+    preferences: MorningBriefPreferences
+    effective_email: Optional[str] = Field(
+        None,
+        description="The address the next brief will be sent to (override if set, else user_id when it looks like an email).",
+    )
+    scheduler_timezone: str = Field(
+        ...,
+        description="IANA TZ the scheduler interprets hour in.",
+    )
+    last_sent_at: Optional[str] = Field(
+        None,
+        description="ISO timestamp of the most recent brief sent to this user, or null if never sent.",
+    )
+
+
+class MorningBriefPreviewResponse(BaseModel):
+    """Response from POST /api/morning-brief/preview — sends a sample to the caller."""
+
+    ok: bool
+    id: Optional[str] = None
+    error: Optional[str] = None
+    recipient: Optional[str] = None
+    summary: Optional[str] = Field(
+        None,
+        description="Human-readable summary of what the brief contained, for UI confirmation.",
+    )

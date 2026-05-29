@@ -81,6 +81,97 @@
 
         <div v-else-if="brief" class="flex flex-col gap-6 print:gap-4">
 
+          <!-- Meeting context (last meeting + open items + follow-ups).
+               Rendered above the portfolio sections because a pre-meeting
+               brief is read top-down: "what was promised / asked / decided
+               last time" sets the agenda; the portfolio numbers below answer
+               the questions that come up. Section is omitted entirely when
+               no meeting notes have been extracted yet so the brief still
+               works for collections that are portfolio-only. -->
+          <section v-if="hasMeetingContext">
+            <h3 class="brief-section-title">
+              Meeting context
+              <span v-if="mc.meetings_count" class="brief-section-meta">
+                {{ mc.meetings_count }} meeting{{ mc.meetings_count === 1 ? '' : 's' }} on file
+              </span>
+            </h3>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <!-- Last meeting -->
+              <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
+                <div class="flex items-baseline justify-between gap-2">
+                  <div class="text-[11px] uppercase tracking-wider text-base-content/55">
+                    Last meeting
+                  </div>
+                  <div v-if="mc.last_meeting?.extracted_at" class="text-[11px] text-base-content/55 tabular-nums">
+                    {{ formatDate(mc.last_meeting.extracted_at) }}
+                  </div>
+                </div>
+                <div v-if="mc.last_meeting?.filename" class="text-xs text-base-content/65 mt-0.5 truncate">
+                  {{ mc.last_meeting.filename }}
+                </div>
+
+                <div v-if="lastConcerns.length" class="mt-2">
+                  <div class="text-[11px] font-semibold text-base-content/70">Client concerns</div>
+                  <ul class="list-disc list-inside text-sm mt-0.5 space-y-0.5">
+                    <li v-for="(c, i) in lastConcerns" :key="`c-${i}`" class="text-base-content/85">{{ c }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="lastDecisions.length" class="mt-2">
+                  <div class="text-[11px] font-semibold text-base-content/70">Decisions</div>
+                  <ul class="list-disc list-inside text-sm mt-0.5 space-y-0.5">
+                    <li v-for="(d, i) in lastDecisions" :key="`d-${i}`" class="text-base-content/85">{{ d }}</li>
+                  </ul>
+                </div>
+
+                <div v-if="mc.last_meeting?.sentiment_notes" class="mt-2 text-xs text-base-content/65 italic">
+                  {{ mc.last_meeting.sentiment_notes }}
+                </div>
+
+                <p v-if="!lastConcerns.length && !lastDecisions.length && !mc.last_meeting?.sentiment_notes"
+                   class="text-sm text-base-content/55 italic mt-1">
+                  No structured notes extracted from the last meeting yet.
+                </p>
+              </div>
+
+              <!-- Open action items + follow-ups -->
+              <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
+                <div class="text-[11px] uppercase tracking-wider text-base-content/55">
+                  Open action items
+                  <span v-if="mc.total_open_action_items > mc.open_action_items.length" class="ml-1 text-base-content/45">
+                    (showing {{ mc.open_action_items.length }} of {{ mc.total_open_action_items }})
+                  </span>
+                </div>
+                <ul v-if="mc.open_action_items.length" class="text-sm mt-1 space-y-1">
+                  <li v-for="(item, i) in mc.open_action_items" :key="`a-${i}`" class="flex items-start gap-1.5">
+                    <span class="text-base-content/45 mt-0.5 leading-none" aria-hidden="true">□</span>
+                    <div class="flex-1 min-w-0">
+                      <div class="text-base-content/90">{{ item.description }}</div>
+                      <div class="text-[11px] text-base-content/55 flex flex-wrap gap-x-2">
+                        <span v-if="item.assignee">{{ item.assignee }}</span>
+                        <span v-if="item.due_date">due {{ item.due_date }}</span>
+                        <span v-if="item.source_filename" class="truncate">{{ item.source_filename }}</span>
+                      </div>
+                    </div>
+                  </li>
+                </ul>
+                <p v-else class="text-sm text-base-content/55 italic mt-1">
+                  No open action items.
+                </p>
+
+                <div v-if="mc.open_follow_up_questions.length" class="mt-3 pt-2 border-t border-base-300/60">
+                  <div class="text-[11px] uppercase tracking-wider text-base-content/55">
+                    Questions to research
+                  </div>
+                  <ul class="list-disc list-inside text-sm mt-0.5 space-y-0.5">
+                    <li v-for="(q, i) in mc.open_follow_up_questions" :key="`f-${i}`" class="text-base-content/85">{{ q }}</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- Household summary -->
           <section>
             <h3 class="brief-section-title">Household summary</h3>
@@ -459,6 +550,23 @@ const thresholds = reactive({
 })
 
 const hs = computed(() => brief.value?.household_summary || {})
+
+// Meeting context — present iff the brief endpoint returned a non-empty block
+// AND that block has at least one thing worth showing. A collection with no
+// transcripts comes back with meetings_count=0 / null last_meeting / empty
+// arrays; in that case skip the section entirely rather than render an empty
+// shell that looks like a bug.
+const mc = computed(() => brief.value?.meeting_context || {})
+const hasMeetingContext = computed(() => {
+  const c = mc.value
+  if (!c || !c.meetings_count) return false
+  const hasLast = !!c.last_meeting
+  const hasItems = (c.open_action_items?.length || 0) > 0
+  const hasFollowUps = (c.open_follow_up_questions?.length || 0) > 0
+  return hasLast || hasItems || hasFollowUps
+})
+const lastConcerns = computed(() => mc.value?.last_meeting?.client_concerns || [])
+const lastDecisions = computed(() => mc.value?.last_meeting?.decisions || [])
 
 const { scheme } = useColorScheme()
 
@@ -852,6 +960,15 @@ function formatTimestamp(iso) {
   try {
     const d = new Date(iso)
     return d.toLocaleString()
+  } catch {
+    return iso
+  }
+}
+
+function formatDate(iso) {
+  try {
+    const d = new Date(iso)
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
   } catch {
     return iso
   }

@@ -993,6 +993,93 @@ class SQLiteBackend(DatabaseBackend):
                     prefs[key] = value
             return prefs
 
+    # ── Weekly Digest Preferences ────────────────────────────
+    #
+    # Per-user opt-in for the weekly advisor digest (see services.digest).
+    # Stored as a JSON blob under user_preferences key
+    # ``digest_prefs:<user_id>`` — same namespacing pattern used by the
+    # agent API keys. Defaults (enabled=False, day=Fri, hour=16) keep the
+    # feature opt-in; the advisor flips it on from Settings.
+
+    DEFAULT_DIGEST_PREFERENCES: Dict[str, Any] = {
+        "enabled": False,
+        "weekday": 4,           # Mon=0, Sun=6 — default Friday
+        "hour": 16,             # 24h, scheduler-local TZ (default America/New_York)
+        "email_override": None, # None = use user_id (which is the email in hosted multi-user mode)
+    }
+
+    def get_digest_preferences(self, user_id: str) -> Dict[str, Any]:
+        stored = self.get_user_preference(f"digest_prefs:{user_id}") or {}
+        return {**self.DEFAULT_DIGEST_PREFERENCES, **stored}
+
+    def set_digest_preferences(self, user_id: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
+        merged = {**self.get_digest_preferences(user_id), **prefs}
+        self.set_user_preference(f"digest_prefs:{user_id}", merged)
+        return merged
+
+    def list_digest_optins(self) -> List[Dict[str, Any]]:
+        """Every user with digest enabled. Returns merged-prefs dicts including user_id.
+
+        Enumerates user_preferences directly rather than iterating the users
+        table — that way prefs that exist for a user_id are honoured even if
+        the auth-middleware upsert is somehow missing.
+        """
+        result: List[Dict[str, Any]] = []
+        prefix = "digest_prefs:"
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT key FROM user_preferences WHERE key LIKE ?",
+                (prefix + "%",),
+            ).fetchall()
+        for (key,) in rows:
+            user_id = key[len(prefix):]
+            if not user_id:
+                continue
+            prefs = self.get_digest_preferences(user_id)
+            if prefs.get("enabled"):
+                result.append({"user_id": user_id, **prefs})
+        return result
+
+    # ── Morning Brief Preferences ────────────────────────────
+    #
+    # Per-user opt-in for the daily morning brief (see services.morning_brief).
+    # Same storage shape as DIGEST_PREFERENCES, distinct namespace so the two
+    # opt-ins don't interfere — an advisor can enable one, both, or neither.
+
+    DEFAULT_MORNING_BRIEF_PREFERENCES: Dict[str, Any] = {
+        "enabled": False,
+        "hour": 7,               # 24h, scheduler-local TZ — advisors check email in their commute
+        "weekdays_only": True,   # Skip Sat/Sun by default
+        "email_override": None,
+    }
+
+    def get_morning_brief_preferences(self, user_id: str) -> Dict[str, Any]:
+        stored = self.get_user_preference(f"morning_brief_prefs:{user_id}") or {}
+        return {**self.DEFAULT_MORNING_BRIEF_PREFERENCES, **stored}
+
+    def set_morning_brief_preferences(self, user_id: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
+        merged = {**self.get_morning_brief_preferences(user_id), **prefs}
+        self.set_user_preference(f"morning_brief_prefs:{user_id}", merged)
+        return merged
+
+    def list_morning_brief_optins(self) -> List[Dict[str, Any]]:
+        """Every user with morning-brief enabled. Same enumeration pattern as digest."""
+        result: List[Dict[str, Any]] = []
+        prefix = "morning_brief_prefs:"
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT key FROM user_preferences WHERE key LIKE ?",
+                (prefix + "%",),
+            ).fetchall()
+        for (key,) in rows:
+            user_id = key[len(prefix):]
+            if not user_id:
+                continue
+            prefs = self.get_morning_brief_preferences(user_id)
+            if prefs.get("enabled"):
+                result.append({"user_id": user_id, **prefs})
+        return result
+
     # ── Agent API Keys ───────────────────────────────────────
 
     def set_agent_api_key(self, provider: str, api_key: str):

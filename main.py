@@ -78,6 +78,13 @@ from models.schemas import (
     FollowupRequest,
     NoteResponse,
     ExtractMeetingNotesRequest,
+    CreateActionItemRequest,
+    UpdateActionItemRequest,
+    ActionItemResponse,
+    ActionItemListResponse,
+    MeetingSummary,
+    MeetingListResponse,
+    MeetingDetailResponse,
     SaveNoteRequest,
     SaveNoteResponse,
     RedactionDryRunRequest,
@@ -88,6 +95,12 @@ from models.schemas import (
     RedactionEntity,
     FeedbackRequest,
     FeedbackResponse,
+    DigestPreferences,
+    DigestPreferencesResponse,
+    DigestPreviewResponse,
+    MorningBriefPreferences,
+    MorningBriefPreferencesResponse,
+    MorningBriefPreviewResponse,
 )
 from services.upload_service import upload_service
 from services.form_field_extractor import (
@@ -215,6 +228,14 @@ async def lifespan(app: FastAPI):
 
         reindex_service.reload_callback = reload_indexer
 
+        # Start the embedded scheduler (weekly digest tick, etc.). Best-effort —
+        # a scheduler failure must not break the rest of the app.
+        try:
+            from services import scheduler as _scheduler
+            _scheduler.start()
+        except Exception as e:
+            logger.error(f"Failed to start scheduler: {e}", exc_info=True)
+
         _initialized = True
 
         logger.info("Finn API ready")
@@ -225,6 +246,11 @@ async def lifespan(app: FastAPI):
 
         # Cleanup on shutdown
         logger.info("Shutting down Finn API...")
+        try:
+            from services import scheduler as _scheduler
+            _scheduler.shutdown()
+        except Exception as e:
+            logger.warning(f"Scheduler shutdown error: {e}")
         indexer_manager.save_all()
         logger.info("Shutdown complete")
 
@@ -1423,6 +1449,7 @@ async def chat_stream_endpoint(
             executed_results: list[dict] = []
             usage = {"input_tokens": 0, "output_tokens": 0, "model": None}
             pending_args: dict[str, dict] = {}
+            final_answer = ""
 
             # Engine selection: general/meetings collections with no large
             # structured tables skip the tool loop and stream a single
@@ -1470,6 +1497,7 @@ async def chat_stream_endpoint(
                     yield f"data: {_json.dumps(citation_payload)}\n\n"
                 elif t == "done":
                     usage = ev.get("usage", usage)
+                    final_answer = ev.get("response_text", "") or final_answer
                 elif t == "error":
                     _diag("error", {"stage": "engine", "message": ev.get("message", "Unknown error")})
                     yield f"data: {_json.dumps({'type':'error','message':ev.get('message','Unknown error')})}\n\n"
@@ -1489,6 +1517,28 @@ async def chat_stream_endpoint(
                 for r in prepared.filtered_results
             ]
             yield f"data: {_json.dumps({'type':'sources','sources':sources_data})}\n\n"
+
+            # Perplexity-style "Related" — suggest the next questions the
+            # advisor is likely to ask. The answer is already fully streamed
+            # above, so this trailing fast-model call only delays the chips,
+            # never the answer. Purely additive: any failure yields no chips.
+            if final_answer.strip():
+                try:
+                    from services.ai_service import AIService as _AIService
+                    last_user = next(
+                        (m.content for m in reversed(chat_request.messages) if m.role == "user"),
+                        "",
+                    )
+                    followups = _AIService(provider=provider).suggest_followups(
+                        question=last_user,
+                        answer=final_answer,
+                        kind=prepared.turn.agent_context.get("kind", "general"),
+                    )
+                except Exception as e:
+                    logger.warning("Follow-up suggestion failed: %s", e)
+                    followups = []
+                if followups:
+                    yield f"data: {_json.dumps({'type':'followups','questions':followups})}\n\n"
 
             _diag("done", {
                 "usage": usage,
@@ -3862,15 +3912,22 @@ async def generate_brief_endpoint(
     concentration_pct: float = 10.0,
     cash_drag_min: float = 50000.0,
     top_n: int = 10,
+    include_meeting_context: bool = True,
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Generate a pre-meeting portfolio brief for *collection_id*.
+    Generate a pre-meeting brief for *collection_id*.
 
-    Calls the brief_generator directly (no LLM token cost) and returns
-    a structured JSON brief with sections: household_summary, accounts,
-    top_positions, tax_loss_candidates, concentration_alerts,
-    cash_drag_alerts, sector_allocation, generated_at.
+    Calls the brief_generator directly (no LLM token cost) for the portfolio
+    sections (household_summary, accounts, top_positions, tax_loss_candidates,
+    concentration_alerts, cash_drag_alerts, sector_allocation, generated_at).
+
+    When ``include_meeting_context`` is true (default), also merges a
+    ``meeting_context`` block sourced from the per-Collection MeetingNotesStore
+    — the most recent meeting's concerns/decisions/sentiment, every open
+    action item across all meetings, and the latest meeting's follow-up
+    questions. The block is well-formed-but-empty when no transcripts have
+    been extracted yet, so the UI can render the section unconditionally.
     """
     require_collection_access(collection_id, user_id, required="read")
     from services.brief_generator import generate_meeting_brief as _gen_brief
@@ -3896,6 +3953,24 @@ async def generate_brief_endpoint(
     except Exception as e:
         logger.error("Brief generation failed for collection %s: %s", collection_id, e)
         raise HTTPException(status_code=500, detail=f"Brief generation failed: {e}")
+
+    if include_meeting_context:
+        try:
+            from services.meeting_notes import build_meeting_context
+            brief["meeting_context"] = build_meeting_context(
+                meeting_notes_store=indexer.vector_store.meeting_notes_store,
+                metadata_store=indexer.vector_store.metadata_store,
+                collection_id=collection_id,
+            )
+        except AttributeError:
+            # Stores not wired on this indexer — leave meeting_context absent
+            # rather than failing the whole brief.
+            logger.debug("Meeting notes store unavailable for collection %s", collection_id)
+        except Exception as e:
+            logger.warning(
+                "Meeting context assembly failed for %s: %s — returning portfolio-only brief",
+                collection_id, e,
+            )
 
     return brief
 
@@ -4120,6 +4195,387 @@ async def extract_meeting_notes_endpoint(
         "document_id": body.document_id,
         "notes": record,
     }
+
+
+# ── Meetings + action items (Slice C) ────────────────────────────────────────
+#
+# The Meetings tab in the frontend reads from these endpoints. Transcript-side
+# extraction was already shipped in v4.5; what's new is a UI-friendly read
+# surface (list + detail) and full CRUD over standalone action items —
+# i.e. the ones the advisor creates from the "Save as action item" button on
+# an assistant chat turn. See services/meeting_notes.py for storage layout.
+
+
+def _meeting_notes_store_or_404(collection_id: str):
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return indexer, indexer.vector_store.meeting_notes_store
+    except AttributeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Meeting notes store unavailable for this collection.",
+        ) from exc
+
+
+def _filename_lookup(indexer) -> dict[str, str]:
+    """Return a {document_id: filename} map; empty on lookup failures."""
+    out: dict[str, str] = {}
+    try:
+        for doc in indexer.vector_store.metadata_store.list_documents():
+            doc_id = doc.get("document_id")
+            if doc_id:
+                out[doc_id] = doc.get("filename") or ""
+    except Exception:
+        # The map is purely cosmetic — a failed enumeration shouldn't
+        # 500 the action-items listing.
+        logger.debug("Failed to enumerate documents for filename map", exc_info=True)
+    return out
+
+
+def _decorate_action_item(
+    item: dict[str, Any],
+    filename_by_doc: dict[str, str],
+) -> dict[str, Any]:
+    """Attach source_filename to a flat action-item dict."""
+    doc_id = item.get("document_id")
+    return {**item, "source_filename": filename_by_doc.get(doc_id, "") if doc_id else ""}
+
+
+@app.get(
+    "/api/collections/{collection_id}/meetings",
+    response_model=MeetingListResponse,
+    tags=["chat"],
+    summary="List meetings (transcripts with extracted notes) for this collection",
+)
+async def list_meetings_endpoint(
+    collection_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Return a summary row per transcript with extracted meeting notes.
+
+    Backs the Meetings tab top panel. One row per ``meeting_notes`` record;
+    each row carries enough counts for the tab to render a glanceable list
+    without round-tripping for detail.
+    """
+    require_collection_access(collection_id, user_id, required="read")
+    indexer, store = _meeting_notes_store_or_404(collection_id)
+    records = store.list_for_collection(collection_id)
+    filename_by_doc = _filename_lookup(indexer)
+    meetings: list[dict[str, Any]] = []
+    for r in records:
+        action_items = r.get("action_items") or []
+        meetings.append({
+            "document_id": r.get("document_id"),
+            "filename": filename_by_doc.get(r.get("document_id"), "") or None,
+            "extracted_at": r.get("extracted_at"),
+            "client_concerns_count": len(r.get("client_concerns") or []),
+            "decisions_count": len(r.get("decisions") or []),
+            "action_items_count": len(action_items),
+            "open_action_items_count": sum(
+                1 for a in action_items
+                if isinstance(a, dict) and (a.get("status") or "open").lower() == "open"
+            ),
+            "follow_up_questions_count": len(r.get("follow_up_questions") or []),
+            "sentiment_notes": r.get("sentiment_notes"),
+        })
+    return {
+        "collection_id": collection_id,
+        "count": len(meetings),
+        "meetings": meetings,
+    }
+
+
+@app.get(
+    "/api/collections/{collection_id}/meetings/{document_id}",
+    response_model=MeetingDetailResponse,
+    tags=["chat"],
+    summary="Get extracted meeting notes for one transcript",
+)
+async def get_meeting_endpoint(
+    collection_id: str,
+    document_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Return the full structured notes for a single meeting transcript."""
+    require_collection_access(collection_id, user_id, required="read")
+    indexer, store = _meeting_notes_store_or_404(collection_id)
+    record = store.get(document_id)
+    if not record or record.get("collection_id") != collection_id:
+        # Same cross-collection guard as the chat sessions endpoint —
+        # don't leak existence of a document the user can't see.
+        raise HTTPException(status_code=404, detail="Meeting notes not found")
+    filename_by_doc = _filename_lookup(indexer)
+    return {
+        "document_id": record["document_id"],
+        "collection_id": record["collection_id"],
+        "filename": filename_by_doc.get(document_id, "") or None,
+        "extracted_at": record.get("extracted_at"),
+        "client_concerns": record.get("client_concerns") or [],
+        "decisions": record.get("decisions") or [],
+        "action_items": record.get("action_items") or [],
+        "follow_up_questions": record.get("follow_up_questions") or [],
+        "sentiment_notes": record.get("sentiment_notes"),
+    }
+
+
+@app.get(
+    "/api/collections/{collection_id}/action-items",
+    response_model=ActionItemListResponse,
+    tags=["chat"],
+    summary="List action items (transcript-extracted + standalone) for this collection",
+)
+async def list_collection_action_items_endpoint(
+    collection_id: str,
+    status: str | None = "open",
+    assignee: str | None = None,
+    limit: int = 100,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Unified action-item listing — both transcript-extracted and standalone.
+
+    ``status=None`` or ``status="all"`` returns every status. ``assignee`` is
+    a case-insensitive substring match. ``limit`` caps the response size.
+    The earlier ``/meetings/action-items`` endpoint stays as an alias —
+    the Brief modal still calls it; new callers should prefer this URL.
+    """
+    require_collection_access(collection_id, user_id, required="read")
+    indexer, store = _meeting_notes_store_or_404(collection_id)
+    items = store.list_action_items(
+        collection_id,
+        status=None if status in (None, "", "all") else status,
+        assignee=assignee,
+    )
+    filename_by_doc = _filename_lookup(indexer)
+    decorated = [_decorate_action_item(it, filename_by_doc) for it in items[:limit]]
+    return {
+        "collection_id": collection_id,
+        "count": len(decorated),
+        "total_available": len(items),
+        "items": decorated,
+    }
+
+
+@app.post(
+    "/api/collections/{collection_id}/action-items",
+    response_model=ActionItemResponse,
+    status_code=201,
+    tags=["chat"],
+    summary="Create a standalone action item (chat-originated or manual)",
+)
+async def create_action_item_endpoint(
+    collection_id: str,
+    body: CreateActionItemRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Insert a new standalone action item.
+
+    Called from the "Save as action item" button on an assistant chat
+    message and from the Meetings tab's manual create form. Transcript
+    items aren't created here — those come out of the v4.5 extraction
+    pass.
+    """
+    require_collection_access(collection_id, user_id, required="readwrite")
+    indexer, store = _meeting_notes_store_or_404(collection_id)
+    try:
+        row = store.add_action_item(
+            collection_id=collection_id,
+            description=body.description,
+            assignee=body.assignee,
+            due_date=body.due_date,
+            status=body.status,
+            source_kind=body.source_kind,
+            source_session_id=body.source_session_id,
+            source_message_id=body.source_message_id,
+            source_excerpt=body.source_excerpt,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "item_id": row["id"],
+        "origin": row.get("source_kind") or "manual",
+        "description": row["description"],
+        "assignee": row.get("assignee"),
+        "due_date": row.get("due_date"),
+        "status": row["status"],
+        "document_id": None,
+        "source_filename": None,
+        "source_session_id": row.get("source_session_id"),
+        "source_message_id": row.get("source_message_id"),
+        "source_excerpt": row.get("source_excerpt"),
+        "extracted_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _parse_meeting_item_id(item_id: str) -> tuple[str, int] | None:
+    """Decode the synthetic 'meeting:<doc_id>:<idx>' identifier.
+
+    Returns (document_id, index) on success, or None when the string is
+    not a transcript-item id. The doc id is permitted to contain colons —
+    only the trailing token after the *last* colon is the index, and the
+    rest (after the leading 'meeting:' prefix) is the document_id.
+    """
+    if not isinstance(item_id, str) or not item_id.startswith("meeting:"):
+        return None
+    body_part = item_id[len("meeting:"):]
+    sep = body_part.rfind(":")
+    if sep <= 0 or sep >= len(body_part) - 1:
+        return None
+    doc_id = body_part[:sep]
+    try:
+        idx = int(body_part[sep + 1:])
+    except ValueError:
+        return None
+    return doc_id, idx
+
+
+@app.patch(
+    "/api/collections/{collection_id}/action-items/{item_id}",
+    response_model=ActionItemResponse,
+    tags=["chat"],
+    summary="Update a standalone or transcript-extracted action item",
+)
+async def update_action_item_endpoint(
+    collection_id: str,
+    item_id: str,
+    body: UpdateActionItemRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Edit fields on an action item.
+
+    For standalone items (integer ``item_id``) every field is editable.
+    For transcript-extracted items (``item_id`` of the form
+    ``meeting:<doc_id>:<idx>``) only ``status`` is editable in place; other
+    fields belong to the immutable JSON extraction and are silently ignored.
+    """
+    require_collection_access(collection_id, user_id, required="readwrite")
+    indexer, store = _meeting_notes_store_or_404(collection_id)
+    filename_by_doc = _filename_lookup(indexer)
+
+    parsed = _parse_meeting_item_id(item_id)
+    if parsed is not None:
+        doc_id, idx = parsed
+        # Cross-collection guard — ensure the document_id belongs to this collection.
+        record = store.get(doc_id)
+        if not record or record.get("collection_id") != collection_id:
+            raise HTTPException(status_code=404, detail="Action item not found")
+        if body.status is None:
+            # No-op edit on a meeting item — return current state for consistency.
+            current_items = record.get("action_items") or []
+            if idx < 0 or idx >= len(current_items):
+                raise HTTPException(status_code=404, detail="Action item not found")
+            item = current_items[idx]
+            return {
+                "item_id": item_id,
+                "origin": "meeting",
+                "description": item.get("description") or "",
+                "assignee": item.get("assignee"),
+                "due_date": item.get("due_date"),
+                "status": item.get("status") or "open",
+                "document_id": doc_id,
+                "source_filename": filename_by_doc.get(doc_id, "") or None,
+                "source_session_id": None,
+                "source_message_id": None,
+                "source_excerpt": None,
+                "extracted_at": record.get("extracted_at"),
+                "updated_at": None,
+            }
+        try:
+            updated = store.update_meeting_action_item_status(doc_id, idx, body.status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Action item not found")
+        return {
+            "item_id": item_id,
+            "origin": "meeting",
+            "description": updated.get("description") or "",
+            "assignee": updated.get("assignee"),
+            "due_date": updated.get("due_date"),
+            "status": updated.get("status") or "open",
+            "document_id": doc_id,
+            "source_filename": filename_by_doc.get(doc_id, "") or None,
+            "source_session_id": None,
+            "source_message_id": None,
+            "source_excerpt": None,
+            "extracted_at": record.get("extracted_at"),
+            "updated_at": None,
+        }
+
+    # Standalone item path — item_id is the integer primary key.
+    try:
+        numeric_id = int(item_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid action item id")
+    existing = store.get_action_item(numeric_id)
+    if not existing or existing.get("collection_id") != collection_id:
+        raise HTTPException(status_code=404, detail="Action item not found")
+    try:
+        row = store.update_action_item(
+            numeric_id,
+            description=body.description,
+            assignee=body.assignee,
+            due_date=body.due_date,
+            status=body.status,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="Action item not found")
+    return {
+        "item_id": row["id"],
+        "origin": row.get("source_kind") or "manual",
+        "description": row["description"],
+        "assignee": row.get("assignee"),
+        "due_date": row.get("due_date"),
+        "status": row["status"],
+        "document_id": None,
+        "source_filename": None,
+        "source_session_id": row.get("source_session_id"),
+        "source_message_id": row.get("source_message_id"),
+        "source_excerpt": row.get("source_excerpt"),
+        "extracted_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+@app.delete(
+    "/api/collections/{collection_id}/action-items/{item_id}",
+    status_code=204,
+    tags=["chat"],
+    summary="Delete a standalone action item",
+)
+async def delete_action_item_endpoint(
+    collection_id: str,
+    item_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Remove a standalone action item.
+
+    Transcript-extracted items can't be deleted — they live as part of the
+    immutable extraction record. Mark them closed instead.
+    """
+    require_collection_access(collection_id, user_id, required="readwrite")
+    indexer, store = _meeting_notes_store_or_404(collection_id)
+    if _parse_meeting_item_id(item_id) is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Transcript-extracted items can't be deleted; mark them closed.",
+        )
+    try:
+        numeric_id = int(item_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid action item id")
+    existing = store.get_action_item(numeric_id)
+    if not existing or existing.get("collection_id") != collection_id:
+        raise HTTPException(status_code=404, detail="Action item not found")
+    if not store.delete_action_item(numeric_id):
+        raise HTTPException(status_code=404, detail="Action item not found")
+    return None
 
 
 @app.get(
@@ -4683,6 +5139,192 @@ def _build_redaction_footer(
     )
     lines.append("")
     return "\n".join(lines)
+
+
+# ── Chat session persistence (Slice B) ───────────────────────────────────────
+#
+# Server-side mirror of the chat sessions the frontend used to keep only in
+# localStorage. Each session belongs to exactly one Collection; messages are
+# appended in order. The store lives in the per-Collection metadata.db
+# alongside MeetingNotesStore / HoldingsStore so a Collection backup is a
+# single file. See services/chat/session_store.py for schema + semantics.
+#
+# These endpoints intentionally do NOT mutate the running chat engine —
+# /api/chat/stream still drives the actual conversation. The frontend calls
+# these in the background to persist what it just rendered so a refresh on
+# another device picks up the same history.
+
+
+class _ChatSessionCreateBody(BaseModel):
+    title: Optional[str] = None
+    session_id: Optional[str] = None  # honor a client-supplied ID for optimistic UI
+
+
+class _ChatSessionRenameBody(BaseModel):
+    title: str
+
+
+class _ChatMessageCreateBody(BaseModel):
+    role: str
+    content: str
+    metadata: Optional[dict[str, Any]] = None
+
+
+def _get_chat_session_store(collection_id: str):
+    """Resolve the per-Collection ChatSessionStore or 404/422 cleanly."""
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return indexer.vector_store.chat_session_store
+    except AttributeError as exc:
+        # Older Collection indexes (created before Slice B shipped) won't
+        # have the store wired in. Surfacing this as 422 instead of 500 so
+        # the frontend can fall back to localStorage rather than alarm.
+        raise HTTPException(
+            status_code=422,
+            detail="Chat session store unavailable for this collection.",
+        ) from exc
+
+
+@app.get(
+    "/api/collections/{collection_id}/chat/sessions",
+    tags=["chat"],
+    summary="List chat sessions for this collection",
+)
+async def list_chat_sessions_endpoint(
+    collection_id: str,
+    include_archived: bool = False,
+    limit: int = 50,
+    user_id: str = Depends(get_current_user_id),
+):
+    require_collection_access(collection_id, user_id, required="read")
+    store = _get_chat_session_store(collection_id)
+    sessions = store.list_sessions(
+        collection_id,
+        include_archived=include_archived,
+        limit=limit,
+    )
+    return {"collection_id": collection_id, "sessions": sessions}
+
+
+@app.post(
+    "/api/collections/{collection_id}/chat/sessions",
+    tags=["chat"],
+    status_code=201,
+    summary="Create a new chat session",
+)
+async def create_chat_session_endpoint(
+    collection_id: str,
+    body: _ChatSessionCreateBody = Body(default_factory=_ChatSessionCreateBody),
+    user_id: str = Depends(get_current_user_id),
+):
+    require_collection_access(collection_id, user_id, required="readwrite")
+    store = _get_chat_session_store(collection_id)
+    session = store.create_session(
+        collection_id=collection_id,
+        title=body.title,
+        session_id=body.session_id,
+    )
+    return session
+
+
+@app.get(
+    "/api/collections/{collection_id}/chat/sessions/{session_id}",
+    tags=["chat"],
+    summary="Get a chat session with its messages",
+)
+async def get_chat_session_endpoint(
+    collection_id: str,
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    require_collection_access(collection_id, user_id, required="read")
+    store = _get_chat_session_store(collection_id)
+    session = store.get_session(session_id)
+    if not session or session["collection_id"] != collection_id:
+        # Guard against a caller passing a session_id from a different
+        # collection — would otherwise leak existence/title.
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    messages = store.list_messages(session_id)
+    return {**session, "messages": messages}
+
+
+@app.patch(
+    "/api/collections/{collection_id}/chat/sessions/{session_id}",
+    tags=["chat"],
+    summary="Rename a chat session",
+)
+async def rename_chat_session_endpoint(
+    collection_id: str,
+    session_id: str,
+    body: _ChatSessionRenameBody,
+    user_id: str = Depends(get_current_user_id),
+):
+    require_collection_access(collection_id, user_id, required="readwrite")
+    store = _get_chat_session_store(collection_id)
+    existing = store.get_session(session_id)
+    if not existing or existing["collection_id"] != collection_id:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    if not store.rename_session(session_id, body.title):
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return store.get_session(session_id)
+
+
+@app.delete(
+    "/api/collections/{collection_id}/chat/sessions/{session_id}",
+    tags=["chat"],
+    status_code=204,
+    summary="Delete a chat session and its messages",
+)
+async def delete_chat_session_endpoint(
+    collection_id: str,
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    require_collection_access(collection_id, user_id, required="readwrite")
+    store = _get_chat_session_store(collection_id)
+    existing = store.get_session(session_id)
+    if not existing or existing["collection_id"] != collection_id:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    store.delete_session(session_id)
+    return None
+
+
+@app.post(
+    "/api/collections/{collection_id}/chat/sessions/{session_id}/messages",
+    tags=["chat"],
+    status_code=201,
+    summary="Append a message to a chat session",
+)
+async def append_chat_message_endpoint(
+    collection_id: str,
+    session_id: str,
+    body: _ChatMessageCreateBody,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Persist one chat turn into the server-side store.
+
+    Called from the frontend on message finalize (and on user-message send),
+    not by the chat engine itself — the engine's job is still to drive the
+    live SSE stream. This endpoint is the durability layer underneath that.
+    """
+    require_collection_access(collection_id, user_id, required="readwrite")
+    store = _get_chat_session_store(collection_id)
+    existing = store.get_session(session_id)
+    if not existing or existing["collection_id"] != collection_id:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    try:
+        message = store.add_message(
+            session_id=session_id,
+            role=body.role,
+            content=body.content,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return message
 
 
 # ── Note of Record save (R7 — Advisor Desktop UX) ────────────────────────────
@@ -5287,6 +5929,238 @@ async def submit_feedback(req: FeedbackRequest, request: Request) -> FeedbackRes
         ok=bool(result.get("ok")),
         id=result.get("id"),
         error=result.get("error"),
+    )
+
+
+# ─── Weekly digest ───────────────────────────────────────────────────────
+
+
+def _digest_effective_email(user_id: str, prefs: dict) -> Optional[str]:
+    override = (prefs.get("email_override") or "").strip() if prefs else ""
+    if override:
+        return override
+    if user_id and "@" in user_id:
+        return user_id
+    return None
+
+
+def _digest_summary_line(payload) -> str:
+    """One-sentence text summary of what's in the payload, for UI confirmation."""
+    bits: list[str] = []
+    if payload.total_new_action_items:
+        bits.append(f"{payload.total_new_action_items} new action item(s)")
+    if payload.total_aging_action_items:
+        bits.append(f"{payload.total_aging_action_items} aging")
+    n_tlh = sum(len(c.tlh_candidates) for c in payload.collections)
+    if n_tlh:
+        bits.append(f"{n_tlh} tax-loss candidate(s) (${payload.total_tlh_dollars:,.0f})")
+    if not bits:
+        return "No new signals — Finn delivered a 'quiet week' note."
+    return "Summary: " + ", ".join(bits) + "."
+
+
+@app.get(
+    "/api/digest/preferences",
+    response_model=DigestPreferencesResponse,
+    summary="Current user's weekly-digest preferences",
+    tags=["digest"],
+)
+async def get_digest_preferences(
+    user_id: str = Depends(get_current_user_id),
+) -> DigestPreferencesResponse:
+    from services.app_database import app_db
+    from services.scheduler import DEFAULT_TIMEZONE
+
+    raw = app_db.get_digest_preferences(user_id)
+    return DigestPreferencesResponse(
+        preferences=DigestPreferences(
+            enabled=bool(raw.get("enabled")),
+            weekday=int(raw.get("weekday", 4)),
+            hour=int(raw.get("hour", 16)),
+            email_override=raw.get("email_override"),
+        ),
+        effective_email=_digest_effective_email(user_id, raw),
+        scheduler_timezone=DEFAULT_TIMEZONE,
+        last_sent_at=raw.get("last_sent_at"),
+    )
+
+
+@app.put(
+    "/api/digest/preferences",
+    response_model=DigestPreferencesResponse,
+    summary="Update the current user's weekly-digest preferences",
+    tags=["digest"],
+)
+async def update_digest_preferences(
+    body: DigestPreferences,
+    user_id: str = Depends(get_current_user_id),
+) -> DigestPreferencesResponse:
+    from services.app_database import app_db
+    from services.scheduler import DEFAULT_TIMEZONE
+
+    saved = app_db.set_digest_preferences(user_id, body.model_dump())
+    return DigestPreferencesResponse(
+        preferences=DigestPreferences(
+            enabled=bool(saved.get("enabled")),
+            weekday=int(saved.get("weekday", 4)),
+            hour=int(saved.get("hour", 16)),
+            email_override=saved.get("email_override"),
+        ),
+        effective_email=_digest_effective_email(user_id, saved),
+        scheduler_timezone=DEFAULT_TIMEZONE,
+        last_sent_at=saved.get("last_sent_at"),
+    )
+
+
+@app.post(
+    "/api/digest/preview",
+    response_model=DigestPreviewResponse,
+    summary="Send a sample weekly digest to the current user right now",
+    tags=["digest"],
+)
+async def send_digest_preview(
+    user_id: str = Depends(get_current_user_id),
+) -> DigestPreviewResponse:
+    """Computes and sends the user's weekly digest immediately so they can see
+    what their scheduled email will look like. Always tagged `[Preview]` in
+    the subject. Does *not* update ``last_sent_at`` — previews don't count
+    toward the once-per-week idempotency.
+    """
+    from services.digest import send_digest_for_user
+
+    result = send_digest_for_user(user_id, is_preview=True)
+    if result.get("ok"):
+        payload = result.get("payload")
+        summary = _digest_summary_line(payload) if payload is not None else None
+        return DigestPreviewResponse(
+            ok=True,
+            id=result.get("id"),
+            recipient=result.get("recipient"),
+            summary=summary,
+        )
+    return DigestPreviewResponse(
+        ok=False,
+        error=result.get("error"),
+        recipient=result.get("recipient"),
+    )
+
+
+# ─── Morning brief ───────────────────────────────────────────────────────
+
+
+def _morning_brief_effective_email(user_id: str, prefs: dict) -> Optional[str]:
+    override = (prefs.get("email_override") or "").strip() if prefs else ""
+    if override:
+        return override
+    if user_id and "@" in user_id:
+        return user_id
+    return None
+
+
+def _morning_brief_summary_line(payload) -> str:
+    """One-sentence text summary of what's in the payload, for UI confirmation."""
+    bits: list[str] = []
+    if payload.total_overdue:
+        bits.append(f"{payload.total_overdue} overdue")
+    if payload.total_due_today:
+        bits.append(f"{payload.total_due_today} due today")
+    if payload.total_due_this_week:
+        bits.append(f"{payload.total_due_this_week} due this week")
+    if payload.total_fresh:
+        bits.append(f"{payload.total_fresh} fresh from overnight")
+    n_tlh = sum(len(c.tlh_candidates) for c in payload.collections)
+    if n_tlh:
+        bits.append(f"{n_tlh} tax-loss candidate(s) (${payload.total_tlh_dollars:,.0f})")
+    if payload.total_new_documents:
+        bits.append(f"{payload.total_new_documents} new document(s)")
+    if not bits:
+        return "Quiet day — Finn delivered a 'nothing pressing' note."
+    return "Summary: " + ", ".join(bits) + "."
+
+
+@app.get(
+    "/api/morning-brief/preferences",
+    response_model=MorningBriefPreferencesResponse,
+    summary="Current user's morning-brief preferences",
+    tags=["morning-brief"],
+)
+async def get_morning_brief_preferences(
+    user_id: str = Depends(get_current_user_id),
+) -> MorningBriefPreferencesResponse:
+    from services.app_database import app_db
+    from services.scheduler import DEFAULT_TIMEZONE
+
+    raw = app_db.get_morning_brief_preferences(user_id)
+    return MorningBriefPreferencesResponse(
+        preferences=MorningBriefPreferences(
+            enabled=bool(raw.get("enabled")),
+            hour=int(raw.get("hour", 7)),
+            weekdays_only=bool(raw.get("weekdays_only", True)),
+            email_override=raw.get("email_override"),
+        ),
+        effective_email=_morning_brief_effective_email(user_id, raw),
+        scheduler_timezone=DEFAULT_TIMEZONE,
+        last_sent_at=raw.get("last_sent_at"),
+    )
+
+
+@app.put(
+    "/api/morning-brief/preferences",
+    response_model=MorningBriefPreferencesResponse,
+    summary="Update the current user's morning-brief preferences",
+    tags=["morning-brief"],
+)
+async def update_morning_brief_preferences(
+    body: MorningBriefPreferences,
+    user_id: str = Depends(get_current_user_id),
+) -> MorningBriefPreferencesResponse:
+    from services.app_database import app_db
+    from services.scheduler import DEFAULT_TIMEZONE
+
+    saved = app_db.set_morning_brief_preferences(user_id, body.model_dump())
+    return MorningBriefPreferencesResponse(
+        preferences=MorningBriefPreferences(
+            enabled=bool(saved.get("enabled")),
+            hour=int(saved.get("hour", 7)),
+            weekdays_only=bool(saved.get("weekdays_only", True)),
+            email_override=saved.get("email_override"),
+        ),
+        effective_email=_morning_brief_effective_email(user_id, saved),
+        scheduler_timezone=DEFAULT_TIMEZONE,
+        last_sent_at=saved.get("last_sent_at"),
+    )
+
+
+@app.post(
+    "/api/morning-brief/preview",
+    response_model=MorningBriefPreviewResponse,
+    summary="Send a sample morning brief to the current user right now",
+    tags=["morning-brief"],
+)
+async def send_morning_brief_preview(
+    user_id: str = Depends(get_current_user_id),
+) -> MorningBriefPreviewResponse:
+    """Computes and sends the user's morning brief immediately so they can see
+    what their scheduled email will look like. Always tagged `[Preview]` in
+    the subject. Does *not* update ``last_sent_at`` — previews don't count
+    toward the once-per-day idempotency.
+    """
+    from services.morning_brief import send_morning_brief_for_user
+
+    result = send_morning_brief_for_user(user_id, is_preview=True)
+    if result.get("ok"):
+        payload = result.get("payload")
+        summary = _morning_brief_summary_line(payload) if payload is not None else None
+        return MorningBriefPreviewResponse(
+            ok=True,
+            id=result.get("id"),
+            recipient=result.get("recipient"),
+            summary=summary,
+        )
+    return MorningBriefPreviewResponse(
+        ok=False,
+        error=result.get("error"),
+        recipient=result.get("recipient"),
     )
 
 

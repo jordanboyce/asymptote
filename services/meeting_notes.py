@@ -253,9 +253,17 @@ class MeetingNotesStore:
     Shares the Collection's ``metadata.db`` file with :class:`MetadataStore`
     (chunks/documents) and :class:`HoldingsStore` (typed brokerage tables);
     each store owns its own tables.
+
+    Action items live in two places: the ``meeting_notes.action_items`` JSON
+    column (items extracted from transcripts, immutable as a set but with
+    per-item status editable in place by index), and the ``action_items``
+    table (standalone items the advisor created from chat or from the
+    Meetings tab). :meth:`list_action_items` unifies both into one flat
+    response with an ``origin`` field per row so callers can tell them apart.
     """
 
     TABLE = "meeting_notes"
+    ACTION_ITEMS_TABLE = "action_items"
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
@@ -281,6 +289,26 @@ class MeetingNotesStore:
             conn.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{self.TABLE}_collection "
                 f"ON {self.TABLE}(collection_id)"
+            )
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {self.ACTION_ITEMS_TABLE} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    collection_id TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    assignee TEXT,
+                    due_date TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    source_kind TEXT NOT NULL DEFAULT 'manual',
+                    source_session_id TEXT,
+                    source_message_id TEXT,
+                    source_excerpt TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{self.ACTION_ITEMS_TABLE}_collection "
+                f"ON {self.ACTION_ITEMS_TABLE}(collection_id, status)"
             )
             conn.commit()
 
@@ -370,27 +398,269 @@ class MeetingNotesStore:
     ) -> list[dict[str, Any]]:
         """Flatten action items across every meeting in a collection.
 
+        Returns a unified list combining transcript-extracted items (from the
+        ``meeting_notes.action_items`` JSON column) and standalone items
+        (from the ``action_items`` table). Each row carries an ``origin`` of
+        ``"meeting"`` or ``"chat"``/``"manual"`` and an ``item_id`` that
+        identifies it for status updates — a synthetic ``meeting:<doc_id>:<idx>``
+        for transcript-extracted items, the integer primary key for
+        standalone items.
+
         Filter semantics: ``status`` defaults to ``"open"``; pass ``None`` for
         all statuses. ``assignee`` is a case-insensitive substring match.
         """
-        records = self.list_for_collection(collection_id)
-        flat: list[dict[str, Any]] = []
         assignee_norm = assignee.strip().lower() if assignee else None
         status_norm = status.strip().lower() if status else None
-        for record in records:
-            for item in record.get("action_items") or []:
+
+        def assignee_matches(value: Any) -> bool:
+            if not assignee_norm:
+                return True
+            return assignee_norm in (value or "").lower()
+
+        flat: list[dict[str, Any]] = []
+
+        # Transcript-extracted items (JSON column on meeting_notes)
+        for record in self.list_for_collection(collection_id):
+            for idx, item in enumerate(record.get("action_items") or []):
                 if status_norm and (item.get("status") or "").lower() != status_norm:
                     continue
-                if assignee_norm:
-                    ai_assignee = (item.get("assignee") or "").lower()
-                    if assignee_norm not in ai_assignee:
-                        continue
+                if not assignee_matches(item.get("assignee")):
+                    continue
                 flat.append({
                     **item,
+                    "item_id": f"meeting:{record['document_id']}:{idx}",
+                    "origin": "meeting",
                     "document_id": record["document_id"],
                     "extracted_at": record["extracted_at"],
                 })
+
+        # Standalone items (action_items table)
+        for row in self._list_standalone_action_items(
+            collection_id,
+            status=status_norm,
+            assignee=assignee_norm,
+        ):
+            flat.append({
+                "item_id": row["id"],
+                "origin": row["source_kind"] or "manual",
+                "description": row["description"],
+                "assignee": row["assignee"],
+                "due_date": row["due_date"],
+                "status": row["status"],
+                "document_id": None,
+                "extracted_at": row["created_at"],
+                "source_session_id": row["source_session_id"],
+                "source_message_id": row["source_message_id"],
+                "source_excerpt": row["source_excerpt"],
+                "updated_at": row["updated_at"],
+            })
+
         return flat
+
+    # ─── Standalone action items (chat-originated / manual) ────────────────
+
+    def add_action_item(
+        self,
+        *,
+        collection_id: str,
+        description: str,
+        assignee: Optional[str] = None,
+        due_date: Optional[str] = None,
+        status: str = "open",
+        source_kind: str = "manual",
+        source_session_id: Optional[str] = None,
+        source_message_id: Optional[str] = None,
+        source_excerpt: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Insert a standalone action item and return it.
+
+        Standalone items are advisor-created from outside a transcript —
+        primarily the "Save as action item" affordance on assistant chat
+        messages, plus future manual-create UIs. Source metadata lets the UI
+        link the item back to the chat turn that motivated it.
+        """
+        clean_desc = (description or "").strip()
+        if not clean_desc:
+            raise ValueError("description is required")
+        now = datetime.now(timezone.utc).isoformat()
+        clean_status = (status or "open").strip().lower() or "open"
+        clean_kind = (source_kind or "manual").strip().lower() or "manual"
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                f"""
+                INSERT INTO {self.ACTION_ITEMS_TABLE} (
+                    collection_id, description, assignee, due_date, status,
+                    source_kind, source_session_id, source_message_id,
+                    source_excerpt, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    collection_id,
+                    clean_desc,
+                    _clean_optional_str(assignee),
+                    _clean_optional_str(due_date),
+                    clean_status,
+                    clean_kind,
+                    _clean_optional_str(source_session_id),
+                    _clean_optional_str(source_message_id),
+                    _clean_optional_str(source_excerpt),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            new_id = cur.lastrowid
+        return self.get_action_item(new_id) or {}
+
+    def get_action_item(self, item_id: int) -> Optional[dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                f"SELECT * FROM {self.ACTION_ITEMS_TABLE} WHERE id = ?",
+                (int(item_id),),
+            ).fetchone()
+            return _standalone_row_to_dict(row) if row else None
+
+    def update_action_item(
+        self,
+        item_id: int,
+        *,
+        description: Optional[str] = None,
+        assignee: Optional[str] = None,
+        due_date: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Patch the supplied fields. Returns the new row, or None if absent.
+
+        Pass any field as the empty string to clear it (assignee="" → NULL).
+        The advisor can mark items closed/open or edit description/assignee/
+        due date from the Meetings tab inline editor.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+        if description is not None:
+            clean = description.strip()
+            if not clean:
+                raise ValueError("description cannot be empty")
+            sets.append("description = ?")
+            params.append(clean)
+        if assignee is not None:
+            sets.append("assignee = ?")
+            params.append(_clean_optional_str(assignee))
+        if due_date is not None:
+            sets.append("due_date = ?")
+            params.append(_clean_optional_str(due_date))
+        if status is not None:
+            clean_status = (status or "").strip().lower()
+            if clean_status not in {"open", "closed"}:
+                raise ValueError("status must be 'open' or 'closed'")
+            sets.append("status = ?")
+            params.append(clean_status)
+        if not sets:
+            return self.get_action_item(item_id)
+        sets.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+        params.append(int(item_id))
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                f"UPDATE {self.ACTION_ITEMS_TABLE} SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return None
+        return self.get_action_item(item_id)
+
+    def delete_action_item(self, item_id: int) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                f"DELETE FROM {self.ACTION_ITEMS_TABLE} WHERE id = ?",
+                (int(item_id),),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def update_meeting_action_item_status(
+        self,
+        document_id: str,
+        index: int,
+        status: str,
+    ) -> Optional[dict[str, Any]]:
+        """Edit a transcript-extracted action item's status in place.
+
+        Transcript items live as a JSON list inside ``meeting_notes.action_items``;
+        the advisor needs to be able to close them off without losing the
+        rest of the extraction. Rewrites the JSON column and returns the
+        updated item dict, or None if document_id / index don't resolve.
+        """
+        clean_status = (status or "").strip().lower()
+        if clean_status not in {"open", "closed"}:
+            raise ValueError("status must be 'open' or 'closed'")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                f"SELECT action_items, raw_json FROM {self.TABLE} WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                items = json.loads(row["action_items"]) if row["action_items"] else []
+            except json.JSONDecodeError:
+                items = []
+            if not isinstance(items, list) or index < 0 or index >= len(items):
+                return None
+            item = items[index]
+            if not isinstance(item, dict):
+                return None
+            item["status"] = clean_status
+            items[index] = item
+            new_action_items = json.dumps(items)
+            # Mirror into the raw_json blob so a future re-read via raw_json
+            # sees the same status. The blob is the original extraction
+            # envelope, used for audit; updating it keeps the two columns
+            # consistent.
+            try:
+                raw_payload = json.loads(row["raw_json"]) if row["raw_json"] else {}
+            except json.JSONDecodeError:
+                raw_payload = {}
+            if isinstance(raw_payload, dict):
+                raw_payload["action_items"] = items
+                new_raw = json.dumps(raw_payload)
+            else:
+                new_raw = row["raw_json"]
+            conn.execute(
+                f"UPDATE {self.TABLE} SET action_items = ?, raw_json = ? "
+                f"WHERE document_id = ?",
+                (new_action_items, new_raw, document_id),
+            )
+            conn.commit()
+            return {**item, "document_id": document_id, "index": index}
+
+    def _list_standalone_action_items(
+        self,
+        collection_id: str,
+        *,
+        status: Optional[str] = None,
+        assignee: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["collection_id = ?"]
+        params: list[Any] = [collection_id]
+        if status:
+            clauses.append("LOWER(status) = ?")
+            params.append(status)
+        if assignee:
+            clauses.append("LOWER(COALESCE(assignee, '')) LIKE ?")
+            params.append(f"%{assignee}%")
+        sql = (
+            f"SELECT * FROM {self.ACTION_ITEMS_TABLE} "
+            f"WHERE {' AND '.join(clauses)} "
+            f"ORDER BY created_at DESC"
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
 
     def has_notes(self, document_id: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
@@ -416,6 +686,23 @@ def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _standalone_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "collection_id": row["collection_id"],
+        "description": row["description"],
+        "assignee": row["assignee"],
+        "due_date": row["due_date"],
+        "status": row["status"],
+        "source_kind": row["source_kind"],
+        "source_session_id": row["source_session_id"],
+        "source_message_id": row["source_message_id"],
+        "source_excerpt": row["source_excerpt"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
 def _json_loads_list(blob: Any) -> list:
     if not blob:
         return []
@@ -424,6 +711,76 @@ def _json_loads_list(blob: Any) -> list:
     except (TypeError, json.JSONDecodeError):
         return []
     return data if isinstance(data, list) else []
+
+
+# ─── Brief integration ─────────────────────────────────────────────────────
+
+def build_meeting_context(
+    *,
+    meeting_notes_store: "MeetingNotesStore",
+    metadata_store: Any,
+    collection_id: str,
+    max_action_items: int = 20,
+    max_follow_ups: int = 10,
+) -> dict[str, Any]:
+    """Assemble the meeting-side context block for a pre-meeting brief.
+
+    The pre-meeting brief in :mod:`services.brief_generator` is portfolio-only
+    by design (no LLM cost). This helper returns the complementary block the
+    advisor wants alongside it: what the client said last time, what's still
+    open, and which questions the advisor owes research on. The brief endpoint
+    merges this into the response under ``meeting_context``.
+
+    Follow-up question semantic: the brief is "what do I need before the next
+    meeting" — so we surface follow-ups from the *most recent* meeting only.
+    Older follow-ups are assumed to have been resolved or rolled forward; the
+    advisor will see them again if they were carried into the latest meeting's
+    notes.
+
+    Returns an empty-but-well-formed dict when no meeting notes exist for the
+    Collection, so the frontend can render the section unconditionally.
+    """
+    records = meeting_notes_store.list_for_collection(collection_id)
+
+    filename_by_doc: dict[str, str] = {}
+    try:
+        for doc in metadata_store.list_documents():
+            doc_id = doc.get("document_id")
+            if doc_id:
+                filename_by_doc[doc_id] = doc.get("filename") or ""
+    except Exception as exc:
+        logger.debug("Could not enumerate documents for filename map: %s", exc)
+
+    last_meeting: Optional[dict[str, Any]] = None
+    if records:
+        latest = records[0]  # list_for_collection already orders DESC by extracted_at
+        last_meeting = {
+            "document_id": latest.get("document_id"),
+            "filename": filename_by_doc.get(latest.get("document_id"), ""),
+            "extracted_at": latest.get("extracted_at"),
+            "client_concerns": list(latest.get("client_concerns") or []),
+            "decisions": list(latest.get("decisions") or []),
+            "follow_up_questions": list(latest.get("follow_up_questions") or []),
+            "sentiment_notes": latest.get("sentiment_notes"),
+        }
+
+    open_items = meeting_notes_store.list_action_items(collection_id, status="open")
+    decorated_items = [
+        {**item, "source_filename": filename_by_doc.get(item.get("document_id"), "")}
+        for item in open_items[:max_action_items]
+    ]
+
+    open_follow_ups: list[str] = []
+    if last_meeting:
+        open_follow_ups = last_meeting["follow_up_questions"][:max_follow_ups]
+
+    return {
+        "meetings_count": len(records),
+        "last_meeting": last_meeting,
+        "open_action_items": decorated_items,
+        "total_open_action_items": len(open_items),
+        "open_follow_up_questions": open_follow_ups,
+    }
 
 
 # ─── Post-indexing trigger (best-effort) ────────────────────────────────────

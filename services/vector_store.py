@@ -11,6 +11,7 @@ from services.metadata_store import MetadataStore
 from services.bm25_service import BM25Index
 from services.financial.holdings_store import HoldingsStore
 from services.meeting_notes import MeetingNotesStore
+from services.chat.session_store import ChatSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,13 @@ class VectorStore:
         # Per-Collection structured meeting notes (v4.5). Same metadata.db;
         # extraction runs after a Whisper-transcribed document indexes.
         self.meeting_notes_store = MeetingNotesStore(self.metadata_db_path)
+
+        # Per-Collection chat session + message persistence (Slice B).
+        # Migrates chat history off browser localStorage so it survives
+        # cache clears, syncs across devices, and is reachable to other
+        # surfaces (notably the Meeting Brief, which now wants to surface
+        # recent advisor questions next to the portfolio data).
+        self.chat_session_store = ChatSessionStore(self.metadata_db_path)
 
         # BM25 keyword search index
         self.bm25_index = BM25Index(self.bm25_db_path)

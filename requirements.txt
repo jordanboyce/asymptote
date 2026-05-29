@@ -55,5 +55,8 @@ yfinance>=0.2.40
 # MCP server
 mcp>=1.9.4
 
+# Embedded job scheduler (weekly advisor digest in services.digest)
+APScheduler>=3.10.0
+
 # Testing
 pytest>=8.0.0

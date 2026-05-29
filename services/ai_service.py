@@ -1323,6 +1323,45 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
         raise ValueError(f"Unknown provider: {provider_name}")
 
 
+def _parse_followup_lines(text: str, max_questions: int) -> List[str]:
+    """Clean a model's newline-delimited follow-up output into a short list.
+
+    Strips list markers ("- ", "* ", "1. ", "2) "), surrounding quotes, an
+    echoed "Follow-up questions:" header, and case-insensitive duplicates.
+    Caps the result at ``max_questions``.
+    """
+    out: List[str] = []
+    seen: set = set()
+    for raw in (text or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        # Strip a leading bullet or "<n>." / "<n>)" enumerator.
+        if s[:2] in ("- ", "* ", "• "):
+            s = s[2:].strip()
+        else:
+            i = 0
+            while i < len(s) and s[i].isdigit():
+                i += 1
+            if 0 < i < len(s) and s[i] in ".)" and s[i + 1:i + 2] == " ":
+                s = s[i + 2:].strip()
+        s = s.strip('"').strip("'").strip()
+        if not s:
+            continue
+        if s.lower().rstrip(":") in (
+            "follow-up questions", "followup questions", "related", "questions",
+        ):
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= max_questions:
+            break
+    return out
+
+
 class AIService:
     """Provider-agnostic AI service for search enhancements."""
 
@@ -1436,6 +1475,67 @@ class AIService:
             logger.warning(f"Query reformulation failed, using original: {e}")
 
         return latest_question
+
+    def suggest_followups(
+        self,
+        question: str,
+        answer: str,
+        *,
+        kind: str = "general",
+        max_questions: int = 3,
+    ) -> List[str]:
+        """Suggest follow-up questions the user is most likely to ask next.
+
+        Perplexity-style "Related" prompts: after an answer lands, surface a
+        few next questions so the user can keep pulling the thread without
+        composing from scratch. Runs on ``fast_model`` (Haiku 4.5 on
+        Anthropic) because these are throwaway suggestions, not analysis.
+
+        Returns ``[]`` on empty input or any failure — the feature is purely
+        additive and must never break or delay a chat turn.
+
+        For ``financial``/``mixed`` collections the questions keep Finn's
+        advisor framing (third person about *the client's* portfolio), so a
+        clicked suggestion reads naturally when it becomes the next message.
+        """
+        if not (answer or "").strip():
+            return []
+
+        if kind in ("financial", "mixed"):
+            framing_rule = (
+                "- The user is a financial advisor analyzing a CLIENT's portfolio. "
+                'Phrase each question in the third person about "the client\'s" '
+                'holdings, accounts, or positions — never "your portfolio".\n'
+            )
+        else:
+            framing_rule = ""
+
+        prompt = (
+            "Suggest the most useful follow-up questions the user might ask "
+            "next, based on the question and answer below.\n\n"
+            "Rules:\n"
+            f"- Output at most {max_questions} questions, one per line.\n"
+            "- No numbering, no bullets, no preamble — just the questions, each "
+            "on its own line.\n"
+            "- Each must be self-contained (resolve pronouns and references) and "
+            "answerable from the same documents or data.\n"
+            "- Keep each under 12 words.\n"
+            "- Suggest genuine next steps, not rephrasings of the original "
+            "question.\n"
+            f"{framing_rule}"
+            "\n"
+            f"Question: {question}\n"
+            f"Answer: {answer[:2000]}\n\n"
+            "Follow-up questions:"
+        )
+
+        try:
+            response = self.provider.complete(prompt, max_tokens=200, model=self.fast_model)
+        except Exception as e:
+            logger.warning(f"Follow-up suggestion failed: {e}")
+            return []
+
+        return _parse_followup_lines(response.get("text", ""), max_questions)
 
     def synthesize_results(
         self,

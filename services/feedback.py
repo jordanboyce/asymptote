@@ -17,10 +17,9 @@ from html import escape
 from typing import Any
 
 from config import settings
+from services.email import send_email
 
 logger = logging.getLogger(__name__)
-
-RESEND_ENDPOINT = "https://api.resend.com/emails"
 
 # Caps on diagnostic payload size pulled into the email. Keeps reports
 # small enough that Resend won't reject them and reviewers don't drown.
@@ -178,8 +177,6 @@ def _build_email_body(ctx: FeedbackContext, diag: dict[str, Any] | None) -> tupl
 
 def send_feedback(ctx: FeedbackContext) -> dict[str, Any]:
     """Send a feedback report. Returns {ok, id?, error?}."""
-    if not settings.resend_api_key:
-        return {"ok": False, "error": "Email delivery not configured (RESEND_API_KEY missing)."}
     if not settings.feedback_email_to:
         return {"ok": False, "error": "Email delivery not configured (FEEDBACK_EMAIL_TO missing)."}
 
@@ -189,34 +186,13 @@ def send_feedback(ctx: FeedbackContext) -> dict[str, Any]:
     subject_hint = (ctx.description.strip().splitlines() or [""])[0][:80] or "Issue report"
     subject = f"[Finn feedback] {subject_hint}"
 
-    payload = {
-        "from": settings.feedback_email_from or "Finn Feedback <onboarding@resend.dev>",
-        "to": [settings.feedback_email_to],
-        "subject": subject,
-        "text": text_body,
-        "html": html_body,
-    }
-
-    import httpx
-
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.post(
-                RESEND_ENDPOINT,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.resend_api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
-        if resp.status_code >= 400:
-            logger.error(
-                "Resend rejected feedback email (status=%s): %s",
-                resp.status_code, resp.text[:500],
-            )
-            return {"ok": False, "error": f"Email delivery failed (HTTP {resp.status_code})."}
-        data = resp.json() if resp.content else {}
-        return {"ok": True, "id": data.get("id")}
-    except Exception as e:
-        logger.exception("Feedback delivery failed")
-        return {"ok": False, "error": f"Email delivery failed: {e}"}
+    result = send_email(
+        to=settings.feedback_email_to,
+        subject=subject,
+        html=html_body,
+        text=text_body,
+        from_addr=settings.feedback_email_from or "Finn Feedback <onboarding@resend.dev>",
+    )
+    if result.ok:
+        return {"ok": True, "id": result.id}
+    return {"ok": False, "error": result.error}

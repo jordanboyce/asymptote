@@ -20,7 +20,6 @@ from services.indexer_manager import indexer_manager
 from services.structured_chat import (
     build_structured_context,
     collect_structured_tables,
-    render_table_as_jsonl,
     render_table_as_rows,
 )
 from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
@@ -902,15 +901,14 @@ def search_collection(
                         "columns": rendered["columns"],
                         "rows": rendered["rows"],
                     }
-                    # Keep rows_jsonl as a fallback for large inlined tables
-                    # where the list-of-lists representation would bloat the
-                    # response (very wide columns × many rows).
-                    if len(rendered["rows"]) > 50:
-                        jsonl = render_table_as_jsonl(
-                            store, t, max_rows=resolved_inline_row_threshold
-                        )
-                        if jsonl:
-                            entry["rows_jsonl"] = jsonl
+                    # Previously emitted `rows_jsonl` here as a "fallback" for
+                    # tables > 50 rows, but it was sent *in addition to* `rows`
+                    # — doubling the payload. JSONL is also strictly larger
+                    # than list-of-lists (repeats every column name on every
+                    # row), so it never made the response smaller. A 97-row
+                    # × 13-column holdings table easily blew past Anthropic's
+                    # 30k input-tokens/min limit on a single search call.
+                    # `columns` + `rows` is enough for the model.
                     structured_tables_payload.append(entry)
         except Exception as e:
             logger.warning(f"MCP search_collection: structured context failed: {e}")
@@ -985,13 +983,12 @@ def search_collection(
             "The collection contains CSV/XLSX tables whose FULL contents are "
             "included above in `structured_tables`. Each entry has `columns` "
             "(display headers) and `rows` (list of lists, same order as "
-            "`columns`); larger tables may additionally carry `rows_jsonl` as "
-            "a JSONL fallback. For any numeric, aggregation, sum, count, "
-            "average, filter, ranking, or date-range question about these "
-            "files, answer DIRECTLY and EXCLUSIVELY from those rows — the "
-            "chunk excerpts in `results` are truncated and must not be used "
-            "for numeric reasoning. Chunks for fully-inlined files have "
-            "already been removed from `results`."
+            "`columns`). For any numeric, aggregation, sum, count, average, "
+            "filter, ranking, or date-range question about these files, "
+            "answer DIRECTLY and EXCLUSIVELY from those rows — the chunk "
+            "excerpts in `results` are truncated and must not be used for "
+            "numeric reasoning. Chunks for fully-inlined files have already "
+            "been removed from `results`."
         )
 
     if resolved_include_sources:

@@ -763,6 +763,18 @@
                     <Copy v-else :size="11" />
                     <span class="text-xs">{{ copiedMessageIndex === index ? 'Copied' : 'Copy' }}</span>
                   </button>
+                  <button
+                    v-if="msg.content"
+                    class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 text-base-content/50 hover:text-primary gap-1"
+                    :class="{ 'text-success': savedActionItemIndex === index }"
+                    :title="savedActionItemIndex === index ? 'Saved' : 'Save as action item'"
+                    :aria-label="savedActionItemIndex === index ? 'Action item saved' : 'Save this answer as an action item'"
+                    @click="openSaveActionItemModal(msg, index)"
+                  >
+                    <Check v-if="savedActionItemIndex === index" :size="11" class="text-success" />
+                    <CheckSquare v-else :size="11" />
+                    <span class="text-xs">{{ savedActionItemIndex === index ? 'Saved' : 'Save as action item' }}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -773,6 +785,30 @@
                 <FileText :size="12" />
                 {{ msg.sources.length }} source{{ msg.sources.length !== 1 ? 's' : '' }} retrieved
               </span>
+            </div>
+
+            <!-- Follow-up suggestions — only under the most recent answer, to
+                 keep the "what next" prompt where it's useful without
+                 cluttering every prior turn. -->
+            <div
+              v-if="!msg.streaming && index === messages.length - 1 && msg.followups && msg.followups.length > 0"
+              class="ml-9 mt-1"
+            >
+              <div class="flex items-center gap-1 text-xs text-base-content/40 mb-1.5">
+                <Sparkles :size="12" class="text-primary/70" />
+                Related
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  v-for="(q, qi) in msg.followups"
+                  :key="`fu-${qi}`"
+                  class="btn btn-xs btn-outline normal-case font-normal"
+                  :disabled="loading"
+                  @click="askFollowup(q)"
+                >
+                  {{ q }}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -934,6 +970,81 @@
         <p v-else class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line</p>
       </div>
 
+      <!-- Save as action item modal (Slice C) -->
+      <div
+        v-if="showActionItemModal"
+        class="modal modal-open"
+        role="dialog"
+        aria-labelledby="save-action-item-title"
+      >
+        <div class="modal-box max-w-md">
+          <h3 id="save-action-item-title" class="font-semibold text-base mb-3 flex items-center gap-2">
+            <CheckSquare :size="16" class="text-primary" />
+            Save as action item
+          </h3>
+          <form @submit.prevent="submitSaveActionItem" class="flex flex-col gap-3">
+            <label class="form-control">
+              <span class="label-text text-xs mb-1">Description</span>
+              <textarea
+                v-model="actionItemDescription"
+                class="textarea textarea-bordered textarea-sm w-full"
+                rows="3"
+                placeholder="What needs to happen?"
+                required
+                maxlength="500"
+                autofocus
+              ></textarea>
+            </label>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="form-control">
+                <span class="label-text text-xs mb-1">Assignee</span>
+                <input
+                  v-model="actionItemAssignee"
+                  type="text"
+                  class="input input-bordered input-sm"
+                  placeholder="advisor / client / name"
+                  maxlength="80"
+                />
+              </label>
+              <label class="form-control">
+                <span class="label-text text-xs mb-1">Due date</span>
+                <input
+                  v-model="actionItemDueDate"
+                  type="text"
+                  class="input input-bordered input-sm"
+                  placeholder="2026-06-15 or 'next meeting'"
+                  maxlength="80"
+                />
+              </label>
+            </div>
+            <div v-if="actionItemExcerpt" class="text-[11px] text-base-content/55 italic border-l border-base-300 pl-2 line-clamp-3">
+              From: {{ actionItemExcerpt }}
+            </div>
+            <div v-if="actionItemError" class="alert alert-error text-xs py-2">
+              {{ actionItemError }}
+            </div>
+            <div class="modal-action mt-1">
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                @click="closeSaveActionItemModal"
+                :disabled="actionItemSaving"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                class="btn btn-primary btn-sm"
+                :disabled="actionItemSaving || !actionItemDescription.trim()"
+              >
+                {{ actionItemSaving ? 'Saving…' : 'Save' }}
+              </button>
+            </div>
+          </form>
+        </div>
+        <div class="modal-backdrop" @click="closeSaveActionItemModal"></div>
+      </div>
+
   </div>
 </template>
 
@@ -955,10 +1066,11 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock, Mic, TrendingDown } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, CheckSquare, ShieldCheck, ShieldAlert, Lock, Mic, TrendingDown } from 'lucide-vue-next'
 import { useSpeechRecognition } from '../composables/useSpeechRecognition.js'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
+import { createActionItem } from '../utils/meetingsApi'
 import SlashCommandPicker from './SlashCommandPicker.vue'
 import { runSlashCommand, isSlashCommand, isStreamingSlashCommand, streamSlashCommand } from '../utils/slashCommands'
 import {
@@ -1370,8 +1482,105 @@ const copyMessage = async (msg, index) => {
   }
 }
 
+// ── Save assistant turn as action item (Slice C) ─────────────────────────
+//
+// Opens an inline modal pre-populated with a short excerpt of the assistant
+// message and posts to /api/collections/{id}/action-items. The created item
+// then shows up in the Meetings tab's "Action items" panel and in the
+// BriefModal meeting-context section, alongside transcript-extracted items.
+const savedActionItemIndex = ref(null)
+let saveResetTimer = null
+
+const showActionItemModal = ref(false)
+const actionItemDescription = ref('')
+const actionItemAssignee = ref('')
+const actionItemDueDate = ref('')
+const actionItemExcerpt = ref('')
+const actionItemMessageIndex = ref(null)
+const actionItemSaving = ref(false)
+const actionItemError = ref('')
+
+const stripMarkdown = (text) => {
+  if (!text) return ''
+  // Quick-and-dirty markdown → plain. Good enough for an action-item
+  // description (no need to pull in turndown or marked); the user can
+  // edit before saving.
+  return text
+    .replace(/```[\s\S]*?```/g, '')                 // code fences
+    .replace(/`([^`]+)`/g, '$1')                    // inline code
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')       // images
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')        // links
+    .replace(/^\s*#{1,6}\s*/gm, '')                 // headings
+    .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1')   // bold/italic
+    .replace(/^\s*>\s?/gm, '')                      // blockquote
+    .replace(/^\s*[-*+]\s+/gm, '')                  // bullet markers
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const openSaveActionItemModal = (msg, index) => {
+  if (!msg?.content) return
+  const plain = stripMarkdown(msg.content)
+  // Default the description to the first sentence/clause (advisor edits in
+  // place). A 200-char cap leaves room without truncating most action items.
+  const firstSentence = plain.split(/(?<=[.!?])\s+/)[0] || plain
+  actionItemDescription.value = firstSentence.slice(0, 200)
+  actionItemAssignee.value = 'advisor'
+  actionItemDueDate.value = ''
+  actionItemExcerpt.value = plain.slice(0, 280)
+  actionItemMessageIndex.value = index
+  actionItemError.value = ''
+  showActionItemModal.value = true
+}
+
+const closeSaveActionItemModal = () => {
+  showActionItemModal.value = false
+  actionItemSaving.value = false
+  actionItemError.value = ''
+}
+
+const submitSaveActionItem = async () => {
+  const colId = collectionStore.currentCollectionId
+  if (!colId) return
+  const desc = actionItemDescription.value.trim()
+  if (!desc) {
+    actionItemError.value = 'Description is required.'
+    return
+  }
+  actionItemSaving.value = true
+  actionItemError.value = ''
+  try {
+    await createActionItem(colId, {
+      description: desc,
+      assignee: actionItemAssignee.value.trim() || null,
+      due_date: actionItemDueDate.value.trim() || null,
+      status: 'open',
+      source_kind: 'chat',
+      source_session_id: activeSessionId.value || null,
+      source_excerpt: actionItemExcerpt.value || null,
+    })
+    savedActionItemIndex.value = actionItemMessageIndex.value
+    if (saveResetTimer) clearTimeout(saveResetTimer)
+    saveResetTimer = setTimeout(() => { savedActionItemIndex.value = null }, 2400)
+    closeSaveActionItemModal()
+  } catch (err) {
+    actionItemError.value = err?.response?.data?.detail || err?.message || 'Save failed.'
+  } finally {
+    actionItemSaving.value = false
+  }
+}
+
 const useSuggestion = (suggestion) => {
   inputMessage.value = suggestion
+}
+
+// Follow-up chip click — fill the input and send immediately so the advisor
+// keeps pulling the thread with one tap (the empty-state suggestions only
+// prefill; these auto-send because they're a deliberate "ask this next").
+const askFollowup = async (question) => {
+  if (loading.value || !question) return
+  inputMessage.value = question
+  await sendMessage()
 }
 
 // Slash command picker state
@@ -1614,6 +1823,8 @@ const sendMessage = async () => {
           await scrollToBottom()
         } else if (event.type === 'citation') {
           chatStore.addStreamingCitation(collectionId, event)
+        } else if (event.type === 'followups') {
+          chatStore.addStreamingFollowups(collectionId, event.questions || [])
         } else if (event.type === 'sources') {
           // Sources will be committed in 'done'
         } else if (event.type === 'done') {
@@ -1730,7 +1941,15 @@ const hasFinancialData = computed(() =>
 )
 watch(
   () => collectionStore.currentCollectionId,
-  () => { loadCollectionKind() },
+  (cid) => {
+    loadCollectionKind()
+    // Slice B — pull any chat history persisted server-side into local
+    // state. Idempotent; safe to fire on every collection switch. Local
+    // storage remains authoritative for live UX (this just adds sessions
+    // we don't already know about, e.g. a session opened on another
+    // device). Fire-and-forget; failures are logged inside the store.
+    if (cid) chatStore.hydrateFromServer(cid)
+  },
   { immediate: true },
 )
 watch(

@@ -400,10 +400,12 @@ def _build_base_framing(
         "question — do not fan out exploratory queries after a good hit."
     )
     answer_economy = (
-        "Be concise: lead with the answer, no preamble, no restatement of the "
-        "question, no closing summary. Prefer direct quotation with citations "
-        "over narrative paraphrase. Length should fit the question — a one-line "
-        "answer for a one-line question."
+        "Front-load the takeaway: open with a single-sentence headline that "
+        "directly answers the question, then add supporting detail, quotes, and "
+        "citations below only if the question needs them. No preamble, no "
+        "restatement of the question, no closing summary. Prefer direct "
+        "quotation with citations over narrative paraphrase. Length should fit "
+        "the question — the headline alone is enough for a one-line question."
     )
 
     if is_financial:

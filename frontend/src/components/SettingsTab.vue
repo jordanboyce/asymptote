@@ -28,6 +28,226 @@
       </div>
     </div>
 
+    <!-- Weekly digest -->
+    <div class="card bg-base-100 border border-base-300">
+      <div class="card-body py-4 px-5 space-y-3">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div class="min-w-0 flex-1">
+            <h3 class="font-semibold text-sm">Weekly digest</h3>
+            <p class="text-xs text-base-content/55 mt-0.5">
+              Get a "what changed this week" email — new and aging open action items, plus tax-loss opportunities across every collection you own. Computed locally; no AI call.
+            </p>
+          </div>
+          <label class="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
+            <span class="text-sm font-medium" :class="digestPrefs.enabled ? 'text-base-content' : 'text-base-content/40'">
+              {{ digestPrefs.enabled ? 'On' : 'Off' }}
+            </span>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              :checked="digestPrefs.enabled"
+              :disabled="digestSaving"
+              @change="onDigestToggle"
+              aria-label="Toggle weekly digest"
+            />
+          </label>
+        </div>
+
+        <div v-if="digestPrefs.enabled" class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-base-300">
+          <div class="form-control">
+            <label class="label p-0 pb-1" for="digest-weekday">
+              <span class="label-text text-xs font-medium">Day</span>
+            </label>
+            <select
+              id="digest-weekday"
+              v-model.number="digestPrefs.weekday"
+              class="select select-bordered select-sm w-full"
+              :disabled="digestSaving"
+              @change="saveDigestPrefs"
+            >
+              <option :value="0">Monday</option>
+              <option :value="1">Tuesday</option>
+              <option :value="2">Wednesday</option>
+              <option :value="3">Thursday</option>
+              <option :value="4">Friday</option>
+              <option :value="5">Saturday</option>
+              <option :value="6">Sunday</option>
+            </select>
+          </div>
+          <div class="form-control">
+            <label class="label p-0 pb-1" for="digest-hour">
+              <span class="label-text text-xs font-medium">Hour</span>
+            </label>
+            <select
+              id="digest-hour"
+              v-model.number="digestPrefs.hour"
+              class="select select-bordered select-sm w-full"
+              :disabled="digestSaving"
+              @change="saveDigestPrefs"
+            >
+              <option v-for="h in 24" :key="h" :value="h - 1">
+                {{ formatHour(h - 1) }}
+              </option>
+            </select>
+            <p class="text-[10px] text-base-content/45 mt-1 leading-tight">{{ digestSchedulerTz }}</p>
+          </div>
+          <div class="form-control">
+            <label class="label p-0 pb-1" for="digest-email">
+              <span class="label-text text-xs font-medium">Send to</span>
+            </label>
+            <input
+              id="digest-email"
+              v-model="digestEmailInput"
+              type="email"
+              :placeholder="digestEffectiveEmail || 'your@email.com'"
+              class="input input-bordered input-sm w-full"
+              :disabled="digestSaving"
+              @blur="onDigestEmailBlur"
+              @keydown.enter.prevent="onDigestEmailBlur"
+            />
+            <p class="text-[10px] text-base-content/45 mt-1 leading-tight">
+              Default: your sign-in email
+            </p>
+          </div>
+        </div>
+
+        <div v-if="digestPrefs.enabled" class="flex items-center justify-between gap-3 flex-wrap pt-1">
+          <div class="text-xs text-base-content/55 min-w-0 flex-1">
+            <span v-if="digestPreviewStatus === 'sending'">Sending preview…</span>
+            <span v-else-if="digestPreviewStatus === 'sent'" class="text-success">
+              ✓ Preview sent to {{ digestPreviewResult?.recipient }}{{ digestPreviewResult?.summary ? ' — ' + digestPreviewResult.summary : '' }}
+            </span>
+            <span v-else-if="digestPreviewStatus === 'error'" class="text-error">
+              {{ digestPreviewError || 'Preview failed.' }}
+            </span>
+            <span v-else-if="digestPrefs.lastSentAt">
+              Last sent {{ formatRelativeTime(digestPrefs.lastSentAt) }}
+            </span>
+            <span v-else>
+              Next digest fires {{ formatDigestNext(digestPrefs.weekday, digestPrefs.hour) }}.
+            </span>
+          </div>
+          <button
+            class="btn btn-sm btn-ghost"
+            :disabled="digestSaving || digestPreviewStatus === 'sending'"
+            @click="sendDigestPreview"
+          >
+            <span v-if="digestPreviewStatus === 'sending'" class="loading loading-spinner loading-xs"></span>
+            Send a preview now
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Morning brief -->
+    <div class="card bg-base-100 border border-base-300">
+      <div class="card-body py-4 px-5 space-y-3">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div class="min-w-0 flex-1">
+            <h3 class="font-semibold text-sm">Morning brief</h3>
+            <p class="text-xs text-base-content/55 mt-0.5">
+              Start your day with a "what's on my plate today" email — overdue and due-today action items, fresh items extracted overnight, tax-loss opportunities, and any new documents Finn indexed while you slept. Computed locally; no AI call.
+            </p>
+          </div>
+          <label class="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
+            <span class="text-sm font-medium" :class="morningBriefPrefs.enabled ? 'text-base-content' : 'text-base-content/40'">
+              {{ morningBriefPrefs.enabled ? 'On' : 'Off' }}
+            </span>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              :checked="morningBriefPrefs.enabled"
+              :disabled="morningBriefSaving"
+              @change="onMorningBriefToggle"
+              aria-label="Toggle morning brief"
+            />
+          </label>
+        </div>
+
+        <div v-if="morningBriefPrefs.enabled" class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-base-300">
+          <div class="form-control">
+            <label class="label p-0 pb-1" for="morning-brief-hour">
+              <span class="label-text text-xs font-medium">Send at</span>
+            </label>
+            <select
+              id="morning-brief-hour"
+              v-model.number="morningBriefPrefs.hour"
+              class="select select-bordered select-sm w-full"
+              :disabled="morningBriefSaving"
+              @change="saveMorningBriefPrefs"
+            >
+              <option v-for="h in 24" :key="h" :value="h - 1">
+                {{ formatHour(h - 1) }}
+              </option>
+            </select>
+            <p class="text-[10px] text-base-content/45 mt-1 leading-tight">{{ morningBriefSchedulerTz }}</p>
+          </div>
+          <div class="form-control">
+            <label class="label p-0 pb-1">
+              <span class="label-text text-xs font-medium">Weekends</span>
+            </label>
+            <label class="cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md border border-base-300 hover:border-base-content/30 transition-colors">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm checkbox-primary"
+                :checked="!morningBriefPrefs.weekdaysOnly"
+                :disabled="morningBriefSaving"
+                @change="onMorningBriefWeekendsToggle"
+              />
+              <span class="text-xs">Send on Saturday & Sunday</span>
+            </label>
+            <p class="text-[10px] text-base-content/45 mt-1 leading-tight">
+              Default: weekdays only
+            </p>
+          </div>
+          <div class="form-control">
+            <label class="label p-0 pb-1" for="morning-brief-email">
+              <span class="label-text text-xs font-medium">Send to</span>
+            </label>
+            <input
+              id="morning-brief-email"
+              v-model="morningBriefEmailInput"
+              type="email"
+              :placeholder="morningBriefEffectiveEmail || 'your@email.com'"
+              class="input input-bordered input-sm w-full"
+              :disabled="morningBriefSaving"
+              @blur="onMorningBriefEmailBlur"
+              @keydown.enter.prevent="onMorningBriefEmailBlur"
+            />
+            <p class="text-[10px] text-base-content/45 mt-1 leading-tight">
+              Default: your sign-in email
+            </p>
+          </div>
+        </div>
+
+        <div v-if="morningBriefPrefs.enabled" class="flex items-center justify-between gap-3 flex-wrap pt-1">
+          <div class="text-xs text-base-content/55 min-w-0 flex-1">
+            <span v-if="morningBriefPreviewStatus === 'sending'">Sending preview…</span>
+            <span v-else-if="morningBriefPreviewStatus === 'sent'" class="text-success">
+              ✓ Preview sent to {{ morningBriefPreviewResult?.recipient }}{{ morningBriefPreviewResult?.summary ? ' — ' + morningBriefPreviewResult.summary : '' }}
+            </span>
+            <span v-else-if="morningBriefPreviewStatus === 'error'" class="text-error">
+              {{ morningBriefPreviewError || 'Preview failed.' }}
+            </span>
+            <span v-else-if="morningBriefPrefs.lastSentAt">
+              Last sent {{ formatRelativeTime(morningBriefPrefs.lastSentAt) }}
+            </span>
+            <span v-else>
+              Next brief fires {{ formatMorningBriefNext(morningBriefPrefs.hour, morningBriefPrefs.weekdaysOnly) }}.
+            </span>
+          </div>
+          <button
+            class="btn btn-sm btn-ghost"
+            :disabled="morningBriefSaving || morningBriefPreviewStatus === 'sending'"
+            @click="sendMorningBriefPreview"
+          >
+            <span v-if="morningBriefPreviewStatus === 'sending'" class="loading loading-spinner loading-xs"></span>
+            Send a preview now
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- System Info (expert only) -->
     <div v-if="isExpertMode" class="card bg-base-200">
       <div class="card-body space-y-3">
@@ -1063,6 +1283,228 @@ const trackTimeout = (fn, ms) => {
   return id
 }
 
+// ── Weekly digest ────────────────────────────────────────────────────
+const digestPrefs = ref({
+  enabled: false,
+  weekday: 4,
+  hour: 16,
+  emailOverride: null,
+  lastSentAt: null,
+})
+const digestEffectiveEmail = ref(null)
+const digestSchedulerTz = ref('America/New_York')
+const digestEmailInput = ref('')
+const digestSaving = ref(false)
+const digestPreviewStatus = ref('idle')  // idle | sending | sent | error
+const digestPreviewError = ref('')
+const digestPreviewResult = ref(null)
+
+const WEEKDAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+
+const formatHour = (h) => {
+  const suffix = h < 12 ? 'AM' : 'PM'
+  const hr = h % 12 === 0 ? 12 : h % 12
+  return `${hr}:00 ${suffix}`
+}
+
+const formatRelativeTime = (iso) => {
+  if (!iso) return ''
+  try {
+    const then = new Date(iso)
+    const diffMs = Date.now() - then.getTime()
+    const days = Math.floor(diffMs / 86400000)
+    if (days <= 0) return 'today'
+    if (days === 1) return 'yesterday'
+    if (days < 7) return `${days} days ago`
+    return then.toLocaleDateString()
+  } catch { return '' }
+}
+
+const formatDigestNext = (weekday, hour) => {
+  return `${WEEKDAY_NAMES[weekday] || 'Friday'} at ${formatHour(hour)}`
+}
+
+const loadDigestPrefs = async () => {
+  try {
+    const { data } = await axios.get('/api/digest/preferences')
+    digestPrefs.value = {
+      enabled: !!data.preferences?.enabled,
+      weekday: data.preferences?.weekday ?? 4,
+      hour: data.preferences?.hour ?? 16,
+      emailOverride: data.preferences?.email_override ?? null,
+      lastSentAt: data.last_sent_at ?? null,
+    }
+    digestEffectiveEmail.value = data.effective_email ?? null
+    digestSchedulerTz.value = data.scheduler_timezone ?? 'America/New_York'
+    digestEmailInput.value = digestPrefs.value.emailOverride ?? ''
+  } catch (e) {
+    // Endpoint may not exist on older deployments — leave defaults.
+  }
+}
+
+const saveDigestPrefs = async () => {
+  digestSaving.value = true
+  try {
+    const body = {
+      enabled: digestPrefs.value.enabled,
+      weekday: digestPrefs.value.weekday,
+      hour: digestPrefs.value.hour,
+      email_override: digestPrefs.value.emailOverride || null,
+    }
+    const { data } = await axios.put('/api/digest/preferences', body)
+    digestPrefs.value = {
+      enabled: !!data.preferences?.enabled,
+      weekday: data.preferences?.weekday ?? 4,
+      hour: data.preferences?.hour ?? 16,
+      emailOverride: data.preferences?.email_override ?? null,
+      lastSentAt: data.last_sent_at ?? null,
+    }
+    digestEffectiveEmail.value = data.effective_email ?? null
+  } finally {
+    digestSaving.value = false
+  }
+}
+
+const onDigestToggle = async (event) => {
+  digestPrefs.value.enabled = event.target.checked
+  digestPreviewStatus.value = 'idle'
+  await saveDigestPrefs()
+}
+
+const onDigestEmailBlur = async () => {
+  const trimmed = (digestEmailInput.value || '').trim()
+  const next = trimmed || null
+  if (next === (digestPrefs.value.emailOverride || null)) return
+  digestPrefs.value.emailOverride = next
+  await saveDigestPrefs()
+}
+
+const sendDigestPreview = async () => {
+  digestPreviewStatus.value = 'sending'
+  digestPreviewError.value = ''
+  digestPreviewResult.value = null
+  try {
+    const { data } = await axios.post('/api/digest/preview')
+    if (data.ok) {
+      digestPreviewStatus.value = 'sent'
+      digestPreviewResult.value = data
+      trackTimeout(() => {
+        if (digestPreviewStatus.value === 'sent') digestPreviewStatus.value = 'idle'
+      }, 10000)
+    } else {
+      digestPreviewStatus.value = 'error'
+      digestPreviewError.value = data.error || 'Preview failed.'
+    }
+  } catch (e) {
+    digestPreviewStatus.value = 'error'
+    digestPreviewError.value = e.response?.data?.detail || e.message || 'Preview failed.'
+  }
+}
+
+// ── Morning brief ────────────────────────────────────────────────────
+const morningBriefPrefs = ref({
+  enabled: false,
+  hour: 7,
+  weekdaysOnly: true,
+  emailOverride: null,
+  lastSentAt: null,
+})
+const morningBriefEffectiveEmail = ref(null)
+const morningBriefSchedulerTz = ref('America/New_York')
+const morningBriefEmailInput = ref('')
+const morningBriefSaving = ref(false)
+const morningBriefPreviewStatus = ref('idle')  // idle | sending | sent | error
+const morningBriefPreviewError = ref('')
+const morningBriefPreviewResult = ref(null)
+
+const formatMorningBriefNext = (hour, weekdaysOnly) => {
+  const at = formatHour(hour)
+  return weekdaysOnly ? `weekdays at ${at}` : `daily at ${at}`
+}
+
+const loadMorningBriefPrefs = async () => {
+  try {
+    const { data } = await axios.get('/api/morning-brief/preferences')
+    morningBriefPrefs.value = {
+      enabled: !!data.preferences?.enabled,
+      hour: data.preferences?.hour ?? 7,
+      weekdaysOnly: data.preferences?.weekdays_only ?? true,
+      emailOverride: data.preferences?.email_override ?? null,
+      lastSentAt: data.last_sent_at ?? null,
+    }
+    morningBriefEffectiveEmail.value = data.effective_email ?? null
+    morningBriefSchedulerTz.value = data.scheduler_timezone ?? 'America/New_York'
+    morningBriefEmailInput.value = morningBriefPrefs.value.emailOverride ?? ''
+  } catch (e) {
+    // Endpoint may not exist on older deployments — leave defaults.
+  }
+}
+
+const saveMorningBriefPrefs = async () => {
+  morningBriefSaving.value = true
+  try {
+    const body = {
+      enabled: morningBriefPrefs.value.enabled,
+      hour: morningBriefPrefs.value.hour,
+      weekdays_only: morningBriefPrefs.value.weekdaysOnly,
+      email_override: morningBriefPrefs.value.emailOverride || null,
+    }
+    const { data } = await axios.put('/api/morning-brief/preferences', body)
+    morningBriefPrefs.value = {
+      enabled: !!data.preferences?.enabled,
+      hour: data.preferences?.hour ?? 7,
+      weekdaysOnly: data.preferences?.weekdays_only ?? true,
+      emailOverride: data.preferences?.email_override ?? null,
+      lastSentAt: data.last_sent_at ?? null,
+    }
+    morningBriefEffectiveEmail.value = data.effective_email ?? null
+  } finally {
+    morningBriefSaving.value = false
+  }
+}
+
+const onMorningBriefToggle = async (event) => {
+  morningBriefPrefs.value.enabled = event.target.checked
+  morningBriefPreviewStatus.value = 'idle'
+  await saveMorningBriefPrefs()
+}
+
+const onMorningBriefWeekendsToggle = async (event) => {
+  // Checkbox is "Send on Saturday & Sunday" — inverse of weekdays_only.
+  morningBriefPrefs.value.weekdaysOnly = !event.target.checked
+  await saveMorningBriefPrefs()
+}
+
+const onMorningBriefEmailBlur = async () => {
+  const trimmed = (morningBriefEmailInput.value || '').trim()
+  const next = trimmed || null
+  if (next === (morningBriefPrefs.value.emailOverride || null)) return
+  morningBriefPrefs.value.emailOverride = next
+  await saveMorningBriefPrefs()
+}
+
+const sendMorningBriefPreview = async () => {
+  morningBriefPreviewStatus.value = 'sending'
+  morningBriefPreviewError.value = ''
+  morningBriefPreviewResult.value = null
+  try {
+    const { data } = await axios.post('/api/morning-brief/preview')
+    if (data.ok) {
+      morningBriefPreviewStatus.value = 'sent'
+      morningBriefPreviewResult.value = data
+      trackTimeout(() => {
+        if (morningBriefPreviewStatus.value === 'sent') morningBriefPreviewStatus.value = 'idle'
+      }, 10000)
+    } else {
+      morningBriefPreviewStatus.value = 'error'
+      morningBriefPreviewError.value = data.error || 'Preview failed.'
+    }
+  } catch (e) {
+    morningBriefPreviewStatus.value = 'error'
+    morningBriefPreviewError.value = e.response?.data?.detail || e.message || 'Preview failed.'
+  }
+}
+
 // UI feature flags
 const searchTabEnabled = ref(true)
 
@@ -1714,6 +2156,8 @@ const clearAllData = async () => {
 onMounted(() => {
   loadAIState()
   loadSystemInfo()
+  loadDigestPrefs()
+  loadMorningBriefPrefs()
 
   // Load theme. App.vue's bootstrap migrates legacy values (light/dark/cupcake/...)
   // to corporate/business and rewrites localStorage, so by the time we read

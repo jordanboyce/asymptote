@@ -1,11 +1,26 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import {
+  appendChatMessage,
+  createChatSession,
+  deleteChatSession,
+  getChatSession,
+  listChatSessions,
+  renameChatSession,
+} from '../utils/chatSessionApi'
 
 const STORAGE_KEY = 'finn_chat_history_v2'
 const LEGACY_STORAGE_KEY = 'finn_chat_history_v1'
 const SCOPE_STORAGE_KEY = 'finn_chat_scope_v1'
 const MAX_MESSAGES_PER_SESSION = 100
 const MAX_SESSIONS_PER_COLLECTION = 50
+
+// Slice B — server-side persistence.
+// localStorage stays as the source of truth for live UX (instant writes, no
+// network latency); the server is a durability + cross-device backup that
+// mirrors mutations in the background. All server calls are fire-and-forget
+// with silent failures so a flaky network never breaks chat.
+const SERVER_SYNC_ENABLED = true
 
 const newSessionId = () =>
   `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -89,6 +104,138 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // ── Server sync (Slice B) ───────────────────────────────────────────────
+  //
+  // Track which (collectionId, sessionId) pairs have been confirmed on the
+  // server so we can lazy-create on first message instead of POSTing an
+  // empty session every time the user opens a chat. Module-scoped, in-memory
+  // only — server is the source of truth for "does this session exist".
+  // { [collectionId]: Set<sessionId> }
+  const serverKnownSessions = new Map()
+
+  const isServerKnown = (collectionId, sessionId) => {
+    return serverKnownSessions.get(collectionId)?.has(sessionId) || false
+  }
+  const markServerKnown = (collectionId, sessionId) => {
+    if (!serverKnownSessions.has(collectionId)) {
+      serverKnownSessions.set(collectionId, new Set())
+    }
+    serverKnownSessions.get(collectionId).add(sessionId)
+  }
+  const markServerUnknown = (collectionId, sessionId) => {
+    serverKnownSessions.get(collectionId)?.delete(sessionId)
+  }
+
+  const ensureSessionOnServer = async (collectionId, sessionId) => {
+    if (!SERVER_SYNC_ENABLED || !collectionId || !sessionId) return
+    if (isServerKnown(collectionId, sessionId)) return
+    const conv = conversations.value[collectionId]
+    const session = conv?.sessions?.find((s) => s.id === sessionId)
+    if (!session) return
+    try {
+      // create_session is idempotent server-side: existing id → returns
+      // the stored row without overwriting. Safe to call eagerly.
+      await createChatSession(collectionId, {
+        sessionId: session.id,
+        title: session.title === 'New chat' ? null : session.title,
+      })
+      markServerKnown(collectionId, sessionId)
+    } catch (e) {
+      // localStorage still authoritative — log and move on.
+      console.warn('chat sync: ensureSessionOnServer failed', e)
+    }
+  }
+
+  const persistMessageToServer = (collectionId, sessionId, message) => {
+    if (!SERVER_SYNC_ENABLED || !collectionId || !sessionId || !message) return
+    // Fire and forget. Awaited internally so ensure→append order is
+    // preserved per message, but no caller blocks on this.
+    void (async () => {
+      try {
+        await ensureSessionOnServer(collectionId, sessionId)
+        await appendChatMessage(collectionId, sessionId, message)
+      } catch (e) {
+        console.warn('chat sync: persistMessageToServer failed', e)
+      }
+    })()
+  }
+
+  const persistDeleteToServer = (collectionId, sessionId) => {
+    if (!SERVER_SYNC_ENABLED || !collectionId || !sessionId) return
+    if (!isServerKnown(collectionId, sessionId)) return
+    void (async () => {
+      try {
+        await deleteChatSession(collectionId, sessionId)
+        markServerUnknown(collectionId, sessionId)
+      } catch (e) {
+        console.warn('chat sync: persistDeleteToServer failed', e)
+      }
+    })()
+  }
+
+  const persistRenameToServer = (collectionId, sessionId, title) => {
+    if (!SERVER_SYNC_ENABLED || !collectionId || !sessionId) return
+    void (async () => {
+      try {
+        await ensureSessionOnServer(collectionId, sessionId)
+        await renameChatSession(collectionId, sessionId, title)
+      } catch (e) {
+        console.warn('chat sync: persistRenameToServer failed', e)
+      }
+    })()
+  }
+
+  // Pull sessions + messages from the server into local state. Merges:
+  //   - sessions present on server but not locally → fetched and added.
+  //   - sessions present in both → leave local untouched (stays the UX
+  //     source of truth this turn; conflicts converge on next mutation).
+  //   - sessions present locally but not on server → pushed up via the
+  //     usual ensure-on-server / persist-message paths later.
+  // Idempotent; safe to call on every collection switch.
+  const hydrateFromServer = async (collectionId) => {
+    if (!SERVER_SYNC_ENABLED || !collectionId) return
+    let serverSessions
+    try {
+      serverSessions = await listChatSessions(collectionId, { limit: 100 })
+    } catch (e) {
+      console.warn('chat sync: hydrateFromServer list failed', e)
+      return
+    }
+
+    ensureConversation(collectionId)
+    const conv = conversations.value[collectionId]
+    const localIds = new Set(conv.sessions.map((s) => s.id))
+
+    for (const sess of serverSessions) {
+      markServerKnown(collectionId, sess.id)
+      if (localIds.has(sess.id)) continue
+      try {
+        const full = await getChatSession(collectionId, sess.id)
+        const messages = (full.messages || []).map((m) => ({
+          role: m.role,
+          content: m.content,
+          ...(m.metadata || {}),
+        }))
+        conv.sessions.push({
+          id: sess.id,
+          title: sess.title || 'New chat',
+          messages,
+          createdAt: Date.parse(sess.created_at) || Date.now(),
+          updatedAt: Date.parse(sess.updated_at) || Date.now(),
+        })
+      } catch (e) {
+        console.warn('chat sync: hydrateFromServer fetch failed', sess.id, e)
+      }
+    }
+    // Sort sessions by updatedAt DESC so the most-recently-touched sits at
+    // the top of the session picker — matches the server's list ordering.
+    conv.sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    if (!conv.activeSessionId && conv.sessions.length) {
+      conv.activeSessionId = conv.sessions[0].id
+    }
+    saveToStorage()
+  }
+
   // Returns the filter array, or null when no filter is set ("all sources in scope").
   const getScopedDocumentIds = (collectionId) => {
     const v = scopedDocIds.value[collectionId]
@@ -161,7 +308,8 @@ export const useChatStore = defineStore('chat', () => {
 
   const addMessage = (collectionId, message) => {
     const session = getActiveSession(collectionId)
-    session.messages.push({ ...message, timestamp: Date.now() })
+    const stamped = { ...message, timestamp: Date.now() }
+    session.messages.push(stamped)
     if (session.messages.length > MAX_MESSAGES_PER_SESSION) {
       session.messages = session.messages.slice(session.messages.length - MAX_MESSAGES_PER_SESSION)
     }
@@ -171,19 +319,22 @@ export const useChatStore = defineStore('chat', () => {
     }
     session.updatedAt = Date.now()
     saveToStorage()
+    persistMessageToServer(collectionId, session.id, stamped)
   }
 
   const addAssistantMessage = (collectionId, message, sources, aiUsage, structuredResults) => {
     const session = getActiveSession(collectionId)
-    session.messages.push({
+    const stamped = {
       ...message,
       sources: sources || [],
       aiUsage: aiUsage || null,
       structuredResults: structuredResults || null,
       timestamp: Date.now(),
-    })
+    }
+    session.messages.push(stamped)
     session.updatedAt = Date.now()
     saveToStorage()
+    persistMessageToServer(collectionId, session.id, stamped)
   }
 
   // --- Streaming support ---
@@ -197,6 +348,7 @@ export const useChatStore = defineStore('chat', () => {
       structuredResults: [],
       sources: [],
       citations: [],
+      followups: [],
       aiUsage: null,
       timestamp: Date.now(),
     })
@@ -238,6 +390,14 @@ export const useChatStore = defineStore('chat', () => {
       startChar: citation.start_char ?? null,
       endChar: citation.end_char ?? null,
     })
+  }
+
+  // Perplexity-style "Related" suggestions — arrive after the answer has
+  // streamed, just before the `done` event finalizes (and persists) the
+  // message, so they ride along into storage without a separate write.
+  const addStreamingFollowups = (collectionId, questions) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (msg) msg.followups = Array.isArray(questions) ? questions : []
   }
 
   const addStreamingToolCall = (collectionId, tool, args) => {
@@ -284,6 +444,10 @@ export const useChatStore = defineStore('chat', () => {
     const session = getActiveSession(collectionId)
     if (session) session.updatedAt = Date.now()
     saveToStorage()
+    // Server sync only fires here — not while the message is streaming —
+    // so we persist a single complete assistant turn instead of a stream
+    // of in-flight states.
+    if (session) persistMessageToServer(collectionId, session.id, msg)
   }
 
   const removeLastStreamingMessage = (collectionId) => {
@@ -353,6 +517,7 @@ export const useChatStore = defineStore('chat', () => {
       conv.activeSessionId = conv.sessions[0].id
     }
     saveToStorage()
+    persistDeleteToServer(collectionId, sessionId)
   }
 
   const renameSession = (collectionId, sessionId, title) => {
@@ -360,15 +525,25 @@ export const useChatStore = defineStore('chat', () => {
     if (!conv) return
     const session = conv.sessions.find((s) => s.id === sessionId)
     if (session) {
-      session.title = deriveTitle(title) || 'Untitled'
+      const nextTitle = deriveTitle(title) || 'Untitled'
+      session.title = nextTitle
       session.updatedAt = Date.now()
       saveToStorage()
+      persistRenameToServer(collectionId, sessionId, nextTitle)
     }
   }
 
   const clearCollectionChat = (collectionId) => {
+    // Best-effort: delete the server-side sessions for this collection too,
+    // so a "clear" survives a refresh. Local state is the source of truth
+    // for the UX; server sync is fire-and-forget.
+    const conv = conversations.value[collectionId]
+    const knownIds = conv?.sessions?.map((s) => s.id) || []
     delete conversations.value[collectionId]
     saveToStorage()
+    for (const sid of knownIds) {
+      persistDeleteToServer(collectionId, sid)
+    }
   }
 
   // Initialize from storage
@@ -397,10 +572,13 @@ export const useChatStore = defineStore('chat', () => {
     addStreamingMessage,
     appendStreamingText,
     addStreamingCitation,
+    addStreamingFollowups,
     addStreamingToolCall,
     resolveStreamingToolCall,
     addStreamingThinking,
     finalizeStreamingMessage,
     removeLastStreamingMessage,
+    // Server sync (Slice B)
+    hydrateFromServer,
   }
 })

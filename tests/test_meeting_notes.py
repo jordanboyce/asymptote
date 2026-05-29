@@ -10,6 +10,7 @@ from services.meeting_notes import (
     ActionItem,
     MeetingNotes,
     MeetingNotesStore,
+    build_meeting_context,
     extract_meeting_notes,
     transcript_text_from_chunks,
 )
@@ -438,3 +439,403 @@ def test_full_round_trip_extract_save_list(tmp_path):
     descriptions = {it["description"] for it in open_items}
     assert "Send revised IPS for signature" in descriptions
     assert "Forward last two 1099s" in descriptions
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# build_meeting_context — the brief-side aggregator
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class _FakeMetadataStore:
+    """Minimal stub matching the attributes build_meeting_context reads."""
+
+    def __init__(self, docs):
+        self._docs = list(docs)
+
+    def list_documents(self):
+        return list(self._docs)
+
+
+def test_build_meeting_context_empty_when_no_meetings(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    md = _FakeMetadataStore([])
+
+    ctx = build_meeting_context(
+        meeting_notes_store=store,
+        metadata_store=md,
+        collection_id="empty-coll",
+    )
+    assert ctx == {
+        "meetings_count": 0,
+        "last_meeting": None,
+        "open_action_items": [],
+        "total_open_action_items": 0,
+        "open_follow_up_questions": [],
+    }
+
+
+def test_build_meeting_context_picks_most_recent_meeting(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    md = _FakeMetadataStore([
+        {"document_id": "doc-1", "filename": "Meeting Notes - 2026-04-01.md"},
+        {"document_id": "doc-2", "filename": "Meeting Notes - 2026-05-15.md"},
+    ])
+
+    # Save in non-chronological order to confirm the helper relies on
+    # list_for_collection's DESC ordering, not insertion order.
+    store.save(
+        document_id="doc-1",
+        collection_id="c",
+        notes=MeetingNotes(
+            client_concerns=["Old concern"],
+            decisions=["Old decision"],
+            follow_up_questions=["Old follow-up"],
+            raw_transcript_doc_id="doc-1",
+        ),
+    )
+    store.save(
+        document_id="doc-2",
+        collection_id="c",
+        notes=MeetingNotes(
+            client_concerns=["Fresh worry"],
+            decisions=["Fresh decision"],
+            follow_up_questions=["Verify with HR"],
+            sentiment_notes="Engaged.",
+            raw_transcript_doc_id="doc-2",
+        ),
+    )
+
+    ctx = build_meeting_context(
+        meeting_notes_store=store,
+        metadata_store=md,
+        collection_id="c",
+    )
+    assert ctx["meetings_count"] == 2
+    assert ctx["last_meeting"]["document_id"] == "doc-2"
+    assert ctx["last_meeting"]["filename"] == "Meeting Notes - 2026-05-15.md"
+    assert ctx["last_meeting"]["client_concerns"] == ["Fresh worry"]
+    assert ctx["last_meeting"]["sentiment_notes"] == "Engaged."
+    # Follow-ups come from the most recent meeting only.
+    assert ctx["open_follow_up_questions"] == ["Verify with HR"]
+
+
+def test_build_meeting_context_aggregates_open_action_items_with_filename(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    md = _FakeMetadataStore([
+        {"document_id": "doc-a", "filename": "Meeting - April.md"},
+        {"document_id": "doc-b", "filename": "Meeting - May.md"},
+    ])
+
+    store.save(
+        document_id="doc-a",
+        collection_id="c",
+        notes=MeetingNotes(
+            action_items=[
+                ActionItem(description="Send IPS", assignee="advisor", status="open"),
+                ActionItem(description="Closed task", assignee="client", status="closed"),
+            ],
+            raw_transcript_doc_id="doc-a",
+        ),
+    )
+    store.save(
+        document_id="doc-b",
+        collection_id="c",
+        notes=MeetingNotes(
+            action_items=[
+                ActionItem(description="Schedule call", assignee="advisor", status="open"),
+            ],
+            raw_transcript_doc_id="doc-b",
+        ),
+    )
+
+    ctx = build_meeting_context(
+        meeting_notes_store=store,
+        metadata_store=md,
+        collection_id="c",
+    )
+
+    assert ctx["total_open_action_items"] == 2
+    by_desc = {it["description"]: it for it in ctx["open_action_items"]}
+    assert "Send IPS" in by_desc
+    assert "Schedule call" in by_desc
+    assert "Closed task" not in by_desc
+    # Each item is decorated with the source filename for the brief UI.
+    assert by_desc["Send IPS"]["source_filename"] == "Meeting - April.md"
+    assert by_desc["Schedule call"]["source_filename"] == "Meeting - May.md"
+
+
+def test_build_meeting_context_respects_max_action_items_cap(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    md = _FakeMetadataStore([{"document_id": "doc-1", "filename": "m.md"}])
+    store.save(
+        document_id="doc-1",
+        collection_id="c",
+        notes=MeetingNotes(
+            action_items=[
+                ActionItem(description=f"Task {i}", status="open") for i in range(15)
+            ],
+            raw_transcript_doc_id="doc-1",
+        ),
+    )
+
+    ctx = build_meeting_context(
+        meeting_notes_store=store,
+        metadata_store=md,
+        collection_id="c",
+        max_action_items=5,
+    )
+    assert len(ctx["open_action_items"]) == 5
+    # total reflects every open item, not just the truncated page — UI uses
+    # this to render "showing 5 of 15".
+    assert ctx["total_open_action_items"] == 15
+
+
+def test_build_meeting_context_survives_metadata_store_failure(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+
+    class BoomMetadataStore:
+        def list_documents(self):
+            raise RuntimeError("backing store unavailable")
+
+    store.save(
+        document_id="doc-1",
+        collection_id="c",
+        notes=MeetingNotes(
+            client_concerns=["A concern"],
+            action_items=[ActionItem(description="A task", status="open")],
+            raw_transcript_doc_id="doc-1",
+        ),
+    )
+
+    ctx = build_meeting_context(
+        meeting_notes_store=store,
+        metadata_store=BoomMetadataStore(),
+        collection_id="c",
+    )
+    # Filename map is empty, but the rest of the brief context is intact.
+    assert ctx["meetings_count"] == 1
+    assert ctx["last_meeting"]["client_concerns"] == ["A concern"]
+    assert ctx["last_meeting"]["filename"] == ""
+    assert ctx["open_action_items"][0]["source_filename"] == ""
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Slice C — standalone action items (chat-originated + manual)
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_add_action_item_persists_and_returns_row(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    row = store.add_action_item(
+        collection_id="c",
+        description="  Call Henderson re: 401k rollover  ",
+        assignee="advisor",
+        due_date="2026-05-30",
+        source_kind="chat",
+        source_session_id="s_abc",
+        source_message_id="m_42",
+        source_excerpt="Per the answer above, we should follow up.",
+    )
+    # Description trimmed, defaults filled in.
+    assert row["description"] == "Call Henderson re: 401k rollover"
+    assert row["status"] == "open"
+    assert row["source_kind"] == "chat"
+    assert row["source_session_id"] == "s_abc"
+    assert row["source_message_id"] == "m_42"
+    assert isinstance(row["id"], int)
+
+    fetched = store.get_action_item(row["id"])
+    assert fetched is not None
+    assert fetched["description"] == row["description"]
+    assert fetched["created_at"] == row["created_at"]
+
+
+def test_add_action_item_rejects_empty_description(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    with pytest.raises(ValueError):
+        store.add_action_item(collection_id="c", description="   ")
+
+
+def test_update_action_item_patches_fields_and_bumps_updated_at(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    row = store.add_action_item(collection_id="c", description="Initial")
+    updated = store.update_action_item(
+        row["id"],
+        description="Renamed",
+        assignee="client",
+        due_date="2026-06-15",
+        status="closed",
+    )
+    assert updated is not None
+    assert updated["description"] == "Renamed"
+    assert updated["assignee"] == "client"
+    assert updated["due_date"] == "2026-06-15"
+    assert updated["status"] == "closed"
+    # updated_at must move; created_at must not.
+    assert updated["updated_at"] >= row["updated_at"]
+    assert updated["created_at"] == row["created_at"]
+
+
+def test_update_action_item_clears_assignee_when_empty_string(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    row = store.add_action_item(
+        collection_id="c", description="Task", assignee="advisor"
+    )
+    updated = store.update_action_item(row["id"], assignee="")
+    assert updated is not None
+    assert updated["assignee"] is None
+
+
+def test_update_action_item_rejects_invalid_status(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    row = store.add_action_item(collection_id="c", description="Task")
+    with pytest.raises(ValueError):
+        store.update_action_item(row["id"], status="archived")
+
+
+def test_update_action_item_returns_none_for_missing_id(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    assert store.update_action_item(9999, status="closed") is None
+
+
+def test_delete_action_item_removes_row(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    row = store.add_action_item(collection_id="c", description="Task")
+    assert store.delete_action_item(row["id"]) is True
+    assert store.get_action_item(row["id"]) is None
+    # Idempotent on a re-call.
+    assert store.delete_action_item(row["id"]) is False
+
+
+def test_list_action_items_merges_standalone_with_meeting_items(tmp_path):
+    """The unified action-item view must include both transcript items
+    (JSON column) and standalone items (action_items table)."""
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.save(document_id="doc-1", collection_id="c", notes=_sample_notes())
+    store.add_action_item(
+        collection_id="c",
+        description="Chat-originated follow-up",
+        source_kind="chat",
+        source_session_id="s_1",
+    )
+
+    open_items = store.list_action_items("c", status="open")
+    descriptions = {it["description"] for it in open_items}
+    assert descriptions == {"Send IPS", "Chat-originated follow-up"}
+    origins = {it["origin"] for it in open_items}
+    assert origins == {"meeting", "chat"}
+
+    # Item IDs must distinguish the two origins.
+    for item in open_items:
+        if item["origin"] == "meeting":
+            assert isinstance(item["item_id"], str)
+            assert item["item_id"].startswith("meeting:doc-1:")
+        else:
+            assert isinstance(item["item_id"], int)
+
+
+def test_list_action_items_standalone_respects_status_filter(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    row = store.add_action_item(collection_id="c", description="Task")
+    store.update_action_item(row["id"], status="closed")
+    store.add_action_item(collection_id="c", description="Still open")
+
+    open_only = store.list_action_items("c", status="open")
+    closed_only = store.list_action_items("c", status="closed")
+    assert {it["description"] for it in open_only} == {"Still open"}
+    assert {it["description"] for it in closed_only} == {"Task"}
+
+
+def test_list_action_items_standalone_respects_assignee_filter(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.add_action_item(collection_id="c", description="A", assignee="advisor")
+    store.add_action_item(collection_id="c", description="B", assignee="client")
+
+    advisor_items = store.list_action_items("c", status=None, assignee="ADVISOR")
+    assert {it["description"] for it in advisor_items} == {"A"}
+
+
+def test_list_action_items_isolates_collections(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.add_action_item(collection_id="alpha", description="From alpha")
+    store.add_action_item(collection_id="beta", description="From beta")
+    items_alpha = store.list_action_items("alpha", status=None)
+    items_beta = store.list_action_items("beta", status=None)
+    assert {it["description"] for it in items_alpha} == {"From alpha"}
+    assert {it["description"] for it in items_beta} == {"From beta"}
+
+
+def test_update_meeting_action_item_status_in_place(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.save(document_id="doc-1", collection_id="c", notes=_sample_notes())
+    # Sample notes: index 0 is "Send IPS" (open), index 1 is "Forward 1099" (closed).
+    updated = store.update_meeting_action_item_status("doc-1", 0, "closed")
+    assert updated is not None
+    assert updated["status"] == "closed"
+    assert updated["description"] == "Send IPS"
+
+    # Sanity: list_action_items now sees the new status.
+    closed = store.list_action_items("c", status="closed")
+    descriptions = {it["description"] for it in closed}
+    assert "Send IPS" in descriptions
+
+
+def test_update_meeting_action_item_status_rejects_invalid(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.save(document_id="doc-1", collection_id="c", notes=_sample_notes())
+    with pytest.raises(ValueError):
+        store.update_meeting_action_item_status("doc-1", 0, "archived")
+
+
+def test_update_meeting_action_item_status_returns_none_for_unknown_doc(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    assert store.update_meeting_action_item_status("missing", 0, "closed") is None
+
+
+def test_update_meeting_action_item_status_returns_none_for_bad_index(tmp_path):
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.save(document_id="doc-1", collection_id="c", notes=_sample_notes())
+    assert store.update_meeting_action_item_status("doc-1", 99, "closed") is None
+
+
+def test_update_meeting_action_item_mirrors_into_raw_json(tmp_path):
+    """raw_json is the audit-trail blob; status edits need to land there too
+    so re-reading the row through that field shows the same state."""
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.save(document_id="doc-1", collection_id="c", notes=_sample_notes())
+    store.update_meeting_action_item_status("doc-1", 0, "closed")
+
+    import sqlite3
+    with sqlite3.connect(store.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            f"SELECT raw_json FROM {store.TABLE} WHERE document_id = ?",
+            ("doc-1",),
+        ).fetchone()
+    payload = json.loads(row["raw_json"])
+    assert payload["action_items"][0]["status"] == "closed"
+
+
+def test_build_meeting_context_includes_standalone_action_items(tmp_path):
+    """Brief's meeting-context block surfaces standalone items alongside
+    transcript-extracted ones — advisor expects to see chat-originated TODOs
+    in the same brief view."""
+    store = MeetingNotesStore(tmp_path / "metadata.db")
+    store.save(document_id="doc-1", collection_id="c", notes=_sample_notes())
+    store.add_action_item(
+        collection_id="c",
+        description="Chat-saved follow-up",
+        source_kind="chat",
+    )
+    ctx = build_meeting_context(
+        meeting_notes_store=store,
+        metadata_store=_FakeMetadataStore({"doc-1": "Henderson 2026-04-15.mp3"}),
+        collection_id="c",
+    )
+    descriptions = {it["description"] for it in ctx["open_action_items"]}
+    assert "Send IPS" in descriptions
+    assert "Chat-saved follow-up" in descriptions
+    # Standalone item has no source filename (no document_id).
+    chat_item = next(
+        it for it in ctx["open_action_items"] if it["description"] == "Chat-saved follow-up"
+    )
+    assert chat_item["source_filename"] == ""
