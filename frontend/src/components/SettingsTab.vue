@@ -460,6 +460,7 @@
                           :placeholder="def.keyPlaceholder || 'API key…'"
                           class="input input-bordered input-sm join-item flex-1"
                           @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''; editBuffer.errorCode = ''"
+                        @blur="onProviderApiKeyBlur(def.id)"
                         />
                         <button
                           class="btn btn-sm join-item"
@@ -510,11 +511,34 @@
 
                 <div v-if="def.models && def.models.length" class="form-control">
                   <label class="label p-0 pb-1" :for="`provider-model-${def.id}`"><span class="label-text font-medium">Model</span></label>
-                  <p class="text-xs text-base-content/50 mb-1">Override the default model. Leave blank to use provider defaults.</p>
-                  <select :id="`provider-model-${def.id}`" v-model="editBuffer.model" class="select select-bordered select-sm w-full">
-                    <option value="">Use provider defaults</option>
-                    <option v-for="m in def.models" :key="m.id" :value="m.id">{{ m.label }}</option>
-                  </select>
+                  <div class="flex items-end gap-2">
+                    <div class="flex-1">
+                      <select :id="`provider-model-${def.id}`" v-model="editBuffer.model" class="select select-bordered select-sm w-full">
+                        <option value="">Use provider defaults</option>
+                        <option v-for="m in getProviderModelOptions(def.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                      </select>
+                      <p class="text-xs text-base-content/50 mt-1">{{ providerModelHint(def.id) }}</p>
+                    </div>
+                    <button
+                      v-if="canDiscoverModels(def.id)"
+                      class="btn btn-xs btn-ghost"
+                      @click="refreshProviderModelList(def.id)"
+                      :disabled="providerModelLoading.value[def.id]"
+                    >
+                      {{ providerModelLoading.value[def.id] ? 'Refreshing…' : 'Refresh' }}
+                    </button>
+                  </div>
+                </div>
+                <div class="form-control">
+                  <label class="label p-0 pb-1" :for="`provider-model-custom-${def.id}`"><span class="label-text font-medium">Custom model ID</span></label>
+                  <input
+                    :id="`provider-model-custom-${def.id}`"
+                    v-model="editBuffer.model"
+                    type="text"
+                    placeholder="Enter a model ID or choose one from the list above"
+                    class="input input-bordered input-sm w-full"
+                  />
+                  <p class="text-xs text-base-content/50 mt-1">Leave blank to use provider defaults.</p>
                 </div>
 
                 <div class="flex items-center gap-2 flex-wrap">
@@ -607,7 +631,7 @@
                 </div>
                 <div class="form-control">
                   <label class="label p-0 pb-1" :for="`custom-baseurl-${cp.id}`"><span class="label-text font-medium">Base URL</span></label>
-                  <input :id="`custom-baseurl-${cp.id}`" v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+                  <input :id="`custom-baseurl-${cp.id}`" v-model="editBuffer.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" @blur="refreshProviderModelList(cp.id)" />
                   <p class="text-xs text-base-content/50 mt-1">Must be an OpenAI-compatible endpoint (e.g. vLLM, LM Studio, Groq, OpenRouter).</p>
                 </div>
                 <div class="form-control">
@@ -1258,6 +1282,8 @@ import {
   setActiveProviderLS,
   getConfiguredProviderIds,
   isManagedProvider,
+  getAPIProviderName,
+  fetchDynamicModels,
   migrateLegacySettings,
   bootstrapAIDefaultsOnFirstProvider,
 } from '../utils/aiProviders.js'
@@ -1901,7 +1927,11 @@ const savingProvider = ref(null)
 const ollamaCheckStatus = ref(null) // null | 'checking' | 'available' | 'unavailable'
 const detectedOllamaModels = ref([])
 
-// Custom provider add form
+// Dynamic model discovery state for provider configs
+const providerModelLists = ref({})
+const providerModelLoading = ref({})
+const providerModelErrors = ref({})
+
 const showAddCustomForm = ref(false)
 const newCustom = ref({ name: '', baseUrl: '', apiKey: '', model: '' })
 
@@ -1920,6 +1950,87 @@ const isProviderConfigured = (id) => {
 const getProviderModelLabel = (id) => {
   const cfg = getProviderConfig(id)
   return cfg?.model || ''
+}
+
+const isCustomProvider = (id) => {
+  const cfg = getProviderConfig(id)
+  return !!cfg?.isCustom
+}
+
+const getDiscoveryProviderName = (id) => {
+  return isCustomProvider(id) ? getAPIProviderName(id) : id
+}
+
+const getDiscoveryBaseUrl = (id) => {
+  if (!isCustomProvider(id)) return undefined
+  return editBuffer.value.baseUrl?.trim() || getProviderConfig(id)?.baseUrl || undefined
+}
+
+const normalizeModelList = (models) => {
+  if (!Array.isArray(models)) return []
+  return models
+    .map((item) => {
+      if (!item) return null
+      if (typeof item === 'string') return { id: item, label: item }
+      const id = item.id || item.model || item.name || ''
+      const label = item.label || item.name || item.id || String(item)
+      return id ? { id, label } : null
+    })
+    .filter(Boolean)
+}
+
+const getProviderModelOptions = (id) => {
+  const dynamic = providerModelLists.value[id]
+  if (Array.isArray(dynamic) && dynamic.length > 0) {
+    return dynamic
+  }
+
+  const def = PROVIDER_DEFS.find(d => d.id === id)
+  return def?.models || []
+}
+
+const canDiscoverModels = (id) => {
+  const def = PROVIDER_DEFS.find(d => d.id === id)
+  if (!def) return false
+  if (def.type === 'local') return false
+  if (isManagedProvider(id)) return false
+  return true
+}
+
+const providerModelHint = (id) => {
+  const loading = providerModelLoading.value[id]
+  const error = providerModelErrors.value[id]
+  if (loading) return 'Refreshing models…'
+  if (error) return `Failed to load models: ${error}`
+  if (providerModelLists.value[id]?.length) return 'Loaded models from the provider.'
+  return 'Override the default model. Leave blank to use provider defaults.'
+}
+
+const refreshProviderModelList = async (providerId) => {
+  if (!canDiscoverModels(providerId) && !isCustomProvider(providerId)) return
+
+  providerModelLoading.value = { ...providerModelLoading.value, [providerId]: true }
+  providerModelErrors.value = { ...providerModelErrors.value, [providerId]: '' }
+
+  try {
+    const apiKey = editBuffer.value.apiKey?.trim() || getProviderConfig(providerId)?.apiKey || ''
+    const baseUrl = getDiscoveryBaseUrl(providerId)
+    const providerName = getDiscoveryProviderName(providerId)
+
+    const models = await fetchDynamicModels(providerName, apiKey, baseUrl)
+    providerModelLists.value = {
+      ...providerModelLists.value,
+      [providerId]: normalizeModelList(models),
+    }
+  } catch (err) {
+    providerModelErrors.value = {
+      ...providerModelErrors.value,
+      [providerId]: err.message || 'Unable to load models.',
+    }
+    providerModelLists.value = { ...providerModelLists.value, [providerId]: [] }
+  } finally {
+    providerModelLoading.value = { ...providerModelLoading.value, [providerId]: false }
+  }
 }
 
 const toggleExpand = (id) => {
@@ -1944,6 +2055,10 @@ const toggleExpand = (id) => {
   }
   if (id === 'ollama' && ollamaCheckStatus.value === null) {
     detectOllama()
+  }
+
+  if (canDiscoverModels(id) && editBuffer.value.apiKey?.trim()) {
+    refreshProviderModelList(id)
   }
 }
 
@@ -1996,6 +2111,12 @@ const validateAndSave = async (id) => {
     editBuffer.value.capabilities = null
   }
   validatingProvider.value = null
+}
+
+const onProviderApiKeyBlur = async (providerId) => {
+  if (canDiscoverModels(providerId) && editBuffer.value.apiKey?.trim()) {
+    await refreshProviderModelList(providerId)
+  }
 }
 
 const setActiveProvider = (id) => {

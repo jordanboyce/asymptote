@@ -101,7 +101,7 @@ export const PROVIDER_DEFS = [
     badge: 'local',
     hasBaseUrl: true,
     defaultBaseUrl: 'http://localhost:11434',
-    models: [], // populated dynamically via detection
+    models: [], // Populated dynamically
   },
   {
     id: 'ollama_cloud',
@@ -404,4 +404,23 @@ export function migrateLegacySettings() {
   }
 
   if (changed) saveProvidersConfig(configs)
+}
+
+export async function fetchDynamicModels(providerId, apiKey, baseUrl = null) {
+  try {
+    const response = await fetch('/api/providers/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider_id: providerId,
+        api_key: apiKey,
+        base_url: baseUrl,
+      }),
+    });
+    if (!response.ok) throw new Error(`Failed to fetch models: ${response.statusText}`);
+    return await response.json();
+  } catch (e) {
+    console.error('Error fetching dynamic models:', e);
+    return [];
+  }
 }

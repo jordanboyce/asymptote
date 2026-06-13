@@ -427,6 +427,43 @@ async def get_managed_provider():
         "model": settings.fallback_model or "gemma4:31b",
     }
 
+class ModelDiscoveryRequest(BaseModel):
+    provider_id: str
+    api_key: str
+    base_url: Optional[str] = None
+
+@app.post(
+    "/api/providers/models",
+    summary="Discover available models for a provider",
+    tags=["ai"],
+    response_model=List[Dict[str, str]],
+)
+async def discover_models(request: ModelDiscoveryRequest):
+    """
+    Fetch the list of available models for a specific AI provider using the provided API key.
+    
+    Args:
+        provider_id: The ID of the provider (e.g., 'openai', 'anthropic', 'ollama')
+        api_key: The user's API key for that provider
+        base_url: Optional base URL for OpenAI-compatible or Ollama providers
+    """
+    try:
+        # Use the existing provider factory logic
+        provider = create_provider(
+            provider_id=request.provider_id,
+            api_key=request.api_key,
+            base_url=request.base_url
+        )
+        
+        models = provider.list_models()
+        return models
+    except Exception as e:
+        logger.error(f"Model discovery failed for {request.provider_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch models from provider: {str(e)}"
+        )
+
 
 @app.post(
     "/documents/upload",
@@ -3454,11 +3491,18 @@ async def list_documents(
             source_path = doc.get("source_path")
 
             if source_type == "local_reference" and source_path:
-                # Local reference - use source_path
+                # Local reference - serve from original location
                 doc_path = Path(source_path)
             else:
-                # Uploaded file - use documents directory
+                # Uploaded file - serve from collection's documents directory
                 doc_path = document_dir / doc["filename"]
+                if not doc_path.exists():
+                    doc_path = document_dir / f"{doc['filename']}"
+                    if not doc_path.exists():
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Document file not found: {doc['filename']}",
+                        )
 
             # Get timestamp from file modification time or upload_timestamp
             # Handle None values by defaulting to empty string
@@ -4099,18 +4143,17 @@ async def list_action_items_endpoint(
             if doc_id:
                 filename_by_doc[doc_id] = doc.get("filename") or ""
     except Exception:
-        pass
-
-    decorated = [
-        {**item, "source_filename": filename_by_doc.get(item.get("document_id"), "")}
-        for item in items[:limit]
-    ]
-
+        # The map is purely cosmetic — a failed enumeration shouldn't
+        # 500 the action-items listing.
+        logger.debug("Failed to enumerate documents for filename map", exc_info=True)
     return {
         "collection_id": collection_id,
-        "count": len(decorated),
+        "count": len(items),
         "total_available": len(items),
-        "items": decorated,
+        "items": [
+            {**item, "source_filename": filename_by_doc.get(item.get("document_id"), "")}
+            for item in items[:limit]
+        ],
     }
 
 
@@ -4949,7 +4992,7 @@ async def _stream_one_shot_with_redaction(
     """SSE generator for one-shot drafting endpoints (/notes/stream, /followup/stream).
 
     Streams raw deltas during generation so the advisor sees progress, then on
-    `done` emits the redacted final text. The frontend swaps the streamed
+    `done` emits the redacted final content. The frontend swaps the streamed
     content for the redacted version — guaranteeing the saved note is scrubbed
     of PII even if the LLM echoed something the prompt-side redaction missed.
     """

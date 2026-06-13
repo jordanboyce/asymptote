@@ -272,18 +272,16 @@ class AIProvider(ABC):
         max_tokens: int,
         model: str,
     ) -> Iterator[dict]:
-        """Stream a single-prompt completion, yielding event dicts.
-
-        Used by OneShotEngine (/notes, /followup, /ask). Same event shape as
-        ``stream_chat``. Default falls back to ``complete`` and emits the
-        result as a single delta — providers should override for real
-        per-token streaming.
-        """
+        """Stream a single-prompt completion, yielding event dicts."""
         result = self.complete(prompt, max_tokens, model)
         text = (result.get("text") or "").strip()
         if text:
             yield {"delta": text}
         yield {"done": True, "usage": result.get("usage") or {"input_tokens": 0, "output_tokens": 0, "model": model}}
+
+    def list_models(self) -> List[Dict[str, str]]:
+        """Return a list of available models as [{'id': str, 'label': str}]."""
+        return []
 
 
 class AnthropicProvider(AIProvider):
@@ -655,6 +653,15 @@ class AnthropicProvider(AIProvider):
             logger.error(f"Anthropic validation error: {e}")
             raise
 
+    def list_models(self) -> List[Dict[str, str]]:
+        """Anthropic does not have a public 'list models' endpoint. 
+        Return known models as a fallback."""
+        models = []
+        for mid, info in KNOWN_MODELS.items():
+            if mid.startswith("claude-"):
+                models.append({"id": mid, "label": mid})
+        return models
+
 
 class OpenAIProvider(AIProvider):
     """OpenAI provider."""
@@ -888,6 +895,19 @@ class OpenAIProvider(AIProvider):
         except Exception as e:
             logger.error(f"OpenAI validation error: {e}")
             raise
+
+    def list_models(self) -> List[Dict[str, str]]:
+        """Fetch available models from OpenAI API."""
+        try:
+            models_page = self.client.models.list()
+            # OpenAI returns a SyncPage object; convert to list of dicts
+            return [
+                {"id": m.id, "label": m.id} 
+                for m in models_page.data
+            ]
+        except Exception as e:
+            logger.error(f"OpenAI model list failed: {e}")
+            return []
 
 
 class OllamaProvider(AIProvider):
