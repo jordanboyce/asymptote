@@ -1,0 +1,4 @@
+services:
+  finn:
+    environment:
+      - DISCARD_ORIGINALS_AFTER_INDEX=true

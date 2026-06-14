@@ -68,7 +68,7 @@ _TOOLS: List[Dict[str, Any]] = [
         "name": "get_table_schema",
         "description": (
             "Return the full typed schema of an ingested CSV/Excel sheet, "
-            "including column sql_names, types, detected financial roles, "
+            "including column sql_names, types, detected column roles, "
             "sample values, and stats."
         ),
         "parameters": {
@@ -131,29 +131,6 @@ _TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "compute_portfolio_metric",
-        "description": (
-            "Run a canned financial portfolio metric. Only valid when "
-            "get_table_schema reports non-empty financial_roles. Supported: "
-            "row_count, total_market_value, total_cost_basis, total_pnl, "
-            "top_holdings, bottom_holdings, largest_gains, largest_losses, "
-            "concentration, breakdown_by_sector, breakdown_by_asset_class, "
-            "breakdown_by_region, breakdown_by_currency, weighted_return, "
-            "summary_statistics."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "identifier": {"type": "string"},
-                "metric": {"type": "string"},
-                "limit": {"type": "integer"},
-                "group_by_symbol": {"type": "boolean"},
-                "collection_id": {"type": "string"},
-            },
-            "required": ["identifier", "metric"],
-        },
-    },
-    {
         "name": "list_collections",
         "description": "List every available collection (id, name, document count).",
         "parameters": {"type": "object", "properties": {}},
@@ -166,63 +143,6 @@ _TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "collection_id": {"type": "string"},
             },
-        },
-    },
-    {
-        "name": "get_price_history",
-        "description": "Historical OHLCV price data for a ticker symbol via Yahoo Finance.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "period": {"type": "string", "description": "e.g. '1d', '5d', '1mo', '6mo', '1y', '5y', 'max'."},
-                "interval": {"type": "string", "description": "e.g. '1d', '1wk', '1mo'."},
-            },
-            "required": ["symbol"],
-        },
-    },
-    {
-        "name": "get_security_classification",
-        "description": "Sector, market cap, and asset-class classification for a ticker symbol.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-            },
-            "required": ["symbol"],
-        },
-    },
-    {
-        "name": "get_company_profile",
-        "description": (
-            "Company-level metadata for a ticker via Yahoo Finance: current "
-            "CEO and other officers, business summary, sector, industry, "
-            "website, employee count, market cap. Use for \"who is the CEO\", "
-            "\"what does X do\", \"where are they headquartered\" questions."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-            },
-            "required": ["symbol"],
-        },
-    },
-    {
-        "name": "get_company_news",
-        "description": (
-            "Recent news headlines for a ticker from Yahoo Finance. Use for "
-            "\"any recent news / updates / announcements / CEO changes / "
-            "guidance changes / M&A activity on X\" questions. Returns "
-            "articles with title, publisher, publish time, and URL."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 30},
-            },
-            "required": ["symbol"],
         },
     },
 ]

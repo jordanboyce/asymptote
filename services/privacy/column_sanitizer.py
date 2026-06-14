@@ -182,7 +182,6 @@ def sanitize_tabular_sheet(
     * ``row_texts`` is regenerated to match the sanitized values.
     * A summary of what was removed is logged at INFO level.
     """
-    from services.financial.roles import detect_financial_role
     from services.privacy.collection_blacklist import apply_blacklist
 
     columns: list[str] = sheet.get("columns", [])
@@ -191,10 +190,11 @@ def sanitize_tabular_sheet(
     if role_overrides:
         combined_overrides.update(role_overrides)
 
-    # Determine action per column
+    # Determine action per column. Roles come from any supplied overrides;
+    # otherwise _classify_column falls back to name-based PII heuristics.
     col_actions: dict[str, str] = {}
     for col in columns:
-        role = combined_overrides.get(col) or detect_financial_role(col, "text")
+        role = combined_overrides.get(col)
         col_actions[col] = _classify_column(col, role)
 
     hash_cols = [c for c, a in col_actions.items() if a == "hash"]

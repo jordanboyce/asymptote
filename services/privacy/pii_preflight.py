@@ -80,7 +80,6 @@ def scan_file(
     from services.document_extractor import DocumentExtractor
     from services.privacy.column_sanitizer import _classify_column
     from services.privacy.collection_blacklist import get_blacklist
-    from services.financial.roles import detect_financial_role
 
     extractor = DocumentExtractor()
     sheets = extractor.extract_tabular_sheets(file_path)
@@ -95,7 +94,7 @@ def scan_file(
 
         col_reports: list[dict] = []
         for col in columns:
-            role = role_overrides.get(col) or detect_financial_role(col, "text")
+            role = role_overrides.get(col)
             action = _classify_column(col, role)
             samples = _sample_values(rows, col)
 

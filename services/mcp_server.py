@@ -23,10 +23,8 @@ from services.structured_chat import (
     render_table_as_jsonl,
     render_table_as_rows,
 )
-from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
 from services.structured_store import SQLValidationError, StructuredStore
 from services.privacy.redaction_middleware import redact_mcp_response
-from services.brief_generator import generate_meeting_brief as _generate_brief
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +358,7 @@ def list_collections() -> dict[str, Any]:
 
     Once you know the target collection_id, pass it explicitly to
     `get_collection_info`, `search_collection`, `list_tables`,
-    `query_table`, `aggregate_table`, `compute_portfolio_metric`, etc. If
+    `query_table`, `aggregate_table`, etc. If
     you omit `collection_id`, those tools fall back to the server's default
     collection, which may not be what the user asked about.
     """
@@ -387,85 +385,6 @@ def list_collections() -> dict[str, Any]:
         "default_collection_id": default_id,
         "collections": entries,
     }, "list_collections")
-
-
-@_asymptote_mcp.tool()
-def generate_meeting_brief(
-    collection_id: str | None = None,
-    tax_loss_min: float = 500.0,
-    concentration_pct: float = 10.0,
-    cash_drag_min: float = 50000.0,
-    top_n: int = 10,
-) -> dict[str, Any]:
-    """Generate a pre-meeting portfolio brief for a collection.
-
-    The PRIMARY tool for advisor meeting preparation. Scans every CSV / Excel
-    table in the collection that has detected financial roles and computes a
-    ready-to-read brief across seven sections:
-
-      household_summary     — total market value, cost basis, unrealized P&L
-      accounts              — per-account breakdown (when an account column exists)
-      top_positions         — top N holdings by market value
-      tax_loss_candidates   — underwater positions with loss >= tax_loss_min
-      concentration_alerts  — single positions >= concentration_pct of portfolio
-      cash_drag_alerts      — cash / money-market positions >= cash_drag_min
-      sector_allocation     — market value grouped by sector
-
-    Call this FIRST at the start of any client meeting prep, portfolio review,
-    or "what should I know about this portfolio?" question. It works across
-    multi-sheet and multi-file collections — all tables are merged into one
-    household view.
-
-    Parameters:
-      - collection_id: Optional. If omitted, uses the server's default
-        collection. Pass an explicit id (from `list_collections`) to target
-        a specific client portfolio.
-      - tax_loss_min: Minimum unrealized loss (in dollars) to surface as a
-        tax-loss harvesting candidate. Default 500.
-      - concentration_pct: Single-position percentage threshold. Positions
-        at or above this share of total market value appear in
-        concentration_alerts. Default 10.0 (10 %).
-      - cash_drag_min: Minimum cash / money-market balance (in dollars) to
-        flag as cash drag. Default 50000.
-      - top_n: Number of top positions by market value to return. Default 10.
-
-    Returns a dict with:
-      - collection_id, tables_scanned, generated_at
-      - household_summary: total_market_value, total_cost_basis,
-        total_unrealized_pnl, sources (per-file breakdown)
-      - accounts: list of {account, market_value}
-      - top_positions: list of {name, market_value, cost_basis?,
-        unrealized_pnl?, ticker?, sector?}
-      - tax_loss_candidates: list of {name, market_value, cost_basis,
-        unrealized_loss, ticker?}
-      - concentration_alerts: list of {name, market_value,
-        pct_of_portfolio, threshold_pct}
-      - cash_drag_alerts: list of {name, market_value, threshold}
-      - sector_allocation: list of {sector, market_value,
-        position_count, pct_of_portfolio?}
-
-    When NOT to use this tool:
-      - For detailed SQL analysis of a single table → use query_table.
-      - For a specific canned metric → use compute_portfolio_metric.
-      - For semantic / narrative questions → use search_collection.
-    """
-    _ensure_enabled()
-    resolved_collection = _resolve_collection_id(collection_id)
-    store = _get_structured_store(resolved_collection)
-
-    thresholds = {
-        'tax_loss_min': tax_loss_min,
-        'concentration_pct': concentration_pct,
-        'cash_drag_min': cash_drag_min,
-        'top_n': top_n,
-    }
-
-    try:
-        brief = _generate_brief(store, collection_id=resolved_collection, thresholds=thresholds)
-    except Exception as exc:
-        raise ValueError(f"Brief generation failed: {exc}") from exc
-
-    return _redact(brief, "generate_meeting_brief")
 
 
 @_asymptote_mcp.tool()
@@ -577,7 +496,6 @@ def search_collection(
       - `list_tables` → `get_table_rows` (small tables, read full data)
       - `list_tables` → `aggregate_table` (group-by / aggregation, no SQL)
       - `list_tables` → `query_table` (ad-hoc SQL for any domain)
-      - `compute_portfolio_metric` for canned financial portfolio metrics.
 
     When this tool IS the right choice:
     - Narrative / prose / conceptual questions about PDFs, text, code, notes.
@@ -721,7 +639,7 @@ def search_collection(
             "reason": (
                 "Query looks numeric/aggregation-shaped. If the answer lives "
                 "in a CSV/XLSX table, list_tables → get_table_schema → "
-                "aggregate_table / query_table / compute_portfolio_metric "
+                "aggregate_table / query_table "
                 "will give correct totals; search_collection results are "
                 "truncated chunks."
             ),
@@ -1118,15 +1036,12 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
       - Small table, just want the data → `get_table_rows(identifier)`.
       - Ad-hoc SQL aggregation → `query_table(sql)`.
       - Generic groupBy/aggregate → `aggregate_table(identifier, ...)`.
-      - Canned financial metrics (top_holdings, breakdown_by_sector, etc.) →
-        `compute_portfolio_metric(identifier, metric)` — only useful when
-        `get_table_schema` returns a `financial_roles` field.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
     raw_tables = store.list_tables()
-    # Strip financial_roles from the listing — that detail belongs in get_table_schema.
+    # Strip column-role detail from the listing — it belongs in get_table_schema.
     tables = [
         {k: v for k, v in t.items() if k != "financial_roles"}
         for t in raw_tables
@@ -1161,12 +1076,10 @@ def get_table_schema(
     and stats (min/max/mean/sum/p25/p50/p75 for numeric columns). Use this
     before writing SQL so you know exact column names and types.
 
-    When semantic financial roles are detected (ticker, market_value, sector,
-    pnl, cost_basis, etc.) the response includes a top-level `financial_roles`
-    map of sql_name → role. A non-empty `financial_roles` means
-    `compute_portfolio_metric` will work for this table; if the field is
-    absent the table has no recognized financial structure and you should use
-    `aggregate_table` or `query_table` instead.
+    When semantic column roles are detected, the response includes a
+    top-level `financial_roles` map of sql_name → role. Use it as a hint when
+    writing SQL or choosing an `aggregate_table` column; when the field is
+    absent, treat every column as plain typed data.
     """
     _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
@@ -1292,93 +1205,6 @@ def query_table(
         "sql": sql,
         **result,
     }, "query_table")
-
-
-PortfolioMetric = Literal[
-    "row_count",
-    "total_market_value",
-    "total_cost_basis",
-    "total_pnl",
-    "top_holdings",
-    "bottom_holdings",
-    "largest_gains",
-    "largest_losses",
-    "concentration",
-    "breakdown_by_sector",
-    "breakdown_by_asset_class",
-    "breakdown_by_region",
-    "breakdown_by_currency",
-    "weighted_return",
-    "summary_statistics",
-]
-
-
-@_asymptote_mcp.tool()
-def compute_portfolio_metric(
-    identifier: str,
-    metric: PortfolioMetric,
-    limit: int = 10,
-    group_by_symbol: bool = True,
-    collection_id: str | None = None,
-    identifier_type: Literal["table_name", "filename", "document_id"] | None = None,
-) -> dict[str, Any]:
-    """Compute a canned financial portfolio metric on an ingested table.
-
-    FINANCIAL CONTEXT ONLY — only call this tool when `get_table_schema`
-    returned a non-empty `financial_roles` field (market_value, pnl,
-    cost_basis, ticker, sector, etc.). For generic tabular data without
-    financial roles use `aggregate_table` or `query_table` instead.
-
-    Safer and more predictable than hand-written SQL for the 15 common
-    portfolio metrics listed below.
-
-    Parameters:
-      - identifier: filename, table_name, or document_id (from `list_tables`).
-      - metric: one of the supported metrics listed below.
-      - limit: for ranking metrics (top_holdings, bottom_holdings, etc.).
-      - group_by_symbol: when true (default), use the auto-generated
-        `__by_symbol` rollup view when available so tax lots are aggregated
-        into positions before computing the metric.
-      - collection_id: Optional. If omitted, uses the server's default
-        collection. Pass an explicit id (from `list_collections`) when the
-        portfolio lives in a specific client collection.
-      - identifier_type: Optional. Restrict the lookup to exactly one of
-        "table_name", "filename", or "document_id". When omitted (default),
-        all three are searched.
-
-    Supported metrics:
-      - row_count
-      - total_market_value
-      - total_cost_basis
-      - total_pnl
-      - top_holdings       (uses limit)
-      - bottom_holdings    (uses limit)
-      - largest_gains      (uses limit)
-      - largest_losses     (uses limit)
-      - concentration      (share of total held by top N, uses limit)
-      - breakdown_by_sector
-      - breakdown_by_asset_class
-      - breakdown_by_region
-      - breakdown_by_currency
-      - weighted_return
-      - summary_statistics
-
-    Each metric requires specific column roles; if the required role isn't
-    found you'll get an error listing which roles were detected — fall back
-    to `query_table` with hand-written SQL in that case.
-    """
-    _ensure_enabled()
-    resolved_collection = _resolve_collection_id(collection_id)
-    store = _get_structured_store(resolved_collection)
-    result = compute_financial_metric(
-        store,
-        identifier,
-        metric,
-        limit=limit,
-        group_by_symbol=group_by_symbol,
-        identifier_type=identifier_type,
-    )
-    return _redact({"collection_id": resolved_collection, **result}, "compute_portfolio_metric")
 
 
 _AGG_FN_SQL = {
@@ -1608,241 +1434,6 @@ def get_recent_redactions(
         result["session_summary"] = summary
 
     return result
-
-
-@_asymptote_mcp.tool()
-def get_price_history(
-    symbol: str,
-    start: str | None = None,
-    end: str | None = None,
-    interval: str = "1d",
-    period: str | None = None,
-) -> dict[str, Any]:
-    """Return historical OHLCV price data for a security.
-
-    Use this for any question that requires time-series price data beyond
-    the snapshot in a portfolio file: trend / momentum / drawdown
-    analysis, "what's in a downtrend?", "how has X performed this year?",
-    "show me the chart", peak-to-trough moves, return over period.
-
-    Parameters:
-      - symbol: Ticker symbol (e.g. "AAPL", "MSFT", "^GSPC"). Required.
-      - period: Yahoo-Finance shorthand for the lookback window. One of:
-        1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max. Use this for
-        simple "last N days/months/years" queries — it is usually easier
-        than computing explicit dates.
-      - start / end: ISO dates (YYYY-MM-DD). Use these when you need a
-        specific window that doesn't align with `period`. If both `period`
-        and `start` are provided, `start` wins.
-      - interval: Bar size. One of: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h,
-        1d, 5d, 1wk, 1mo, 3mo. Default "1d". Note: yfinance limits
-        intraday intervals to recent windows (e.g. 1m is last 7 days).
-
-    Returns: { symbol, interval, start, end, currency, points,
-    point_count, source, cached, cached_at }. Each point has
-    { date, open, high, low, close, volume }.
-
-    On lookup failure returns { error, message, symbol } with error
-    codes: missing_symbol, invalid_interval, invalid_period,
-    symbol_not_found_or_no_data, yfinance_fetch_failed. Agents should
-    fall back to reporting the error to the user rather than inventing
-    values.
-
-    Results are cached locally on disk; repeat calls within the TTL
-    (30 min intraday, 12 h daily, 24 h weekly+) return instantly.
-    """
-    _ensure_enabled()
-
-    from services.market_data.price_history import get_price_history as _fetch
-
-    response = _fetch(
-        symbol=symbol,
-        start=start,
-        end=end,
-        interval=interval,
-        period=period,
-    )
-    return _redact(response, tool_name="get_price_history")
-
-
-@_asymptote_mcp.tool()
-def get_security_classification(symbol: str) -> dict[str, Any]:
-    """Return sector, industry, market cap bucket, asset class for a security.
-
-    Use this for questions about portfolio composition that the source
-    file doesn't directly answer: sector concentration, growth vs value,
-    asset-class breakdown, market-cap exposure, geographic exposure,
-    ETF category. Also use it to classify holdings when the uploaded
-    file has no sector/industry columns.
-
-    Parameters:
-      - symbol: Ticker (e.g. "AAPL", "SPY", "VTI"). Required.
-
-    Returns: symbol, name, asset_class (equity/etf/mutual_fund/…),
-    sector, industry, country, currency, exchange, market_cap,
-    market_cap_bucket (mega/large/mid/small/micro/nano),
-    dividend_yield, beta, isin, category (ETFs),
-    fund_family (ETFs), source, cached, cached_at.
-
-    On lookup failure returns { error, message, symbol } with codes:
-    missing_symbol, symbol_not_found, yfinance_fetch_failed. Classifications
-    are cached locally for 7 days — sector assignments change rarely.
-    """
-    _ensure_enabled()
-
-    from services.market_data.classification import get_security_classification as _fetch
-
-    response = _fetch(symbol=symbol)
-    return _redact(response, tool_name="get_security_classification")
-
-
-@_asymptote_mcp.tool()
-def get_company_profile(symbol: str) -> dict[str, Any]:
-    """Return company-level metadata for a ticker: current officers, CEO,
-    business summary, sector, industry, website, headcount, market cap.
-
-    Use this for "who is the CEO of X?", "what does X do?", "where are
-    they based?", "how many employees?" — anything that needs the current
-    state of the company rather than price data or a prose document.
-
-    Parameters:
-      - symbol: Ticker (e.g. "AAPL", "GLW"). Required.
-
-    Returns: symbol, name, quote_type, sector, industry, country, website,
-    ir_website, employees, business_summary, ceo ({name, title, age,
-    year_born, total_pay}), officers (full leadership list), market_cap,
-    source, cached, cached_at.
-
-    Profiles cache for 24 h — leadership / sector assignments change
-    slowly. For fresh CEO-transition announcements combine with
-    get_company_news.
-    """
-    _ensure_enabled()
-
-    from services.market_data.company import get_company_profile as _fetch
-
-    response = _fetch(symbol=symbol)
-    return _redact(response, tool_name="get_company_profile")
-
-
-@_asymptote_mcp.tool()
-def get_company_news(symbol: str, limit: int = 10) -> dict[str, Any]:
-    """Return recent news headlines for a ticker from yfinance.
-
-    Use this for "any recent news on X?", "did X announce anything?",
-    "recent CEO changes at X?", "earnings news", M&A coverage, guidance
-    updates — surfaces press releases and news articles indexed by Yahoo
-    Finance.
-
-    Parameters:
-      - symbol: Ticker. Required.
-      - limit: Max headlines to return (1-30, default 10).
-
-    Returns: symbol, count, news (list of {title, summary, publisher,
-    published_at, url, content_type}), source, cached, cached_at.
-
-    Cached for 30 minutes so fresh headlines surface without hammering
-    the upstream feed.
-    """
-    _ensure_enabled()
-
-    from services.market_data.company import get_company_news as _fetch
-
-    response = _fetch(symbol=symbol, limit=limit)
-    return _redact(response, tool_name="get_company_news")
-
-
-@_asymptote_mcp.tool()
-def get_corporate_events(
-    symbol: str,
-    since: str | None = None,
-    types: list[str] | None = None,
-    limit: int = 50,
-) -> dict[str, Any]:
-    """Return recent corporate events for a security: SEC filings, dividends,
-    splits, merger filings, and upcoming earnings.
-
-    Use this for "any recent 8-Ks?", "CEO change?", "M&A exposure?",
-    "dividend cut?", "upcoming earnings date?" — anything that requires
-    scanning the filing / event timeline rather than prose news.
-
-    Parameters:
-      - symbol: Ticker. Required. US-listed issuers only for SEC filings;
-        non-US symbols still return dividend/split/earnings data from
-        yfinance.
-      - since: ISO date (YYYY-MM-DD). Defaults to 1 year ago.
-      - types: Subset of ["filing", "8-K", "10-K", "10-Q", "dividend",
-        "split", "merger", "earnings"]. Default covers everything. Use
-        "filing" for the default filing set, or name specific forms to
-        narrow.
-      - limit: Max filings to return (default 50).
-
-    Returns: symbol, since, types, filings (form, filed, report_date,
-    accession, description, url), dividends ({date, amount}), splits
-    ({date, ratio}), earnings ({date, type}), counts, source, cached,
-    cached_at. May include `warnings` when SEC lookup fails (e.g. non-US
-    ticker) — dividends/splits/earnings still return.
-
-    Cached for 12 hours. SEC CIK lookups cache indefinitely.
-    """
-    _ensure_enabled()
-
-    from services.market_data.corporate_events import get_corporate_events as _fetch
-
-    response = _fetch(symbol=symbol, since=since, types=types, limit=limit)
-    return _redact(response, tool_name="get_corporate_events")
-
-
-@_asymptote_mcp.tool()
-def enrich_holdings(
-    collection_id: str | None = None,
-    identifier: str | None = None,
-    include: list[str] | None = None,
-    max_symbols: int = 100,
-) -> dict[str, Any]:
-    """Walk the holdings table for a collection and enrich every distinct
-    ticker with classification, company profile, (optionally) corporate
-    events and 1-year price history.
-
-    This is the composite tool that turns a bare portfolio file into an
-    answerable data structure: sector concentration, growth vs value,
-    CEO changes, recent M&A, price action — all with one call. Every
-    underlying feed caches aggressively; re-runs within the TTL are
-    near-instant.
-
-    Parameters:
-      - collection_id: Collection to enrich. Defaults to the server's
-        default collection.
-      - identifier: Optional table_name / filename / document_id. If
-        omitted, auto-picks the first table with a detected `ticker`
-        role.
-      - include: Subset of ["classification", "profile", "events",
-        "price_1y"]. Default: ["classification", "profile"]. Add
-        "events" for filings/dividends/splits and "price_1y" for the
-        daily OHLCV series — each adds an extra round of calls per
-        symbol.
-      - max_symbols: Cap on distinct symbols to enrich (default 100,
-        max 500).
-
-    Returns: collection_id, table_name, include, symbol_count, truncated,
-    holdings (list of {symbol, classification?, profile?, events?,
-    price_1y?}), source.
-
-    On lookup failure returns { error, message, ... } with codes:
-    no_holdings_table, no_symbols, invalid_include.
-    """
-    _ensure_enabled()
-    resolved_collection = _resolve_collection_id(collection_id)
-
-    from services.market_data.enrich import enrich_holdings as _enrich
-
-    response = _enrich(
-        collection_id=resolved_collection,
-        identifier=identifier,
-        include=include,
-        max_symbols=max_symbols,
-    )
-    return _redact(response, tool_name="enrich_holdings")
 
 
 @_asymptote_mcp.tool()

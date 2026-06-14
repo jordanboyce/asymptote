@@ -18,7 +18,6 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from services.financial.metrics import AVAILABLE_METRICS, compute_financial_metric
 from services.structured_store import SQLValidationError, StructuredStore
 
 logger = logging.getLogger(__name__)
@@ -34,7 +33,6 @@ _MAX_SCHEMA_PROMPT_COLS = 40
 
 SUPPORTED_TOOLS = {
     "query_table",
-    "compute_portfolio_metric",
     "search_documents",
     "get_document_context",
     "list_tables",
@@ -43,12 +41,6 @@ SUPPORTED_TOOLS = {
     "aggregate_table",
     "list_collections",
     "get_collection_info",
-    "get_price_history",
-    "get_security_classification",
-    "get_company_profile",
-    "get_company_news",
-    "get_corporate_events",
-    "enrich_holdings",
 }
 
 
@@ -107,16 +99,16 @@ def build_tool_use_instructions() -> str:
     """Render the agentic tool-use protocol for the system prompt.
 
     Describes every tool the chat loop can dispatch (document retrieval,
-    structured tables, market data, collection listing). Provider-agnostic
-    because we use ReAct-style `<tool_call>{...}</tool_call>` blocks rather
-    than each provider's native tool-calling API.
+    structured tables, collection listing). Provider-agnostic because we use
+    ReAct-style `<tool_call>{...}</tool_call>` blocks rather than each
+    provider's native tool-calling API.
     """
     return (
         "TOOL USE PROTOCOL:\n"
         "You are an agent. You may call tools to retrieve documents, run "
-        "structured queries against ingested CSV/XLSX tables, look up market "
-        "data, or enumerate collections. Call tools whenever the answer "
-        "requires data you don't already have in this prompt — do not guess.\n\n"
+        "structured queries against ingested CSV/XLSX tables, or enumerate "
+        "collections. Call tools whenever the answer requires data you don't "
+        "already have in this prompt — do not guess.\n\n"
         "CRITICAL: Do NOT narrate what you are about to do (\"Let me query...\", "
         "\"I'll look this up...\"). Either emit an actual <tool_call> block, "
         "OR write the final answer. Prose that only announces intent without "
@@ -139,57 +131,30 @@ def build_tool_use_instructions() -> str:
         'question involves CSV/XLSX data you don\'t already see inlined.\n'
         '    <tool_call>{"tool": "list_tables"}</tool_call>\n'
         '  - get_table_schema — full typed schema (columns, types, '
-        'financial roles, sample values, stats).\n'
-        '    <tool_call>{"tool": "get_table_schema", "identifier": "portfolio.csv"}</tool_call>\n'
+        'detected column roles, sample values, stats).\n'
+        '    <tool_call>{"tool": "get_table_schema", "identifier": "data.csv"}</tool_call>\n'
         '  - get_table_rows — return the full rows of a small/medium table '
         'in one call (no SQL needed).\n'
-        '    <tool_call>{"tool": "get_table_rows", "identifier": "portfolio.csv", "limit": 200}</tool_call>\n'
+        '    <tool_call>{"tool": "get_table_rows", "identifier": "data.csv", "limit": 200}</tool_call>\n'
         '  - aggregate_table — group-by aggregation without writing SQL.\n'
-        '    <tool_call>{"tool": "aggregate_table", "identifier": "portfolio.csv", "aggregate_col": "market_value", "agg_fn": "sum", "group_by": "sector", "sort_by": "value_desc"}</tool_call>\n'
+        '    <tool_call>{"tool": "aggregate_table", "identifier": "data.csv", "aggregate_col": "amount", "agg_fn": "sum", "group_by": "category", "sort_by": "value_desc"}</tool_call>\n'
         '  - query_table — read-only SQL SELECT for ad-hoc analytics.\n'
-        '    <tool_call>{"tool": "query_table", "sql": "SELECT \\"sector\\", SUM(\\"market_value\\") FROM \\"csv_data_abc\\" GROUP BY \\"sector\\""}</tool_call>\n'
+        '    <tool_call>{"tool": "query_table", "sql": "SELECT \\"category\\", SUM(\\"amount\\") FROM \\"csv_data_abc\\" GROUP BY \\"category\\""}</tool_call>\n'
         '    Rules: SELECT/WITH only, single statement, double-quote every '
-        'identifier, column names are case-sensitive (use the exact sql_name).\n'
-        '  - compute_portfolio_metric — canned financial metric. Only valid '
-        'when get_table_schema reports financial_roles.\n'
-        '    <tool_call>{"tool": "compute_portfolio_metric", "identifier": "portfolio.csv", "metric": "top_holdings", "limit": 5}</tool_call>\n'
-        '    Metrics: row_count, total_market_value, total_cost_basis, '
-        'total_pnl, top_holdings, bottom_holdings, largest_gains, '
-        'largest_losses, concentration, breakdown_by_sector, '
-        'breakdown_by_asset_class, breakdown_by_region, breakdown_by_currency, '
-        'weighted_return, summary_statistics.\n\n'
+        'identifier, column names are case-sensitive (use the exact sql_name).\n\n'
         "COLLECTION META:\n"
         '  - list_collections — list every available collection (id, name, '
-        'doc count). Use when the user references a different client/project.\n'
+        'doc count). Use when the user references a different collection.\n'
         '    <tool_call>{"tool": "list_collections"}</tool_call>\n'
         '  - get_collection_info — full document listing for a collection.\n'
         '    <tool_call>{"tool": "get_collection_info", "collection_id": "..."}</tool_call>\n\n'
-        "MARKET DATA:\n"
-        '  - get_price_history — historical OHLCV for a ticker.\n'
-        '    <tool_call>{"tool": "get_price_history", "symbol": "AAPL", "period": "1y"}</tool_call>\n'
-        '  - get_security_classification — sector, market cap, asset class.\n'
-        '    <tool_call>{"tool": "get_security_classification", "symbol": "AAPL"}</tool_call>\n'
-        '  - get_company_profile — CEO, sector, employee count, business summary.\n'
-        '    <tool_call>{"tool": "get_company_profile", "symbol": "AAPL"}</tool_call>\n'
-        '  - get_company_news — recent headlines for a ticker.\n'
-        '    <tool_call>{"tool": "get_company_news", "symbol": "AAPL", "limit": 5}</tool_call>\n'
-        '  - get_corporate_events — SEC filings (8-K/10-K/10-Q, merger), '
-        'dividends, splits, upcoming earnings since a date.\n'
-        '    <tool_call>{"tool": "get_corporate_events", "symbol": "AAPL", "since": "2025-01-01", "types": ["8-K", "dividend"]}</tool_call>\n'
-        '  - enrich_holdings — composite: pulls classification + company '
-        'profile (optional events, price_1y) for every distinct ticker in '
-        'a collection\'s holdings table. One call answers sector/growth-vs-'
-        'value/CEO-changes questions at the portfolio level.\n'
-        '    <tool_call>{"tool": "enrich_holdings", "collection_id": "...", "include": ["classification", "profile"]}</tool_call>\n\n'
         "OUTPUT FORMATTING:\n"
         "- Final answers are rendered as GitHub-flavored markdown. Use "
         "headings, bullets, bold, and tables when they help — but prefer "
         "tight prose for short answers.\n"
-        "- When citing news from get_company_news, render every link as "
-        "[Title](url) using the EXACT `url` field from the tool result. "
-        "NEVER use `#`, `(here)`, or any placeholder href — if a result "
-        "has no url, omit the link entirely. Same rule for any other "
-        "tool that returns urls.\n\n"
+        "- When a tool result includes urls, render every link as [Title](url) "
+        "using the EXACT `url` field. NEVER use `#`, `(here)`, or any "
+        "placeholder href — if a result has no url, omit the link entirely.\n\n"
         "GUIDANCE:\n"
         "- For numeric/aggregation/ranking questions about CSV/XLSX data, "
         "always go through the structured-table tools — never estimate from "
@@ -410,21 +375,6 @@ def execute_tool_calls(
                     collection_id=collection_id,
                 )
 
-            elif tool == "compute_portfolio_metric":
-                identifier = call.get("identifier") or call.get("table") or call.get("filename")
-                metric = call.get("metric")
-                if not identifier or not metric:
-                    raise ValueError("compute_portfolio_metric requires 'identifier' and 'metric'")
-                limit = int(call.get("limit", 10))
-                args_for_log = {"identifier": identifier, "metric": metric, "limit": limit, "collection_id": collection_id}
-                data = mcp.compute_portfolio_metric(
-                    identifier=identifier,
-                    metric=metric,
-                    limit=limit,
-                    group_by_symbol=bool(call.get("group_by_symbol", True)),
-                    collection_id=collection_id,
-                )
-
             elif tool == "list_collections":
                 args_for_log = {}
                 data = mcp.list_collections()
@@ -432,77 +382,6 @@ def execute_tool_calls(
             elif tool == "get_collection_info":
                 args_for_log = {"collection_id": collection_id}
                 data = mcp.get_collection_info(collection_id=collection_id)
-
-            elif tool == "get_price_history":
-                symbol = call.get("symbol") or call.get("ticker")
-                if not symbol:
-                    raise ValueError("get_price_history requires 'symbol'")
-                args_for_log = {
-                    "symbol": symbol,
-                    "period": call.get("period", "1y"),
-                    "interval": call.get("interval", "1d"),
-                }
-                data = mcp.get_price_history(
-                    symbol=symbol,
-                    period=call.get("period", "1y"),
-                    interval=call.get("interval", "1d"),
-                )
-
-            elif tool == "get_security_classification":
-                symbol = call.get("symbol") or call.get("ticker")
-                if not symbol:
-                    raise ValueError("get_security_classification requires 'symbol'")
-                args_for_log = {"symbol": symbol}
-                data = mcp.get_security_classification(symbol=symbol)
-
-            elif tool == "get_company_profile":
-                symbol = call.get("symbol") or call.get("ticker")
-                if not symbol:
-                    raise ValueError("get_company_profile requires 'symbol'")
-                args_for_log = {"symbol": symbol}
-                data = mcp.get_company_profile(symbol=symbol)
-
-            elif tool == "get_company_news":
-                symbol = call.get("symbol") or call.get("ticker")
-                if not symbol:
-                    raise ValueError("get_company_news requires 'symbol'")
-                limit = int(call.get("limit", 10))
-                args_for_log = {"symbol": symbol, "limit": limit}
-                data = mcp.get_company_news(symbol=symbol, limit=limit)
-
-            elif tool == "get_corporate_events":
-                symbol = call.get("symbol") or call.get("ticker")
-                if not symbol:
-                    raise ValueError("get_corporate_events requires 'symbol'")
-                types = call.get("types")
-                since = call.get("since")
-                limit = int(call.get("limit", 50))
-                args_for_log = {
-                    "symbol": symbol,
-                    "since": since,
-                    "types": types,
-                    "limit": limit,
-                }
-                data = mcp.get_corporate_events(
-                    symbol=symbol, since=since, types=types, limit=limit,
-                )
-
-            elif tool == "enrich_holdings":
-                include = call.get("include")
-                identifier = call.get("identifier")
-                max_symbols = int(call.get("max_symbols", 100))
-                args_for_log = {
-                    "collection_id": collection_id,
-                    "identifier": identifier,
-                    "include": include,
-                    "max_symbols": max_symbols,
-                }
-                data = mcp.enrich_holdings(
-                    collection_id=collection_id,
-                    identifier=identifier,
-                    include=include,
-                    max_symbols=max_symbols,
-                )
 
             else:
                 raise ValueError(f"No dispatcher for tool '{tool}'")

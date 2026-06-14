@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-import services.financial  # noqa: F401 — registers structured-store plugins
 from services.app_database import SQLiteBackend
 from services.mcp_server import (
     _detect_exact_match_intent,

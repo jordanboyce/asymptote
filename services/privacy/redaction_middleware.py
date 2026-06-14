@@ -18,16 +18,10 @@ from typing import Any
 
 from config import settings
 
-# Tools whose responses are 100% public market data sourced from external
-# providers (yfinance, etc.). They never touch private documents or PII, so
-# we skip Presidio entirely — otherwise author bylines, headlines containing
-# years, and tickers shaped like names get scrubbed for no benefit.
-_BYPASS_TOOLS = frozenset({
-    "get_company_news",
-    "get_company_profile",
-    "get_price_history",
-    "get_security_classification",
-})
+# Tools whose responses are 100% public data sourced from external providers
+# and never touch private documents or PII can be listed here to skip Presidio
+# entirely. None are registered in the generic build.
+_BYPASS_TOOLS: frozenset[str] = frozenset()
 
 # Column names (in tabular tool results) whose values are structural
 # identifiers, not PII. When a tool returns {columns:[...], rows:[[...]]},

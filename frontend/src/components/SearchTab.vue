@@ -366,17 +366,19 @@
     </div>
 
     <!-- Results -->
-    <div v-if="searchStore.results.length > 0" class="space-y-4">
-      <div class="flex justify-between items-center">
-        <h3 class="text-xl font-semibold">Results ({{ searchStore.results.length }})</h3>
-        <p class="text-sm text-base-content/70">Query: "{{ searchStore.lastQuery }}"</p>
+    <div v-if="searchStore.results.length > 0" class="space-y-3">
+      <div class="flex justify-between items-baseline gap-3">
+        <h3 class="text-sm font-semibold text-base-content/80">
+          {{ searchStore.results.length }} result{{ searchStore.results.length === 1 ? '' : 's' }}
+        </h3>
+        <p class="text-xs text-base-content/50 truncate">"{{ searchStore.lastQuery }}"</p>
       </div>
 
-      <div v-for="(result, index) in searchStore.results" :key="index" class="card bg-base-200 shadow-md">
-        <div class="card-body">
+      <div v-for="(result, index) in searchStore.results" :key="index" class="card bg-base-100 border border-base-300 shadow-sm hover:border-base-content/15 transition-colors">
+        <div class="card-body p-4">
           <div class="flex justify-between items-start">
             <div class="flex-1">
-              <h4 class="card-title text-lg">
+              <h4 class="card-title text-base gap-2">
                 <!-- Format-aware icon -->
                 <svg v-if="result.source_format === 'csv'" class="w-5 h-5 text-success" fill="none"
                   stroke="currentColor" viewBox="0 0 24 24">

@@ -899,38 +899,6 @@ class DocumentExtractor:
         ext = file_path.suffix.lower()
 
         if ext == '.csv':
-            # Check for NetX360 HBIL hierarchical format before normal CSV reading.
-            # The HBIL format has multiple ASSET header rows interspersed with account
-            # metadata blocks — standard header sniffing cannot handle it.
-            try:
-                from services.ingest_profiles.netx360 import is_netx360_hbil, preprocess_hbil
-                if is_netx360_hbil(file_path):
-                    logger.info(
-                        f"CSV {file_path.name}: detected NetX360 HBIL format, "
-                        "applying hierarchical preprocessor"
-                    )
-                    columns, rows = preprocess_hbil(file_path)
-                    sheet = {
-                        'sheet_name': '',
-                        'columns': columns,
-                        'rows': rows,
-                        'row_texts': [
-                            ' '.join(str(v) for v in r.values() if v is not None)
-                            for r in rows
-                        ],
-                        'document_metadata': {},
-                        'role_overrides': {},
-                        'type_overrides': {},
-                        'vendor_profile': None,
-                    }
-                    self._apply_ingest_profile(sheet, file_path)
-                    return [sheet]
-            except Exception as e:
-                logger.warning(
-                    f"NetX360 HBIL check/preprocess failed for {file_path.name}: {e}; "
-                    "falling back to standard CSV reader"
-                )
-
             header_idx, doc_metadata = _sniff_csv_header(file_path)
             try:
                 df = pd.read_csv(file_path, skiprows=header_idx)
@@ -942,7 +910,7 @@ class DocumentExtractor:
                     f"preamble fields: {[k for k in doc_metadata if not k.startswith('_')]}"
                 )
             sheet = self._dataframe_to_sheet(df, sheet_name='', document_metadata=doc_metadata)
-            self._apply_ingest_profile(sheet, file_path)
+            self._init_sheet_overrides(sheet)
             return [sheet]
 
         if ext in ('.xlsx', '.xls'):
@@ -975,34 +943,22 @@ class DocumentExtractor:
                 sheet = self._dataframe_to_sheet(
                     df, sheet_name=str(sheet_name), document_metadata=doc_metadata
                 )
-                self._apply_ingest_profile(sheet, file_path)
+                self._init_sheet_overrides(sheet)
                 sheets.append(sheet)
             return sheets
 
         raise ValueError(f"extract_tabular_sheets: unsupported extension {ext}")
 
-    def _apply_ingest_profile(self, sheet: Dict[str, Any], file_path: Path) -> None:
-        """Run vendor profile detection (P0.4) and embed overrides into sheet dict in-place."""
-        sheet['role_overrides'] = {}
-        sheet['type_overrides'] = {}
-        sheet['vendor_profile'] = None
-        try:
-            from services.ingest_profiles import detect_profile, apply_profile
-            profile = detect_profile(
-                filename=file_path.name,
-                columns=sheet['columns'],
-                file_path=file_path,
-            )
-            if profile:
-                _, rows_filtered, role_map, type_map = apply_profile(
-                    profile, sheet['columns'], sheet['rows']
-                )
-                sheet['rows'] = rows_filtered
-                sheet['role_overrides'] = role_map
-                sheet['type_overrides'] = type_map
-                sheet['vendor_profile'] = profile.get('display_name', profile.get('vendor'))
-        except Exception as e:
-            logger.warning(f"Vendor profile detection failed for {file_path.name}: {e}")
+    def _init_sheet_overrides(self, sheet: Dict[str, Any]) -> None:
+        """Initialize the role/type override slots the structured store reads.
+
+        Column roles and types are inferred downstream by the structured store;
+        the generic build carries no vendor-specific ingest profiles, so these
+        start empty.
+        """
+        sheet.setdefault('role_overrides', {})
+        sheet.setdefault('type_overrides', {})
+        sheet.setdefault('vendor_profile', None)
 
     def _dataframe_to_sheet(self, df, sheet_name: str,
                             document_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

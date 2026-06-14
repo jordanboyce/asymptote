@@ -20,7 +20,6 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import services.financial  # registers currency/percent types and financial role detector
 from config import settings
 from services.document_extractor import DocumentExtractor, is_code_file
 from services.code_extractor import SUPPORTED_CODE_EXTENSIONS
@@ -1260,8 +1259,8 @@ async def chat_with_documents(
         scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
 
         # The agent always has the full toolkit available (search, table tools,
-        # market data, etc.). Only the LARGE-table schema block is conditional
-        # on tool_tables — small tables are already inlined as JSONL.
+        # etc.). Only the LARGE-table schema block is conditional on tool_tables
+        # — small tables are already inlined as JSONL.
         tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
         tools_block = build_tool_use_instructions()
         agent_context = {
@@ -1270,18 +1269,12 @@ async def chat_with_documents(
         }
 
         base_system_parts = [
-            f"You are an analytical assistant for a financial advisor. The person "
-            f"chatting with you is the advisor — not the client. The documents, "
-            f"holdings, accounts, and portfolio data in {scope_note} belong to "
-            f"one of the advisor's clients.",
-            "Always refer to the portfolio in the third person: \"the client's "
-            "holdings\", \"the client's cash position\", \"this account\" — never "
-            "\"your holdings\" or \"your portfolio\". Frame recommendations as "
-            "observations and options the advisor can weigh, raise with the client, "
-            "or act on in a professional capacity; do not address the advisor as if "
-            "they were the investor.",
-            "Answer the advisor's question using the COLLECTION OVERVIEW, STRUCTURED "
+            f"You are an analytical research assistant working over the user's "
+            f"indexed sources in {scope_note}.",
+            "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED "
             "TABLES (when provided), and RETRIEVED CONTEXT below.",
+            "Ground every claim in the provided sources, cite them, and say so "
+            "plainly when the sources don't contain the answer rather than guessing.",
             "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
             "(file counts, available documents, date ranges).",
         ]
@@ -1311,7 +1304,7 @@ async def chat_with_documents(
                 attached_packs = expertise_store.get_packs_for_collection(collection_id)
                 if attached_packs:
                     base_system_parts.append(
-                        "When ADVISOR EXPERTISE is provided, follow its guidance, rules, and "
+                        "When EXPERTISE is provided, follow its guidance, rules, and "
                         "frameworks as authoritative instructions for this analysis."
                     )
                     guidance_sections = "\n\n".join(
@@ -1319,7 +1312,7 @@ async def chat_with_documents(
                         for p in attached_packs
                     )
                     expertise_block = (
-                        "ADVISOR EXPERTISE (apply these frameworks when analyzing this portfolio):\n"
+                        "EXPERTISE (apply these frameworks when analyzing these sources):\n"
                         + guidance_sections
                     )
             except Exception as _ep_err:
@@ -1731,16 +1724,11 @@ async def chat_stream_endpoint(
             # ---------- system prompt --------------------------------------------
             _scope_note = 'all collections' if chat_request.scope == 'all' else 'the current collection'
             base_system_parts = [
-                f"You are an analytical assistant for a financial advisor. The person "
-                f"chatting with you is the advisor — not the client. The documents, "
-                f"holdings, accounts, and portfolio data in {_scope_note} belong to "
-                f"one of the advisor's clients.",
-                "Always refer to the portfolio in the third person: \"the client's holdings\", "
-                "\"the client's cash position\", \"this account\" — never \"your holdings\" or "
-                "\"your portfolio\". Frame recommendations as observations and options the "
-                "advisor can weigh, raise with the client, or act on in a professional "
-                "capacity; do not address the advisor as if they were the investor.",
-                "Answer the advisor's question using the COLLECTION OVERVIEW, STRUCTURED TABLES (when provided), and RETRIEVED CONTEXT below.",
+                f"You are an analytical research assistant working over the user's "
+                f"indexed sources in {_scope_note}.",
+                "Ground every claim in the provided sources, cite them, and say so "
+                "plainly when the sources don't contain the answer rather than guessing.",
+                "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED TABLES (when provided), and RETRIEVED CONTEXT below.",
                 "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself (file counts, available documents, date ranges).",
             ]
             if inline_block:
@@ -1761,10 +1749,10 @@ async def chat_stream_endpoint(
                     attached_packs = expertise_store.get_packs_for_collection(collection_id)
                     if attached_packs:
                         base_system_parts.append(
-                            "When ADVISOR EXPERTISE is provided, follow its guidance, rules, and frameworks as authoritative instructions for this analysis."
+                            "When EXPERTISE is provided, follow its guidance, rules, and frameworks as authoritative instructions for this analysis."
                         )
                         expertise_block = (
-                            "ADVISOR EXPERTISE (apply these frameworks when analyzing this portfolio):\n"
+                            "EXPERTISE (apply these frameworks when analyzing these sources):\n"
                             + "\n\n".join(
                                 f"## {p.name}\n{(p.description + chr(10)) if p.description else ''}{p.body}".strip()
                                 for p in attached_packs
@@ -4161,55 +4149,6 @@ async def revoke_share(share_id: str, user_id: str = Depends(get_current_user_id
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-
-
-# ── Meeting Brief REST endpoint (v4.4) ────────────────────────────────────────
-
-@app.post(
-    "/api/collections/{collection_id}/brief",
-    tags=["chat"],
-    summary="Generate a pre-meeting portfolio brief",
-)
-async def generate_brief_endpoint(
-    collection_id: str,
-    tax_loss_min: float = 500.0,
-    concentration_pct: float = 10.0,
-    cash_drag_min: float = 50000.0,
-    top_n: int = 10,
-):
-    """
-    Generate a pre-meeting portfolio brief for *collection_id*.
-
-    Calls the brief_generator directly (no LLM token cost) and returns
-    a structured JSON brief with sections: household_summary, accounts,
-    top_positions, tax_loss_candidates, concentration_alerts,
-    cash_drag_alerts, sector_allocation, generated_at.
-    """
-    from services.brief_generator import generate_meeting_brief as _gen_brief
-
-    try:
-        indexer = get_indexer(collection_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-    try:
-        store = indexer.vector_store.structured_store
-    except AttributeError:
-        raise HTTPException(status_code=422, detail="No structured store found for this collection.")
-
-    try:
-        thresholds = {
-            "tax_loss_min": tax_loss_min,
-            "concentration_pct": concentration_pct,
-            "cash_drag_min": cash_drag_min,
-            "top_n": top_n,
-        }
-        brief = _gen_brief(store, collection_id=collection_id, thresholds=thresholds)
-    except Exception as e:
-        logger.error("Brief generation failed for collection %s: %s", collection_id, e)
-        raise HTTPException(status_code=500, detail=f"Brief generation failed: {e}")
-
-    return brief
 
 
 # ── Expertise Library endpoints ───────────────────────────────────────────────

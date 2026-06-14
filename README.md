@@ -6,6 +6,8 @@ Upload documents (PDF, TXT, DOCX, CSV), run advanced hybrid semantic + keyword r
 
 > **Why "Asymptote"?** In mathematics, an asymptote is a line that a curve approaches but never quite reaches. Like semantic search continuously approaching perfect understanding of your documents - getting closer with every query, but always refining, always learning. We're forever approaching the answer, never claiming to have reached it completely.
 
+> 📚 **Developer docs** live in [docs/](docs/): [Architecture](docs/ARCHITECTURE.md) · [Roadmap](docs/ROADMAP.md). Agent guidance is in [CLAUDE.md](CLAUDE.md). Financial-analysis features live on the `fintech` branch.
+
 ---
 
 ## Table of Contents

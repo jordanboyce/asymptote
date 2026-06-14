@@ -5,7 +5,6 @@ import axios from 'axios'
 // instant, deterministic.
 
 export const SLASH_COMMANDS = {
-  '/brief': 'Generate meeting brief for this collection',
   '/stats': 'Show collection statistics',
   '/docs': 'List indexed documents',
   '/tools': 'Show what the assistant can do',
@@ -128,38 +127,27 @@ const TOOL_CATEGORIES = [
   {
     title: 'DOCUMENTS',
     items: [
-      'Search PDFs, text, and code (keyword, semantic, or hybrid)',
+      'Search PDFs, text, Markdown, and code (keyword, semantic, or hybrid)',
       'Pull the full text of a document, page, or section',
       'Browse what\'s indexed across all your collections',
     ],
   },
   {
-    title: 'PORTFOLIO TABLES (CSV / Excel)',
+    title: 'TABLES (CSV / Excel)',
     items: [
       'Run read-only SQL or group-by aggregations on imported spreadsheets',
-      'Compute metrics: market value, cost basis, P&L, concentration, top/bottom holdings',
-      'Break down by sector, asset class, region, or currency',
-      'Surface tax-loss candidates and weighted returns',
       'Inspect schema, column types, and sample rows before querying',
-    ],
-  },
-  {
-    title: 'MARKET DATA (Yahoo Finance)',
-    items: [
-      'Historical OHLCV price history for any ticker',
-      'Sector, market cap, and asset-class classification',
-      'Company profile: CEO, business summary, HQ, employees',
-      'Recent news headlines',
+      'Filter, sort, count, and summarize rows',
     ],
   },
 ]
 
 const TOOL_EXAMPLES = [
-  '"List my top 20 holdings by market value"',
-  '"Show my sector breakdown and flag concentration risks"',
-  '"What\'s been happening with AAPL in the news this month?"',
-  '"Find the passage in the 10-K that mentions supply chain risk"',
-  '"What\'s the 1-year return on SPY vs. QQQ?"',
+  '"Summarize the key findings in this report"',
+  '"Find the section that discusses methodology"',
+  '"What are the main themes across these documents?"',
+  '"How many rows in the spreadsheet have status = open?"',
+  '"What are the column names in the uploaded CSV?"',
 ]
 
 const formatTools = () => {
@@ -179,176 +167,6 @@ const formatTools = () => {
   return lines.join('\n')
 }
 
-// Shorten long account identifiers (NetX360 HBIL includes full name+address)
-// Strategy: stop at the first trust/account-role keyword, then at a street
-// number, and finally hard-truncate — whichever gives the shortest clean label.
-const _shortAccount = (raw) => {
-  if (!raw) return 'Unknown Account'
-  const s = String(raw).replace(/\s+/g, ' ').trim()
-  if (s.length <= 45) return s
-
-  // 1. Split at common trust / account-role keywords (inclusive: keep keyword)
-  const roleMatch = s.match(/^(.*?\b(?:TTEE|TRUST|IRA|ROTH|UGMA|UTMA|LLC|INC|CORP|JTWROS|TOD|FBO|DBA)\b)/i)
-  if (roleMatch) {
-    const candidate = roleMatch[1].trim()
-    if (candidate.length >= 6 && candidate.length <= 60) {
-      return candidate.length <= 45 ? candidate : candidate.slice(0, 42).trimEnd() + '…'
-    }
-  }
-
-  // 2. Detect where a US street address starts (digits followed by a direction or street)
-  const addrIdx = s.search(/\b\d{2,5}\s+[A-Z]/)
-  if (addrIdx > 6) {
-    const beforeAddr = s.slice(0, addrIdx).trim()
-    return beforeAddr.length <= 45 ? beforeAddr : beforeAddr.slice(0, 42).trimEnd() + '…'
-  }
-
-  // 3. Hard truncate
-  return s.slice(0, 42).trimEnd() + '…'
-}
-
-const _fmtMoney = (n) => {
-  if (n == null) return '—'
-  const abs = Math.abs(n)
-  const sign = n < 0 ? '-' : ''
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`
-  return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-}
-
-const formatBrief = (brief) => {
-  if (!brief) return 'No portfolio data found in this collection.'
-  const lines = []
-  const fmt = (n) => (n == null ? '—' : typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n))
-
-  // Household summary
-  // NOTE: brief_generator uses keys: total_market_value, total_cost_basis, total_unrealized_pnl
-  const hs = brief.household_summary || {}
-  lines.push('MEETING BRIEF', '═'.repeat(40))
-  lines.push(`Generated: ${brief.generated_at ? new Date(brief.generated_at).toLocaleString() : '—'}`, '')
-  lines.push('HOUSEHOLD SUMMARY', '─'.repeat(20))
-  if (hs.total_market_value != null) lines.push(`Market Value:    ${_fmtMoney(hs.total_market_value)}`)
-  if (hs.total_cost_basis != null)   lines.push(`Cost Basis:      ${_fmtMoney(hs.total_cost_basis)}`)
-  const pnl = hs.total_unrealized_pnl ?? hs.total_unrealized_gl ?? null
-  if (pnl != null) {
-    const sign = pnl >= 0 ? '+' : ''
-    lines.push(`Unrealized G/L:  ${sign}${_fmtMoney(pnl)}`)
-  }
-  lines.push('')
-
-  // Accounts — deduplicate by key and truncate long names from HBIL exports
-  if (brief.accounts?.length) {
-    lines.push('ACCOUNTS', '─'.repeat(20))
-    const seen = new Set()
-    for (const acc of brief.accounts) {
-      const label = _shortAccount(acc.account || acc.account_type || 'Account')
-      const key = `${label}|${acc.market_value}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      lines.push(`${label}: ${_fmtMoney(acc.market_value)}`)
-    }
-    lines.push('')
-  }
-
-  // Top positions — deduplicate by name+value (same position may appear from both files)
-  // Also filter out phantom header-value rows (e.g. name="Symbol") from multi-account CSVs
-  // that haven't been re-indexed yet after the header-row fix.
-  const _knownHeaders = new Set(['symbol', 'description', 'account name', 'account number',
-    'name', 'ticker', 'quantity', 'price', 'value', 'market value', 'cost basis'])
-  if (brief.top_positions?.length) {
-    lines.push('TOP POSITIONS', '─'.repeat(20))
-    const seen = new Set()
-    const sorted = [...brief.top_positions].sort((a, b) => (b.market_value || 0) - (a.market_value || 0))
-    const totalMv = hs.total_market_value || 0
-    let shown = 0
-    for (const p of sorted) {
-      const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
-      const mv = p.market_value || 0
-      // Skip phantom header rows
-      if (_knownHeaders.has(sym.toLowerCase().trim())) continue
-      const dedupKey = `${sym}|${Math.round(mv)}`
-      if (seen.has(dedupKey)) continue
-      seen.add(dedupKey)
-      const pct = totalMv > 0 ? ` (${(mv / totalMv * 100).toFixed(1)}%)` : ''
-      lines.push(`${sym}${pct}: ${_fmtMoney(mv)}`)
-      if (++shown >= 10) break
-    }
-    lines.push('')
-  }
-
-  // Tax-loss candidates — brief_generator uses 'name', 'unrealized_loss' (positive number = loss)
-  if (brief.tax_loss_candidates?.length) {
-    const seen = new Set()
-    const realLosses = []
-    for (const p of brief.tax_loss_candidates) {
-      const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
-      if (_knownHeaders.has(sym.toLowerCase().trim())) continue
-      const loss = p.unrealized_loss ?? p.unrealized_gl ?? 0
-      const dedupKey = `${sym}|${Math.round(loss)}`
-      if (seen.has(dedupKey)) continue
-      seen.add(dedupKey)
-      realLosses.push({ sym, loss })
-    }
-    if (realLosses.length) {
-      lines.push(`⚠️  TAX-LOSS CANDIDATES (${realLosses.length})`, '─'.repeat(20))
-      for (const { sym, loss } of realLosses) {
-        lines.push(`${sym}: -${_fmtMoney(Math.abs(loss))} unrealized loss`)
-      }
-      lines.push('')
-    }
-  }
-
-  // Concentration alerts — brief_generator uses 'name', 'pct_of_portfolio'
-  if (brief.concentration_alerts?.length) {
-    lines.push(`🔴 CONCENTRATION ALERTS (${brief.concentration_alerts.length})`, '─'.repeat(20))
-    const seen = new Set()
-    for (const p of brief.concentration_alerts) {
-      const sym = p.ticker || p.name || p.symbol || p.description || '(unnamed)'
-      const pct = p.pct_of_portfolio ?? p.weight_pct
-      if (seen.has(sym)) continue
-      seen.add(sym)
-      lines.push(`${sym}: ${pct != null ? fmt(pct) + '%' : '—'} of portfolio`)
-    }
-    lines.push('')
-  }
-
-  // Cash drag — group same fund across multiple HBIL accounts by name prefix
-  if (brief.cash_drag_alerts?.length) {
-    // Group entries whose names share the same first ~40 chars (same fund, different accounts)
-    const cashGroups = new Map()
-    for (const p of brief.cash_drag_alerts) {
-      const rawName = p.ticker || p.name || p.description || p.symbol || 'Cash'
-      const groupKey = rawName.slice(0, 40).trimEnd().toLowerCase()
-      if (!cashGroups.has(groupKey)) {
-        cashGroups.set(groupKey, { name: rawName, total: 0, count: 0 })
-      }
-      const g = cashGroups.get(groupKey)
-      g.total += p.market_value || 0
-      g.count++
-    }
-    const cashList = [...cashGroups.values()].sort((a, b) => b.total - a.total)
-    lines.push(`💵 CASH DRAG (${cashList.length} position${cashList.length !== 1 ? 's' : ''})`, '─'.repeat(20))
-    for (const g of cashList) {
-      const acctNote = g.count > 1 ? ` (${g.count} accounts)` : ''
-      lines.push(`${g.name}: ${_fmtMoney(g.total)}${acctNote}`)
-    }
-    lines.push('')
-  }
-
-  // Sector allocation — brief_generator uses 'sector', 'market_value' (no weight_pct — compute it)
-  if (brief.sector_allocation?.length) {
-    lines.push('SECTOR ALLOCATION', '─'.repeat(20))
-    const totalMv = hs.total_market_value || brief.sector_allocation.reduce((s, r) => s + (r.market_value || 0), 0)
-    for (const s of brief.sector_allocation) {
-      const pct = totalMv > 0 ? ((s.market_value || 0) / totalMv * 100).toFixed(1) : '—'
-      // brief_generator uses 'weight_pct' OR compute from market_value
-      const displayPct = s.weight_pct != null ? fmt(s.weight_pct) : pct
-      lines.push(`${s.sector || '?'}: ${displayPct}%`)
-    }
-  }
-
-  return lines.join('\n')
-}
-
 // Parses, validates, and executes a slash command. Returns { cmd, content } on
 // success or { cmd, content, error: true } on failure. Callers decide how to
 // render the result.
@@ -365,11 +183,6 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
 
     if (cmd === '/tools') {
       return { cmd, content: formatTools() }
-    }
-
-    if (cmd === '/brief') {
-      const response = await axios.post(`/api/collections/${collectionId}/brief`)
-      return { cmd, content: formatBrief(response.data) }
     }
 
     const response = await axios.get(`/documents?collection_id=${collectionId}`)

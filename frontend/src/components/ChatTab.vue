@@ -263,16 +263,26 @@
       <div ref="messagesContainer" class="flex-1 overflow-y-auto space-y-4 min-h-0 pr-1">
 
         <!-- Empty state -->
-        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-base-content/50 gap-3 py-8">
-          <div v-if="hasAnyProvider && documentCount > 0" class="flex flex-wrap gap-2 justify-center max-w-md">
-            <button
-              v-for="suggestion in suggestions"
-              :key="suggestion"
-              class="btn btn-xs btn-outline"
-              @click="useSuggestion(suggestion)"
-            >
-              {{ suggestion }}
-            </button>
+        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-center gap-5 py-8 px-4">
+          <div v-if="hasAnyProvider && documentCount > 0" class="flex flex-col items-center gap-5 max-w-md">
+            <div class="flex flex-col items-center gap-2">
+              <div class="w-11 h-11 rounded-full bg-base-200 flex items-center justify-center">
+                <Bot :size="20" class="text-base-content/50" aria-hidden="true" />
+              </div>
+              <h3 class="text-sm font-medium text-base-content/80">Ask about your documents</h3>
+              <p class="text-xs text-base-content/40">Answers are grounded in your indexed sources, with citations.</p>
+            </div>
+            <div class="flex flex-col gap-1.5 w-full">
+              <button
+                v-for="suggestion in suggestions"
+                :key="suggestion"
+                class="btn btn-sm btn-ghost justify-start font-normal text-base-content/70 hover:text-base-content border border-base-300 hover:border-base-content/20"
+                @click="useSuggestion(suggestion)"
+              >
+                <Sparkles :size="13" class="text-base-content/30 flex-shrink-0" aria-hidden="true" />
+                <span class="truncate">{{ suggestion }}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -435,82 +445,12 @@
                       </div>
                     </div>
 
-                    <!-- Company news -->
-                    <div v-else-if="sr.tool === 'get_company_news' && sr.result?.news" class="px-3 py-2 space-y-1.5">
-                      <div v-if="sr.result.count === 0" class="text-xs text-base-content/50">No recent news.</div>
-                      <ul v-else class="space-y-1.5">
-                        <li v-for="(n, nIdx) in sr.result.news.slice(0, 8)" :key="nIdx" class="text-xs">
-                          <a v-if="n.url" :href="n.url" target="_blank" rel="noopener" class="font-medium link link-hover">{{ n.title }}</a>
-                          <span v-else class="font-medium">{{ n.title }}</span>
-                          <div class="text-base-content/40 text-[10px]">
-                            {{ n.publisher || 'unknown' }}<span v-if="n.published_at"> · {{ n.published_at }}</span>
-                          </div>
-                        </li>
-                      </ul>
-                    </div>
-
-                    <!-- Company profile -->
-                    <div v-else-if="sr.tool === 'get_company_profile' && sr.result?.name" class="px-3 py-2 space-y-1 text-xs">
-                      <div class="font-semibold text-sm">{{ sr.result.name }} <span class="text-base-content/40 font-normal">· {{ sr.result.symbol }}</span></div>
-                      <div v-if="sr.result.ceo" class="text-base-content/70">CEO: {{ sr.result.ceo.name }}<span v-if="sr.result.ceo.title" class="text-base-content/40"> · {{ sr.result.ceo.title }}</span></div>
-                      <div class="text-base-content/50">
-                        <span v-if="sr.result.sector">{{ sr.result.sector }}</span>
-                        <span v-if="sr.result.industry"> · {{ sr.result.industry }}</span>
-                        <span v-if="sr.result.employees"> · {{ sr.result.employees.toLocaleString() }} employees</span>
-                      </div>
-                    </div>
-
                     <!-- list_tables / list_collections / get_collection_info -->
                     <div v-else-if="sr.result?.tables" class="px-3 py-2 text-xs text-base-content/60">
                       {{ sr.result.tables.length }} table{{ sr.result.tables.length === 1 ? '' : 's' }}
                     </div>
                     <div v-else-if="sr.result?.collections" class="px-3 py-2 text-xs text-base-content/60">
                       {{ sr.result.collections.length }} collection{{ sr.result.collections.length === 1 ? '' : 's' }}
-                    </div>
-
-                    <!-- Price history summary -->
-                    <div
-                      v-else-if="sr.tool === 'get_price_history' && sr.result?.points"
-                      class="px-3 py-2 text-xs space-y-1.5"
-                    >
-                      <div class="flex flex-wrap gap-x-3 gap-y-1 text-base-content/70">
-                        <span class="font-mono">{{ sr.result.symbol }}</span>
-                        <span class="text-base-content/40">·</span>
-                        <span>{{ sr.result.interval }} bars</span>
-                        <span class="text-base-content/40">·</span>
-                        <span>{{ sr.result.start }} → {{ sr.result.end }}</span>
-                        <span class="text-base-content/40">·</span>
-                        <span>{{ sr.result.point_count }} points</span>
-                        <span v-if="sr.result.currency" class="text-base-content/40">·</span>
-                        <span v-if="sr.result.currency" class="font-mono">{{ sr.result.currency }}</span>
-                      </div>
-                      <div v-if="priceHistorySummary(sr.result)" class="flex flex-wrap gap-x-4 gap-y-1 font-mono">
-                        <span>
-                          <span class="text-base-content/50">open:</span>
-                          {{ formatCell(priceHistorySummary(sr.result).firstClose) }}
-                        </span>
-                        <span>
-                          <span class="text-base-content/50">close:</span>
-                          {{ formatCell(priceHistorySummary(sr.result).lastClose) }}
-                        </span>
-                        <span
-                          v-if="priceHistorySummary(sr.result).pctChange != null"
-                          :class="priceHistorySummary(sr.result).pctChange >= 0 ? 'text-success' : 'text-error'"
-                        >
-                          {{ priceHistorySummary(sr.result).pctChange >= 0 ? '+' : '' }}{{ priceHistorySummary(sr.result).pctChange.toFixed(2) }}%
-                        </span>
-                        <span>
-                          <span class="text-base-content/50">high:</span>
-                          {{ formatCell(priceHistorySummary(sr.result).high) }}
-                        </span>
-                        <span>
-                          <span class="text-base-content/50">low:</span>
-                          {{ formatCell(priceHistorySummary(sr.result).low) }}
-                        </span>
-                      </div>
-                      <div v-if="sr.result.cached" class="text-base-content/40">
-                        cached · source: {{ sr.result.source }}
-                      </div>
                     </div>
 
                     <!-- Generic key/value fallback -->
@@ -621,19 +561,6 @@
       <!-- Input area -->
       <div class="flex-shrink-0 pt-3">
 
-        <!-- Quick-action chips (only shown when chat is empty + provider configured) -->
-        <div v-if="messages.length === 0 && hasAnyProvider && props.documentCount > 0" class="flex flex-wrap gap-1.5 mb-2">
-          <button
-            class="btn btn-xs btn-outline btn-primary gap-1 rounded-full"
-            :disabled="loading"
-            @click="runBriefCommand"
-            title="Generate pre-meeting portfolio brief"
-          >
-            <FileText :size="11" />
-            Generate Meeting Brief
-          </button>
-        </div>
-
         <div
           class="relative rounded-2xl border border-base-300 bg-base-200/60 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all"
         >
@@ -701,7 +628,7 @@
             </button>
           </div>
         </div>
-        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /brief, /tools, /stats, /docs, /help</p>
+        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /tools, /stats, /docs, /help</p>
       </div>
 
   </div>
@@ -725,7 +652,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, LineChart, Tag, Wrench, Sparkles, Building2, Newspaper, Copy, Check, ShieldCheck, ShieldAlert, Lock } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check, ShieldCheck, ShieldAlert, Lock } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -834,10 +761,10 @@ const deleteSession = (sessionId) => {
 }
 
 const suggestions = [
-  'Top 10 holdings by market value',
-  'Portfolio concentration — top 5 positions',
-  'Allocation breakdown by sector',
-  'Largest unrealized gains and losses',
+  'Summarize the key points in these documents',
+  'What are the main themes across my sources?',
+  'What questions do these documents answer?',
+  'Give me an overview of this collection',
 ]
 
 // Expanded-details state for structured result cards: Set of "msgIdx:srIdx"
@@ -864,23 +791,14 @@ const TOOL_META = {
   get_table_rows:          { label: 'Reading table rows',   icon: Table2,   color: 'text-success' },
   query_table:             { label: 'SQL query',            icon: Table2,   color: 'text-success' },
   aggregate_table:         { label: 'Aggregating table',    icon: Table2,   color: 'text-success' },
-  compute_portfolio_metric:{ label: 'Portfolio metric',     icon: Table2,   color: 'text-success' },
   list_collections:        { label: 'Listing collections',  icon: Database, color: 'text-base-content/60' },
   get_collection_info:     { label: 'Collection info',      icon: Database, color: 'text-base-content/60' },
-  get_price_history:       { label: 'Price history',        icon: LineChart,color: 'text-warning' },
-  get_security_classification: { label: 'Security info',    icon: Tag,      color: 'text-warning' },
-  get_company_profile:     { label: 'Company profile',      icon: Building2,color: 'text-warning' },
-  get_company_news:        { label: 'Company news',         icon: Newspaper,color: 'text-warning' },
 }
 
 const toolMeta = (name) => TOOL_META[name] || { label: name || 'tool', icon: Wrench, color: 'text-base-content/50' }
 const toolIcon = (name) => toolMeta(name).icon
 const toolIconClass = (name) => toolMeta(name).color
-const toolLabel = (sr) => {
-  const meta = toolMeta(sr.tool)
-  if (sr.tool === 'compute_portfolio_metric') return sr.args?.metric || meta.label
-  return meta.label
-}
+const toolLabel = (sr) => toolMeta(sr.tool).label
 const toolDetail = (sr) => {
   const a = sr.args || {}
   return a.query || a.identifier || a.symbol || a.table || a.filename || a.document_id || ''
@@ -907,33 +825,6 @@ const formatCell = (v) => {
   }
   const s = String(v)
   return s.length > 200 ? s.slice(0, 200) + '…' : s
-}
-
-const priceHistorySummary = (result) => {
-  const pts = Array.isArray(result?.points) ? result.points : []
-  if (pts.length === 0) return null
-  const first = pts[0]
-  const last = pts[pts.length - 1]
-  const firstClose = typeof first.close === 'number' ? first.close : null
-  const lastClose = typeof last.close === 'number' ? last.close : null
-  let pctChange = null
-  if (firstClose != null && lastClose != null && firstClose !== 0) {
-    pctChange = ((lastClose - firstClose) / firstClose) * 100
-  }
-  let hi = -Infinity, lo = Infinity
-  for (const p of pts) {
-    if (typeof p.high === 'number' && p.high > hi) hi = p.high
-    if (typeof p.low === 'number' && p.low < lo) lo = p.low
-  }
-  return {
-    firstDate: first.date,
-    lastDate: last.date,
-    firstClose,
-    lastClose,
-    pctChange,
-    high: isFinite(hi) ? hi : null,
-    low: isFinite(lo) ? lo : null,
-  }
 }
 
 const providerDisplayName = getProviderDisplayName
@@ -1173,14 +1064,6 @@ const clearChat = () => {
   if (confirm('Clear this conversation? This cannot be undone.')) {
     chatStore.clearMessages(collectionStore.currentCollectionId)
   }
-}
-
-// One-click brief button handler — same as typing `/brief` and hitting Enter
-const runBriefCommand = async () => {
-  if (loading.value) return
-  inputMessage.value = '/brief'
-  await runInlineSlashCommand('/brief')
-  inputMessage.value = ''
 }
 
 // Persist options

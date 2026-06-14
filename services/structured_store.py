@@ -10,8 +10,8 @@ the rest of the indexing stack.
 
 Extension points
 ----------------
-External modules (e.g. ``services.financial``) can register additional type
-detectors and column-role detectors at import time:
+External plugin modules can register additional type detectors and
+column-role detectors at import time:
 
   * ``register_type_extension(TypeExtension(...))``  — adds a custom type that
     is checked during column inference with the same 80% threshold used for
@@ -494,10 +494,10 @@ class StructuredStore:
     table maps documents to their physical tables and caches inferred
     schema/roles.
 
-    This class is intentionally domain-agnostic. Financial-specific behaviour
-    (currency/percent types, column role detection, portfolio metrics) is
-    provided by the ``services.financial`` plugin which registers itself with
-    :func:`register_type_extension` and :func:`register_role_detector`.
+    This class is intentionally domain-agnostic. Domain-specific behaviour
+    (custom types, column-role detection) can be layered on by a plugin module
+    that registers itself with :func:`register_type_extension` and
+    :func:`register_role_detector`.
     """
 
     META_TABLE_PREFIX = 'csv_data_'
@@ -613,31 +613,6 @@ class StructuredStore:
                 'stats': info['stats'],
                 'samples': sample_values,
             })
-
-        # -- P0.5: LLM-assisted role inference for unmapped columns ----------
-        from config import settings as _cfg
-        if _cfg.enable_llm_schema_inference:
-            mapped = sum(1 for c in col_infos if c['role'])
-            total = len(col_infos)
-            unmapped_frac = 1.0 - (mapped / total) if total else 0.0
-            if unmapped_frac >= _cfg.llm_schema_inference_threshold:
-                unmapped_cols = [c for c in col_infos if not c['role']]
-                logger.info(
-                    "LLM schema inference triggered: %d/%d columns unmapped (%.0f%%)",
-                    len(unmapped_cols), total, unmapped_frac * 100,
-                )
-                try:
-                    from services.llm_role_inference import infer_roles_with_llm
-                    llm_roles = infer_roles_with_llm(
-                        unmapped_columns=unmapped_cols,
-                        collection_id=None,  # collection_id not available here
-                    )
-                    for c in col_infos:
-                        if not c['role'] and c['name'] in llm_roles:
-                            c['role'] = llm_roles[c['name']]
-                except Exception as exc:
-                    logger.warning("LLM schema inference failed, continuing without: %s", exc)
-        # -----------------------------------------------------------------
 
         table_name = self._table_name(document_id, sheet_name)
 
