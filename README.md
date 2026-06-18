@@ -35,7 +35,7 @@ pip install -r requirements.txt
 python main.py
 
 # 3. Open your browser
-open http://localhost:8000
+open http://localhost:8473
 ```
 
 ### Docker
@@ -43,7 +43,7 @@ open http://localhost:8000
 ```bash
 # Standard deployment
 docker-compose up -d
-open http://localhost:8000
+open http://localhost:8473
 
 # Corporate environment (with custom SSL certificates)
 docker-compose -f docker-compose.yml up -d --build
@@ -68,7 +68,7 @@ build_installer.bat
 
 **Desktop Features:**
 - System tray icon with quick access
-- Automatic port management (finds free port if 8000 is taken)
+- Automatic port management (finds free port if 8473 is taken)
 - Native Windows application (no terminal needed)
 - Same functionality as web version
 - Opens browser automatically on startup
@@ -79,9 +79,9 @@ build_installer.bat
 
 ### What You Get
 
-- **Web Interface**: http://localhost:8000 - Simple UI for searching, uploading, and managing documents
-- **API Docs**: http://localhost:8000/docs - Interactive OpenAPI documentation
-- **API Endpoint**: http://localhost:8000/api - REST API for programmatic access
+- **Web Interface**: http://localhost:8473 - Simple UI for searching, uploading, and managing documents
+- **API Docs**: http://localhost:8473/docs - Interactive OpenAPI documentation
+- **API Endpoint**: http://localhost:8473/api - REST API for programmatic access
 
 ---
 
@@ -225,16 +225,16 @@ python main.py
 INFO - Loading embedding model: all-MiniLM-L6-v2
 INFO - Initializing vector store (metadata: json)
 INFO - Asymptote API ready
-INFO - Uvicorn running on http://0.0.0.0:8000
+INFO - Uvicorn running on http://0.0.0.0:8473
 ```
 
 **Access the API:**
-- Interactive docs: http://localhost:8000/docs
-- Health check: http://localhost:8000/health
+- Interactive docs: http://localhost:8473/docs
+- Health check: http://localhost:8473/health
 
 ### MCP Integration
 
-Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8000/mcp` when `ENABLE_MCP=true` (default).
+Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
 
 Use the **Settings** tab in the UI to:
 - Enable or disable the MCP server without restarting
@@ -247,7 +247,7 @@ Use the **Settings** tab in the UI to:
 
 ```bash
 # Check health
-curl http://localhost:8000/health
+curl http://localhost:8473/health
 
 # Expected response:
 {"status":"healthy","indexed_chunks":0}
@@ -274,7 +274,7 @@ npm install
 npm run dev
 ```
 
-This starts the dev server at http://localhost:5173 with hot-reload. The backend must be running separately at http://localhost:8000.
+This starts the dev server at http://localhost:5173 with hot-reload. The backend must be running separately at http://localhost:8473.
 
 ### Building for Production
 
@@ -284,7 +284,7 @@ cd frontend
 npm run build
 ```
 
-This compiles the Vue app and outputs static files to the `static/` directory (one level up), which the FastAPI backend serves automatically at http://localhost:8000.
+This compiles the Vue app and outputs static files to the `static/` directory (one level up), which the FastAPI backend serves automatically at http://localhost:8473.
 
 ### Frontend Stack
 
@@ -326,7 +326,7 @@ MAX_TOP_K=50                            # Maximum results allowed
 
 # Server
 HOST=0.0.0.0
-PORT=8000
+PORT=8473
 ```
 
 ### AI Features (Optional)
@@ -339,7 +339,7 @@ Asymptote supports optional AI integration for enhanced search results:
 - **Multi-Provider**: Use Anthropic Claude, OpenAI GPT, INL HPC AI, and Ollama
 
 **Setup:**
-1. Open the web interface at http://localhost:8000
+1. Open the web interface at http://localhost:8473
 2. Navigate to the **Settings** tab
 3. Select your AI provider (Anthropic, OpenAI, INL HPC, or Ollama)
 4. Enter your API key (stored securely in browser localStorage, never sent to server)
@@ -380,7 +380,7 @@ Build and run with the corporate Dockerfile:
 ```bash
 # Option A: Direct docker build
 docker build -f Dockerfile.corporate -t asymptote-corporate .
-docker run -d -p 8000:8000 -v $(pwd)/data:/app/data asymptote-corporate
+docker run -d -p 8473:8473 -v $(pwd)/data:/app/data asymptote-corporate
 
 # Option B: Edit docker-compose.yml to use Dockerfile.corporate
 # Change the dockerfile line under build:
@@ -424,12 +424,12 @@ export REQUESTS_CA_BUNDLE=/path/to/your/cert.crt
 
 ```bash
 # Upload PDFs
-curl -X POST "http://localhost:8000/documents/upload" \
+curl -X POST "http://localhost:8473/documents/upload" \
   -F "files=@document1.pdf" \
   -F "files=@document2.pdf"
 
 # Upload other file types (TXT, DOCX, CSV)
-curl -X POST "http://localhost:8000/documents/upload" \
+curl -X POST "http://localhost:8473/documents/upload" \
   -F "files=@notes.txt" \
   -F "files=@report.docx" \
   -F "files=@data.csv"
@@ -458,7 +458,7 @@ curl -X POST "http://localhost:8000/documents/upload" \
 
 **Basic search:**
 ```bash
-curl -X POST "http://localhost:8000/search" \
+curl -X POST "http://localhost:8473/search" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "machine learning algorithms",
@@ -468,7 +468,7 @@ curl -X POST "http://localhost:8000/search" \
 
 **Search with AI features:**
 ```bash
-curl -X POST "http://localhost:8000/search" \
+curl -X POST "http://localhost:8473/search" \
   -H "Content-Type: application/json" \
   -H "X-AI-Key: your-api-key-here" \
   -d '{
@@ -494,8 +494,8 @@ curl -X POST "http://localhost:8000/search" \
       "similarity_score": 0.87,
       "document_id": "abc123",
       "chunk_id": "abc123_p42_c0",
-      "pdf_url": "http://localhost:8000/documents/abc123/pdf",
-      "page_url": "http://localhost:8000/documents/abc123/pdf#page=42"
+      "pdf_url": "http://localhost:8473/documents/abc123/pdf",
+      "page_url": "http://localhost:8473/documents/abc123/pdf#page=42"
     }
   ],
   "total_results": 5
@@ -521,20 +521,20 @@ curl -X POST "http://localhost:8000/search" \
 **Open PDF at specific page:**
 ```bash
 # In browser (opens at page 42)
-open "http://localhost:8000/documents/abc123/pdf#page=42"
+open "http://localhost:8473/documents/abc123/pdf#page=42"
 ```
 
 ### List Documents
 
 ```bash
-curl "http://localhost:8000/documents"
+curl "http://localhost:8473/documents"
 ```
 
 ### OCR Playground Preview
 
 ```bash
 # Preview OCR extraction without indexing
-curl -X POST "http://localhost:8000/api/ocr/playground" \
+curl -X POST "http://localhost:8473/api/ocr/playground" \
   -H "Content-Type: application/json" \
   -d '{
     "file_path": "C:/path/to/scanned-form.pdf",
@@ -553,14 +553,14 @@ This returns page-level OCR text previews and extracted form-like field/value pa
 
 ```bash
 # Download any document type
-curl "http://localhost:8000/documents/abc123/pdf" -o output.pdf
+curl "http://localhost:8473/documents/abc123/pdf" -o output.pdf
 ```
 
 ### Inspect Indexed Chunks (Including OCR Fields)
 
 ```bash
 # View stored chunks for a document
-curl "http://localhost:8000/documents/abc123/chunks?include_fields=true"
+curl "http://localhost:8473/documents/abc123/chunks?include_fields=true"
 ```
 
 Use this to inspect exactly what was indexed for OCR PDFs.  
@@ -569,7 +569,7 @@ For form-like documents, the response includes heuristic `extracted_fields` key/
 ### Delete Document
 
 ```bash
-curl -X DELETE "http://localhost:8000/documents/abc123"
+curl -X DELETE "http://localhost:8473/documents/abc123"
 ```
 
 **Response:**
@@ -592,7 +592,7 @@ curl -X DELETE "http://localhost:8000/documents/abc123"
 
 ### Interactive Documentation
 
-Visit http://localhost:8000/docs for a full interactive API playground.
+Visit http://localhost:8473/docs for a full interactive API playground.
 
 ---
 
@@ -600,7 +600,7 @@ Visit http://localhost:8000/docs for a full interactive API playground.
 
 ### Common Issues
 
-#### 1. "Port 8000 already in use"
+#### 1. "Port 8473 already in use"
 
 **Solution:**
 ```bash
@@ -712,8 +712,8 @@ echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env
 #### 7. "Search returns no results"
 
 **Checklist:**
-1. Are documents uploaded? Check: `curl http://localhost:8000/documents`
-2. Check health: `curl http://localhost:8000/health`
+1. Are documents uploaded? Check: `curl http://localhost:8473/documents`
+2. Check health: `curl http://localhost:8473/health`
 3. Try broader query: "database" instead of "postgresql query optimization"
 4. Check logs for errors: Look at terminal output
 
@@ -951,7 +951,7 @@ asymptote/
 ```python
 import requests
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8473"
 
 # Upload documents (PDF, TXT, DOCX, CSV)
 with open("document.pdf", "rb") as f:

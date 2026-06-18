@@ -54,16 +54,6 @@ call "%ROOT%venv\Scripts\activate.bat"
 pip install -q -r "%ROOT%desktop\requirements_desktop.txt"
 if errorlevel 1 ( echo ERROR: pip install failed & exit /b 1 )
 
-REM Ensure spaCy NLP model is present (required by Presidio PII redaction)
-python -c "import en_core_web_lg" 2>nul
-if errorlevel 1 (
-    echo       Downloading spaCy en_core_web_lg model...
-    python -m spacy download en_core_web_lg
-    if errorlevel 1 (
-        echo       Falling back to en_core_web_sm...
-        python -m spacy download en_core_web_sm
-    )
-)
 echo       Done.
 echo.
 

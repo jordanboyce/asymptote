@@ -6,7 +6,7 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 import tailwindcss from '@tailwindcss/vite'
 
 // API server URL - can be overridden with VITE_API_URL env var
-const apiTarget = process.env.VITE_API_URL || 'http://localhost:8000'
+const apiTarget = process.env.VITE_API_URL || 'http://localhost:8473'
 
 // https://vite.dev/config/
 export default defineConfig({

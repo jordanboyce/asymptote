@@ -70,7 +70,7 @@
 
       <!-- Trust copy footer -->
       <div class="mt-10 text-center text-[11px] text-base-content/45 leading-relaxed">
-        Your documents stay on this device. PII is redacted on-device before any AI call.
+        Your documents stay on this device.
       </div>
     </div>
   </div>

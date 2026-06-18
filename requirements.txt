@@ -43,12 +43,6 @@ pydantic-settings>=2.6.0
 # Database backends (PostgreSQL is optional — only needed when DB_BACKEND=postgresql)
 psycopg2-binary>=2.9.0
 
-# PII redaction (runs locally, no cloud dependency)
-presidio-analyzer>=2.2.0
-presidio-anonymizer>=2.2.0
-spacy>=3.7.0
-# Download the NLP model on first install: python -m spacy download en_core_web_lg
-
 # Market data enrichment feeds (v4.2 — price history, classification, corporate events)
 yfinance>=0.2.40
 

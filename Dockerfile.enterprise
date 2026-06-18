@@ -84,17 +84,17 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DATA_DIR=/app/data
 ENV HOST=0.0.0.0
-ENV PORT=8000
+ENV PORT=8473
 
 # ---- Health check ------------------------------------------
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8473/health || exit 1
 
 # ---- Expose port -------------------------------------------
-EXPOSE 8000
+EXPOSE 8473
 
 # ---- Drop to non-root -------------------------------------
 USER asymptote
 
 # ---- Entrypoint --------------------------------------------
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--limit-concurrency", "100", "--timeout-keep-alive", "65"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8473", "--workers", "2", "--limit-concurrency", "100", "--timeout-keep-alive", "65"]

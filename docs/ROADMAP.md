@@ -4,7 +4,7 @@ Forward-looking work for the general-purpose (`master`) Asymptote tool. Shipped 
 
 ## Guiding frame
 
-Asymptote owns the trustworthy data layer; the intelligence layer lives upstream in whatever LLM the user trusts. Our job: make a user's own documents and tabular data faithfully agent-queryable, redact PII before any external model call, and never be silently wrong. Reached through Asymptote's own chat UI by default, or an external MCP client when the user prefers one.
+Asymptote owns the trustworthy data layer; the intelligence layer lives upstream in whatever LLM the user trusts. Our job: make a user's own documents and tabular data faithfully agent-queryable, and never be silently wrong. Reached through Asymptote's own chat UI by default, or an external MCP client when the user prefers one.
 
 ## Library — ingestion & context
 
@@ -25,6 +25,5 @@ Asymptote owns the trustworthy data layer; the intelligence layer lives upstream
 
 ## Always-on constraints
 
-- Every tool response is PII-redacted before it leaves the process.
 - Raw data passes through by default; semantic layers exist only where Asymptote itself must act deterministically (aggregations, type coercion).
 - When inference fails, degrade to raw-data tools and let the LLM handle semantics — never guess and pretend.

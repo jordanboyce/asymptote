@@ -10,22 +10,6 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 docling_datas, docling_binaries, docling_hiddenimports = collect_all('docling')
 docling_models_datas, docling_models_binaries, docling_models_hiddenimports = collect_all('docling_core')
 
-# Collect presidio — uses dynamic component registration that PyInstaller misses
-presidio_analyzer_datas, presidio_analyzer_binaries, presidio_analyzer_hiddenimports = collect_all('presidio_analyzer')
-presidio_anonymizer_datas, presidio_anonymizer_binaries, presidio_anonymizer_hiddenimports = collect_all('presidio_anonymizer')
-
-# Collect spaCy and the NLP model used by Presidio
-spacy_datas, spacy_binaries, spacy_hiddenimports = collect_all('spacy')
-try:
-    en_core_web_lg_datas, en_core_web_lg_binaries, en_core_web_lg_hiddenimports = collect_all('en_core_web_lg')
-except Exception:
-    # Fall back to small model if large not installed
-    en_core_web_lg_datas, en_core_web_lg_binaries, en_core_web_lg_hiddenimports = [], [], []
-try:
-    en_core_web_sm_datas, en_core_web_sm_binaries, en_core_web_sm_hiddenimports = collect_all('en_core_web_sm')
-except Exception:
-    en_core_web_sm_datas, en_core_web_sm_binaries, en_core_web_sm_hiddenimports = [], [], []
-
 # Collect faster-whisper / ctranslate2 (native libs PyInstaller often misses)
 try:
     ctranslate2_datas, ctranslate2_binaries, ctranslate2_hiddenimports = collect_all('ctranslate2')
@@ -62,11 +46,6 @@ a = Analysis(
         []
         + docling_binaries
         + docling_models_binaries
-        + presidio_analyzer_binaries
-        + presidio_anonymizer_binaries
-        + spacy_binaries
-        + en_core_web_lg_binaries
-        + en_core_web_sm_binaries
         + ctranslate2_binaries
         + faster_whisper_binaries
     ),
@@ -89,11 +68,6 @@ a = Analysis(
     ]
     + docling_datas
     + docling_models_datas
-    + presidio_analyzer_datas
-    + presidio_anonymizer_datas
-    + spacy_datas
-    + en_core_web_lg_datas
-    + en_core_web_sm_datas
     + ctranslate2_datas
     + faster_whisper_datas
     ) if not _is_project_runtime_data(entry[0])],
@@ -138,20 +112,6 @@ a = Analysis(
         'services.structured_store',
         'services.upload_service',
         'services.vector_store',
-
-        # ── Privacy / PII redaction ────────────────────────────────────────
-        'services.privacy',
-        'services.privacy.collection_blacklist',
-        'services.privacy.column_sanitizer',
-        'services.privacy.custom_recognizers',
-        'services.privacy.custom_recognizers.cusip_in_context',
-        'services.privacy.custom_recognizers.financial_account',
-        'services.privacy.custom_recognizers.trust_account_name',
-        'services.privacy.pii_preflight',
-        'services.privacy.redaction_config',
-        'services.privacy.redaction_engine',
-        'services.privacy.redaction_log',
-        'services.privacy.redaction_middleware',
 
         # ── Market data ───────────────────────────────────────────────────
         'services.market_data',
@@ -215,19 +175,6 @@ a = Analysis(
         'transformers',
         'huggingface_hub',
 
-        # ── PII redaction (Presidio + spaCy) ─────────────────────────────
-        # presidio uses dynamic recognizer registry — collect_all handles most
-        # of it but explicit entries guard against missed lazy imports
-        'presidio_analyzer',
-        'presidio_analyzer.nlp_engine',
-        'presidio_analyzer.nlp_engine.spacy_nlp_engine',
-        'presidio_analyzer.predefined_recognizers',
-        'presidio_anonymizer',
-        'presidio_anonymizer.operators',
-        'spacy',
-        'en_core_web_lg',
-        'en_core_web_sm',
-
         # ── Audio transcription ───────────────────────────────────────────
         'faster_whisper',
         'ctranslate2',
@@ -259,11 +206,6 @@ a = Analysis(
     ]
     + docling_hiddenimports
     + docling_models_hiddenimports
-    + presidio_analyzer_hiddenimports
-    + presidio_anonymizer_hiddenimports
-    + spacy_hiddenimports
-    + en_core_web_lg_hiddenimports
-    + en_core_web_sm_hiddenimports
     + ctranslate2_hiddenimports
     + faster_whisper_hiddenimports,
     hookspath=[],

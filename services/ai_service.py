@@ -684,6 +684,114 @@ class OllamaCloudProvider(OpenAIProvider):
             raise
 
 
+class OpenRouterProvider(OpenAIProvider):
+    """OpenRouter provider — one OpenAI-compatible endpoint, hundreds of models.
+
+    OpenRouter proxies Anthropic, OpenAI, Google, Mistral, DeepSeek, Qwen,
+    Llama and more behind a single OpenAI-compatible API, so users get broad
+    model choice (and automatic failover/cheapest-routing) without us
+    integrating each vendor's native SDK.
+
+    Auth: API key from openrouter.ai (Bearer token; OpenAI SDK handles it).
+    Endpoint: https://openrouter.ai/api/v1.
+    Model IDs are namespaced like `anthropic/claude-3.5-sonnet`,
+    `openai/gpt-4o`, `meta-llama/llama-3.3-70b-instruct`.
+    """
+
+    FAST_MODEL = "anthropic/claude-3.5-haiku"
+    QUALITY_MODEL = "anthropic/claude-3.5-sonnet"
+
+    def __init__(self, api_key: str, model: Optional[str] = None):
+        super().__init__(api_key, model=model, base_url="https://openrouter.ai/api/v1")
+
+    def validate(self) -> bool:
+        from openai import AuthenticationError, RateLimitError
+        try:
+            self.client.chat.completions.create(
+                model=self.FAST_MODEL,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            return True
+        except AuthenticationError:
+            logger.warning("OpenRouter authentication failed — check your key at openrouter.ai/keys")
+            return False
+        except RateLimitError:
+            return True
+        except Exception as e:
+            logger.error(f"OpenRouter validation error: {e}")
+            raise
+
+
+class BedrockProvider(AnthropicProvider):
+    """AWS Bedrock provider for Anthropic Claude models.
+
+    Reuses the Anthropic SDK's `AnthropicBedrock` client, which speaks the same
+    Messages API as the direct Anthropic provider — so every method inherited
+    from `AnthropicProvider` (complete, complete_with_tools, native tool use,
+    prompt caching, vision) works unchanged. The only difference is the
+    transport: requests are signed with AWS SigV4 and billed through the
+    customer's AWS account, which is the whole point — it lets enterprises
+    consume Claude through an existing AWS contract instead of a separate
+    Anthropic bill.
+
+    Auth: standard AWS credential chain (env vars, shared config, or an
+    instance/role profile) plus a region. Pass `region` via kwargs or set
+    `AWS_REGION`. There is no simple API key, so this provider is configured
+    server-side rather than through the per-request BYO-key header flow.
+
+    Requires `boto3` (installed via `pip install "anthropic[bedrock]"`). The
+    import is deferred so the rest of the app runs without it.
+
+    Bedrock model IDs differ from the public ones, e.g.
+    `anthropic.claude-3-5-sonnet-20241022-v2:0`.
+    """
+
+    FAST_MODEL = "anthropic.claude-3-5-haiku-20241022-v1:0"
+    QUALITY_MODEL = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        region: Optional[str] = None,
+        aws_access_key: Optional[str] = None,
+        aws_secret_key: Optional[str] = None,
+    ):
+        try:
+            from anthropic import AnthropicBedrock
+        except ImportError as e:
+            raise RuntimeError(
+                "AWS Bedrock support requires boto3. Install it with "
+                '`pip install "anthropic[bedrock]"`.'
+            ) from e
+
+        client_kwargs: dict = {}
+        if region:
+            client_kwargs["aws_region"] = region
+        if aws_access_key and aws_secret_key:
+            client_kwargs["aws_access_key"] = aws_access_key
+            client_kwargs["aws_secret_key"] = aws_secret_key
+        # Note: we intentionally do NOT call super().__init__ — that would build
+        # a direct Anthropic client. We only need to swap in the Bedrock client;
+        # every inherited method drives `self.client.messages` agnostically.
+        self.client = AnthropicBedrock(**client_kwargs)
+        if model:
+            self.FAST_MODEL = model
+            self.QUALITY_MODEL = model
+
+    def validate(self) -> bool:
+        try:
+            self.client.messages.create(
+                model=self.FAST_MODEL,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            return True
+        except Exception as e:
+            logger.error(f"AWS Bedrock validation error: {e}")
+            raise
+
+
 class OpenAICompatibleProvider(OpenAIProvider):
     """Generic OpenAI-compatible provider for custom endpoints (vLLM, LM Studio, Groq, etc.)."""
 
@@ -709,11 +817,13 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
     """Create an AI provider instance.
 
     Args:
-        provider_name: Provider name — anthropic, openai, grok, google, github, openai_compatible, ollama, ollama_cloud
-        api_key: API key for cloud providers (not needed for local Ollama or key-less endpoints)
+        provider_name: Provider name — anthropic, openai, grok, google, github, openrouter, bedrock, openai_compatible, ollama, ollama_cloud
+        api_key: API key for cloud providers (not needed for local Ollama, Bedrock's AWS chain, or key-less endpoints)
         **kwargs:
-            model       – model name override
-            base_url    – custom base URL (for openai, openai_compatible, ollama)
+            model         – model name override
+            base_url      – custom base URL (for openai, openai_compatible, ollama)
+            region        – AWS region (for bedrock)
+            aws_access_key, aws_secret_key – explicit AWS creds (for bedrock; omit to use the default chain)
     """
     if provider_name == "anthropic":
         if not api_key:
@@ -753,6 +863,18 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
         if not api_key:
             raise ValueError("API key required for Ollama Cloud (get one at https://ollama.com)")
         return OllamaCloudProvider(api_key, model=kwargs.get("model"))
+    elif provider_name == "openrouter":
+        if not api_key:
+            raise ValueError("API key required for OpenRouter (get one at https://openrouter.ai/keys)")
+        return OpenRouterProvider(api_key, model=kwargs.get("model"))
+    elif provider_name == "bedrock":
+        # Bedrock uses the AWS credential chain, not a simple API key.
+        return BedrockProvider(
+            model=kwargs.get("model"),
+            region=kwargs.get("region"),
+            aws_access_key=kwargs.get("aws_access_key"),
+            aws_secret_key=kwargs.get("aws_secret_key"),
+        )
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
 

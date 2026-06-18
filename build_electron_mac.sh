@@ -41,14 +41,6 @@ fi
 source "$ROOT/venv/bin/activate"
 pip install -q -r "$ROOT/desktop/requirements_desktop.txt"
 
-# Ensure spaCy NLP model is present (required by Presidio PII redaction)
-if ! python -c "import en_core_web_lg" 2>/dev/null; then
-    echo "      Downloading spaCy en_core_web_lg model..."
-    python -m spacy download en_core_web_lg || {
-        echo "      Falling back to en_core_web_sm..."
-        python -m spacy download en_core_web_sm
-    }
-fi
 echo "      Done."
 echo ""
 

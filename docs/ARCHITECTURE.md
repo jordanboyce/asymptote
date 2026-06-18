@@ -17,7 +17,6 @@ Asymptote is a privacy-focused tool for indexing your own documents and data, ch
   - `services/structured_chat.py` — the provider-agnostic chat tool registry and dispatcher (see below).
   - `services/agent_tools.py` — the same tool registry rendered as native Anthropic / OpenAI tool schemas.
   - `services/mcp_server.py` — embedded HTTP MCP endpoint mounted at `/mcp`.
-  - `services/privacy/` — Presidio-based PII redaction; `redaction_middleware` wraps MCP tool output before it leaves the process.
   - `services/tabular/` — generic tabular inference (header detection, type/role mapping) shared by CSV/XLSX/PDF tables.
   - `services/expertise_store.py` — named, markdown-body "Expertise" packs: reusable research frameworks/instructions a user can attach to a collection.
 - [middleware/](../middleware/) — `user_context` resolves `X-User-ID` for multi-user mode.
@@ -32,7 +31,7 @@ Chat is a provider-agnostic ReAct-style tool-use loop, so it works across every 
 
 ## MCP
 
-The embedded MCP server ([services/mcp_server.py](../services/mcp_server.py)) is mounted at `/mcp` for power users who already work inside an external MCP client. Every MCP tool response passes through `services.privacy.redaction_middleware` so no PII reaches an external model — preserve that boundary when adding tools.
+The embedded MCP server ([services/mcp_server.py](../services/mcp_server.py)) is mounted at `/mcp` for power users who already work inside an external MCP client.
 
 The in-app chat is the primary surface; the MCP endpoint is secondary.
 
@@ -40,7 +39,7 @@ The in-app chat is the primary surface; the MCP endpoint is secondary.
 
 - [frontend/src/App.vue](../frontend/src/App.vue) — shell with tab navigation; per-tab components in [frontend/src/components/](../frontend/src/components/) (ChatTab, SearchTab, DocumentsTab, MCPTab, OCRPlaygroundTab, TokenizerTab, SettingsTab, ExpertiseLibrary, …).
 - Pinia stores in [frontend/src/stores/](../frontend/src/stores/).
-- The Vite dev server runs at `:5173` and proxies to the backend at `:8000`. The production build lands in [static/](../static/) and is served by FastAPI; do not hand-edit `static/assets/*` — they are build outputs.
+- The Vite dev server runs at `:5173` and proxies to the backend at `:8473`. The production build lands in [static/](../static/) and is served by FastAPI; do not hand-edit `static/assets/*` — they are build outputs.
 
 ## Design language
 

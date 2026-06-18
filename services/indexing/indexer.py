@@ -62,7 +62,7 @@ class DocumentIndexer:
         Args:
             document_path: Path to the document file
             filename: Original filename
-            collection_id: Collection being indexed into (used for PII blacklist lookup)
+            collection_id: Collection being indexed into
 
         Returns:
             DocumentMetadata object
@@ -273,29 +273,6 @@ class DocumentIndexer:
         if not sheets:
             raise ValueError(f"Could not extract any rows from {filename}")
 
-        # ── Index-time PII sanitization ────────────────────────────────────
-        # Strip client identity columns (account holder names, account numbers,
-        # addresses, phone numbers, etc.) before anything is written to disk.
-        # The advisor already has this data in their source system; the AI only
-        # needs the investment/financial data.
-        try:
-            from services.privacy.column_sanitizer import sanitize_tabular_sheet
-            from services.privacy.collection_blacklist import get_blacklist
-            _blacklist = get_blacklist(collection_id) if collection_id else []
-            for sheet in sheets:
-                sanitize_tabular_sheet(sheet, blacklist=_blacklist or None)
-        except Exception as _san_err:
-            # Sanitization failure is non-fatal but we log loudly — we'd rather
-            # refuse to index than store raw PII silently.
-            logger.error(
-                "PII column sanitization failed for %s — aborting index to prevent "
-                "raw PII from being stored: %s",
-                filename, _san_err, exc_info=True,
-            )
-            raise ValueError(
-                f"PII sanitization failed for {filename}: {_san_err}"
-            ) from _san_err
-
         total_rows = sum(len(s['rows']) for s in sheets)
         report("extracting", 100,
                f"Extracted {total_rows} rows across {len(sheets)} sheet(s)")
@@ -503,8 +480,18 @@ class DocumentIndexer:
         ai_usage = AIUsage() if ai_active else None
         synthesis = None
 
-        # Fetch extra results if reranking (so the LLM has a bigger pool)
-        fetch_k = min(top_k * 5, 50) if (ai_active and ai_options.rerank) else top_k
+        # A local cross-encoder reranker (if enabled) runs for EVERY caller,
+        # including MCP search which passes no ai_service. Resolve it up front so
+        # we know whether to widen the candidate pool below.
+        from services.reranker import get_reranker
+        local_reranker = get_reranker()
+
+        # Fetch extra results when any reranker will run (local cross-encoder or
+        # the AI-judgment reranker) so the reranker has a bigger pool to reorder.
+        from config import settings as _settings
+        want_wider_pool = local_reranker is not None or (ai_active and ai_options.rerank)
+        mult = max(1, getattr(_settings, "reranker_candidate_multiplier", 5))
+        fetch_k = min(top_k * mult, 50) if want_wider_pool else top_k
 
         # Perform search based on mode
         if mode == SearchMode.KEYWORD:
@@ -532,18 +519,25 @@ class DocumentIndexer:
         if skip_filenames:
             results = [r for r in results if r.filename not in skip_filenames]
 
-        # Step 3: Optionally rerank results
-        if ai_active and ai_options.rerank and len(results) > 0:
+        # Step 3a: Local cross-encoder rerank (preferred — local, free, nothing
+        # leaves the machine, runs for every caller). When it reorders the pool we skip the
+        # AI-judgment reranker below to avoid a redundant second pass.
+        reranked_locally = False
+        if local_reranker is not None and len(results) > 1:
             try:
-                from services.privacy.redaction_middleware import redact_text_for_ai
+                results = local_reranker.rerank(query, results, top_k)
+                reranked_locally = True
+            except Exception as e:
+                logger.warning(f"Local reranking failed, using retrieval order: {e}")
+
+        # Step 3b: Optionally rerank results with the AI-judgment reranker
+        if ai_active and ai_options.rerank and not reranked_locally and len(results) > 0:
+            try:
                 rerank_input = [
                     {
                         "index": i,
                         "filename": r.filename,
-                        # Redact PII from snippets sent to the AI reranker.
-                        "text_snippet": redact_text_for_ai(
-                            r.text_snippet, source_label="search_rerank"
-                        ),
+                        "text_snippet": r.text_snippet,
                         "similarity_score": r.similarity_score,
                     }
                     for i, r in enumerate(results)
@@ -574,28 +568,19 @@ class DocumentIndexer:
             len(results) > 0 or collection_overview or structured_context
         ):
             try:
-                from services.privacy.redaction_middleware import redact_text_for_ai
-                # Redact PII from snippets and structured table data before synthesis.
                 synth_input = [
                     {
                         "filename": r.filename,
                         "page_number": r.page_number,
-                        "text_snippet": redact_text_for_ai(
-                            r.text_snippet, source_label="search_synthesis"
-                        ),
+                        "text_snippet": r.text_snippet,
                     }
                     for r in results
                 ]
-                safe_structured_context = (
-                    redact_text_for_ai(structured_context, source_label="search_synthesis_tables")
-                    if structured_context
-                    else structured_context
-                )
                 synth_result = ai_service.synthesize_results(
                     query,
                     synth_input,
                     collection_overview=collection_overview,
-                    structured_context=safe_structured_context,
+                    structured_context=structured_context,
                 )
                 synthesis = synth_result["synthesis"]
                 usage = synth_result["usage"]

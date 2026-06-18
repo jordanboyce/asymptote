@@ -271,7 +271,7 @@ class SQLiteBackend(DatabaseBackend):
             except sqlite3.OperationalError:
                 pass
 
-            # Add MCP display name/description (PII-safe aliases)
+            # Add MCP display name/description (optional aliases for MCP output)
             for col in ["mcp_display_name TEXT", "mcp_display_description TEXT"]:
                 try:
                     conn.execute(f"ALTER TABLE collections ADD COLUMN {col}")

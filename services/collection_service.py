@@ -18,56 +18,6 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
-def _normalize_for_pii_check(text: str) -> str:
-    """Normalize underscores/hyphens to spaces so Presidio can detect
-    person names embedded in identifiers like 'margarett_sullivan'."""
-    import re
-    return re.sub(r"[_\-]+", " ", text)
-
-
-def _generate_mcp_aliases(
-    name: str,
-    description: str,
-) -> tuple[str | None, str | None]:
-    """Generate PII-safe display names for MCP output.
-
-    Runs the collection name and description through the redaction engine.
-    If PII is detected, returns a sanitized alias; otherwise returns None
-    (meaning the real name is safe to use in MCP responses).
-
-    Also normalizes underscores/hyphens to spaces before checking, since
-    Presidio can't detect person names in 'margarett_sullivan' form.
-    """
-    if not getattr(settings, "enable_pii_redaction", False):
-        return None, None
-
-    try:
-        from services.privacy.redaction_engine import redaction_engine
-        if not redaction_engine.available:
-            return None, None
-
-        display_name = None
-        # Check both the raw name and a normalized form
-        result = redaction_engine.redact_text(name)
-        if not result.had_pii:
-            result = redaction_engine.redact_text(_normalize_for_pii_check(name))
-        if result.had_pii:
-            display_name = result.redacted_text
-
-        display_desc = None
-        if description:
-            result = redaction_engine.redact_text(description)
-            if not result.had_pii:
-                result = redaction_engine.redact_text(_normalize_for_pii_check(description))
-            if result.had_pii:
-                display_desc = result.redacted_text
-
-        return display_name, display_desc
-    except Exception:
-        logger.debug("PII check skipped for collection name", exc_info=True)
-        return None, None
-
-
 class CollectionService:
     """Manages document collections and their associated data."""
 
@@ -113,9 +63,6 @@ class CollectionService:
         Returns:
             Collection details
         """
-        mcp_display_name, mcp_display_description = _generate_mcp_aliases(
-            name, description,
-        )
         collection_id = app_db.create_collection(
             name=name,
             description=description,
@@ -124,8 +71,8 @@ class CollectionService:
             chunk_overlap=chunk_overlap,
             embedding_model=embedding_model,
             owner_id=owner_id,
-            mcp_display_name=mcp_display_name,
-            mcp_display_description=mcp_display_description,
+            mcp_display_name=None,
+            mcp_display_description=None,
         )
         self._ensure_collection_dirs(collection_id)
         logger.info(f"Created collection '{name}' with ID {collection_id} owner={owner_id}")

@@ -64,10 +64,6 @@ class ConfigManager:
             "mcp_max_source_length": settings.mcp_max_source_length,
             "mcp_ai_provider": settings.mcp_ai_provider,
             "mcp_ollama_model": settings.mcp_ollama_model,
-            # Privacy / PII redaction settings
-            "enable_pii_redaction": settings.enable_pii_redaction,
-            "pii_redaction_style": settings.pii_redaction_style,
-            "pii_score_threshold": settings.pii_score_threshold,
             # LLM schema inference (P0.5)
             "enable_llm_schema_inference": settings.enable_llm_schema_inference,
             "llm_schema_inference_threshold": settings.llm_schema_inference_threshold,
@@ -120,7 +116,6 @@ class ConfigManager:
         mcp_fields = {"enable_mcp", "mcp_server_id", "mcp_default_collection", "mcp_top_k",
                       "mcp_mode", "mcp_semantic_weight", "mcp_include_sources",
                       "mcp_max_source_length", "mcp_ai_provider", "mcp_ollama_model"}
-        privacy_fields = {"enable_pii_redaction", "pii_redaction_style", "pii_score_threshold"}
         inference_fields = {"enable_llm_schema_inference", "llm_schema_inference_threshold"}
         ui_fields = {"enable_chat_tab"}
 
@@ -137,7 +132,6 @@ class ConfigManager:
             "mcp_top_k", "mcp_mode", "mcp_semantic_weight",
             "mcp_include_sources", "mcp_max_source_length",
             "mcp_ai_provider", "mcp_ollama_model",
-            "enable_pii_redaction", "pii_redaction_style", "pii_score_threshold",
             "enable_llm_schema_inference", "llm_schema_inference_threshold",
             "enable_chat_tab",
         }

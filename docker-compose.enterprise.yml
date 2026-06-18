@@ -86,7 +86,7 @@ services:
     container_name: asymptote-api
     restart: unless-stopped
     expose:
-      - "8000"                # only reachable via nginx on the backend network
+      - "8473"                # only reachable via nginx on the backend network
     volumes:
       - asymptote-data:/app/data
       - asymptote-models:/home/asymptote/.cache    # embedding model cache
@@ -95,7 +95,7 @@ services:
     environment:
       - DATA_DIR=/app/data
       - HOST=0.0.0.0
-      - PORT=8000
+      - PORT=8473
       - DB_BACKEND=${DB_BACKEND:-sqlite}
       - POSTGRES_URL=${POSTGRES_URL:-postgresql://asymptote:asymptote@postgres:5432/asymptote}
       - ENABLE_MULTI_USER=${ENABLE_MULTI_USER:-false}
@@ -104,7 +104,7 @@ services:
       - frontend       # internet access (needed for model download + AI API calls)
       - backend        # internal communication with ollama
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8473/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -53,7 +53,7 @@ Asymptote.exe
 ```
 
 The application will:
-- Start the server on `http://localhost:8000` (or next available port)
+- Start the server on `http://localhost:8473` (or next available port)
 - Open your default browser
 - Run in the system tray
 
@@ -213,7 +213,7 @@ hiddenimports=[
 
 ### Runtime Issues
 
-**Port already in use**: The app will automatically find the next available port starting from 8000.
+**Port already in use**: The app will automatically find the next available port starting from 8473.
 
 **Antivirus blocking**: Some antivirus software flags PyInstaller executables as suspicious. You may need to:
 - Add an exception for the executable

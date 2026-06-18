@@ -247,8 +247,6 @@ def execute_tool_calls(
 
     `agent_context` carries the chat-level defaults the agent inherits when
     its tool call doesn't specify them — most importantly `collection_id`.
-    All MCP wrappers apply Presidio redaction internally before returning,
-    so results are safe to feed back into the AI prompt.
     """
     # Lazy import — services.mcp_server pulls in heavy deps and the agent
     # loop is the only consumer here.

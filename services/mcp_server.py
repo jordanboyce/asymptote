@@ -24,7 +24,6 @@ from services.structured_chat import (
     render_table_as_rows,
 )
 from services.structured_store import SQLValidationError, StructuredStore
-from services.privacy.redaction_middleware import redact_mcp_response
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +65,14 @@ def _ensure_enabled() -> None:
         raise RuntimeError("Asymptote MCP is disabled in Settings.")
 
 
-def _redact(response: dict[str, Any], tool_name: str) -> dict[str, Any]:
-    """Apply PII redaction to an MCP tool response before it exits."""
-    return redact_mcp_response(
-        response,
-        tool_name=tool_name,
-        collection_id=response.get("collection_id"),
-    )
+def _tool_response(response: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    """Return an MCP tool response unchanged.
+
+    Retained as the single seam every tool result passes through, in case
+    post-processing is needed later. `tool_name` identifies the producing
+    tool for callers and diagnostics.
+    """
+    return response
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -210,14 +210,14 @@ def build_mcp_export_payload(base_url: str, profile: dict[str, Any] | None = Non
 
 
 def _mcp_safe_name(collection: dict[str, Any] | None, fallback: str = "") -> str:
-    """Return the PII-safe display name for MCP output."""
+    """Return the display name for MCP output."""
     if not collection:
         return fallback
     return collection.get("mcp_display_name") or collection.get("name", fallback)
 
 
 def _mcp_safe_description(collection: dict[str, Any] | None, fallback: str = "") -> str:
-    """Return the PII-safe description for MCP output."""
+    """Return the description for MCP output."""
     if not collection:
         return fallback
     return collection.get("mcp_display_description") or collection.get("description", fallback)
@@ -380,7 +380,7 @@ def list_collections() -> dict[str, Any]:
             "is_default": cid == default_id,
         })
 
-    return _redact({
+    return _tool_response({
         "total_collections": len(entries),
         "default_collection_id": default_id,
         "collections": entries,
@@ -460,7 +460,7 @@ def get_collection_info(
     }
     if detail == "with_documents":
         payload["documents"] = doc_list
-    return _redact(payload, "get_collection_info")
+    return _tool_response(payload, "get_collection_info")
 
 
 @_asymptote_mcp.tool()
@@ -689,7 +689,7 @@ def search_collection(
             for rank, result in enumerate(search_result.get("results", []), start=1)
         ]
 
-    return _redact(response, "search_collection")
+    return _tool_response(response, "search_collection")
 
 
 _DOC_CONTEXT_MAX_CHARS_DEFAULT = 12000
@@ -809,7 +809,7 @@ def get_document_context(
 
     joined = "\n".join(c["text"] for c in emitted)
 
-    return _redact({
+    return _tool_response({
         "collection_id": resolved_collection,
         "document_id": document_id,
         "filename": doc_info.get("filename"),
@@ -852,6 +852,38 @@ def _find_literal_excerpt(text: str, pattern: str, case_insensitive: bool) -> tu
     return idx, excerpt
 
 
+def _find_regex_excerpt(
+    text: str, regex: "_re.Pattern[str]"
+) -> tuple[int, str, str] | None:
+    """Find the first regex match in text.
+
+    Returns (offset, excerpt_with_markers, matched_text) or None. Mirrors
+    `_find_literal_excerpt` but wraps the actual matched span (which may differ
+    from the raw pattern) in « » markers.
+    """
+    if not text:
+        return None
+    m = regex.search(text)
+    if not m:
+        return None
+    idx, end_idx = m.start(), m.end()
+    matched = text[idx:end_idx]
+    start = max(0, idx - _FIND_EXCERPT_PAD_CHARS)
+    end = min(len(text), end_idx + _FIND_EXCERPT_PAD_CHARS)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    excerpt = (
+        prefix
+        + text[start:idx]
+        + "«"
+        + matched
+        + "»"
+        + text[end_idx:end]
+        + suffix
+    )
+    return idx, excerpt, matched
+
+
 @_asymptote_mcp.tool()
 def find_in_documents(
     pattern: str,
@@ -860,22 +892,33 @@ def find_in_documents(
     collection_id: str | None = None,
     max_results: int = 20,
 ) -> dict[str, Any]:
-    """Exact substring search across a collection's indexed text chunks.
+    """Exact-substring OR regex search across a collection's indexed text chunks.
 
     Use this tool when the user cites an exact string that should appear
-    verbatim in a document: a ticker symbol, a CUSIP, a client-name fragment,
-    a quoted phrase, an identifier, a policy number, or any verbatim term.
-    Unlike `search_collection` (which is tuned for semantic / BM25 ranking
-    and drops stopwords and punctuation), this tool does a literal substring
-    match — the pattern either appears in the chunk or it doesn't.
+    verbatim in a document (ticker symbol, CUSIP, client-name fragment, quoted
+    phrase, identifier, policy number) OR when you want a structural / pattern
+    match that semantic search can't express. Unlike `search_collection` (tuned
+    for semantic / BM25 ranking, drops stopwords and punctuation), this tool
+    matches the literal string or regex against the raw chunk text.
+
+    This is the right tool for code-aware lookups over indexed source files:
+    finding call sites (`literal="foo("`), definitions
+    (`literal=false, pattern="def\\s+handle_\\w+"`), imports, `TODO`/`FIXME`
+    comments, env-var reads, or any identifier or code pattern an embedding
+    query would only fuzzily match.
 
     Parameters:
-      - pattern: The exact string to find. Not a regex. Leading/trailing
-        whitespace is preserved.
-      - literal: Reserved for future regex support; currently always literal.
-      - case_sensitive: If true, the match is byte-exact. If false (default),
-        matches ignore ASCII case. Use case_sensitive=true for ticker symbols
-        or other identifiers where case matters.
+      - pattern: The string to find. Interpreted as a literal substring when
+        `literal=true` (default) or as a Python regular expression when
+        `literal=false`. Leading/trailing whitespace is preserved.
+      - literal: If true (default), `pattern` is matched as a plain substring.
+        If false, `pattern` is compiled as a regex (Python `re` syntax) and
+        matched with `re.search` against each chunk — use this for code
+        patterns, alternations, anchors, character classes, etc. Invalid
+        regexes raise a clear error.
+      - case_sensitive: If true, the match is case-exact. If false (default),
+        matching ignores ASCII case (regex compiled with `re.IGNORECASE`). Use
+        case_sensitive=true for ticker symbols or other case-bearing identifiers.
       - collection_id: Optional. If omitted, uses the server's default
         collection.
       - max_results: Max matches to return (default 20, cap 100). One chunk
@@ -887,6 +930,8 @@ def find_in_documents(
       - excerpt: the chunk text around the match, with the matched span
         wrapped in « » so it's easy to spot
       - offset: character offset of the match within the chunk
+      - match: the exact text the pattern matched (useful with regex, where the
+        matched span differs from the pattern)
 
     When NOT to use this tool:
       - For conceptual / paraphrased questions — use `search_collection`
@@ -898,8 +943,14 @@ def find_in_documents(
     _ensure_enabled()
     if not pattern or not pattern.strip():
         raise ValueError("pattern must not be empty")
+
+    regex: "_re.Pattern[str] | None" = None
     if not literal:
-        raise ValueError("regex / non-literal search is not yet supported; pass literal=True")
+        flags = 0 if case_sensitive else _re.IGNORECASE
+        try:
+            regex = _re.compile(pattern, flags)
+        except _re.error as e:
+            raise ValueError(f"Invalid regular expression: {e}")
 
     resolved_collection = _resolve_collection_id(collection_id)
     capped = max(1, min(int(max_results), _FIND_MAX_RESULTS))
@@ -912,10 +963,17 @@ def find_in_documents(
     for chunk in metadata_store.get_all_chunks_ordered():
         scanned += 1
         text = chunk.get("text") or ""
-        hit = _find_literal_excerpt(text, pattern, case_insensitive=not case_sensitive)
-        if not hit:
-            continue
-        offset, excerpt = hit
+        if regex is not None:
+            hit = _find_regex_excerpt(text, regex)
+            if not hit:
+                continue
+            offset, excerpt, matched = hit
+        else:
+            literal_hit = _find_literal_excerpt(text, pattern, case_insensitive=not case_sensitive)
+            if not literal_hit:
+                continue
+            offset, excerpt = literal_hit
+            matched = pattern
         matches.append({
             "filename": chunk.get("filename"),
             "document_id": chunk.get("document_id"),
@@ -923,13 +981,15 @@ def find_in_documents(
             "page_number": chunk.get("page_number"),
             "offset": offset,
             "excerpt": excerpt,
+            "match": matched,
         })
         if len(matches) >= capped:
             break
 
-    return _redact({
+    return _tool_response({
         "collection_id": resolved_collection,
         "pattern": pattern,
+        "literal": bool(literal),
         "case_sensitive": bool(case_sensitive),
         "total_matches": len(matches),
         "chunks_scanned": scanned,
@@ -1046,7 +1106,7 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
         {k: v for k, v in t.items() if k != "financial_roles"}
         for t in raw_tables
     ]
-    return _redact({
+    return _tool_response({
         "collection_id": resolved_collection,
         "total_tables": len(tables),
         "tables": tables,
@@ -1087,7 +1147,7 @@ def get_table_schema(
     schema = store.get_schema(identifier, identifier_type=identifier_type)
     if not schema:
         raise _no_table_error(store, identifier, resolved_collection)
-    return _redact(_format_schema_summary(schema), "get_table_schema")
+    return _tool_response(_format_schema_summary(schema), "get_table_schema")
 
 
 @_asymptote_mcp.tool()
@@ -1151,7 +1211,7 @@ def get_table_rows(
     display_columns = [sql_to_orig.get(raw_columns[i], raw_columns[i]) for i in keep_idx]
     display_rows = [[row[i] for i in keep_idx] for row in raw_rows]
 
-    return _redact({
+    return _tool_response({
         "collection_id": resolved_collection,
         "table_name": table_name,
         "filename": schema.get("filename"),
@@ -1200,7 +1260,7 @@ def query_table(
         result = store.execute_query(sql, max_rows=capped_rows)
     except SQLValidationError as e:
         raise ValueError(str(e))
-    return _redact({
+    return _tool_response({
         "collection_id": resolved_collection,
         "sql": sql,
         **result,
@@ -1297,7 +1357,7 @@ def aggregate_table(
     except SQLValidationError as e:
         raise ValueError(str(e))
 
-    return _redact({
+    return _tool_response({
         "collection_id": resolved_collection,
         "identifier": identifier,
         "table_name": table_name,
@@ -1348,7 +1408,7 @@ def get_document_metadata(
             f"'{resolved_collection}'. Call get_collection_info() to see "
             f"available document_ids."
         )
-    return _redact({
+    return _tool_response({
         "collection_id": resolved_collection,
         "document_id": doc_info.get("document_id"),
         "filename": doc_info.get("filename"),
@@ -1364,198 +1424,6 @@ def get_document_metadata(
         "num_chunks": doc_info.get("num_chunks"),
         "upload_timestamp": doc_info.get("upload_timestamp"),
     }, "get_document_metadata")
-
-
-# ---------------------------------------------------------------------------
-# PII Redaction — audit and configuration tools
-# ---------------------------------------------------------------------------
-
-
-@_asymptote_mcp.tool()
-def get_recent_redactions(
-    session_id: str | None = None,
-    collection_id: str | None = None,
-    limit: int = 50,
-) -> dict[str, Any]:
-    """Return recent PII redaction events from the audit log.
-
-    Use this to self-verify what PII was removed before proceeding, or to
-    answer user questions about what was redacted.
-
-    Parameters:
-      - session_id: Filter to a specific session. If omitted, returns
-        redactions across all sessions.
-      - collection_id: Filter to a specific collection. If omitted,
-        returns redactions across all collections.
-      - limit: Max entries to return (default 50, cap 500).
-
-    Returns a list of redaction events with entity_type, replacement text,
-    which tool produced the output, and the Presidio confidence score.
-    The original PII text is NOT included in the response (it stays in
-    the local audit log only).
-    """
-    _ensure_enabled()
-
-    from services.privacy.redaction_log import redaction_log
-
-    capped = max(1, min(int(limit), 500))
-    events = redaction_log.get_recent(
-        session_id=session_id,
-        collection_id=collection_id,
-        limit=capped,
-    )
-
-    # Strip original_text from the response — it must not leave the machine
-    safe_events = [
-        {
-            "id": e.get("id"),
-            "timestamp": e.get("timestamp"),
-            "session_id": e.get("session_id"),
-            "collection_id": e.get("collection_id"),
-            "tool_name": e.get("tool_name"),
-            "document_id": e.get("document_id"),
-            "entity_type": e.get("entity_type"),
-            "replacement": e.get("replacement"),
-            "score": e.get("score"),
-        }
-        for e in events
-    ]
-
-    # Also include a summary if session_id was provided
-    summary = None
-    if session_id:
-        summary = redaction_log.get_session_summary(session_id)
-
-    result: dict[str, Any] = {
-        "total_returned": len(safe_events),
-        "redactions": safe_events,
-    }
-    if summary:
-        result["session_summary"] = summary
-
-    return result
-
-
-@_asymptote_mcp.tool()
-def get_redaction_config(
-    collection_id: str | None = None,
-) -> dict[str, Any]:
-    """Return the active PII redaction profile for a collection.
-
-    Shows which entity types are being redacted, the redaction style
-    (e.g. [ENTITY_TYPE], [REDACTED], partial_mask), the confidence
-    threshold, and any allow-listed strings.
-
-    Parameters:
-      - collection_id: Optional. If omitted, returns the global default
-        profile.
-    """
-    _ensure_enabled()
-
-    from services.privacy.redaction_config import get_redaction_profile, _profile_to_dict
-
-    profile = get_redaction_profile(collection_id)
-    payload = _profile_to_dict(profile)
-    payload["collection_id"] = collection_id
-    payload["enabled"] = getattr(settings, "enable_pii_redaction", False)
-    return payload
-
-
-@_asymptote_mcp.tool()
-def redaction_preview(
-    text: str,
-    collection_id: str | None = None,
-) -> dict[str, Any]:
-    """Dry-run PII detection on a string without persisting anything.
-
-    Returns what entities would be redacted and their replacements,
-    without writing to the audit log or modifying the input. Useful
-    for agents to self-verify before sending context upstream to
-    an LLM provider.
-
-    Parameters:
-      - text: The string to analyze.
-      - collection_id: Collection whose redaction profile to apply.
-        Omit to use the global default profile.
-
-    Returns: { redacted_text, entity_count, had_pii, entities: [
-      { entity_type, start, end, score, replacement } ] }
-    """
-    _ensure_enabled()
-
-    from services.privacy.redaction_engine import redaction_engine
-
-    result = redaction_engine.redact_text(text, collection_id)
-    return {
-        "redacted_text": result.redacted_text,
-        "entity_count": len(result.details),
-        "had_pii": result.had_pii,
-        "entities": [
-            {
-                "entity_type": d.entity_type,
-                "start": d.start,
-                "end": d.end,
-                "score": d.score,
-                "replacement": d.replacement,
-            }
-            for d in result.details
-        ],
-    }
-
-
-@_asymptote_mcp.tool()
-def set_redaction_policy(
-    collection_id: str | None = None,
-    redaction_style: str | None = None,
-    allow_list: list[str] | None = None,
-    minimum_score_threshold: float | None = None,
-    entity_types_enabled: list[str] | None = None,
-    strict_mode: bool | None = None,
-) -> dict[str, Any]:
-    """Update the PII redaction policy for a collection.
-
-    Parameters:
-      - collection_id: Collection to update. Omit for global default.
-      - redaction_style: "entity_type" | "redacted" |
-        "consistent_pseudonym" | "partial_mask" | "synthetic_placeholder"
-      - allow_list: Strings that should never be redacted
-        (fund names, tickers, firm names).
-      - minimum_score_threshold: Presidio confidence floor (0.0-1.0).
-        Lower = more aggressive.
-      - entity_types_enabled: List of entity types to enforce.
-        Omit to enable all defaults.
-      - strict_mode: When true, redact at minimum_score_threshold;
-        when false, only high-confidence matches.
-
-    Returns the updated profile dict plus `collection_id` and `enabled`.
-    """
-    _ensure_enabled()
-
-    from services.privacy.redaction_config import (
-        save_redaction_profile,
-        _profile_to_dict,
-        clear_profile_cache,
-    )
-
-    updates: dict[str, Any] = {}
-    if redaction_style is not None:
-        updates["redaction_style"] = redaction_style
-    if allow_list is not None:
-        updates["allow_list"] = allow_list
-    if minimum_score_threshold is not None:
-        updates["minimum_score_threshold"] = minimum_score_threshold
-    if entity_types_enabled is not None:
-        updates["entity_types_enabled"] = entity_types_enabled
-    if strict_mode is not None:
-        updates["strict_mode"] = strict_mode
-
-    profile = save_redaction_profile(collection_id, updates)
-    clear_profile_cache()
-
-    payload = _profile_to_dict(profile)
-    payload["collection_id"] = collection_id
-    payload["enabled"] = getattr(settings, "enable_pii_redaction", False)
-    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -1597,7 +1465,7 @@ def resource_collection(id: str) -> dict[str, Any]:
             entry["source_path"] = doc["source_path"]
         doc_list.append(entry)
 
-    return _redact({
+    return _tool_response({
         "collection_id": resolved,
         "collection_name": _mcp_safe_name(collection, resolved),
         "description": _mcp_safe_description(collection, ""),
@@ -1629,7 +1497,7 @@ def resource_collection_schema(id: str) -> dict[str, Any]:
         full = store.get_schema(t["table_name"])
         if full:
             schemas.append(_format_schema_summary(full))
-    return _redact({
+    return _tool_response({
         "collection_id": resolved,
         "total_tables": len(schemas),
         "schemas": schemas,
@@ -1661,7 +1529,7 @@ def resource_document(id: str) -> dict[str, Any]:
             f"Document '{id}' not found in collection '{resolved}'. "
             f"Call get_collection_info() to see available document_ids."
         )
-    return _redact({
+    return _tool_response({
         "collection_id": resolved,
         "document_id": doc_info.get("document_id"),
         "filename": doc_info.get("filename"),
@@ -1719,7 +1587,7 @@ def resource_table(id: str) -> dict[str, Any]:
     display_columns = [sql_to_orig.get(raw_columns[i], raw_columns[i]) for i in keep_idx]
     display_rows = [[row[i] for i in keep_idx] for row in raw_rows]
 
-    return _redact({
+    return _tool_response({
         "collection_id": resolved,
         "schema": summary,
         "sample_columns": display_columns,

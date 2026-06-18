@@ -26,11 +26,11 @@ COPY . .
 RUN mkdir -p /app/data/documents /app/data/indexes
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8473
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV DATA_DIR=/app/data
 
 # Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8473"]

@@ -77,7 +77,7 @@ except ImportError:
     print("Note: Install pystray for system tray support: pip install pystray pillow")
 
 
-def find_free_port(start_port=8000, max_tries=10):
+def find_free_port(start_port=8473, max_tries=10):
     """Find a free port starting from start_port."""
     for port in range(start_port, start_port + max_tries):
         try:

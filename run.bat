@@ -41,7 +41,7 @@ if not exist "certs\server.crt" (
 
 REM Start the server
 echo.
-echo Starting server on port 8000
+echo Starting server on port 8473
 echo (HTTPS if SSL_CERTFILE is set in .env, otherwise HTTP)
 echo.
 python main.py

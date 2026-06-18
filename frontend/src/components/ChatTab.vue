@@ -12,61 +12,6 @@
         </div>
 
         <div class="flex items-center gap-0.5">
-          <!-- Privacy status indicator -->
-          <div class="dropdown dropdown-end mr-1">
-            <label
-              tabindex="0"
-              class="btn btn-xs btn-ghost gap-1 px-1.5 h-5 min-h-0 font-normal"
-              :class="piiRedactionEnabled ? 'text-success/80 hover:text-success' : 'text-warning hover:text-warning'"
-              :title="piiRedactionEnabled ? 'Data stays local. PII redacted before AI calls.' : 'Warning: PII redaction is currently OFF'"
-              :aria-label="piiRedactionEnabled ? 'Privacy: stored locally, PII redacted before AI calls' : 'Privacy warning: PII redaction is off'"
-              aria-haspopup="menu"
-            >
-              <ShieldCheck v-if="piiRedactionEnabled" :size="11" aria-hidden="true" />
-              <ShieldAlert v-else :size="11" aria-hidden="true" />
-              <span class="text-xs">{{ piiRedactionEnabled ? 'Local · PII redacted' : 'PII redaction off' }}</span>
-            </label>
-            <div
-              tabindex="0"
-              class="dropdown-content z-[60] card card-compact w-80 shadow-lg bg-base-100 border border-base-300"
-              role="menu"
-            >
-              <div class="card-body gap-3">
-                <div class="flex items-start gap-2">
-                  <Lock :size="14" class="text-base-content/60 flex-shrink-0 mt-0.5" aria-hidden="true" />
-                  <div class="text-xs">
-                    <div class="font-medium text-base-content/90">Stored locally</div>
-                    <div class="text-base-content/60 mt-0.5">
-                      Your documents and the derived index live on the machine running Asymptote. They are not uploaded to our servers.
-                    </div>
-                  </div>
-                </div>
-                <div class="flex items-start gap-2">
-                  <ShieldCheck v-if="piiRedactionEnabled" :size="14" class="text-success flex-shrink-0 mt-0.5" aria-hidden="true" />
-                  <ShieldAlert v-else :size="14" class="text-warning flex-shrink-0 mt-0.5" aria-hidden="true" />
-                  <div class="text-xs">
-                    <div class="font-medium text-base-content/90">
-                      {{ piiRedactionEnabled ? 'PII redacted before AI calls' : 'PII redaction is disabled' }}
-                    </div>
-                    <div class="text-base-content/60 mt-0.5">
-                      <template v-if="piiRedactionEnabled">
-                        Names, account numbers, and other identifiers are detected and replaced on-device before any prompt is sent to the AI provider.
-                      </template>
-                      <template v-else>
-                        Prompts sent to the AI provider may contain client identifiers. Enable redaction in Privacy settings.
-                      </template>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  class="btn btn-xs btn-ghost justify-start w-full text-xs font-normal"
-                  @click="$emit('switch-tab', 'settings')"
-                >
-                  Privacy settings →
-                </button>
-              </div>
-            </div>
-          </div>
 
           <!-- Session switcher -->
           <div class="dropdown dropdown-end">
@@ -652,7 +597,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check, ShieldCheck, ShieldAlert, Lock } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
@@ -695,18 +640,6 @@ const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 const configuredProviders = computed(() => getConfiguredProviderIds())
 const selectedProvider = ref(localStorage.getItem('chat_provider') || '')
 const hasAnyProvider = computed(() => configuredProviders.value.length > 0)
-
-// Privacy status (for the header indicator)
-const piiRedactionEnabled = ref(true)
-const loadPrivacyStatus = async () => {
-  try {
-    const response = await axios.get('/api/config')
-    piiRedactionEnabled.value = response.data.enable_pii_redaction ?? true
-  } catch {
-    // Keep optimistic default — the badge falls back to "on" if the config
-    // endpoint is unreachable, which matches the server-side default.
-  }
-}
 
 const sendDisabled = computed(() => {
   if (!inputMessage.value.trim() || loading.value) return true
@@ -1087,7 +1020,6 @@ const handlePrefill = (e) => {
 onMounted(() => {
   ensureValidProvider()
   scrollToBottom()
-  loadPrivacyStatus()
   window.addEventListener('asymptote:prefill-chat', handlePrefill)
 })
 

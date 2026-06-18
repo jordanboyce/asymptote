@@ -22,10 +22,20 @@ class Settings(BaseSettings):
     default_top_k: int = 10
     max_top_k: int = 50
 
+    # Local cross-encoder reranker (second-stage relevance reordering).
+    # Runs locally (no API tokens, no PII egress) and applies to every search
+    # caller, including the MCP tools. Opt-in because it downloads/loads a model
+    # on first use. When enabled, retrieval fetches a wider candidate pool
+    # (top_k * reranker_candidate_multiplier, capped) and the cross-encoder
+    # reorders it down to top_k.
+    enable_reranker: bool = False
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_candidate_multiplier: int = 5
+
 
     # Server configuration
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8473
 
     # HTTPS / TLS. If both files exist, uvicorn serves HTTPS on `port`.
     # Leave empty to run plain HTTP (default). Paths are relative to the
@@ -70,14 +80,9 @@ class Settings(BaseSettings):
     vision_ocr_ollama_url: str = "http://localhost:11434"
     vision_ocr_form_mode: bool = False      # Form-aware prompt + ruled-line image preprocessing
 
-    # PII redaction (Presidio-based, runs locally)
-    enable_pii_redaction: bool = True  # Redact PII from all MCP tool output
-    pii_redaction_style: str = "entity_type"  # redacted | entity_type | consistent_pseudonym | partial_mask | synthetic_placeholder
-    pii_score_threshold: float = 0.4  # Presidio confidence floor (lower = more aggressive)
-
     # LLM-assisted column role inference (P0.5)
     # When enabled, columns that can't be mapped by vendor profiles or regex
-    # heuristics are sent (with sample values redacted via Presidio) to an LLM
+    # heuristics are sent (with column names and sample values) to an LLM
     # for role assignment.  Requires mcp_ai_provider != "none" and a valid key.
     enable_llm_schema_inference: bool = False
     llm_schema_inference_threshold: float = 0.5  # Trigger when ≥ this fraction of columns are unmapped
