@@ -125,17 +125,30 @@
     </header>
 
     <!-- ── Body ── -->
-    <div class="flex flex-1 overflow-hidden min-h-0">
+    <div class="flex flex-1 overflow-hidden min-h-0 relative">
+
+      <!-- Compact mode: side panels overlay the main surface instead of
+           squeezing it, so the answer column keeps the full window width.
+           This backdrop closes whichever panel is open. -->
+      <div
+        v-if="isCompact && (sourcesSidebarOpen || analysisSidebarOpen)"
+        class="absolute inset-0 z-30 bg-base-content/20"
+        @click="sourcesSidebarOpen = false; analysisSidebarOpen = false"
+        aria-hidden="true"
+      ></div>
 
       <!-- Left sidebar: sources (resizable, hidden on collections overview) -->
       <aside
         v-show="!isCollectionsView"
-        class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative"
-        :class="isResizing ? '' : 'transition-all duration-200 ease-in-out'"
-        :style="{ width: sourcesSidebarOpen ? sidebarWidth + 'px' : '0px' }"
+        class="bg-base-100 overflow-hidden flex flex-col"
+        :class="[
+          isResizing ? '' : 'transition-all duration-200 ease-in-out',
+          isCompact ? 'absolute left-0 top-0 h-full z-40 shadow-2xl' : 'flex-shrink-0 relative',
+        ]"
+        :style="{ width: sourcesSidebarOpen ? effectiveSidebarWidth + 'px' : '0px' }"
       >
         <!-- Sidebar content fixed to sidebarWidth so it doesn't shrink during close animation -->
-        <div class="h-full flex flex-col" :style="{ width: sidebarWidth + 'px' }">
+        <div class="h-full flex flex-col" :style="{ width: effectiveSidebarWidth + 'px' }">
           <SourcesSidebar
             @document-deleted="handleDocumentDeleted"
             @background-job-started="showJobsDrawer = true"
@@ -143,9 +156,9 @@
           />
         </div>
 
-        <!-- Drag handle -->
+        <!-- Drag handle (pointless in compact overlay mode) -->
         <div
-          v-if="sourcesSidebarOpen"
+          v-if="sourcesSidebarOpen && !isCompact"
           class="absolute right-0 top-0 h-full w-1 cursor-col-resize group z-10 hover:bg-primary/40 transition-colors"
           :class="isResizing ? 'bg-primary/60' : ''"
           @mousedown.prevent="startResize"
@@ -425,6 +438,7 @@
             </div>
 
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
+            <ArtifactsTab v-if="activeTab === 'generate'" />
             <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
             <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
@@ -438,13 +452,16 @@
       <!-- Right sidebar: analysis (resizable, hidden on collections overview) -->
       <aside
         v-show="!isCollectionsView"
-        class="flex-shrink-0 bg-base-100 overflow-hidden flex flex-col relative border-l border-base-300"
-        :class="isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out'"
-        :style="{ width: analysisSidebarOpen ? analysisWidth + 'px' : '0px' }"
+        class="bg-base-100 overflow-hidden flex flex-col border-l border-base-300"
+        :class="[
+          isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out',
+          isCompact ? 'absolute right-0 top-0 h-full z-40 shadow-2xl' : 'flex-shrink-0 relative',
+        ]"
+        :style="{ width: analysisSidebarOpen ? effectiveAnalysisWidth + 'px' : '0px' }"
       >
-        <!-- Drag handle (on the LEFT edge of the right sidebar) -->
+        <!-- Drag handle (on the LEFT edge of the right sidebar; pointless in compact overlay mode) -->
         <div
-          v-if="analysisSidebarOpen"
+          v-if="analysisSidebarOpen && !isCompact"
           class="absolute left-0 top-0 h-full w-1 cursor-col-resize group z-10 hover:bg-primary/40 transition-colors"
           :class="isResizingAnalysis ? 'bg-primary/60' : ''"
           @mousedown.prevent="startResizeAnalysis"
@@ -458,7 +475,7 @@
           </div>
         </div>
 
-        <div class="h-full flex flex-col" :style="{ width: analysisWidth + 'px' }">
+        <div class="h-full flex flex-col" :style="{ width: effectiveAnalysisWidth + 'px' }">
           <AnalysisSidebar
             @close="analysisSidebarOpen = false"
             @send-to-chat="handleSendToChat"
@@ -908,9 +925,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Sparkles } from 'lucide-vue-next'
 
 const chatTabEnabled = ref(true)
 
@@ -918,6 +935,7 @@ const tabs = computed(() => {
   const t = []
   if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
   t.push({ id: 'search', label: 'Search', icon: Search })
+  t.push({ id: 'generate', label: 'Generate', icon: Sparkles })
   t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   return t
 })
@@ -927,17 +945,22 @@ const toolTabs = [
   { id: 'ocr', label: 'OCR Preview', icon: FileSearch },
   { id: 'tokenizer', label: 'Token Visualizer', icon: Hash },
 ]
-import SearchTab from './components/SearchTab.vue'
+// Core layout + default tab load eagerly; every other tab is code-split so
+// the initial bundle stays small (TokenizerTab alone pulls in gpt-tokenizer's
+// multi-MB token tables, which nobody should pay for on first paint).
 import SourcesSidebar from './components/SourcesSidebar.vue'
 import AnalysisSidebar from './components/AnalysisSidebar.vue'
-import OCRPlaygroundTab from './components/OCRPlaygroundTab.vue'
-import TokenizerTab from './components/TokenizerTab.vue'
 import ChatTab from './components/ChatTab.vue'
-import SettingsTab from './components/SettingsTab.vue'
-import MCPTab from './components/MCPTab.vue'
-import ShareModal from './components/ShareModal.vue'
-import ExpertiseLibrary from './components/ExpertiseLibrary.vue'
-import WelcomeOnboarding from './components/WelcomeOnboarding.vue'
+
+const SearchTab = defineAsyncComponent(() => import('./components/SearchTab.vue'))
+const ArtifactsTab = defineAsyncComponent(() => import('./components/ArtifactsTab.vue'))
+const OCRPlaygroundTab = defineAsyncComponent(() => import('./components/OCRPlaygroundTab.vue'))
+const TokenizerTab = defineAsyncComponent(() => import('./components/TokenizerTab.vue'))
+const SettingsTab = defineAsyncComponent(() => import('./components/SettingsTab.vue'))
+const MCPTab = defineAsyncComponent(() => import('./components/MCPTab.vue'))
+const ShareModal = defineAsyncComponent(() => import('./components/ShareModal.vue'))
+const ExpertiseLibrary = defineAsyncComponent(() => import('./components/ExpertiseLibrary.vue'))
+const WelcomeOnboarding = defineAsyncComponent(() => import('./components/WelcomeOnboarding.vue'))
 import { getConfiguredProviderIds } from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
@@ -985,19 +1008,57 @@ const stats = ref({
   chunks: 0
 })
 
-// Sources sidebar state (persisted)
-const sourcesSidebarOpen = ref(localStorage.getItem('sources_sidebar_open') !== 'false')
+// Compact (sidebar/companion) mode: when the window is pinned narrow next to
+// other apps, the side panels overlay the main surface instead of squeezing
+// it. Tracked live so dragging the window across the threshold adapts.
+const compactQuery = window.matchMedia('(max-width: 767px)')
+const isCompact = ref(compactQuery.matches)
+compactQuery.addEventListener('change', e => { isCompact.value = e.matches })
 
-watch(sourcesSidebarOpen, v => localStorage.setItem('sources_sidebar_open', String(v)))
+// Sources sidebar state (persisted; starts closed in compact mode where an
+// open overlay would cover the whole answer surface)
+const sourcesSidebarOpen = ref(
+  isCompact.value ? false : localStorage.getItem('sources_sidebar_open') !== 'false'
+)
+
+watch(sourcesSidebarOpen, v => {
+  if (!isCompact.value) localStorage.setItem('sources_sidebar_open', String(v))
+  if (v && isCompact.value) analysisSidebarOpen.value = false  // one overlay at a time
+})
 
 // Analysis sidebar state (persisted, resizable)
 const ANALYSIS_MIN = 240
 const ANALYSIS_MAX = 600
 const analysisWidth = ref(parseInt(localStorage.getItem('analysis_width') || '320'))
-const analysisSidebarOpen = ref(localStorage.getItem('analysis_sidebar_open') !== 'false')
+const analysisSidebarOpen = ref(
+  isCompact.value ? false : localStorage.getItem('analysis_sidebar_open') !== 'false'
+)
 const isResizingAnalysis = ref(false)
 
-watch(analysisSidebarOpen, v => localStorage.setItem('analysis_sidebar_open', String(v)))
+watch(analysisSidebarOpen, v => {
+  if (!isCompact.value) localStorage.setItem('analysis_sidebar_open', String(v))
+  if (v && isCompact.value) sourcesSidebarOpen.value = false  // one overlay at a time
+})
+
+// Overlay panels cap at 85% of the window so a sliver of context stays visible
+const compactPanelCap = () => Math.round(window.innerWidth * 0.85)
+const effectiveSidebarWidth = computed(() =>
+  isCompact.value ? Math.min(sidebarWidth.value, compactPanelCap()) : sidebarWidth.value
+)
+const effectiveAnalysisWidth = computed(() =>
+  isCompact.value ? Math.min(analysisWidth.value, compactPanelCap()) : analysisWidth.value
+)
+
+// Entering compact mode with both panels open would stack two overlays; close them.
+watch(isCompact, compact => {
+  if (compact) {
+    sourcesSidebarOpen.value = false
+    analysisSidebarOpen.value = false
+  } else {
+    sourcesSidebarOpen.value = localStorage.getItem('sources_sidebar_open') !== 'false'
+    analysisSidebarOpen.value = localStorage.getItem('analysis_sidebar_open') !== 'false'
+  }
+})
 
 const startResizeAnalysis = (e) => {
   isResizingAnalysis.value = true

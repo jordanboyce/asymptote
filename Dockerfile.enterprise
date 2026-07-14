@@ -16,10 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt requirements-ocr.txt requirements-audio.txt requirements-postgres.txt ./
 
 # Install Python deps into a prefix we can copy later
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt -r requirements-ocr.txt -r requirements-audio.txt -r requirements-postgres.txt
 
 # ============================================================
 # Stage 2: Production runtime

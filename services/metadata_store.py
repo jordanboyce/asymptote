@@ -296,6 +296,20 @@ class MetadataStore:
 
         logger.debug(f"Added {len(chunks)} chunks to metadata store")
 
+    @staticmethod
+    def _row_to_chunk(row: sqlite3.Row) -> dict:
+        """Convert a chunks row to a dict, decoding JSON-encoded CSV fields."""
+        result = dict(row)
+        if result.get("csv_columns"):
+            result["csv_columns"] = json.loads(result["csv_columns"])
+        if result.get("csv_values"):
+            result["csv_values"] = json.loads(result["csv_values"])
+        return result
+
+    # SQLite's default host-parameter limit is 999; stay under it when
+    # expanding IN (...) clauses.
+    _IN_CLAUSE_BATCH = 900
+
     def get_chunk_by_index(self, index: int) -> Optional[dict]:
         """
         Get chunk metadata by its sequential index.
@@ -306,26 +320,226 @@ class MetadataStore:
         Returns:
             Chunk metadata dictionary or None
         """
+        return self.get_chunks_by_indices([index]).get(index)
+
+    def get_chunks_by_indices(self, indices: List[int]) -> Dict[int, dict]:
+        """
+        Batch-fetch chunk metadata by sequential (FAISS) positions.
+
+        One query per ~900 positions instead of one OFFSET-scan per position,
+        which is what makes search over large collections tractable.
+
+        Args:
+            indices: Sequential 0-based positions matching the FAISS index
+
+        Returns:
+            Dict mapping position -> chunk metadata dict (missing positions omitted)
+        """
+        wanted = sorted({int(i) for i in indices})
+        if not wanted:
+            return {}
+
+        results: Dict[int, dict] = {}
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT chunk_id, document_id, filename, page_number, chunk_index, text,
-                       source_format, extraction_method, csv_row_number, csv_columns, csv_values
-                FROM chunks
-                ORDER BY id
-                LIMIT 1 OFFSET ?
-            """, (index,))
+            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
+                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(f"""
+                    SELECT * FROM (
+                        SELECT chunk_id, document_id, filename, page_number, chunk_index, text,
+                               source_format, extraction_method, csv_row_number, csv_columns, csv_values,
+                               (ROW_NUMBER() OVER (ORDER BY id) - 1) AS pos
+                        FROM chunks
+                    ) WHERE pos IN ({placeholders})
+                """, batch)
+                for row in cursor.fetchall():
+                    chunk = self._row_to_chunk(row)
+                    pos = chunk.pop("pos")
+                    results[pos] = chunk
+        return results
 
-            row = cursor.fetchone()
-            if row:
-                result = dict(row)
-                # Decode JSON fields
-                if result.get("csv_columns"):
-                    result["csv_columns"] = json.loads(result["csv_columns"])
-                if result.get("csv_values"):
-                    result["csv_values"] = json.loads(result["csv_values"])
-                return result
-            return None
+    def get_chunks_by_chunk_ids(self, chunk_ids: List[str]) -> Dict[str, dict]:
+        """
+        Batch-fetch chunk metadata by chunk_id (uses the idx_chunk_id index).
+
+        Args:
+            chunk_ids: Chunk identifiers to fetch
+
+        Returns:
+            Dict mapping chunk_id -> chunk metadata dict (missing ids omitted)
+        """
+        wanted = list(dict.fromkeys(chunk_ids))
+        if not wanted:
+            return {}
+
+        results: Dict[str, dict] = {}
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
+                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(f"""
+                    SELECT chunk_id, document_id, filename, page_number, chunk_index, text,
+                           source_format, extraction_method, csv_row_number, csv_columns, csv_values
+                    FROM chunks
+                    WHERE chunk_id IN ({placeholders})
+                """, batch)
+                for row in cursor.fetchall():
+                    chunk = self._row_to_chunk(row)
+                    results[chunk["chunk_id"]] = chunk
+        return results
+
+    def get_positions_for_chunk_ids(self, chunk_ids) -> Dict[str, int]:
+        """
+        Map chunk_ids to their sequential (FAISS) positions.
+
+        Lets search pre-filter FAISS hits by position before fetching any
+        metadata, instead of fetching metadata for every hit and filtering after.
+
+        Args:
+            chunk_ids: Iterable of chunk identifiers
+
+        Returns:
+            Dict mapping chunk_id -> 0-based position
+        """
+        wanted = list(dict.fromkeys(chunk_ids))
+        if not wanted:
+            return {}
+
+        results: Dict[str, int] = {}
+        with sqlite3.connect(self.db_path) as conn:
+            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
+                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(f"""
+                    SELECT chunk_id, pos FROM (
+                        SELECT chunk_id, (ROW_NUMBER() OVER (ORDER BY id) - 1) AS pos
+                        FROM chunks
+                    ) WHERE chunk_id IN ({placeholders})
+                """, batch)
+                for chunk_id, pos in cursor.fetchall():
+                    results[chunk_id] = pos
+        return results
+
+    def get_ids_for_chunk_ids(self, chunk_ids) -> Dict[str, int]:
+        """
+        Map chunk_ids to their stable SQLite row ids (used as FAISS ids).
+
+        Args:
+            chunk_ids: Iterable of chunk identifiers
+
+        Returns:
+            Dict mapping chunk_id -> chunks.id (missing ids omitted)
+        """
+        wanted = list(dict.fromkeys(chunk_ids))
+        if not wanted:
+            return {}
+
+        results: Dict[str, int] = {}
+        with sqlite3.connect(self.db_path) as conn:
+            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
+                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(
+                    f"SELECT chunk_id, id FROM chunks WHERE chunk_id IN ({placeholders})",
+                    batch,
+                )
+                for chunk_id, row_id in cursor.fetchall():
+                    results[chunk_id] = row_id
+        return results
+
+    def get_chunks_by_rowids(self, row_ids) -> Dict[int, dict]:
+        """
+        Batch-fetch chunk metadata by SQLite row id (primary-key lookup).
+
+        Args:
+            row_ids: Iterable of chunks.id values (FAISS ids)
+
+        Returns:
+            Dict mapping row id -> chunk metadata dict (missing ids omitted)
+        """
+        wanted = sorted({int(i) for i in row_ids})
+        if not wanted:
+            return {}
+
+        results: Dict[int, dict] = {}
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
+                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(f"""
+                    SELECT id, chunk_id, document_id, filename, page_number, chunk_index, text,
+                           source_format, extraction_method, csv_row_number, csv_columns, csv_values
+                    FROM chunks
+                    WHERE id IN ({placeholders})
+                """, batch)
+                for row in cursor.fetchall():
+                    chunk = self._row_to_chunk(row)
+                    results[chunk.pop("id")] = chunk
+        return results
+
+    def get_document_chunk_rowids(self, document_id: str) -> List[int]:
+        """
+        Get the SQLite row ids (FAISS ids) for all chunks of a document.
+
+        Args:
+            document_id: Document identifier
+
+        Returns:
+            List of chunks.id values, ordered by insertion
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT id FROM chunks WHERE document_id = ? ORDER BY id",
+                (document_id,),
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_all_rowids_ordered(self) -> List[int]:
+        """
+        All chunk row ids in insertion order.
+
+        Position i in this list corresponds to FAISS position i in a legacy
+        (pre-IDMap) index — used once to migrate old indexes to id-mapped ones.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT id FROM chunks ORDER BY id")
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_documents_info(self, document_ids) -> Dict[str, dict]:
+        """
+        Batch version of get_document_info for a set of documents.
+
+        Args:
+            document_ids: Iterable of document identifiers
+
+        Returns:
+            Dict mapping document_id -> document metadata dict (missing ids omitted)
+        """
+        wanted = list(dict.fromkeys(document_ids))
+        if not wanted:
+            return {}
+
+        results: Dict[str, dict] = {}
+        with sqlite3.connect(self.db_path) as conn:
+            self._ensure_v3_1_columns(conn)
+            conn.row_factory = sqlite3.Row
+            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
+                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(f"""
+                    SELECT document_id, filename, num_pages, num_chunks, upload_timestamp,
+                           source_format, extraction_method, embedding_model, chunk_size,
+                           chunk_overlap, schema_version, source_path, source_type
+                    FROM documents
+                    WHERE document_id IN ({placeholders})
+                """, batch)
+                for row in cursor.fetchall():
+                    info = dict(row)
+                    results[info["document_id"]] = info
+        return results
 
     def get_chunks_by_document(self, document_id: str) -> List[dict]:
         """
@@ -498,6 +712,41 @@ class MetadataStore:
                 results.append(result)
             return results
 
+    def iter_chunk_texts(self, substring: str = None, case_sensitive: bool = False):
+        """Stream (chunk_id, document_id, filename, page_number, text) tuples.
+
+        With `substring` (must be plain text, not a pattern), rows are
+        prefiltered in SQL via INSTR so only candidate chunks ever leave the
+        database — callers still re-verify the match, since SQLite's lower()
+        is ASCII-only. Without it, all chunks stream through a server-side
+        cursor in id order, never materializing the corpus in memory.
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            base = """
+                SELECT chunk_id, document_id, filename, page_number, text
+                FROM chunks
+            """
+            if substring:
+                if case_sensitive:
+                    cursor = conn.execute(
+                        base + " WHERE instr(text, ?) > 0 ORDER BY id", (substring,)
+                    )
+                else:
+                    cursor = conn.execute(
+                        base + " WHERE instr(lower(text), ?) > 0 ORDER BY id",
+                        (substring.lower(),),
+                    )
+            else:
+                cursor = conn.execute(base + " ORDER BY id")
+            while True:
+                rows = cursor.fetchmany(500)
+                if not rows:
+                    break
+                yield from rows
+        finally:
+            conn.close()
+
     def get_schema_version(self) -> str:
         """Get the current schema version."""
         with sqlite3.connect(self.db_path) as conn:
@@ -595,6 +844,116 @@ class MetadataStore:
             """, (source_path, source_type, document_id))
             conn.commit()
             logger.info(f"Updated source for document {document_id}: {source_type} -> {source_path}")
+
+    def get_filtered_chunk_ids(
+        self,
+        document_ids: Optional[List[str]] = None,
+        source_formats: Optional[List[str]] = None,
+        filenames: Optional[List[str]] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> Optional[set]:
+        """Resolve a set of chunk_ids matching the given metadata filters.
+
+        Returns ``None`` when no filter is supplied (meaning "no restriction —
+        search the whole index"). Returns an explicit (possibly empty) set when
+        at least one filter is active; an empty set legitimately means "no chunk
+        matches", and callers should short-circuit to zero results.
+
+        Filters compose with AND. ``source_formats`` matches on the document's
+        ``source_format`` (e.g. 'pdf', 'csv'); ``date_from``/``date_to`` compare
+        against ``documents.upload_timestamp`` as ISO strings (lexicographic
+        comparison is correct for ISO-8601). Values are matched case-insensitively
+        for formats and filenames.
+        """
+        has_filter = any([document_ids, source_formats, filenames, date_from, date_to])
+        if not has_filter:
+            return None
+
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        if document_ids:
+            placeholders = ",".join("?" for _ in document_ids)
+            clauses.append(f"c.document_id IN ({placeholders})")
+            params.extend(document_ids)
+
+        if source_formats:
+            fmts = [f.lower().lstrip(".") for f in source_formats]
+            placeholders = ",".join("?" for _ in fmts)
+            # Prefer the chunk's own source_format, fall back to the document's.
+            clauses.append(
+                f"LOWER(COALESCE(c.source_format, d.source_format)) IN ({placeholders})"
+            )
+            params.extend(fmts)
+
+        if filenames:
+            names = [n.lower() for n in filenames]
+            placeholders = ",".join("?" for _ in names)
+            clauses.append(f"LOWER(c.filename) IN ({placeholders})")
+            params.extend(names)
+
+        if date_from:
+            clauses.append("COALESCE(d.upload_timestamp, '') >= ?")
+            params.append(date_from)
+
+        if date_to:
+            clauses.append("COALESCE(d.upload_timestamp, '') <= ?")
+            params.append(date_to)
+
+        where = " AND ".join(clauses)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT c.chunk_id
+                FROM chunks c
+                LEFT JOIN documents d ON d.document_id = c.document_id
+                WHERE {where}
+                """,
+                params,
+            )
+            return {row[0] for row in cursor.fetchall()}
+
+    def get_filter_facets(self) -> Dict[str, Any]:
+        """Return the available filter values for this collection.
+
+        Powers filter UIs and lets the agent discover what it can filter on:
+        the distinct source formats present, and the list of documents (id,
+        filename, format, timestamp). Cheap — reads only the documents table.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            self._ensure_v3_1_columns(conn)
+            conn.row_factory = sqlite3.Row
+
+            formats = [
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT LOWER(source_format)
+                    FROM documents
+                    WHERE source_format IS NOT NULL AND source_format != ''
+                    ORDER BY 1
+                    """
+                ).fetchall()
+            ]
+
+            documents = [
+                {
+                    "document_id": row["document_id"],
+                    "filename": row["filename"],
+                    "source_format": row["source_format"],
+                    "upload_timestamp": row["upload_timestamp"],
+                }
+                for row in conn.execute(
+                    """
+                    SELECT document_id, filename, source_format, upload_timestamp
+                    FROM documents
+                    ORDER BY COALESCE(upload_timestamp, '1970-01-01') DESC
+                    """
+                ).fetchall()
+            ]
+
+        return {"source_formats": formats, "documents": documents}
 
     def clear_all(self):
         """Clear all chunks and documents from the metadata store."""

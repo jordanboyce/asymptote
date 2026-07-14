@@ -13,6 +13,11 @@ class Settings(BaseSettings):
 
     # Embedding configuration
     embedding_model: str = "all-MiniLM-L6-v2"
+    # "local" = sentence-transformers (downloaded from HuggingFace)
+    # "ollama" = Ollama /api/embed (fully local, no HF dependency)
+    embedding_provider: Literal["local", "ollama"] = "local"
+    ollama_base_url: str = "http://localhost:11434"   # used for embeddings and inference
+    ollama_embedding_model: str = "nomic-embed-text"  # Ollama model when embedding_provider="ollama"
 
     # Text chunking configuration
     chunk_size: int = 1000
@@ -70,8 +75,10 @@ class Settings(BaseSettings):
     ocr_max_file_mb: int = 50  # Skip OCR for files larger than this in MB (0 = no limit)
 
     # Vision AI OCR - used when enable_ocr=True and vision_ocr_provider is set
-    vision_ocr_provider: str = "none"  # "anthropic" | "openai" | "ollama" | "none"
-    vision_ocr_model: str = ""
+    # "auto" = zero-config: auto-pick a vision model from the local Ollama
+    # install (no API key, no model selection needed).
+    vision_ocr_provider: str = "none"  # "auto" | "anthropic" | "openai" | "ollama" | "none"
+    vision_ocr_model: str = ""  # Leave empty with "auto" to auto-detect the Ollama model
     vision_ocr_api_key: str = ""  # Stored locally for indexing use
     vision_ocr_dpi: int = 150  # PDF render DPI (higher = better quality, slower)
     vision_ocr_enhance_image: bool = True  # Boost contrast/sharpness before sending to model
@@ -79,6 +86,13 @@ class Settings(BaseSettings):
     vision_ocr_cleanup_model: str = ""  # Model for cleanup (empty = same as vision model)
     vision_ocr_ollama_url: str = "http://localhost:11434"
     vision_ocr_form_mode: bool = False      # Form-aware prompt + ruled-line image preprocessing
+
+    # Local Ollama context window (num_ctx). Ollama defaults to a small context
+    # (~2048 tokens) and SILENTLY truncates anything longer — which drops most of
+    # the retrieved documents in a RAG prompt. We set num_ctx explicitly on every
+    # Ollama call so local models actually see the context. Raise this for big
+    # documents (bounded by the model's trained max and your VRAM).
+    ollama_num_ctx: int = 8192
 
     # LLM-assisted column role inference (P0.5)
     # When enabled, columns that can't be mapped by vendor profiles or regex

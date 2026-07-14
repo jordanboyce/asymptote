@@ -1,0 +1,15 @@
+# Optional: OCR for scanned PDFs (enable_ocr=True).
+# Heavy — docling pulls in a torch runtime. Install only if you index scanned documents.
+#
+#   pip install -r requirements-ocr.txt
+
+# Legacy OCR (also requires the Tesseract binary installed on the system)
+pytesseract>=0.3.10
+pdf2image>=1.16.0
+Pillow>=10.0.0
+
+# VLM-based OCR engines (pick one):
+# Primary fallback: Docling (IBM, MIT licensed, CPU-friendly)
+docling>=2.0.0
+# Alternative: Marker (uses Surya, best accuracy/speed balance)
+# pip install marker-pdf

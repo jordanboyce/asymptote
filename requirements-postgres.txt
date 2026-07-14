@@ -1,0 +1,6 @@
+# Optional: PostgreSQL backend for multi-user / enterprise deployments
+# (DB_BACKEND=postgresql). The default SQLite backend needs nothing extra.
+#
+#   pip install -r requirements-postgres.txt
+
+psycopg2-binary>=2.9.0

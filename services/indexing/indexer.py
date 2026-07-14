@@ -448,6 +448,41 @@ class DocumentIndexer:
         logger.info(f"Successfully indexed code file {filename}: {num_chunks} symbol chunks")
         return metadata
 
+    def rebuild_vector_index(self, batch_size: int = 128) -> int:
+        """Rebuild the FAISS index by re-embedding every chunk's stored text.
+
+        Repairs collections whose index drifted from metadata (the legacy
+        positional index could accumulate stale vectors across deletes and
+        re-indexes). Needs no source documents — chunk text lives in SQLite.
+
+        Returns the number of chunks re-embedded.
+        """
+        import numpy as np
+        import faiss
+
+        metadata_store = self.vector_store.metadata_store
+        chunks = metadata_store.get_all_chunks_ordered()
+        id_by_chunk = metadata_store.get_ids_for_chunk_ids(
+            [c["chunk_id"] for c in chunks]
+        )
+
+        logger.info(f"Rebuilding vector index from metadata: {len(chunks)} chunks")
+        new_index = self.vector_store._new_index()
+
+        for start in range(0, len(chunks), batch_size):
+            batch = chunks[start:start + batch_size]
+            embeddings = self.embedding_service.embed_texts([c["text"] for c in batch])
+            embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+            ids = np.asarray([id_by_chunk[c["chunk_id"]] for c in batch], dtype=np.int64)
+            new_index.add_with_ids(embeddings.astype(np.float32), ids)
+            if (start // batch_size) % 10 == 0:
+                logger.info(f"Rebuild progress: {min(start + batch_size, len(chunks))}/{len(chunks)}")
+
+        self.vector_store.index = new_index
+        self.vector_store.save()
+        logger.info(f"Vector index rebuilt with {new_index.ntotal} vectors")
+        return new_index.ntotal
+
     def search(
         self,
         query: str,
@@ -459,6 +494,7 @@ class DocumentIndexer:
         collection_overview: Optional[str] = None,
         structured_context: Optional[str] = None,
         skip_filenames: Optional[set] = None,
+        filters: Optional[dict] = None,
     ) -> dict:
         """
         Search for documents matching the query, with optional AI enhancements.
@@ -470,11 +506,30 @@ class DocumentIndexer:
             ai_options: Optional AI feature flags
             mode: Search mode (semantic, keyword, or hybrid)
             semantic_weight: Weight for semantic search in hybrid mode (0-1)
+            filters: Optional metadata pre-filter dict. Recognized keys:
+                document_ids, source_formats, filenames, date_from, date_to.
+                Restricts retrieval to chunks whose document matches before
+                ranking — sharply improves precision on large collections.
 
         Returns:
             Dict with 'results', and optionally 'enhanced_query', 'synthesis', 'ai_usage'
         """
         logger.info(f"Searching for: {query[:100]} (mode={mode.value})")
+
+        # Resolve the metadata pre-filter to a concrete set of allowed chunk_ids.
+        # None => no restriction. Empty set => filter matched nothing; bail early.
+        allowed_chunk_ids: Optional[set] = None
+        if filters:
+            allowed_chunk_ids = self.vector_store.metadata_store.get_filtered_chunk_ids(
+                document_ids=filters.get("document_ids"),
+                source_formats=filters.get("source_formats"),
+                filenames=filters.get("filenames"),
+                date_from=filters.get("date_from"),
+                date_to=filters.get("date_to"),
+            )
+            if allowed_chunk_ids is not None and len(allowed_chunk_ids) == 0:
+                logger.info("Search filters matched no documents; returning no results")
+                return {"results": [], "synthesis": None, "ai_usage": None}
 
         ai_active = ai_service and ai_options
         ai_usage = AIUsage() if ai_active else None
@@ -495,8 +550,14 @@ class DocumentIndexer:
 
         # Perform search based on mode
         if mode == SearchMode.KEYWORD:
-            # Pure BM25 keyword search
-            bm25_results = self.vector_store.bm25_index.search(query, fetch_k)
+            # Pure BM25 keyword search. When filtering, pull the full ranked list
+            # so post-filtering down to fetch_k stays exact.
+            bm25_k = self.vector_store.index.ntotal if allowed_chunk_ids is not None else fetch_k
+            bm25_results = self.vector_store.bm25_index.search(query, max(bm25_k, 1))
+            if allowed_chunk_ids is not None:
+                bm25_results = [
+                    (cid, score) for cid, score in bm25_results if cid in allowed_chunk_ids
+                ][:fetch_k]
             results = self._bm25_to_search_results(bm25_results)
         elif mode == SearchMode.HYBRID:
             # Combined semantic + keyword search
@@ -506,11 +567,14 @@ class DocumentIndexer:
                 query_embedding=query_embedding,
                 top_k=fetch_k,
                 semantic_weight=semantic_weight,
+                allowed_chunk_ids=allowed_chunk_ids,
             )
         else:
             # Default: pure semantic search
             query_embedding = self.embedding_service.embed_query(query)
-            results = self.vector_store.search(query_embedding, top_k=fetch_k)
+            results = self.vector_store.search(
+                query_embedding, top_k=fetch_k, allowed_chunk_ids=allowed_chunk_ids
+            )
 
         # Drop results from files that are already fully inlined as structured
         # JSONL in the synthesis prompt — keeping their chunks would waste
@@ -667,39 +731,24 @@ class DocumentIndexer:
         if max_score == 0:
             max_score = 1
 
-        results = []
-        # Get all chunks to find by chunk_id
-        all_chunks = self.vector_store.metadata_store.get_all_chunks_ordered()
-        chunk_lookup = {chunk["chunk_id"]: chunk for chunk in all_chunks}
+        # Batch-fetch only the matched chunks (indexed lookup) and their docs
+        metadata_store = self.vector_store.metadata_store
+        chunk_lookup = metadata_store.get_chunks_by_chunk_ids(
+            [chunk_id for chunk_id, _ in bm25_results]
+        )
+        doc_infos = metadata_store.get_documents_info(
+            {chunk["document_id"] for chunk in chunk_lookup.values()}
+        )
 
+        results = []
         for chunk_id, score in bm25_results:
             chunk = chunk_lookup.get(chunk_id)
             if not chunk:
                 continue
-
-            # Get document info for source_type
-            doc_info = self.vector_store.metadata_store.get_document_info(chunk["document_id"])
-            source_type = doc_info.get("source_type") if doc_info else None
-            source_path = doc_info.get("source_path") if doc_info else None
-
-            result = SearchResult(
-                filename=chunk["filename"],
-                page_number=chunk["page_number"],
-                text_snippet=chunk["text"],
-                similarity_score=score / max_score,  # Normalize to 0-1
-                document_id=chunk["document_id"],
-                chunk_id=chunk["chunk_id"],
-                pdf_url="",
-                page_url="",
-                source_format=chunk.get("source_format"),
-                extraction_method=chunk.get("extraction_method"),
-                csv_row_number=chunk.get("csv_row_number"),
-                csv_columns=chunk.get("csv_columns"),
-                csv_values=chunk.get("csv_values"),
-                # v3.1: Local file reference support
-                source_type=source_type,
-                source_path=source_path,
+            results.append(
+                self.vector_store._build_search_result(
+                    chunk, score / max_score, doc_infos  # Normalize to 0-1
+                )
             )
-            results.append(result)
 
         return results

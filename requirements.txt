@@ -1,3 +1,11 @@
+# Core dependencies — everything needed for indexing, search, chat, and MCP.
+#
+# Optional feature sets live in separate files so a base install stays small
+# (the extras below pull in multi-GB ML runtimes):
+#   pip install -r requirements-ocr.txt       # scanned-PDF OCR (docling, tesseract)
+#   pip install -r requirements-audio.txt     # audio transcription (faster-whisper)
+#   pip install -r requirements-postgres.txt  # enterprise Postgres backend
+
 # Core API framework
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
@@ -9,21 +17,6 @@ pdfplumber>=0.11.0
 python-docx>=1.1.0
 pandas>=2.2.0
 openpyxl>=3.1.0
-
-# OCR support - multiple engine options
-# Legacy OCR (requires Tesseract installed on system)
-pytesseract>=0.3.10
-pdf2image>=1.16.0
-Pillow>=10.0.0
-
-# VLM-based OCR engines (optional - install based on preference)
-# Primary: Marker (uses Surya, best accuracy/speed balance)
-# pip install marker-pdf
-# Fallback: Docling (IBM, MIT licensed, CPU-friendly)
-docling>=2.0.0
-
-# Audio transcription (meeting recordings -> text via local Whisper)
-faster-whisper>=1.0.0
 
 # Embeddings and vector search
 sentence-transformers>=3.0.0
@@ -39,12 +32,6 @@ httpx>=0.28.0
 python-dotenv>=1.0.0
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
-
-# Database backends (PostgreSQL is optional — only needed when DB_BACKEND=postgresql)
-psycopg2-binary>=2.9.0
-
-# Market data enrichment feeds (v4.2 — price history, classification, corporate events)
-yfinance>=0.2.40
 
 # MCP server
 mcp>=1.9.4

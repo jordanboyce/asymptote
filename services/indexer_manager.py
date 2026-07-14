@@ -13,7 +13,7 @@ from typing import Dict, Optional
 from services.collection_service import collection_service
 from services.document_extractor import DocumentExtractor
 from services.chunker import TextChunker
-from services.embedder import EmbeddingService
+from services.embedder import EmbeddingService, OllamaEmbeddingService
 from services.vector_store import VectorStore
 from services.indexing import DocumentIndexer
 from config import settings
@@ -58,7 +58,8 @@ class IndexerManager:
                 "mcp_include_sources", "mcp_max_source_length",
                 "mcp_ai_provider", "mcp_ollama_model",
             }
-            for key in ocr_fields | mcp_fields:
+            misc_fields = {"ollama_num_ctx", "embedding_provider", "ollama_base_url", "ollama_embedding_model"}
+            for key in ocr_fields | mcp_fields | misc_fields:
                 if key in db_config:
                     try:
                         setattr(settings, key, db_config[key])
@@ -120,6 +121,28 @@ class IndexerManager:
         logger.info(f"Created indexer for collection '{collection_id}'")
         return indexer
 
+    def _get_embedding_service(self, collection_embedding_model: str):
+        """Return the appropriate embedding service based on config.
+
+        If embedding_provider is "ollama", always returns an OllamaEmbeddingService
+        regardless of the per-collection embedding_model override (Ollama uses a
+        single model configured globally).  Otherwise falls back to sentence-transformers.
+        """
+        if settings.embedding_provider == "ollama":
+            key = f"ollama::{settings.ollama_base_url}::{settings.ollama_embedding_model}"
+            if key not in self._embedding_services:
+                self._embedding_services[key] = OllamaEmbeddingService(
+                    model_name=settings.ollama_embedding_model,
+                    base_url=settings.ollama_base_url,
+                )
+            return self._embedding_services[key]
+
+        # Local sentence-transformers path
+        model = collection_embedding_model
+        if model not in self._embedding_services:
+            self._embedding_services[model] = EmbeddingService(model_name=model)
+        return self._embedding_services[model]
+
     def _create_indexer(self, collection: dict) -> DocumentIndexer:
         """Create a DocumentIndexer for a collection.
 
@@ -134,13 +157,8 @@ class IndexerManager:
         chunk_size = collection.get("chunk_size", settings.chunk_size)
         chunk_overlap = collection.get("chunk_overlap", settings.chunk_overlap)
 
-        # Get or create embedding service for this model
-        if embedding_model not in self._embedding_services:
-            logger.info(f"Loading embedding model: {embedding_model}")
-            self._embedding_services[embedding_model] = EmbeddingService(
-                model_name=embedding_model
-            )
-        embedding_service = self._embedding_services[embedding_model]
+        # Get or create embedding service
+        embedding_service = self._get_embedding_service(embedding_model)
 
         # Get paths for this collection
         indexes_dir = collection_service.get_indexes_path(collection_id)

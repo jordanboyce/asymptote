@@ -38,6 +38,14 @@ python main.py
 open http://localhost:8473
 ```
 
+Optional feature sets (each pulls in large ML runtimes — install only what you use):
+
+```bash
+pip install -r requirements-ocr.txt       # OCR for scanned PDFs
+pip install -r requirements-audio.txt     # audio transcription (Whisper)
+pip install -r requirements-postgres.txt  # enterprise PostgreSQL backend
+```
+
 ### Docker
 
 ```bash
@@ -198,7 +206,12 @@ Asymptote lets you:
 pip install -r requirements.txt
 ```
 
-**What happens:** Downloads and installs all packages listed above. Takes 2-5 minutes.
+**What happens:** Downloads and installs the core packages. Takes 2-5 minutes.
+
+Scanned-PDF OCR, audio transcription, and the PostgreSQL backend are optional
+extras — add `-r requirements-ocr.txt`, `-r requirements-audio.txt`, or
+`-r requirements-postgres.txt` if you need them. The app runs fine without
+them and tells you which extra to install if you enable a feature that needs it.
 
 ### Step 2: Configure (Optional)
 

@@ -25,10 +25,10 @@ ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY requirements.txt requirements-ocr.txt requirements-audio.txt ./
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-ocr.txt -r requirements-audio.txt
 
 # Copy application code
 COPY . .

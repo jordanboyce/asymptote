@@ -18,7 +18,9 @@ _TOOLS: List[Dict[str, Any]] = [
             "Semantic / keyword / hybrid search across the active document "
             "collection. Use for narrative, prose, or conceptual questions "
             "about PDFs, text, or code. Returns ranked chunks with filename, "
-            "page number, and a similarity score."
+            "page number, and a similarity score. Pass `filters` to restrict "
+            "retrieval to specific documents, file types, or a date range — "
+            "this sharply improves precision on large collections."
         ),
         "parameters": {
             "type": "object",
@@ -27,6 +29,24 @@ _TOOLS: List[Dict[str, Any]] = [
                 "mode": {"type": "string", "enum": ["semantic", "keyword", "hybrid"]},
                 "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
                 "collection_id": {"type": "string", "description": "Omit to use the active chat collection."},
+                "filters": {
+                    "type": "object",
+                    "description": (
+                        "Optional metadata pre-filter. Discover valid values via "
+                        "get_collection_info. All keys are AND-combined."
+                    ),
+                    "properties": {
+                        "document_ids": {"type": "array", "items": {"type": "string"}},
+                        "filenames": {"type": "array", "items": {"type": "string"}},
+                        "source_formats": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "File types, e.g. [\"pdf\", \"csv\"].",
+                        },
+                        "date_from": {"type": "string", "description": "ISO timestamp lower bound on upload time."},
+                        "date_to": {"type": "string", "description": "ISO timestamp upper bound on upload time."},
+                    },
+                },
             },
             "required": ["query"],
         },

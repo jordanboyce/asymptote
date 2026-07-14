@@ -6,18 +6,20 @@ services:
     container_name: asymptote-api
     ports:
       - "8473:8473"
+    env_file:
+      - .env
     volumes:
-      # Persist data directory (PDFs and indexes)
       - ./data:/app/data
+      - hf_cache:/root/.cache/huggingface
     environment:
-      # Override these in a .env file if needed
+      # These override .env so the container always uses local sentence-transformers
+      # for embeddings regardless of what .env says — Ollama embedding has hardware
+      # requirements that make it impractical in the container.
       - DATA_DIR=/app/data
-      - EMBEDDING_MODEL=all-MiniLM-L6-v2
-      - CHUNK_SIZE=600
-      - CHUNK_OVERLAP=100
-      - DEFAULT_TOP_K=10
       - HOST=0.0.0.0
       - PORT=8473
+      - EMBEDDING_PROVIDER=local
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8473/health"]
@@ -25,3 +27,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+volumes:
+  hf_cache:

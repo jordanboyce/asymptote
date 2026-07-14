@@ -3,6 +3,9 @@
 
 # Base requirements (relative to desktop directory)
 -r ../requirements.txt
+# Desktop bundles ship full-featured (OCR + audio) like before the extras split
+-r ../requirements-ocr.txt
+-r ../requirements-audio.txt
 
 # Desktop packaging
 pyinstaller>=6.0.0

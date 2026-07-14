@@ -38,14 +38,38 @@
         <div v-show="addSectionOpen" class="px-3 pb-3 space-y-2">
           <!-- File/folder/record buttons -->
           <div class="flex gap-1.5">
-            <button @click="openFilePicker" class="btn btn-primary btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
-              <FileText :size="12" />
-              Files
-            </button>
-            <button @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
-              <FolderOpen :size="12" />
-              Folder
-            </button>
+            <template v-if="capabilities.native_file_picker === false">
+              <!-- Headless/Docker: labels directly trigger hidden inputs (no JS click chain needed) -->
+              <label
+                for="sb-file-input"
+                class="btn btn-primary btn-xs flex-1 gap-1 cursor-pointer"
+                :class="{ 'btn-disabled pointer-events-none': indexing || isRecording }"
+              >
+                <FileText :size="12" />
+                Files
+              </label>
+              <label
+                for="sb-folder-input"
+                class="btn btn-outline btn-xs flex-1 gap-1 cursor-pointer"
+                :class="{ 'btn-disabled pointer-events-none': indexing || isRecording }"
+              >
+                <FolderOpen :size="12" />
+                Folder
+              </label>
+              <input id="sb-file-input" type="file" multiple class="sr-only" @change="handleBrowserFiles" :disabled="indexing || isRecording" />
+              <input id="sb-folder-input" type="file" webkitdirectory class="sr-only" @change="handleBrowserFolder" :disabled="indexing || isRecording" />
+            </template>
+            <template v-else>
+              <!-- Desktop: buttons call native OS file picker via backend -->
+              <button @click="openFilePicker" class="btn btn-primary btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
+                <FileText :size="12" />
+                Files
+              </button>
+              <button @click="openFolderPicker" class="btn btn-outline btn-xs flex-1 gap-1" :disabled="indexing || isRecording">
+                <FolderOpen :size="12" />
+                Folder
+              </button>
+            </template>
             <button
               @click="toggleRecording"
               class="btn btn-xs flex-1 gap-1"
@@ -112,9 +136,17 @@
             </div>
 
             <!-- Progress -->
-            <div v-if="indexing && !useBackgroundIndexing" class="space-y-1">
-              <progress class="progress progress-primary w-full h-1.5" :value="indexProgressPercent" max="100"></progress>
-              <div v-if="currentIndexingFile" class="text-xs text-base-content/50 truncate">{{ currentIndexingFile }}</div>
+            <div v-if="indexing" class="space-y-1">
+              <template v-if="uploading">
+                <div class="flex items-center gap-2 text-xs text-base-content/60">
+                  <span class="loading loading-spinner loading-xs"></span>
+                  Uploading {{ uploadingCount }} file{{ uploadingCount !== 1 ? 's' : '' }}…
+                </div>
+              </template>
+              <template v-else-if="!useBackgroundIndexing">
+                <progress class="progress progress-primary w-full h-1.5" :value="indexProgressPercent" max="100"></progress>
+                <div v-if="currentIndexingFile" class="text-xs text-base-content/50 truncate">{{ currentIndexingFile }}</div>
+              </template>
             </div>
           </div>
 
@@ -240,7 +272,11 @@
 
       <!-- Empty state -->
       <div v-else-if="documents.length === 0" class="py-8 px-4 text-center">
-        <p class="text-xs text-base-content/50">No sources yet. Use Add Sources above to get started.</p>
+        <template v-if="justIndexed">
+          <span class="loading loading-spinner loading-sm"></span>
+          <p class="text-xs text-base-content/50 mt-2">Syncing sources…</p>
+        </template>
+        <p v-else class="text-xs text-base-content/50">No sources yet. Use Add Sources above to get started.</p>
       </div>
 
       <!-- Document list -->
@@ -498,8 +534,11 @@ const fileExtensions = ref([
 ])
 const recentRepos = ref([])
 
-// Index state (using native file picker)
-const selectedPaths = ref([]) // Array of { path: string, name: string, isFolder?: boolean, size?: number }
+// Server capability flags (fetched on mount); native_file_picker=false → Docker/headless mode
+const capabilities = ref({})
+
+// Index state
+const selectedPaths = ref([]) // Array of { path: string, name: string, isFolder?: boolean, size?: number, file?: File }
 const copyToLibrary = ref(false) // Default OFF - index in-place
 const useBackgroundIndexing = ref(false) // Default OFF - synchronous indexing
 const indexing = ref(false)
@@ -509,6 +548,9 @@ const currentIndexingFile = ref('')
 const indexSuccess = ref(false)
 const indexError = ref('')
 const indexResult = ref({ count: 0, chunks: 0 })
+const uploading = ref(false)
+const uploadingCount = ref(0)
+const justIndexed = ref(false)
 
 // Document management state
 const documents = ref([])
@@ -732,7 +774,44 @@ const getFilename = (path) => {
   return path.split(/[/\\]/).pop()
 }
 
-// Open native file picker via backend API
+// Handle files selected via browser <input type="file"> (headless/Docker mode)
+const handleBrowserFiles = (event) => {
+  const files = Array.from(event.target.files || [])
+  const existingNames = new Set(selectedPaths.value.map(p => p.name))
+  for (const file of files) {
+    if (!existingNames.has(file.name)) {
+      selectedPaths.value.push({ path: '', name: file.name, size: file.size, file })
+    }
+  }
+  event.target.value = ''
+}
+
+// Handle folder selected via browser <input webkitdirectory> (headless/Docker mode)
+const handleBrowserFolder = (event) => {
+  let files = Array.from(event.target.files || [])
+  if (isSourceCode.value) {
+    const enabledExts = new Set(
+      fileExtensions.value.filter(e => e.enabled).flatMap(e => e.exts)
+    )
+    if (includeDocumentation.value) {
+      ['.txt', '.md', '.json', '.jsonl'].forEach(e => enabledExts.add(e))
+    }
+    files = files.filter(f => {
+      const ext = '.' + f.name.split('.').pop().toLowerCase()
+      return enabledExts.has(ext)
+    })
+  }
+  const existingNames = new Set(selectedPaths.value.map(p => p.name))
+  for (const file of files) {
+    const relativeName = file.webkitRelativePath || file.name
+    if (!existingNames.has(relativeName)) {
+      selectedPaths.value.push({ path: '', name: relativeName, size: file.size, file })
+    }
+  }
+  event.target.value = ''
+}
+
+// Open native OS file picker (desktop only — headless uses label/input directly in template)
 const openFilePicker = async () => {
   try {
     indexError.value = ''
@@ -759,7 +838,7 @@ const openFilePicker = async () => {
   }
 }
 
-// Open native folder picker via backend API
+// Open native OS folder picker (desktop only — headless uses label/input directly in template)
 const openFolderPicker = async () => {
   try {
     indexError.value = ''
@@ -840,8 +919,12 @@ const clearAllPaths = () => {
 const indexFiles = async () => {
   if (selectedPaths.value.length === 0) return
 
-  // Separate files and folders up front
-  const files = selectedPaths.value.filter(p => !p.isFolder)
+  // Split browser-uploaded File objects from server-side path references
+  const browserItems = selectedPaths.value.filter(p => p.file)
+  const pathItems = selectedPaths.value.filter(p => !p.file)
+
+  // Separate files and folders (path-based items only)
+  const files = pathItems.filter(p => !p.isFolder)
   const filePaths = files.map(p => p.path)
 
   indexing.value = true
@@ -851,7 +934,7 @@ const indexFiles = async () => {
   indexSuccess.value = false
   indexError.value = ''
 
-  const folders = selectedPaths.value.filter(p => p.isFolder)
+  const folders = pathItems.filter(p => p.isFolder)
 
   // Use background indexing based on toggle
   const useBackground = useBackgroundIndexing.value
@@ -861,6 +944,40 @@ const indexFiles = async () => {
   const errors = []
 
   try {
+    // Browser-uploaded File objects (headless/Docker mode) → multipart POST to /documents/upload
+    if (browserItems.length > 0) {
+      uploading.value = true
+      uploadingCount.value = browserItems.length
+      try {
+        const formData = new FormData()
+        for (const item of browserItems) {
+          formData.append('files', item.file, item.name)
+        }
+        formData.append('collection_id', collectionStore.currentCollectionId)
+        const response = await axios.post('/documents/upload', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
+        successCount += response.data.documents_processed || 0
+        totalChunks += response.data.total_chunks || 0
+      } catch (err) {
+        const errorMsg = err.response?.data?.detail || err.message
+        errors.push(`Upload: ${errorMsg}`)
+        console.error('Browser upload error:', err)
+      } finally {
+        uploading.value = false
+        uploadingCount.value = 0
+      }
+      if (filePaths.length === 0 && folders.length === 0 && successCount > 0) {
+        indexSuccess.value = true
+        indexResult.value = { count: successCount, chunks: totalChunks }
+        justIndexed.value = true
+        addSectionOpen.value = false
+        loadDocuments()
+        setTimeout(() => loadDocuments(), 1500)
+        emit('document-deleted')
+      }
+    }
+
     if (filePaths.length > 0) {
       if (useBackground) {
         // Use background indexing for large file sets
@@ -916,7 +1033,10 @@ const indexFiles = async () => {
           indexSuccess.value = true
           indexResult.value = { count: successCount, chunks: totalChunks }
           selectedPaths.value = folders
+          justIndexed.value = true
+          addSectionOpen.value = false
           loadDocuments()
+          setTimeout(() => loadDocuments(), 1500)
           emit('document-deleted')
         }
       }
@@ -948,9 +1068,12 @@ const indexFiles = async () => {
       if (successCount > 0) {
         indexSuccess.value = true
         indexResult.value = { count: successCount, chunks: totalChunks }
+        justIndexed.value = true
+        addSectionOpen.value = false
       }
       selectedPaths.value = []
       loadDocuments()
+      setTimeout(() => loadDocuments(), 1500)
       emit('document-deleted')
     }
 
@@ -1004,6 +1127,7 @@ const loadDocuments = async () => {
     const collectionId = collectionStore.currentCollectionId
     const response = await axios.get(`/documents?collection_id=${collectionId}`)
     documents.value = response.data.documents || []
+    if (documents.value.length > 0) justIndexed.value = false
   } catch (err) {
     error.value = err.response?.data?.detail || 'Failed to load sources'
   } finally {
@@ -1273,11 +1397,17 @@ const selectRecentRepo = async (repo) => {
 }
 
 
-onMounted(() => {
+onMounted(async () => {
   loadDocuments()
   loadRecentRepos()
   loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
+  try {
+    const resp = await axios.get('/api/capabilities')
+    capabilities.value = resp.data
+  } catch {
+    // leave capabilities empty; native picker stays as default
+  }
 })
 
 onBeforeUnmount(() => {

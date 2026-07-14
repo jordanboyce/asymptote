@@ -38,14 +38,16 @@ class VectorStore:
 
         self.index_path = self.index_dir / "faiss.index"
         self.metadata_db_path = self.index_dir / "metadata.db"
+        # Legacy shadow copy of all vectors — superseded by IndexIDMap2's
+        # reconstruct support; only read once during migration, then removed.
         self.embeddings_path = self.index_dir / "embeddings.npy"
         self.bm25_db_path = self.index_dir / "bm25.db"
 
-        # FAISS index
+        # FAISS index: IndexIDMap2 over IndexFlatIP, keyed by the chunk's
+        # SQLite row id. Stable ids mean deletes are in-place remove_ids
+        # calls instead of full rebuilds, and search hits map straight to
+        # primary-key lookups.
         self.index: Optional[faiss.Index] = None
-
-        # Embeddings storage: NumPy array of embeddings
-        self.embeddings: Optional[np.ndarray] = None
 
         # SQLite metadata store
         self.metadata_store = MetadataStore(self.metadata_db_path)
@@ -59,29 +61,70 @@ class VectorStore:
 
         self._load_or_create_index()
 
+    def _new_index(self) -> faiss.Index:
+        """Create an empty id-mapped index (cosine similarity via normalized IP)."""
+        return faiss.IndexIDMap2(faiss.IndexFlatIP(self.embedding_dim))
+
     def _load_or_create_index(self):
-        """Load existing index from disk or create a new one."""
+        """Load existing index from disk (migrating legacy formats) or create a new one."""
         if self.index_path.exists():
             logger.info("Loading existing FAISS index")
-            self.index = faiss.read_index(str(self.index_path))
+            loaded = faiss.read_index(str(self.index_path))
 
-            # Load embeddings if they exist
-            if self.embeddings_path.exists():
-                self.embeddings = np.load(str(self.embeddings_path))
-                logger.info(f"Loaded embeddings array with shape {self.embeddings.shape}")
+            if isinstance(faiss.downcast_index(loaded), faiss.IndexIDMap2):
+                self.index = loaded
             else:
-                logger.warning("Embeddings file not found - deletion will not work properly")
-                self.embeddings = None
+                self.index = self._migrate_legacy_index(loaded)
 
             total_chunks = self.metadata_store.get_total_chunks()
             logger.info(f"Loaded index with {total_chunks} chunks")
         else:
             logger.info("Creating new FAISS index")
-            # Use IndexFlatIP for cosine similarity (inner product)
-            # Vectors must be L2 normalized before adding
-            self.index = faiss.IndexFlatIP(self.embedding_dim)
-            self.embeddings = None
+            self.index = self._new_index()
             logger.info("Created new index")
+
+    def _migrate_legacy_index(self, legacy: faiss.Index) -> faiss.Index:
+        """Wrap a legacy positional IndexFlatIP into an id-mapped index.
+
+        Legacy indexes stored vectors in chunk-insertion order with a parallel
+        embeddings.npy shadow copy. Re-add every vector under its chunk's
+        SQLite row id, persist, and drop the now-redundant shadow file.
+        """
+        logger.info("Migrating legacy FAISS index to id-mapped format")
+        row_ids = self.metadata_store.get_all_rowids_ordered()
+
+        if self.embeddings_path.exists():
+            vectors = np.load(str(self.embeddings_path)).astype(np.float32)
+        elif legacy.ntotal > 0:
+            vectors = legacy.reconstruct_n(0, legacy.ntotal)
+        else:
+            vectors = np.zeros((0, self.embedding_dim), dtype=np.float32)
+
+        n = min(len(row_ids), len(vectors), legacy.ntotal) if legacy.ntotal else min(len(row_ids), len(vectors))
+        if n != legacy.ntotal or n != len(row_ids):
+            logger.error(
+                f"Legacy index migration: index/metadata drift detected "
+                f"(index={legacy.ntotal} vectors, metadata={len(row_ids)} chunks, "
+                f"embeddings={len(vectors)}). The positional mapping was already "
+                f"unreliable for this collection; keeping first {n} as a placeholder. "
+                f"Run DocumentIndexer.rebuild_vector_index() (or a collection "
+                f"re-index) to restore correct semantic search."
+            )
+
+        new_index = self._new_index()
+        if n > 0:
+            new_index.add_with_ids(vectors[:n], np.asarray(row_ids[:n], dtype=np.int64))
+
+        faiss.write_index(new_index, str(self.index_path))
+        if self.embeddings_path.exists():
+            try:
+                self.embeddings_path.unlink()
+                logger.info("Removed legacy embeddings.npy shadow copy")
+            except OSError as e:
+                logger.warning(f"Could not remove embeddings.npy: {e}")
+
+        logger.info(f"Migrated {n} vectors to id-mapped FAISS index")
+        return new_index
 
     def load(self):
         """Reload the index from disk (public method for external reload)."""
@@ -93,7 +136,6 @@ class VectorStore:
         logger.info("Closing vector store...")
         # Clear references to allow garbage collection
         self.index = None
-        self.embeddings = None
         self.metadata_store = None
 
     def add_chunks(self, chunks: List[ChunkMetadata], embeddings: np.ndarray):
@@ -113,18 +155,21 @@ class VectorStore:
         # Normalize embeddings for cosine similarity
         embeddings_normalized = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
 
-        # Add to FAISS index
-        self.index.add(embeddings_normalized.astype(np.float32))
+        # Re-indexed chunk_ids get a fresh row id from INSERT OR REPLACE, so
+        # evict any existing vectors for them first to avoid orphaned ids.
+        stale = self.metadata_store.get_ids_for_chunk_ids([c.chunk_id for c in chunks])
+        if stale:
+            self.index.remove_ids(np.asarray(list(stale.values()), dtype=np.int64))
 
-        # Store embeddings
-        if self.embeddings is None:
-            self.embeddings = embeddings_normalized.astype(np.float32)
-        else:
-            self.embeddings = np.vstack([self.embeddings, embeddings_normalized.astype(np.float32)])
-
-        # Add metadata to SQLite
+        # Add metadata to SQLite first — its assigned row ids become the FAISS ids
         chunk_dicts = [chunk.model_dump() for chunk in chunks]
         self.metadata_store.add_chunks(chunk_dicts)
+
+        id_by_chunk = self.metadata_store.get_ids_for_chunk_ids(
+            [chunk.chunk_id for chunk in chunks]
+        )
+        ids = np.asarray([id_by_chunk[chunk.chunk_id] for chunk in chunks], dtype=np.int64)
+        self.index.add_with_ids(embeddings_normalized.astype(np.float32), ids)
 
         # Add to BM25 index for keyword search
         bm25_docs = [(chunk.chunk_id, chunk.text) for chunk in chunks]
@@ -132,13 +177,22 @@ class VectorStore:
 
         logger.info(f"Added {len(chunks)} chunks to index")
 
-    def search(self, query_embedding: np.ndarray, top_k: int = 10) -> List[SearchResult]:
+    def search(
+        self,
+        query_embedding: np.ndarray,
+        top_k: int = 10,
+        allowed_chunk_ids: Optional[set] = None,
+    ) -> List[SearchResult]:
         """
         Search for similar chunks.
 
         Args:
             query_embedding: Query embedding vector
             top_k: Number of results to return
+            allowed_chunk_ids: Optional set of chunk_ids to restrict results to
+                (metadata pre-filter). When provided, the whole index is scanned
+                so the top_k *filtered* results are exact rather than whatever
+                survives a narrow candidate window.
 
         Returns:
             List of SearchResult objects, sorted by similarity (highest first)
@@ -147,51 +201,53 @@ class VectorStore:
             logger.warning("Index is empty, returning no results")
             return []
 
+        # An explicit empty filter set means "nothing matches" — don't search.
+        if allowed_chunk_ids is not None and len(allowed_chunk_ids) == 0:
+            return []
+
         # Normalize query for cosine similarity
         query_normalized = query_embedding / np.linalg.norm(query_embedding)
         query_normalized = query_normalized.reshape(1, -1).astype(np.float32)
 
-        # Search
-        k = min(top_k, self.index.ntotal)
-        similarities, indices = self.index.search(query_normalized, k)
-
-        # Convert to SearchResult objects
-        results = []
-        for similarity, idx in zip(similarities[0], indices[0]):
-            if idx == -1:  # FAISS returns -1 for empty results
-                continue
-
-            # Fetch metadata from SQLite by index
-            chunk = self.metadata_store.get_chunk_by_index(int(idx))
-            if not chunk:
-                logger.warning(f"No metadata found for index {idx}")
-                continue
-
-            # Get document info for source_type
-            doc_info = self.metadata_store.get_document_info(chunk["document_id"])
-            source_type = doc_info.get("source_type") if doc_info else None
-            source_path = doc_info.get("source_path") if doc_info else None
-
-            result = SearchResult(
-                filename=chunk["filename"],
-                page_number=chunk["page_number"],
-                text_snippet=chunk["text"],
-                similarity_score=float(similarity),
-                document_id=chunk["document_id"],
-                chunk_id=chunk["chunk_id"],
-                pdf_url="",  # Will be populated by the API endpoint
-                page_url="",  # Will be populated by the API endpoint
-                # v3.0: Format-aware metadata
-                source_format=chunk.get("source_format"),
-                extraction_method=chunk.get("extraction_method"),
-                csv_row_number=chunk.get("csv_row_number"),
-                csv_columns=chunk.get("csv_columns"),
-                csv_values=chunk.get("csv_values"),
-                # v3.1: Local file reference support
-                source_type=source_type,
-                source_path=source_path,
+        # Search. When filtering, scan the full index so post-filtering still
+        # yields the true top_k; otherwise just fetch top_k. FAISS labels are
+        # the chunks' SQLite row ids.
+        filtering = allowed_chunk_ids is not None
+        allowed_ids: Optional[set] = None
+        if filtering:
+            allowed_ids = set(
+                self.metadata_store.get_ids_for_chunk_ids(allowed_chunk_ids).values()
             )
-            results.append(result)
+            if not allowed_ids:
+                return []
+
+        k = self.index.ntotal if filtering else min(top_k, self.index.ntotal)
+        similarities, labels = self.index.search(query_normalized, k)
+
+        # Keep the top_k hits (post-filter) before touching SQLite, then
+        # batch-fetch metadata for just those.
+        hits: List[tuple] = []
+        for similarity, row_id in zip(similarities[0], labels[0]):
+            if row_id == -1:  # FAISS returns -1 for empty results
+                continue
+            if filtering and int(row_id) not in allowed_ids:
+                continue
+            hits.append((float(similarity), int(row_id)))
+            if len(hits) >= top_k:
+                break
+
+        chunks_by_id = self.metadata_store.get_chunks_by_rowids([rid for _, rid in hits])
+        doc_infos = self.metadata_store.get_documents_info(
+            {chunk["document_id"] for chunk in chunks_by_id.values()}
+        )
+
+        results = []
+        for similarity, row_id in hits:
+            chunk = chunks_by_id.get(row_id)
+            if not chunk:
+                logger.warning(f"No metadata found for FAISS id {row_id}")
+                continue
+            results.append(self._build_search_result(chunk, similarity, doc_infos))
 
         return results
 
@@ -200,7 +256,8 @@ class VectorStore:
         query: str,
         query_embedding: np.ndarray,
         top_k: int = 10,
-        semantic_weight: float = 0.7
+        semantic_weight: float = 0.7,
+        allowed_chunk_ids: Optional[set] = None,
     ) -> List[SearchResult]:
         """
         Perform hybrid search combining semantic similarity and BM25 keyword matching.
@@ -221,29 +278,59 @@ class VectorStore:
             logger.warning("Index is empty, returning no results")
             return []
 
-        # Get more candidates than top_k to allow for re-ranking
-        candidate_k = min(top_k * 3, self.index.ntotal)
+        # An explicit empty filter set means "nothing matches" — don't search.
+        if allowed_chunk_ids is not None and len(allowed_chunk_ids) == 0:
+            return []
 
-        # 1. Semantic search
+        filtering = allowed_chunk_ids is not None
+        allowed_ids: Optional[set] = None
+        if filtering:
+            allowed_ids = set(
+                self.metadata_store.get_ids_for_chunk_ids(allowed_chunk_ids).values()
+            )
+            if not allowed_ids:
+                return []
+
+        # Get more candidates than top_k to allow for re-ranking. When filtering,
+        # scan the full index so the post-filter doesn't starve the result set,
+        # but keep only the best candidate_limit survivors.
+        candidate_limit = min(top_k * 3, self.index.ntotal)
+        candidate_k = self.index.ntotal if filtering else candidate_limit
+
+        # 1. Semantic search — collect surviving (row id, score) pairs first,
+        # then batch-fetch metadata for just those.
         query_normalized = query_embedding / np.linalg.norm(query_embedding)
         query_normalized = query_normalized.reshape(1, -1).astype(np.float32)
-        semantic_sims, semantic_indices = self.index.search(query_normalized, candidate_k)
+        semantic_sims, semantic_labels = self.index.search(query_normalized, candidate_k)
 
-        # Build semantic scores dict (chunk_id -> score)
+        semantic_hits: List[tuple] = []
+        for similarity, row_id in zip(semantic_sims[0], semantic_labels[0]):
+            if row_id == -1:
+                continue
+            if filtering and int(row_id) not in allowed_ids:
+                continue
+            semantic_hits.append((int(row_id), float(similarity)))
+            if len(semantic_hits) >= candidate_limit:
+                break
+
+        chunks_by_id = self.metadata_store.get_chunks_by_rowids([rid for rid, _ in semantic_hits])
+
         semantic_scores: Dict[str, float] = {}
         chunk_data: Dict[str, dict] = {}
-
-        for similarity, idx in zip(semantic_sims[0], semantic_indices[0]):
-            if idx == -1:
-                continue
-            chunk = self.metadata_store.get_chunk_by_index(int(idx))
+        for row_id, similarity in semantic_hits:
+            chunk = chunks_by_id.get(row_id)
             if chunk:
                 chunk_id = chunk["chunk_id"]
-                semantic_scores[chunk_id] = float(similarity)
+                semantic_scores[chunk_id] = similarity
                 chunk_data[chunk_id] = chunk
 
         # 2. BM25 keyword search
-        bm25_results = self.bm25_index.search(query, candidate_k)
+        bm25_k = self.index.ntotal if filtering else candidate_limit
+        bm25_results = self.bm25_index.search(query, bm25_k)
+        if filtering:
+            bm25_results = [
+                (cid, score) for cid, score in bm25_results if cid in allowed_chunk_ids
+            ][:candidate_limit]
 
         # Normalize BM25 scores to 0-1 range
         bm25_scores: Dict[str, float] = {}
@@ -252,14 +339,14 @@ class VectorStore:
             if max_bm25 > 0:
                 for chunk_id, score in bm25_results:
                     bm25_scores[chunk_id] = score / max_bm25
-                    # Fetch chunk data if not already in semantic results
-                    if chunk_id not in chunk_data:
-                        chunk = self._get_chunk_by_id(chunk_id)
-                        if chunk:
-                            chunk_data[chunk_id] = chunk
+                # Batch-fetch chunk data for BM25-only matches
+                missing = [cid for cid in bm25_scores if cid not in chunk_data]
+                chunk_data.update(self.metadata_store.get_chunks_by_chunk_ids(missing))
 
         # 3. Combine scores
         all_chunk_ids = set(semantic_scores.keys()) | set(bm25_scores.keys())
+        if filtering:
+            all_chunk_ids &= allowed_chunk_ids
         combined_scores: Dict[str, float] = {}
 
         for chunk_id in all_chunk_ids:
@@ -273,55 +360,55 @@ class VectorStore:
         # 4. Sort by combined score and build results
         sorted_chunks = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
 
-        results = []
-        for chunk_id, combined_score in sorted_chunks[:top_k]:
-            chunk = chunk_data.get(chunk_id)
-            if not chunk:
-                continue
+        top_chunks = [
+            (chunk_data[cid], score) for cid, score in sorted_chunks[:top_k] if cid in chunk_data
+        ]
+        doc_infos = self.metadata_store.get_documents_info(
+            {chunk["document_id"] for chunk, _ in top_chunks}
+        )
 
-            # Get document info for source_type
-            doc_info = self.metadata_store.get_document_info(chunk["document_id"])
-            source_type = doc_info.get("source_type") if doc_info else None
-            source_path = doc_info.get("source_path") if doc_info else None
-
-            result = SearchResult(
-                filename=chunk["filename"],
-                page_number=chunk["page_number"],
-                text_snippet=chunk["text"],
-                similarity_score=combined_score,
-                document_id=chunk["document_id"],
-                chunk_id=chunk["chunk_id"],
-                pdf_url="",
-                page_url="",
-                source_format=chunk.get("source_format"),
-                extraction_method=chunk.get("extraction_method"),
-                csv_row_number=chunk.get("csv_row_number"),
-                csv_columns=chunk.get("csv_columns"),
-                csv_values=chunk.get("csv_values"),
-                # v3.1: Local file reference support
-                source_type=source_type,
-                source_path=source_path,
-            )
-            results.append(result)
+        results = [
+            self._build_search_result(chunk, score, doc_infos)
+            for chunk, score in top_chunks
+        ]
 
         logger.info(f"Hybrid search returned {len(results)} results "
                    f"(semantic_weight={semantic_weight})")
         return results
 
+    @staticmethod
+    def _build_search_result(
+        chunk: dict, score: float, doc_infos: Dict[str, dict]
+    ) -> SearchResult:
+        """Build a SearchResult from chunk metadata and pre-fetched document info."""
+        doc_info = doc_infos.get(chunk["document_id"])
+        return SearchResult(
+            filename=chunk["filename"],
+            page_number=chunk["page_number"],
+            text_snippet=chunk["text"],
+            similarity_score=score,
+            document_id=chunk["document_id"],
+            chunk_id=chunk["chunk_id"],
+            pdf_url="",  # Populated by the API endpoint
+            page_url="",  # Populated by the API endpoint
+            source_format=chunk.get("source_format"),
+            extraction_method=chunk.get("extraction_method"),
+            csv_row_number=chunk.get("csv_row_number"),
+            csv_columns=chunk.get("csv_columns"),
+            csv_values=chunk.get("csv_values"),
+            source_type=doc_info.get("source_type") if doc_info else None,
+            source_path=doc_info.get("source_path") if doc_info else None,
+        )
+
     def _get_chunk_by_id(self, chunk_id: str) -> Optional[dict]:
-        """Get chunk metadata by chunk_id."""
-        # This is a slower lookup but needed for BM25-only matches
-        chunks = self.metadata_store.get_all_chunks_ordered()
-        for chunk in chunks:
-            if chunk["chunk_id"] == chunk_id:
-                return chunk
-        return None
+        """Get chunk metadata by chunk_id (indexed lookup)."""
+        return self.metadata_store.get_chunks_by_chunk_ids([chunk_id]).get(chunk_id)
 
     def delete_document(self, document_id: str) -> int:
         """
         Delete all chunks belonging to a document.
 
-        Note: FAISS doesn't support efficient deletion, so we rebuild the index.
+        The id-mapped index supports in-place removal — no rebuild needed.
 
         Args:
             document_id: Document ID to delete
@@ -329,14 +416,14 @@ class VectorStore:
         Returns:
             Number of chunks deleted
         """
-        # Get indices to delete from metadata store
-        indices_to_delete = set(self.metadata_store.get_document_chunk_indices(document_id))
+        # Capture row ids before the metadata rows disappear
+        row_ids = self.metadata_store.get_document_chunk_rowids(document_id)
 
-        if len(indices_to_delete) == 0:
+        if not row_ids:
             logger.warning(f"Document {document_id} not found in index")
             return 0
 
-        num_deleted = len(indices_to_delete)
+        num_deleted = len(row_ids)
         logger.info(f"Deleting {num_deleted} chunks for document {document_id}")
 
         # Delete from BM25 index
@@ -351,28 +438,9 @@ class VectorStore:
         except Exception as e:
             logger.warning(f"Failed to drop structured tables for {document_id}: {e}")
 
-        # Rebuild FAISS index with remaining embeddings
-        if self.embeddings is not None:
-            new_embeddings = []
-            for idx in range(len(self.embeddings)):
-                if idx not in indices_to_delete:
-                    new_embeddings.append(self.embeddings[idx])
-
-            # Rebuild FAISS index
-            logger.info(f"Rebuilding index with {len(new_embeddings)} remaining chunks")
-            self.index = faiss.IndexFlatIP(self.embedding_dim)
-
-            if len(new_embeddings) > 0:
-                self.embeddings = np.array(new_embeddings, dtype=np.float32)
-                self.index.add(self.embeddings)
-                logger.info(f"Re-added {len(new_embeddings)} vectors to index")
-            else:
-                self.embeddings = None
-                logger.info("Index is now empty")
-        else:
-            logger.warning("No embeddings stored - cannot rebuild index properly")
-
-        logger.info(f"Successfully deleted document {document_id}")
+        # Remove the vectors in place
+        removed = self.index.remove_ids(np.asarray(row_ids, dtype=np.int64))
+        logger.info(f"Removed {removed} vectors from FAISS index for document {document_id}")
 
         return num_deleted
 
@@ -386,16 +454,9 @@ class VectorStore:
         return self.metadata_store.list_documents()
 
     def save(self):
-        """Persist the FAISS index, embeddings, and metadata to disk."""
+        """Persist the FAISS index to disk (metadata is already in SQLite)."""
         logger.info(f"Saving FAISS index with {self.index.ntotal} vectors")
         faiss.write_index(self.index, str(self.index_path))
-
-        # Save embeddings
-        if self.embeddings is not None:
-            np.save(str(self.embeddings_path), self.embeddings)
-            logger.info(f"Saved embeddings array with shape {self.embeddings.shape}")
-
-        # Metadata is already persisted in SQLite
         logger.info("Index saved successfully")
 
     def get_total_chunks(self) -> int:
@@ -407,8 +468,7 @@ class VectorStore:
         logger.info("Clearing vector store index and metadata")
 
         # Create new empty FAISS index
-        self.index = faiss.IndexFlatIP(self.embedding_dim)
-        self.embeddings = None
+        self.index = self._new_index()
 
         # Clear all metadata from database
         self.metadata_store.clear_all()

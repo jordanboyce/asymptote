@@ -56,8 +56,8 @@ class AudioTranscriber:
                 from faster_whisper import WhisperModel
             except ImportError as e:
                 raise RuntimeError(
-                    "faster-whisper is not installed. Run `pip install faster-whisper` "
-                    "or `pip install -r requirements.txt`."
+                    "Audio transcription requires the optional audio extras. "
+                    "Run `pip install -r requirements-audio.txt` (or `pip install faster-whisper`)."
                 ) from e
 
             logger.info(

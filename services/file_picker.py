@@ -5,6 +5,24 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+_native_picker_available: Optional[bool] = None
+
+
+def is_native_picker_available() -> bool:
+    """Check if native OS file picker is available (fails in headless/Docker environments)."""
+    global _native_picker_available
+    if _native_picker_available is not None:
+        return _native_picker_available
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        root.destroy()
+        _native_picker_available = True
+    except Exception:
+        _native_picker_available = False
+    return _native_picker_available
+
 # Supported file types for the file picker dialog
 SUPPORTED_FILETYPES = [
     ("All supported files", "*.pdf *.txt *.docx *.csv *.xlsx *.xls *.md *.json *.jsonl *.py *.js *.ts *.jsx *.tsx *.cs *.java *.go *.rs *.c *.h *.cpp *.hpp *.php *.rb *.swift *.kt *.scala *.pas *.dpr *.asm"),

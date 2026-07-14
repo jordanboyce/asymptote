@@ -180,12 +180,13 @@ export function removeProviderConfig(id) {
   saveProvidersConfig(getProvidersConfig().filter(p => p.id !== id))
 }
 
-/** Get the current ai_settings object. */
+/** Get the current ai_settings object. Rerank and synthesize default to on. */
 export function getAISettings() {
   try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
+    return { rerank: true, synthesize: true, ...stored }
   } catch {
-    return {}
+    return { rerank: true, synthesize: true }
   }
 }
 

@@ -1,0 +1,5 @@
+# Optional: audio transcription (meeting recordings -> text via local Whisper).
+#
+#   pip install -r requirements-audio.txt
+
+faster-whisper>=1.0.0

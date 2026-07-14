@@ -75,6 +75,8 @@ from models.schemas import (
     ChatRequest,
     ChatResponse,
     ChatSource,
+    ArtifactRequest,
+    ArtifactResponse,
     RepoUploadRequest,
     RepoUploadResponse,
     ExpertisePack,
@@ -234,7 +236,8 @@ async def embed_text(request: EmbedRequest):
     import numpy as np
     try:
         indexer = indexer_manager.get_indexer("default")
-        embedding = indexer.embedding_service.embed_query(request.text)
+        # embed_query is CPU-bound (sentence-transformers) — keep it off the event loop
+        embedding = await asyncio.to_thread(indexer.embedding_service.embed_query, request.text)
         norm = float(np.linalg.norm(embedding))
         if norm > 0:
             embedding = embedding / norm
@@ -274,7 +277,7 @@ async def health(collection_id: str = "default"):
     summary="Upload and index documents (PDF, TXT, DOCX, CSV)",
     tags=["documents"],
 )
-async def upload_documents(
+def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool, not on the event loop
     files: List[UploadFile] = File(...),
     collection_id: str = "default",
 ) -> UploadResponse:
@@ -784,7 +787,7 @@ async def cancel_upload_job(job_id: int):
     summary="Upload and index a code repository or folder (async)",
     tags=["documents"],
 )
-async def upload_repository(
+def upload_repository(  # sync: extraction+embedding run in FastAPI's threadpool, not on the event loop
     request: RepoUploadRequest,
 ) -> RepoUploadResponse:
     """
@@ -982,7 +985,11 @@ async def search_documents(
             except Exception as e:
                 logger.warning(f"Failed to build structured context for search: {e}")
 
-        search_result = indexer.search(
+        # Run the search in a worker thread: query embedding, FAISS, the
+        # optional reranker, and AI synthesis are all synchronous and would
+        # otherwise block the event loop for every other request (UI + MCP).
+        search_result = await asyncio.to_thread(
+            indexer.search,
             query=search_request.query,
             top_k=search_request.top_k,
             ai_service=ai_service,
@@ -992,6 +999,7 @@ async def search_documents(
             collection_overview=collection_overview,
             structured_context=structured_context_str,
             skip_filenames=skip_filenames or None,
+            filters=search_request.filters.to_dict() if search_request.filters else None,
         )
 
         results = search_result["results"]
@@ -1011,9 +1019,9 @@ async def search_documents(
                 "document_id": r.document_id,
                 "filename": r.filename,
                 "page_number": r.page_number,
-                "chunk_index": r.chunk_index,
-                "text": r.text,
-                "similarity": r.similarity,
+                "chunk_id": r.chunk_id,
+                "text": r.text_snippet,
+                "similarity": r.similarity_score,
                 "pdf_url": r.pdf_url,
                 "page_url": r.page_url
             } for r in results])
@@ -1050,7 +1058,7 @@ from services.collection_overview import build_collection_overview as _build_col
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_with_documents(
+def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAPI's threadpool
     chat_request: ChatRequest,
     request: Request,
     collection_id: str = "default",
@@ -1565,6 +1573,88 @@ async def chat_with_documents(
 
 
 # ---------------------------------------------------------------------------
+# Generated artifacts — turn a collection into a cited document
+# ---------------------------------------------------------------------------
+# Thin adapter over the chat tool loop: each artifact type is an instruction
+# message run through /api/chat, so grounding, citations, structured-table
+# tools, and the sources list are all reused rather than reimplemented.
+
+@app.get("/api/artifacts/types", tags=["artifacts"])
+async def list_artifact_types_endpoint() -> dict:
+    """List the available artifact types for the generate UI."""
+    from services import artifacts as artifacts_service
+
+    return {"types": artifacts_service.list_artifact_types()}
+
+
+@app.post("/api/artifacts", response_model=ArtifactResponse, tags=["artifacts"])
+async def generate_artifact(
+    artifact_request: ArtifactRequest,
+    request: Request,
+    collection_id: str = "default",
+    x_ai_key: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+) -> ArtifactResponse:
+    """Generate a source-grounded artifact (summary, FAQ, timeline, etc.).
+
+    Reuses the chat tool loop end-to-end: builds a templated instruction for the
+    requested artifact type, runs it through `chat_with_documents`, and repackages
+    the grounded answer + sources as an artifact.
+    """
+    from services import artifacts as artifacts_service
+
+    if not artifacts_service.is_valid_type(artifact_request.artifact_type):
+        valid = ", ".join(t["type"] for t in artifacts_service.list_artifact_types())
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown artifact type '{artifact_request.artifact_type}'. Valid: {valid}",
+        )
+
+    instruction = artifacts_service.build_artifact_message(
+        artifact_request.artifact_type,
+        focus=artifact_request.focus,
+        custom_instructions=artifact_request.custom_instructions,
+    )
+
+    chat_request = ChatRequest(
+        messages=[ChatMessage(role="user", content=instruction)],
+        provider=artifact_request.provider,
+        mode=artifact_request.mode,
+        scope=artifact_request.scope,
+        rerank=False,
+        top_k=artifact_request.top_k,
+    )
+
+    # chat_with_documents is a sync handler now — run it in a worker thread
+    chat_response = await asyncio.to_thread(
+        chat_with_documents,
+        chat_request,
+        request,
+        collection_id=collection_id,
+        x_ai_key=x_ai_key,
+        x_ollama_model=x_ollama_model,
+        x_anthropic_model=x_anthropic_model,
+        x_openai_model=x_openai_model,
+        x_ai_model=x_ai_model,
+        x_ai_base_url=x_ai_base_url,
+    )
+
+    return ArtifactResponse(
+        artifact_type=artifact_request.artifact_type,
+        title=artifacts_service.artifact_title(
+            artifact_request.artifact_type, artifact_request.focus
+        ),
+        content=chat_response.message.content,
+        sources=chat_response.sources,
+        ai_usage=chat_response.ai_usage,
+    )
+
+
+# ---------------------------------------------------------------------------
 # v4.4 — Streaming chat endpoint (SSE)
 # ---------------------------------------------------------------------------
 # Mirrors /api/chat but emits Server-Sent Events so the frontend can display
@@ -1638,7 +1728,10 @@ async def chat_stream_endpoint(
                 history_for_reformulation = [
                     {"role": m.role, "content": m.content} for m in prior_messages
                 ]
-                search_query = ai_service.reformulate_query(history_for_reformulation, latest_query)
+                # Blocking provider round-trip — keep it off the event loop
+                search_query = await asyncio.to_thread(
+                    ai_service.reformulate_query, history_for_reformulation, latest_query
+                )
             else:
                 search_query = latest_query
 
@@ -1651,7 +1744,8 @@ async def chat_stream_endpoint(
                     col_id = col["id"]
                     try:
                         col_indexer = get_indexer(col_id)
-                        col_search = col_indexer.search(
+                        col_search = await asyncio.to_thread(
+                            col_indexer.search,
                             query=search_query, top_k=chat_request.top_k, mode=chat_request.mode
                         )
                         for r in col_search["results"]:
@@ -1671,7 +1765,9 @@ async def chat_stream_endpoint(
                 except ValueError as e:
                     yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
                     return
-                sr = indexer.search(query=search_query, top_k=chat_request.top_k, mode=chat_request.mode)
+                sr = await asyncio.to_thread(
+                    indexer.search, query=search_query, top_k=chat_request.top_k, mode=chat_request.mode
+                )
                 context_results = sr["results"]
                 result_collection_ids = [collection_id] * len(context_results)
 
@@ -1681,7 +1777,9 @@ async def chat_stream_endpoint(
                 if chat_request.scope == "all"
                 else [collection_id]
             )
-            structured_tables, structured_stores = collect_structured_tables(overview_ids)
+            structured_tables, structured_stores = await asyncio.to_thread(
+                collect_structured_tables, overview_ids
+            )
             structured_ctx = build_structured_context(structured_tables, structured_stores) if structured_tables else {
                 "inline_block": "", "tool_tables": [], "inlined_filenames": set(), "inlined_document_ids": set()
             }
@@ -1699,7 +1797,7 @@ async def chat_stream_endpoint(
             ) or "No relevant context found."
 
             try:
-                collection_overview = _build_collection_overview(overview_ids)
+                collection_overview = await asyncio.to_thread(_build_collection_overview, overview_ids)
             except Exception as e:
                 logger.warning(f"Stream chat: failed to build collection overview: {e}")
                 collection_overview = "(Collection overview unavailable.)"
@@ -1776,7 +1874,9 @@ async def chat_stream_endpoint(
                 ]
 
                 for iteration in range(max_iterations):
-                    turn = provider.complete_with_tools(
+                    # Blocking provider round-trip — keep it off the event loop
+                    turn = await asyncio.to_thread(
+                        provider.complete_with_tools,
                         messages=messages,
                         tools=tools_spec,
                         max_tokens=4096,
@@ -1808,7 +1908,9 @@ async def chat_stream_endpoint(
 
                     # Execute all tool calls
                     adapted_calls = [{"tool": tc["name"], **(tc.get("input") or {})} for tc in tool_calls]
-                    iter_results = execute_tool_calls(adapted_calls, agent_context=agent_context)
+                    iter_results = await asyncio.to_thread(
+                        execute_tool_calls, adapted_calls, agent_context=agent_context
+                    )
                     executed_results.extend(iter_results)
 
                     # Emit tool_end for each result
@@ -1838,7 +1940,8 @@ async def chat_stream_endpoint(
 
                 if not response_text:
                     try:
-                        turn = provider.complete_with_tools(
+                        turn = await asyncio.to_thread(
+                            provider.complete_with_tools,
                             messages=messages, tools=[], max_tokens=2048,
                             model=ai_service.quality_model,
                             system=system_text + "\n\nDo not call any more tools. Summarize the final answer.",
@@ -1881,7 +1984,9 @@ async def chat_stream_endpoint(
 
                 for iteration in range(5):
                     prompt = _compose(suffix)
-                    result = provider.complete(prompt=prompt, max_tokens=2048, model=ai_service.quality_model)
+                    result = await asyncio.to_thread(
+                        provider.complete, prompt=prompt, max_tokens=2048, model=ai_service.quality_model
+                    )
                     raw_text = result["text"]
                     usage_iter = result.get("usage", {}) or {}
                     total_input_tokens += usage_iter.get("input_tokens", 0)
@@ -1895,7 +2000,9 @@ async def chat_stream_endpoint(
                         break
                     for tc in tool_calls_react:
                         yield f"data: {_json.dumps({'type':'tool_start','tool':tc.get('tool','unknown'),'args':{}})}\n\n"
-                    iter_results = execute_tool_calls(tool_calls_react, agent_context=agent_context)
+                    iter_results = await asyncio.to_thread(
+                        execute_tool_calls, tool_calls_react, agent_context=agent_context
+                    )
                     executed_results.extend(iter_results)
                     for tc, res in zip(tool_calls_react, iter_results):
                         yield f"data: {_json.dumps({'type':'tool_end','tool':tc.get('tool','unknown'),'result':res})}\n\n"
@@ -1951,7 +2058,9 @@ async def chat_stream_endpoint(
     summary="Open native file picker dialog",
     tags=["desktop"],
 )
-async def open_file_picker(multiple: bool = True, include_sizes: bool = False):
+def open_file_picker(multiple: bool = True, include_sizes: bool = False):
+    # sync: the tkinter dialog blocks until dismissed — in the threadpool that
+    # stalls one worker, not the whole server (UI + MCP kept freezing before)
     """
     Open a native OS file picker dialog.
 
@@ -1995,7 +2104,7 @@ async def open_file_picker(multiple: bool = True, include_sizes: bool = False):
     summary="Open native folder picker dialog",
     tags=["desktop"],
 )
-async def open_folder_picker_endpoint():
+def open_folder_picker_endpoint():  # sync: see open_file_picker
     """
     Open a native OS folder picker dialog.
 
@@ -2018,6 +2127,34 @@ async def open_folder_picker_endpoint():
         )
 
 
+@app.get(
+    "/api/capabilities",
+    summary="Query server capabilities for adaptive UI",
+    tags=["system"],
+)
+async def get_capabilities():
+    """
+    Returns server-side capability flags so the frontend can adapt.
+
+    native_file_picker: False in headless/Docker environments where
+    tkinter cannot open a display; the frontend should fall back to
+    browser-native <input type="file"> upload in that case.
+
+    ocr_available / audio_available / postgres_available: whether the
+    corresponding optional dependency set (requirements-ocr.txt,
+    requirements-audio.txt, requirements-postgres.txt) is installed, so the
+    UI can hide or annotate features that need an extra install.
+    """
+    from importlib.util import find_spec
+    from services.file_picker import is_native_picker_available
+    return {
+        "native_file_picker": is_native_picker_available(),
+        "ocr_available": find_spec("docling") is not None or find_spec("pytesseract") is not None,
+        "audio_available": find_spec("faster_whisper") is not None,
+        "postgres_available": find_spec("psycopg2") is not None,
+    }
+
+
 class ScanFolderRequest(BaseModel):
     """Request body for scanning a folder."""
     path: str
@@ -2030,7 +2167,7 @@ class ScanFolderRequest(BaseModel):
     summary="Scan folder and return list of supported files",
     tags=["desktop"],
 )
-async def scan_folder(request: ScanFolderRequest):
+def scan_folder(request: ScanFolderRequest):  # sync: filesystem walk runs in the threadpool
     """
     Scan a folder and return the list of supported files found.
 
@@ -2130,7 +2267,7 @@ class OCRPlaygroundRequest(BaseModel):
     summary="Run OCR preview on a PDF without indexing",
     tags=["ocr"],
 )
-async def ocr_playground_preview(request: OCRPlaygroundRequest):
+def ocr_playground_preview(request: OCRPlaygroundRequest):  # sync: OCR is CPU-bound, runs in the threadpool
     """
     Run OCR/text extraction preview on a local PDF and return page-level output.
 
@@ -2282,7 +2419,7 @@ class VisionOCRRequest(BaseModel):
     summary="Run vision-AI OCR on a PDF (playground, no indexing)",
     tags=["ocr"],
 )
-async def ocr_vision_playground(
+def ocr_vision_playground(  # sync: OCR + vision-model calls run in the threadpool
     request: VisionOCRRequest,
     x_ai_key: Optional[str] = Header(default=None, alias="X-AI-Key"),
 ):
@@ -2391,7 +2528,7 @@ class IndexLocalRequest(BaseModel):
     summary="Index a local file without uploading",
     tags=["documents"],
 )
-async def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:
+def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: indexing runs in the threadpool
     """
     Index a file directly from the local filesystem without copying it.
 
@@ -2595,7 +2732,7 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
     summary="Validate an AI provider API key or Ollama model",
     tags=["ai"],
 )
-async def validate_api_key(
+def validate_api_key(  # sync: provider round-trip runs in the threadpool
     x_ai_key: str = Header(None),
     x_ai_provider: str = Header("anthropic"),
     x_ollama_model: str = Header(None),
@@ -2669,7 +2806,7 @@ async def validate_api_key(
     summary="Ask a question about indexed documents",
     tags=["agent"],
 )
-async def ask_question(
+def ask_question(  # sync: search + provider round-trips run in the threadpool
     request: AskRequest,
     x_ai_key: str = Header(None),
     x_ai_provider: str = Header("anthropic"),
@@ -3257,7 +3394,7 @@ async def get_ollama_status():
         - models: List of available models with names and sizes
         - error: Error message if detection failed
     """
-    return detect_ollama()
+    return detect_ollama(settings.ollama_base_url)
 
 
 @app.get(
@@ -3275,11 +3412,11 @@ async def get_ollama_vision_models():
     import httpx
     import asyncio
 
-    status = detect_ollama()
+    status = detect_ollama(settings.ollama_base_url)
     if not status.get("available"):
         return {"available": False, "models": [], "error": status.get("error")}
 
-    base_url = status.get("base_url", "http://localhost:11434").rstrip("/")
+    base_url = status.get("base_url", settings.ollama_base_url).rstrip("/")
     all_models = status.get("models", [])
 
     # Known vision model name patterns as a fallback
@@ -3619,7 +3756,7 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
     summary="Delete a collection",
     tags=["collections"],
 )
-async def delete_collection(collection_id: str, user_id: str = Depends(get_current_user_id)):
+def delete_collection(collection_id: str, user_id: str = Depends(get_current_user_id)):  # sync: index teardown runs in the threadpool
     """
     Delete a collection and all its documents. Requires owner access.
 
@@ -3654,6 +3791,27 @@ async def delete_collection(collection_id: str, user_id: str = Depends(get_curre
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete collection: {str(e)}"
         )
+
+
+@app.get(
+    "/search/facets",
+    summary="List filterable metadata (formats, documents) for a collection",
+    tags=["search"],
+)
+async def search_facets(collection_id: str = "default") -> dict:
+    """Return the available search-filter values for a collection.
+
+    Powers the search/chat filter UI: the distinct source formats present and
+    the documents (id, filename, format, upload timestamp) that a query can be
+    restricted to via SearchRequest.filters.
+    """
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    facets = indexer.vector_store.metadata_store.get_filter_facets()
+    return {"collection_id": collection_id, **facets}
 
 
 @app.get(
@@ -3952,7 +4110,7 @@ async def get_document_chunks(
     summary="Delete a document from the index",
     tags=["documents"],
 )
-async def delete_document(
+def delete_document(  # sync: FAISS rebuild on delete runs in the threadpool
     document_id: str,
     collection_id: str = "default",
 ):

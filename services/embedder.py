@@ -1,11 +1,71 @@
-"""Embedding service using sentence-transformers."""
+"""Embedding services: local sentence-transformers or remote Ollama."""
 
-from typing import List, Optional, Union
+import json
 import logging
+import urllib.request
+from typing import List, Optional, Union
+
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
+
+
+class OllamaEmbeddingService:
+    """Generates embeddings via Ollama's /api/embed endpoint.
+
+    Requires Ollama running locally (or reachable at base_url) with the
+    chosen embedding model already pulled (e.g. `ollama pull nomic-embed-text`).
+    No HuggingFace download, no sentence-transformers dependency for this path.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "nomic-embed-text",
+        base_url: str = "http://localhost:11434",
+    ):
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
+        logger.info(f"Initialising Ollama embedding: model={model_name} url={self.base_url}")
+        # Probe once to verify connectivity and discover dimensionality.
+        try:
+            sample = self._call_api(["dimension probe"])
+            self.embedding_dim = len(sample[0])
+            logger.info(f"Ollama embedding ready: dim={self.embedding_dim}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot connect to Ollama at {self.base_url} with model '{model_name}'. "
+                f"Make sure Ollama is running and the model is pulled "
+                f"(`ollama pull {model_name}`). Error: {e}"
+            ) from e
+
+    def _call_api(self, texts: List[str]) -> List[List[float]]:
+        payload = json.dumps({"model": self.model_name, "input": texts}).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/api/embed",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode())
+        embeddings = data.get("embeddings")
+        if not embeddings:
+            raise ValueError(f"Ollama /api/embed returned no embeddings: {data}")
+        return embeddings
+
+    def embed_texts(self, texts: List[str]) -> np.ndarray:
+        if not texts:
+            return np.array([]).reshape(0, self.embedding_dim)
+        logger.debug(f"Ollama embed_texts: {len(texts)} texts")
+        # Batch in chunks of 64 to avoid oversized requests.
+        results: List[List[float]] = []
+        for i in range(0, len(texts), 64):
+            results.extend(self._call_api(texts[i : i + 64]))
+        return np.array(results, dtype=np.float32)
+
+    def embed_query(self, query: str) -> np.ndarray:
+        logger.debug(f"Ollama embed_query: {query[:60]}…")
+        return np.array(self._call_api([query])[0], dtype=np.float32)
 
 
 class EmbeddingService:
@@ -18,6 +78,8 @@ class EmbeddingService:
         Args:
             model_name: Name of the sentence-transformers model to use
         """
+        from sentence_transformers import SentenceTransformer  # lazy: only needed for local provider
+
         self.model_name = model_name
         logger.info(f"Loading embedding model: {model_name}")
 

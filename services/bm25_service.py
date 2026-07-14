@@ -1,162 +1,208 @@
-"""BM25 keyword search service for hybrid search support."""
+"""BM25 keyword search service for hybrid search support.
 
-import math
+Backed by SQLite's FTS5 full-text index and its built-in bm25() ranking.
+Documents and queries are pre-tokenized with the same normalizer the previous
+hand-rolled implementation used (lowercase, alphanumeric tokens, stopword and
+short-token removal), so search semantics are unchanged while scoring and
+storage are handled natively by FTS5 — far faster and smaller than the old
+Python-side term-frequency tables.
+
+Legacy databases (bm25_term_freq / bm25_doc_freq tables) are migrated in place
+on first open: BM25 is bag-of-words, so each chunk is reconstructed by
+repeating every stored term `term_freq` times, which preserves rankings
+without needing the original text.
+"""
+
 import re
 import sqlite3
-from collections import Counter
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Common English stopwords (kept identical to the previous implementation so
+# indexed corpora and queries keep matching the same way).
+_STOPWORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+    'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
+    'to', 'was', 'were', 'will', 'with', 'the', 'this', 'but', 'they',
+    'have', 'had', 'what', 'when', 'where', 'who', 'which', 'why', 'how',
+    'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
+    'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
+    'than', 'too', 'very', 'can', 'just', 'should', 'now'
+}
+
+_TOKEN_RE = re.compile(r'\b[a-z0-9]+\b')
+
+# SQLite's default host-parameter limit is 999; stay under it for IN (...).
+_IN_CLAUSE_BATCH = 900
+
 
 class BM25Index:
     """
-    BM25 (Best Matching 25) keyword search index.
+    BM25 keyword search index on SQLite FTS5.
 
-    BM25 is a probabilistic retrieval function that ranks documents based on
-    term frequency and inverse document frequency, with length normalization.
-
-    Parameters:
-        k1: Term frequency saturation parameter (default: 1.5)
-        b: Length normalization parameter (default: 0.75)
+    Note: FTS5's bm25() uses fixed k1=1.2 / b=0.75. The k1/b constructor
+    arguments are retained for interface compatibility and reported by
+    get_stats(), but do not affect FTS5 scoring.
     """
 
-    def __init__(self, db_path: Path, k1: float = 1.5, b: float = 0.75):
+    def __init__(self, db_path: Path, k1: float = 1.2, b: float = 0.75):
         """
         Initialize the BM25 index.
 
         Args:
             db_path: Path to SQLite database for storing BM25 data
-            k1: Controls term frequency saturation (1.2-2.0 typical)
-            b: Controls length normalization (0 = no normalization, 1 = full)
+            k1: Retained for compatibility (FTS5 uses its built-in value)
+            b: Retained for compatibility (FTS5 uses its built-in value)
         """
         self.db_path = db_path
         self.k1 = k1
         self.b = b
         self._init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.db_path)
+
     def _init_db(self):
-        """Initialize BM25 database tables."""
-        with sqlite3.connect(self.db_path) as conn:
-            # Document frequency table: term -> number of docs containing term
+        """Initialize FTS5 tables and migrate any legacy index in place."""
+        with self._connect() as conn:
+            # chunk_id <-> rowid mapping. FTS5 can't index a chunk_id column,
+            # so deletes/upserts go through this table's UNIQUE index instead
+            # of scanning the FTS content.
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS bm25_doc_freq (
-                    term TEXT PRIMARY KEY,
-                    doc_freq INTEGER NOT NULL
+                CREATE TABLE IF NOT EXISTS bm25_docs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chunk_id TEXT UNIQUE NOT NULL,
+                    doc_length INTEGER NOT NULL
                 )
             """)
+            try:
+                conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS bm25_fts
+                    USING fts5(text, tokenize='unicode61')
+                """)
+                # Vocabulary view for stats (one row per distinct term)
+                conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS bm25_fts_vocab
+                    USING fts5vocab(bm25_fts, 'row')
+                """)
+            except sqlite3.OperationalError as e:
+                raise RuntimeError(
+                    "This SQLite build lacks FTS5, which Asymptote's keyword "
+                    "search requires. Use a standard CPython build (3.9+)."
+                ) from e
 
-            # Term frequency table: (chunk_id, term) -> frequency
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS bm25_term_freq (
-                    chunk_id TEXT NOT NULL,
-                    term TEXT NOT NULL,
-                    term_freq INTEGER NOT NULL,
-                    doc_length INTEGER NOT NULL,
-                    PRIMARY KEY (chunk_id, term)
-                )
-            """)
-
-            # Corpus statistics
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS bm25_stats (
-                    key TEXT PRIMARY KEY,
-                    value REAL NOT NULL
-                )
-            """)
-
-            # Create indexes for faster queries
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_bm25_term
-                ON bm25_term_freq(term)
-            """)
-
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_bm25_chunk
-                ON bm25_term_freq(chunk_id)
-            """)
-
+            migrated = self._migrate_legacy(conn)
             conn.commit()
 
-        logger.info(f"Initialized BM25 index at {self.db_path}")
+        if migrated:
+            # Reclaim the space freed by dropping the legacy tables (they were
+            # the bulk of the file). VACUUM needs its own autocommit connection.
+            vac = sqlite3.connect(self.db_path, isolation_level=None)
+            try:
+                vac.execute("VACUUM")
+            finally:
+                vac.close()
 
-    def _tokenize(self, text: str) -> List[str]:
+        logger.info(f"Initialized BM25 (FTS5) index at {self.db_path}")
+
+    def _migrate_legacy(self, conn: sqlite3.Connection) -> bool:
+        """Rebuild the FTS index from legacy term-frequency tables, then drop them.
+
+        Returns True when legacy tables were found (and dropped).
         """
-        Tokenize text into terms for BM25 indexing.
+        legacy = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='bm25_term_freq'"
+        ).fetchone()
+        if not legacy:
+            return False
 
-        Simple tokenization that:
-        - Lowercases text
-        - Splits on non-alphanumeric characters
-        - Removes very short tokens (< 2 chars)
-        - Removes common stopwords
+        already_populated = conn.execute("SELECT 1 FROM bm25_docs LIMIT 1").fetchone()
+        if not already_populated:
+            rows = conn.execute("""
+                SELECT chunk_id, term, term_freq, doc_length
+                FROM bm25_term_freq ORDER BY chunk_id
+            """).fetchall()
+            docs: Dict[str, List[str]] = {}
+            lengths: Dict[str, int] = {}
+            for chunk_id, term, freq, doc_length in rows:
+                docs.setdefault(chunk_id, []).extend([term] * freq)
+                lengths[chunk_id] = doc_length
+            for chunk_id, terms in docs.items():
+                cursor = conn.execute(
+                    "INSERT INTO bm25_docs (chunk_id, doc_length) VALUES (?, ?)",
+                    (chunk_id, lengths.get(chunk_id, len(terms))),
+                )
+                conn.execute(
+                    "INSERT INTO bm25_fts (rowid, text) VALUES (?, ?)",
+                    (cursor.lastrowid, " ".join(terms)),
+                )
+            logger.info(
+                f"Migrated {len(docs)} chunks from legacy BM25 tables to FTS5"
+            )
 
-        Args:
-            text: Text to tokenize
+        conn.execute("DROP TABLE IF EXISTS bm25_term_freq")
+        conn.execute("DROP TABLE IF EXISTS bm25_doc_freq")
+        conn.execute("DROP TABLE IF EXISTS bm25_stats")
+        return True
 
-        Returns:
-            List of tokens
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        """Normalize text into index/query tokens.
+
+        Lowercases, keeps alphanumeric tokens of length >= 2, and removes
+        common English stopwords — identical to the pre-FTS5 behavior so
+        existing search semantics are preserved.
         """
-        # Lowercase and split on non-alphanumeric
-        tokens = re.findall(r'\b[a-z0-9]+\b', text.lower())
+        tokens = _TOKEN_RE.findall(text.lower())
+        return [t for t in tokens if len(t) >= 2 and t not in _STOPWORDS]
 
-        # Common English stopwords
-        stopwords = {
-            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-            'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
-            'to', 'was', 'were', 'will', 'with', 'the', 'this', 'but', 'they',
-            'have', 'had', 'what', 'when', 'where', 'who', 'which', 'why', 'how',
-            'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
-            'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
-            'than', 'too', 'very', 'can', 'just', 'should', 'now'
-        }
+    def _delete_chunks(self, conn: sqlite3.Connection, chunk_ids: List[str]) -> int:
+        """Delete chunks by id from both tables. Returns number deleted."""
+        deleted = 0
+        for start in range(0, len(chunk_ids), _IN_CLAUSE_BATCH):
+            batch = chunk_ids[start:start + _IN_CLAUSE_BATCH]
+            placeholders = ",".join("?" for _ in batch)
+            rowids = [r[0] for r in conn.execute(
+                f"SELECT id FROM bm25_docs WHERE chunk_id IN ({placeholders})", batch
+            ).fetchall()]
+            if not rowids:
+                continue
+            id_placeholders = ",".join("?" for _ in rowids)
+            conn.execute(f"DELETE FROM bm25_fts WHERE rowid IN ({id_placeholders})", rowids)
+            conn.execute(f"DELETE FROM bm25_docs WHERE id IN ({id_placeholders})", rowids)
+            deleted += len(rowids)
+        return deleted
 
-        # Filter stopwords and short tokens
-        return [t for t in tokens if len(t) >= 2 and t not in stopwords]
+    def _insert_documents(self, conn: sqlite3.Connection, documents: List[Tuple[str, str]]):
+        """Tokenize and insert (chunk_id, text) pairs, replacing existing chunk_ids."""
+        chunk_ids = [chunk_id for chunk_id, _ in documents]
+        self._delete_chunks(conn, chunk_ids)
+        for chunk_id, text in documents:
+            tokens = self._tokenize(text)
+            if not tokens:
+                continue
+            cursor = conn.execute(
+                "INSERT INTO bm25_docs (chunk_id, doc_length) VALUES (?, ?)",
+                (chunk_id, len(tokens)),
+            )
+            conn.execute(
+                "INSERT INTO bm25_fts (rowid, text) VALUES (?, ?)",
+                (cursor.lastrowid, " ".join(tokens)),
+            )
 
     def add_document(self, chunk_id: str, text: str):
         """
-        Add a document/chunk to the BM25 index.
+        Add a document/chunk to the BM25 index (replaces any existing entry).
 
         Args:
             chunk_id: Unique identifier for the chunk
             text: Text content to index
         """
-        tokens = self._tokenize(text)
-        if not tokens:
-            return
-
-        doc_length = len(tokens)
-        term_freqs = Counter(tokens)
-
-        with sqlite3.connect(self.db_path) as conn:
-            # Check if chunk already exists (for re-indexing)
-            existing = conn.execute(
-                "SELECT 1 FROM bm25_term_freq WHERE chunk_id = ? LIMIT 1",
-                (chunk_id,)
-            ).fetchone()
-
-            if existing:
-                # Remove old entries
-                self._remove_document_internal(conn, chunk_id)
-
-            # Add term frequencies
-            conn.executemany("""
-                INSERT INTO bm25_term_freq (chunk_id, term, term_freq, doc_length)
-                VALUES (?, ?, ?, ?)
-            """, [(chunk_id, term, freq, doc_length) for term, freq in term_freqs.items()])
-
-            # Update document frequencies
-            for term in term_freqs.keys():
-                conn.execute("""
-                    INSERT INTO bm25_doc_freq (term, doc_freq)
-                    VALUES (?, 1)
-                    ON CONFLICT(term) DO UPDATE SET doc_freq = doc_freq + 1
-                """, (term,))
-
-            # Update corpus stats
-            self._update_stats(conn)
+        with self._connect() as conn:
+            self._insert_documents(conn, [(chunk_id, text)])
             conn.commit()
 
     def add_documents_batch(self, documents: List[Tuple[str, str]]):
@@ -166,39 +212,9 @@ class BM25Index:
         Args:
             documents: List of (chunk_id, text) tuples
         """
-        with sqlite3.connect(self.db_path) as conn:
-            all_term_freqs = []
-            doc_freq_updates = Counter()
-
-            for chunk_id, text in documents:
-                tokens = self._tokenize(text)
-                if not tokens:
-                    continue
-
-                doc_length = len(tokens)
-                term_freqs = Counter(tokens)
-
-                for term, freq in term_freqs.items():
-                    all_term_freqs.append((chunk_id, term, freq, doc_length))
-                    doc_freq_updates[term] += 1
-
-            # Batch insert term frequencies
-            conn.executemany("""
-                INSERT OR REPLACE INTO bm25_term_freq (chunk_id, term, term_freq, doc_length)
-                VALUES (?, ?, ?, ?)
-            """, all_term_freqs)
-
-            # Batch update document frequencies
-            for term, count in doc_freq_updates.items():
-                conn.execute("""
-                    INSERT INTO bm25_doc_freq (term, doc_freq)
-                    VALUES (?, ?)
-                    ON CONFLICT(term) DO UPDATE SET doc_freq = doc_freq + ?
-                """, (term, count, count))
-
-            self._update_stats(conn)
+        with self._connect() as conn:
+            self._insert_documents(conn, documents)
             conn.commit()
-
         logger.info(f"Added {len(documents)} documents to BM25 index")
 
     def remove_document(self, chunk_id: str):
@@ -208,31 +224,9 @@ class BM25Index:
         Args:
             chunk_id: Chunk identifier to remove
         """
-        with sqlite3.connect(self.db_path) as conn:
-            self._remove_document_internal(conn, chunk_id)
-            self._update_stats(conn)
+        with self._connect() as conn:
+            self._delete_chunks(conn, [chunk_id])
             conn.commit()
-
-    def _remove_document_internal(self, conn: sqlite3.Connection, chunk_id: str):
-        """Internal method to remove document within a transaction."""
-        # Get terms for this document to update doc_freq
-        cursor = conn.execute(
-            "SELECT term FROM bm25_term_freq WHERE chunk_id = ?",
-            (chunk_id,)
-        )
-        terms = [row[0] for row in cursor.fetchall()]
-
-        # Delete term frequencies
-        conn.execute("DELETE FROM bm25_term_freq WHERE chunk_id = ?", (chunk_id,))
-
-        # Update document frequencies
-        for term in terms:
-            conn.execute("""
-                UPDATE bm25_doc_freq SET doc_freq = doc_freq - 1 WHERE term = ?
-            """, (term,))
-
-        # Clean up terms with zero doc_freq
-        conn.execute("DELETE FROM bm25_doc_freq WHERE doc_freq <= 0")
 
     def remove_documents_by_document_id(self, document_id: str, metadata_db_path: Path):
         """
@@ -242,7 +236,6 @@ class BM25Index:
             document_id: Document identifier
             metadata_db_path: Path to metadata database to get chunk IDs
         """
-        # Get chunk IDs from metadata store
         with sqlite3.connect(metadata_db_path) as meta_conn:
             cursor = meta_conn.execute(
                 "SELECT chunk_id FROM chunks WHERE document_id = ?",
@@ -253,123 +246,65 @@ class BM25Index:
         if not chunk_ids:
             return
 
-        with sqlite3.connect(self.db_path) as conn:
-            for chunk_id in chunk_ids:
-                self._remove_document_internal(conn, chunk_id)
-            self._update_stats(conn)
+        with self._connect() as conn:
+            removed = self._delete_chunks(conn, chunk_ids)
             conn.commit()
 
-        logger.info(f"Removed {len(chunk_ids)} chunks from BM25 index for document {document_id}")
-
-    def _update_stats(self, conn: sqlite3.Connection):
-        """Update corpus statistics."""
-        # Total documents
-        cursor = conn.execute("SELECT COUNT(DISTINCT chunk_id) FROM bm25_term_freq")
-        num_docs = cursor.fetchone()[0]
-
-        # Average document length
-        cursor = conn.execute("""
-            SELECT AVG(doc_length) FROM (
-                SELECT chunk_id, MAX(doc_length) as doc_length
-                FROM bm25_term_freq GROUP BY chunk_id
-            )
-        """)
-        avg_doc_len = cursor.fetchone()[0] or 0
-
-        conn.execute("""
-            INSERT OR REPLACE INTO bm25_stats (key, value) VALUES ('num_docs', ?)
-        """, (num_docs,))
-
-        conn.execute("""
-            INSERT OR REPLACE INTO bm25_stats (key, value) VALUES ('avg_doc_len', ?)
-        """, (avg_doc_len,))
-
-    def _get_stats(self) -> Tuple[int, float]:
-        """Get corpus statistics."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT key, value FROM bm25_stats")
-            stats = dict(cursor.fetchall())
-            return int(stats.get('num_docs', 0)), float(stats.get('avg_doc_len', 0))
+        logger.info(f"Removed {removed} chunks from BM25 index for document {document_id}")
 
     def search(self, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
         """
-        Search the index using BM25 scoring.
+        Search the index using FTS5's built-in BM25 scoring.
+
+        Documents matching ANY query term are scored (OR semantics, matching
+        the previous implementation).
 
         Args:
             query: Search query
             top_k: Number of results to return
 
         Returns:
-            List of (chunk_id, score) tuples, sorted by score descending
+            List of (chunk_id, score) tuples, sorted by score descending.
+            Scores are positive (negated FTS5 rank; higher = better).
         """
         query_terms = self._tokenize(query)
         if not query_terms:
             return []
 
-        num_docs, avg_doc_len = self._get_stats()
-        if num_docs == 0:
-            return []
+        # Tokens are alphanumeric-only, but quote them anyway so nothing is
+        # ever interpreted as FTS5 query syntax.
+        match_expr = " OR ".join(f'"{t}"' for t in query_terms)
 
-        with sqlite3.connect(self.db_path) as conn:
-            # Get document frequencies for query terms
-            placeholders = ','.join('?' * len(query_terms))
-            cursor = conn.execute(f"""
-                SELECT term, doc_freq FROM bm25_doc_freq WHERE term IN ({placeholders})
-            """, query_terms)
-            doc_freqs = dict(cursor.fetchall())
+        with self._connect() as conn:
+            rows = conn.execute("""
+                SELECT d.chunk_id, -bm25(bm25_fts) AS score
+                FROM bm25_fts
+                JOIN bm25_docs d ON d.id = bm25_fts.rowid
+                WHERE bm25_fts MATCH ?
+                ORDER BY bm25(bm25_fts)
+                LIMIT ?
+            """, (match_expr, max(1, int(top_k)))).fetchall()
 
-            # Calculate IDF for each query term
-            idfs = {}
-            for term in query_terms:
-                df = doc_freqs.get(term, 0)
-                if df > 0:
-                    # BM25 IDF formula
-                    idfs[term] = math.log((num_docs - df + 0.5) / (df + 0.5) + 1)
-
-            if not idfs:
-                return []
-
-            # Get term frequencies for matching documents
-            idf_terms = list(idfs.keys())
-            placeholders = ','.join('?' * len(idf_terms))
-            cursor = conn.execute(f"""
-                SELECT chunk_id, term, term_freq, doc_length
-                FROM bm25_term_freq
-                WHERE term IN ({placeholders})
-            """, idf_terms)
-
-            # Calculate BM25 scores
-            scores: Dict[str, float] = {}
-            for chunk_id, term, tf, doc_length in cursor.fetchall():
-                idf = idfs.get(term, 0)
-
-                # BM25 scoring formula
-                numerator = tf * (self.k1 + 1)
-                denominator = tf + self.k1 * (1 - self.b + self.b * doc_length / avg_doc_len)
-                term_score = idf * (numerator / denominator)
-
-                scores[chunk_id] = scores.get(chunk_id, 0) + term_score
-
-        # Sort by score and return top_k
-        sorted_results = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        return sorted_results[:top_k]
+        return [(chunk_id, float(score)) for chunk_id, score in rows]
 
     def clear(self):
         """Clear all data from the BM25 index."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM bm25_term_freq")
-            conn.execute("DELETE FROM bm25_doc_freq")
-            conn.execute("DELETE FROM bm25_stats")
+        with self._connect() as conn:
+            conn.execute("DELETE FROM bm25_fts")
+            conn.execute("DELETE FROM bm25_docs")
             conn.commit()
         logger.info("Cleared BM25 index")
 
     def get_stats(self) -> Dict[str, any]:
         """Get index statistics."""
-        num_docs, avg_doc_len = self._get_stats()
-
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM bm25_doc_freq")
-            vocab_size = cursor.fetchone()[0]
+        with self._connect() as conn:
+            num_docs = conn.execute("SELECT COUNT(*) FROM bm25_docs").fetchone()[0]
+            avg_doc_len = conn.execute(
+                "SELECT AVG(doc_length) FROM bm25_docs"
+            ).fetchone()[0] or 0
+            vocab_size = conn.execute(
+                "SELECT COUNT(*) FROM bm25_fts_vocab"
+            ).fetchone()[0]
 
         return {
             "num_documents": num_docs,

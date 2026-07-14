@@ -33,6 +33,9 @@ class ConfigManager:
         # Start with current settings from .env
         config = {
             "embedding_model": settings.embedding_model,
+            "embedding_provider": settings.embedding_provider,
+            "ollama_base_url": settings.ollama_base_url,
+            "ollama_embedding_model": settings.ollama_embedding_model,
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
             "default_top_k": settings.default_top_k,
@@ -53,6 +56,7 @@ class ConfigManager:
             "vision_ocr_cleanup_model": settings.vision_ocr_cleanup_model,
             "vision_ocr_ollama_url": settings.vision_ocr_ollama_url,
             "vision_ocr_form_mode": settings.vision_ocr_form_mode,
+            "ollama_num_ctx": settings.ollama_num_ctx,
             # MCP settings
             "enable_mcp": settings.enable_mcp,
             "mcp_server_id": settings.mcp_server_id,
@@ -102,9 +106,9 @@ class ConfigManager:
         }
 
         # Fields that require restart
-        restart_fields = {"embedding_model", "host", "port"}
+        restart_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "host", "port"}
         # Fields that require re-indexing
-        reindex_fields = {"embedding_model", "chunk_size", "chunk_overlap"}
+        reindex_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "chunk_size", "chunk_overlap"}
         # OCR fields that can be applied at runtime (no restart needed)
         ocr_fields = {
             "enable_ocr", "ocr_max_pages", "ocr_max_file_mb",
@@ -121,7 +125,8 @@ class ConfigManager:
 
         # Validate updates
         valid_fields = {
-            "embedding_model", "chunk_size", "chunk_overlap",
+            "embedding_model", "embedding_provider", "ollama_base_url", "ollama_embedding_model",
+            "chunk_size", "chunk_overlap",
             "default_top_k", "max_top_k",
             "enable_ocr", "ocr_max_pages", "ocr_max_file_mb",
             "vision_ocr_provider", "vision_ocr_model", "vision_ocr_api_key",
@@ -134,6 +139,7 @@ class ConfigManager:
             "mcp_ai_provider", "mcp_ollama_model",
             "enable_llm_schema_inference", "llm_schema_inference_threshold",
             "enable_chat_tab",
+            "ollama_num_ctx",
         }
 
         for key in updates.keys():

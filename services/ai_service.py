@@ -409,19 +409,34 @@ class OpenAIProvider(AIProvider):
 class OllamaProvider(AIProvider):
     """Ollama provider for local LLM inference."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2"):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2",
+                 num_ctx: Optional[int] = None):
         """Initialize Ollama provider.
 
         Args:
             base_url: Ollama API base URL (default: http://localhost:11434)
             model: Model name to use (e.g., llama3.2, mistral, phi3)
+            num_ctx: Context window in tokens. Ollama defaults to a small window
+                and silently truncates longer prompts, so we always send this.
+                Falls back to settings.ollama_num_ctx, then 8192.
         """
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.num_ctx = num_ctx if (num_ctx and num_ctx > 0) else self._default_num_ctx()
         # Ollama uses the model name for both fast and quality
         # Users can override by specifying different models
         self.FAST_MODEL = model
         self.QUALITY_MODEL = model
+
+    @staticmethod
+    def _default_num_ctx() -> int:
+        """Resolve the configured Ollama context window, defaulting to 8192."""
+        try:
+            from config import settings
+            value = int(getattr(settings, "ollama_num_ctx", 8192) or 8192)
+            return value if value > 0 else 8192
+        except Exception:
+            return 8192
 
     def _openai_client(self):
         """Return an OpenAI client pointed at Ollama's OpenAI-compatible /v1/ endpoint."""
@@ -442,7 +457,9 @@ class OllamaProvider(AIProvider):
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
-                    "options": {"num_predict": max_tokens},
+                    # num_ctx is essential: without it Ollama uses a tiny default
+                    # window and silently truncates the prompt, dropping context.
+                    "options": {"num_predict": max_tokens, "num_ctx": self.num_ctx},
                 },
             )
             response.raise_for_status()
@@ -464,7 +481,7 @@ class OllamaProvider(AIProvider):
         The OpenAI-compatible /v1/chat/completions endpoint defaults to
         num_ctx=2048, which is far too small for page images and causes the
         model to silently return empty output.  The native endpoint lets us
-        set num_ctx explicitly, matching how complete() already works.
+        set num_ctx explicitly, the same way complete() does.
         """
         import httpx
 
@@ -485,7 +502,9 @@ class OllamaProvider(AIProvider):
                         "stream": False,
                         "options": {
                             "num_predict": max_tokens,
-                            "num_ctx": 16384,   # large enough for full-page images
+                            # Page images need a large window; never go below 16384
+                            # even if the configured text num_ctx is smaller.
+                            "num_ctx": max(self.num_ctx, 16384),
                         },
                     },
                 )
@@ -858,6 +877,7 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
         return OllamaProvider(
             base_url=kwargs.get("base_url", "http://localhost:11434"),
             model=kwargs.get("model", "llama3.2"),
+            num_ctx=kwargs.get("num_ctx"),
         )
     elif provider_name == "ollama_cloud":
         if not api_key:

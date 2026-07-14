@@ -155,6 +155,23 @@ class SearchMode(str, Enum):
     HYBRID = "hybrid"      # Combined semantic + keyword
 
 
+class SearchFilters(BaseModel):
+    """Metadata pre-filter applied before ranking. All fields AND-combine."""
+
+    document_ids: Optional[List[str]] = Field(None, description="Restrict to these document ids")
+    filenames: Optional[List[str]] = Field(None, description="Restrict to these exact filenames")
+    source_formats: Optional[List[str]] = Field(
+        None, description="Restrict to these file types, e.g. ['pdf', 'csv']"
+    )
+    date_from: Optional[str] = Field(None, description="ISO timestamp lower bound on upload time")
+    date_to: Optional[str] = Field(None, description="ISO timestamp upper bound on upload time")
+
+    def to_dict(self) -> Optional[dict]:
+        """Return a plain dict of set filters, or None if nothing is set."""
+        data = {k: v for k, v in self.model_dump().items() if v}
+        return data or None
+
+
 class SearchRequest(BaseModel):
     """Request body for search endpoint."""
 
@@ -167,6 +184,7 @@ class SearchRequest(BaseModel):
         ge=0.0,
         le=1.0
     )
+    filters: Optional[SearchFilters] = Field(None, description="Optional metadata pre-filter")
     ai: Optional[AIOptions] = Field(None, description="Optional AI enhancement settings")
 
 
@@ -323,6 +341,28 @@ class ChatResponse(BaseModel):
         None,
         description="Structured query / metric tool-call results executed during this turn"
     )
+
+
+class ArtifactRequest(BaseModel):
+    """Request body for generating a collection artifact."""
+
+    artifact_type: str = Field(..., description="Artifact type, e.g. 'summary', 'faq', 'timeline', 'briefing', 'study_guide'")
+    provider: str = Field("anthropic", description="AI provider")
+    scope: str = Field("current", description="'current' (this collection) or 'all'")
+    mode: SearchMode = Field(SearchMode.HYBRID, description="Search mode for context retrieval")
+    top_k: int = Field(8, description="Chunks per retrieval call during generation", ge=1, le=20)
+    focus: Optional[str] = Field(None, description="Optional subject to narrow the artifact to")
+    custom_instructions: Optional[str] = Field(None, description="Optional extra freeform guidance")
+
+
+class ArtifactResponse(BaseModel):
+    """A generated, source-grounded artifact."""
+
+    artifact_type: str = Field(..., description="The artifact type that was generated")
+    title: str = Field(..., description="Human-readable title")
+    content: str = Field(..., description="The artifact body as Markdown, with inline citations")
+    sources: List[ChatSource] = Field(default_factory=list, description="Sources cited/used")
+    ai_usage: Optional[AIUsage] = Field(None, description="AI token usage")
 
 
 # Repository/Folder upload schemas

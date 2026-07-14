@@ -285,12 +285,20 @@ def execute_tool_calls(
                     raise ValueError("search_documents requires 'query'")
                 mode = call.get("mode")
                 top_k = call.get("top_k")
-                args_for_log = {"query": query, "mode": mode, "top_k": top_k, "collection_id": collection_id}
-                data = mcp.search_collection(
+                filters = call.get("filters")
+                args_for_log = {
+                    "query": query, "mode": mode, "top_k": top_k,
+                    "filters": filters, "collection_id": collection_id,
+                }
+                # Sync variant: this executor already runs off the event loop
+                # (threadpool endpoint or asyncio.to_thread); the async MCP
+                # tool wrapper would return a coroutine here.
+                data = mcp.search_collection_sync(
                     query=query,
                     collection_id=collection_id,
                     mode=mode,
                     top_k=int(top_k) if top_k is not None else None,
+                    filters=filters if isinstance(filters, dict) else None,
                 )
 
             elif tool == "get_document_context":
@@ -519,6 +527,22 @@ def render_table_as_rows(
     return {"columns": columns, "rows": rows}
 
 
+# Only tables from genuinely tabular source files are inline candidates.
+# Tables *extracted* from PDFs/DOCX also land in the structured store, and a
+# document-heavy collection can hold dozens of small ones — inlining those
+# bloats every search/chat prompt with marginal tables AND (via
+# inlined_filenames → skip_filenames) suppresses the document's text chunks
+# from retrieval. They remain fully queryable through the SQL tool loop.
+_TABULAR_SOURCE_EXTS = {".csv", ".tsv", ".xlsx", ".xls"}
+
+
+def _is_tabular_source(filename: str | None) -> bool:
+    if not filename:
+        return False
+    dot = filename.rfind(".")
+    return dot != -1 and filename[dot:].lower() in _TABULAR_SOURCE_EXTS
+
+
 def build_structured_context(
     tables: List[Dict[str, Any]],
     stores: Dict[str, StructuredStore],
@@ -527,9 +551,10 @@ def build_structured_context(
 ) -> Dict[str, Any]:
     """Split structured tables into (small → inline JSONL, large → tool loop).
 
-    For small tables we render the FULL contents into the prompt so the model
-    can answer numeric/aggregation questions without depending on top-K chunk
-    retrieval. For large tables we fall back to the SQL tool-use loop.
+    For small CSV/XLSX tables we render the FULL contents into the prompt so
+    the model can answer numeric/aggregation questions without depending on
+    top-K chunk retrieval. Large tables — and tables extracted from
+    non-tabular documents like PDFs — fall back to the SQL tool-use loop.
 
     Returns a dict:
       - inline_block: str, full JSONL prompt section (or '')
@@ -548,7 +573,12 @@ def build_structured_context(
         cid = t.get("collection_id")
         store = stores.get(cid) if cid else None
 
-        if not store or row_count == 0 or row_count > inline_row_threshold:
+        if (
+            not store
+            or row_count == 0
+            or row_count > inline_row_threshold
+            or not _is_tabular_source(t.get("filename"))
+        ):
             tool_tables.append(t)
             continue
 

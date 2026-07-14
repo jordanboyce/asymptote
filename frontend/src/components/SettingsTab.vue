@@ -1,48 +1,32 @@
 <template>
   <div class="space-y-6">
 
-    <!-- System Info -->
+    <!-- Appearance -->
     <div class="card bg-base-200">
-      <div class="card-body space-y-3">
+      <div class="card-body space-y-4">
         <div>
-          <h3 class="card-title text-base">System</h3>
-          <p class="text-sm text-base-content/70 mt-0.5">Database backend and multi-user configuration. These are set via environment variables.</p>
+          <h3 class="card-title text-base">Appearance</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">Visual theme and interface options.</p>
         </div>
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div class="bg-base-100 rounded-lg p-3">
-            <div class="text-xs text-base-content/50 mb-1">Database Backend</div>
-            <div class="font-semibold text-sm flex items-center gap-1.5">
-              <span class="badge badge-sm" :class="systemInfo.db_backend === 'postgresql' ? 'badge-primary' : 'badge-ghost'">
-                {{ systemInfo.db_backend === 'postgresql' ? 'PostgreSQL' : 'SQLite' }}
-              </span>
-            </div>
-          </div>
-          <div class="bg-base-100 rounded-lg p-3">
-            <div class="text-xs text-base-content/50 mb-1">Multi-User Mode</div>
-            <div class="font-semibold text-sm flex items-center gap-1.5">
-              <span class="badge badge-sm" :class="systemInfo.multi_user ? 'badge-success' : 'badge-ghost'">
-                {{ systemInfo.multi_user ? 'Enabled' : 'Disabled' }}
-              </span>
-            </div>
-          </div>
-          <div class="bg-base-100 rounded-lg p-3">
-            <div class="text-xs text-base-content/50 mb-1">Current User</div>
-            <div class="font-semibold text-sm truncate">{{ systemInfo.user_id || 'default' }}</div>
-          </div>
-        </div>
-        <p class="text-xs text-base-content/50">
-          Set <code>DB_BACKEND=postgresql</code> and <code>ENABLE_MULTI_USER=true</code> in your .env for multi-user enterprise mode.
-        </p>
-      </div>
-    </div>
 
-    <!-- UI Feature Flags -->
-    <div class="card bg-base-200">
-      <div class="card-body space-y-3">
-        <div>
-          <h3 class="card-title text-base">UI Features</h3>
-          <p class="text-sm text-base-content/70 mt-0.5">Toggle optional interface panels.</p>
+        <div class="form-control">
+          <label class="label p-0 pb-1" for="theme-select">
+            <span class="label-text font-medium">Theme</span>
+          </label>
+          <select
+            id="theme-select"
+            v-model="selectedTheme"
+            class="select select-bordered w-full max-w-xs"
+            @change="applyTheme"
+          >
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+            <option value="cupcake">Cupcake</option>
+            <option value="dracula">Dracula</option>
+            <option value="nord">Nord</option>
+          </select>
         </div>
+
         <div class="rounded-lg border border-base-300 bg-base-100 p-3">
           <label class="flex cursor-pointer items-start gap-4">
             <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="chatTabEnabled" @change="saveChatTabSetting" />
@@ -55,7 +39,7 @@
       </div>
     </div>
 
-    <!-- AI Integration -->
+    <!-- AI Providers -->
     <div class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
@@ -70,7 +54,6 @@
 
           <!-- Built-in Provider Rows -->
           <div v-for="def in PROVIDER_DEFS" :key="def.id">
-            <!-- Row header -->
             <div
               class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
               @click="toggleExpand(def.id)"
@@ -89,7 +72,6 @@
               </div>
             </div>
 
-            <!-- Config panel -->
             <div v-if="expandedProvider === def.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
 
               <!-- Ollama config -->
@@ -106,6 +88,27 @@
                     class="input input-bordered input-sm w-full"
                   />
                   <p class="text-xs text-base-content/50 mt-1">Change this to connect to a remote Ollama instance.</p>
+                </div>
+
+                <div class="form-control">
+                  <label class="label p-0 pb-1" for="ollama-num-ctx">
+                    <span class="label-text font-medium">Context window (num_ctx)</span>
+                  </label>
+                  <input
+                    id="ollama-num-ctx"
+                    v-model.number="ollamaNumCtx"
+                    type="number"
+                    min="512"
+                    step="512"
+                    placeholder="8192"
+                    class="input input-bordered input-sm w-full"
+                    @change="saveOllamaNumCtx"
+                  />
+                  <p class="text-xs text-base-content/50 mt-1">
+                    Tokens of context sent to local Ollama models. Ollama's default is small (~2048) and
+                    silently truncates longer prompts — raise this so the model sees your full documents
+                    (higher uses more memory). Applies to chat, search, and OCR cleanup.
+                  </p>
                 </div>
 
                 <div v-if="ollamaCheckStatus === 'checking'" class="flex items-center gap-2 text-sm text-base-content/60">
@@ -289,36 +292,8 @@
           + Add Custom Endpoint
         </button>
 
-        <!-- AI Feature Toggles -->
-        <div v-if="configuredProviderIds.length > 0" class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm space-y-3">
-          <div>
-            <h4 class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">AI Features (Defaults)</h4>
-            <p class="mt-1 text-xs text-base-content/60">Default on/off state for reranking and synthesis when you run a search. You can also toggle these live in the Search tab.</p>
-          </div>
-          <div class="space-y-2">
-            <div class="rounded-lg border border-base-300 bg-base-200/50 p-3">
-              <label class="flex cursor-pointer items-start gap-4">
-                <input type="checkbox" class="toggle toggle-primary toggle-sm" :checked="aiSettings.rerank" @change="toggleAIFeature('rerank')" />
-                <div>
-                  <span class="label-text font-medium">Result Reranking</span>
-                  <p class="text-xs text-base-content/60">Use AI to judge which results actually answer your question.</p>
-                </div>
-              </label>
-            </div>
-            <div class="rounded-lg border border-base-300 bg-base-200/50 p-3">
-              <label class="flex cursor-pointer items-start gap-4">
-                <input type="checkbox" class="toggle toggle-primary toggle-sm" :checked="aiSettings.synthesize" @change="toggleAIFeature('synthesize')" />
-                <div>
-                  <span class="label-text font-medium">Answer Synthesis</span>
-                  <p class="text-xs text-base-content/60">Generate a direct answer from your indexed sources with citations.</p>
-                </div>
-              </label>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
-
 
     <!-- OCR Settings -->
     <div class="card bg-base-200">
@@ -355,7 +330,9 @@
               <p class="mt-1 text-xs text-base-content/60">
                 Vision AI sends each PDF page as an image to a language model for text extraction.
                 More accurate than traditional OCR for complex layouts and degraded scans.
-                Set provider to "None" to use Docling (free, local) as fallback when available.
+                OCR reuses a provider you've already set up above in <strong>AI Providers</strong> —
+                pick one here and its key is reused automatically. Choose <strong>None</strong> to use
+                Docling (free, local) when available.
               </p>
             </div>
 
@@ -365,36 +342,23 @@
                   <span class="label-text font-medium">Provider</span>
                 </label>
                 <select id="vision-provider" v-model="visionProvider" class="select select-bordered w-full" @change="onOcrProviderChange">
-                  <option value="none">None (Docling fallback)</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="ollama">Ollama (local)</option>
+                  <option value="none">None — Docling (free, local)</option>
+                  <option v-for="opt in ocrConfiguredProviders" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
+                  </option>
                 </select>
+                <p v-if="!ocrConfiguredProviders.length" class="text-xs text-warning mt-1">
+                  No AI providers configured yet. Add one in AI Providers above, or use None (Docling).
+                </p>
+                <p v-else class="text-xs text-base-content/55 mt-1">
+                  The chosen model must support image input (vision).
+                </p>
               </div>
 
-              <!-- OpenAI model -->
-              <div class="form-control" v-if="visionProvider === 'openai'">
-                <label class="label pb-1" for="vision-model-openai"><span class="label-text font-medium">Model</span></label>
-                <select id="vision-model-openai" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="gpt-4o">gpt-4o (best quality)</option>
-                  <option value="gpt-4o-mini">gpt-4o-mini (faster, cheaper)</option>
-                </select>
-              </div>
-
-              <!-- Anthropic model -->
-              <div class="form-control" v-else-if="visionProvider === 'anthropic'">
-                <label class="label pb-1" for="vision-model-anthropic"><span class="label-text font-medium">Model</span></label>
-                <select id="vision-model-anthropic" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                  <option value="claude-opus-4-6">claude-opus-4-6 (best quality)</option>
-                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5 (balanced)</option>
-                  <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fastest)</option>
-                </select>
-              </div>
-
-              <!-- Ollama model -->
-              <div class="form-control" v-else-if="visionProvider === 'ollama'">
+              <!-- Ollama (local): detect vision-capable models -->
+              <div class="form-control" v-if="visionProvider === 'ollama'">
                 <label class="label pb-1" for="vision-model-ollama">
-                  <span class="label-text font-medium">Model</span>
+                  <span class="label-text font-medium">Vision model</span>
                   <button
                     class="label-text-alt btn btn-xs btn-ghost"
                     @click="refreshOcrOllamaVisionModels"
@@ -416,23 +380,39 @@
                 </div>
               </div>
 
-              <!-- API Key (cloud providers) -->
-              <div class="form-control" v-if="visionProvider !== 'none' && visionProvider !== 'ollama'">
+              <!-- Cloud / hosted providers: vision model -->
+              <div class="form-control" v-else-if="visionIsCloud">
+                <label class="label pb-1" for="vision-model-cloud"><span class="label-text font-medium">Vision model</span></label>
+                <input
+                  id="vision-model-cloud"
+                  v-model="visionModel"
+                  class="input input-bordered w-full"
+                  placeholder="e.g. gpt-4o, claude-sonnet-4-5, qwen2.5-vl"
+                  @change="saveOCRSettings"
+                />
+                <p class="text-xs text-base-content/50 mt-1">
+                  Reused from your {{ visionProviderLabel }} setup. Override here if it isn't vision-capable.
+                </p>
+              </div>
+
+              <!-- API Key (cloud/hosted) -->
+              <div class="form-control" v-if="visionIsCloud">
                 <label class="label pb-1" for="vision-apikey">
-                  <span class="label-text font-medium">API Key (stored on server for indexing)</span>
-                  <span v-if="visionKeyFromStorage" class="label-text-alt text-success">loaded from settings</span>
+                  <span class="label-text font-medium">API Key</span>
+                  <span v-if="visionApiKey" class="label-text-alt text-success">reused from {{ visionProviderLabel }}</span>
                 </label>
                 <input
                   id="vision-apikey"
                   v-model="visionApiKey"
                   type="password"
                   class="input input-bordered w-full"
-                  :placeholder="visionKeyFromStorage ? '(using saved key)' : 'sk-... or sk-ant-...'"
+                  :placeholder="visionApiKey ? '(using saved key)' : 'paste a key to override'"
                   @change="saveOCRSettings"
                 />
+                <p class="text-xs text-base-content/50 mt-1">Stored on the server so background indexing can use it.</p>
               </div>
 
-              <!-- Ollama URL -->
+              <!-- Ollama URL (local only) -->
               <div class="form-control" v-if="visionProvider === 'ollama'">
                 <label class="label pb-1" for="vision-ollama-url"><span class="label-text font-medium">Ollama URL</span></label>
                 <input
@@ -487,23 +467,20 @@
             <!-- Cleanup model -->
             <div v-if="visionProvider !== 'none' && visionCleanupPass" class="mt-4 rounded-xl border border-base-300 bg-base-100 p-4">
               <h4 id="cleanup-model-heading" class="text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70 mb-2">Cleanup Model</h4>
-              <p class="text-xs text-base-content/60 mb-3">Text-only model for the cleanup pass. Leave blank to reuse the vision model.</p>
+              <p class="text-xs text-base-content/60 mb-3">Optional text-only model for the cleanup pass, on the same provider. Leave blank to reuse the vision model.</p>
               <div class="form-control max-w-xs">
-                <select v-if="visionProvider === 'openai'" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
-                  <option value="">(same as vision model)</option>
-                  <option value="gpt-4o">gpt-4o</option>
-                  <option value="gpt-4o-mini">gpt-4o-mini</option>
-                </select>
-                <select v-else-if="visionProvider === 'anthropic'" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
-                  <option value="">(same as vision model)</option>
-                  <option value="claude-opus-4-6">claude-opus-4-6</option>
-                  <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5</option>
-                  <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
-                </select>
-                <select v-else-if="visionProvider === 'ollama' && ocrOllamaAllModels.length" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
+                <select v-if="visionProvider === 'ollama' && ocrOllamaAllModels.length" v-model="visionCleanupModel" class="select select-bordered w-full" @change="saveOCRSettings" aria-labelledby="cleanup-model-heading">
                   <option value="">(same as vision model)</option>
                   <option v-for="m in ocrOllamaAllModels" :key="m.name" :value="m.name">{{ m.name }}</option>
                 </select>
+                <input
+                  v-else
+                  v-model="visionCleanupModel"
+                  class="input input-bordered w-full"
+                  placeholder="(same as vision model)"
+                  @change="saveOCRSettings"
+                  aria-labelledby="cleanup-model-heading"
+                />
               </div>
             </div>
           </section>
@@ -535,94 +512,107 @@
       </div>
     </div>
 
-    <!-- Appearance -->
+    <!-- Embedding Settings -->
     <div class="card bg-base-200">
       <div class="card-body space-y-4">
         <div>
-          <h3 class="card-title text-base">Appearance</h3>
-          <p class="text-sm text-base-content/70 mt-0.5">Visual theme for the local UI.</p>
-        </div>
-
-        <div class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-          <label class="label p-0 pb-2" for="theme-select">
-            <span class="label-text text-sm font-semibold uppercase tracking-[0.18em] text-base-content/70">Theme</span>
-          </label>
-          <select
-            id="theme-select"
-            v-model="selectedTheme"
-            class="select select-bordered w-full"
-            @change="applyTheme"
-          >
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="cupcake">Cupcake</option>
-            <option value="dracula">Dracula</option>
-            <option value="nord">Nord</option>
-          </select>
-        </div>
-
-        <!-- Theme Preview -->
-        <div class="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-          <div class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/70 mb-3">Preview</div>
-          <div class="flex flex-wrap gap-2">
-            <button class="btn btn-primary btn-sm">Primary</button>
-            <button class="btn btn-secondary btn-sm">Secondary</button>
-            <button class="btn btn-accent btn-sm">Accent</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- LLM Schema Inference -->
-    <div class="card bg-base-200">
-      <div class="card-body space-y-4">
-        <div>
-          <h3 class="card-title text-base">LLM Column Role Inference</h3>
+          <h3 class="card-title text-base">Embedding</h3>
           <p class="text-sm text-base-content/70 mt-0.5">
-            When columns can't be mapped by vendor profiles or heuristics, send column names and sample values to an LLM for role assignment. Requires an AI provider above.
+            How document chunks and search queries are converted into vectors.
+            Changing the provider or model requires re-indexing all collections.
           </p>
         </div>
 
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-          <label class="flex cursor-pointer items-start gap-4">
-            <input
-              type="checkbox"
-              class="toggle toggle-primary toggle-sm flex-shrink-0"
-              v-model="llmSchemaInferenceEnabled"
-              @change="saveInferenceSettings"
-            />
-            <div class="min-w-0">
-              <span class="label-text font-medium">Enable LLM Schema Inference</span>
-              <p class="text-xs text-base-content/60">
-                Column names and sample values are sent to the configured LLM provider for role assignment.
-              </p>
-            </div>
-          </label>
+        <!-- Provider selector -->
+        <div class="form-control">
+          <label class="label p-0 pb-1"><span class="label-text font-medium">Provider</span></label>
+          <div class="flex gap-3 flex-wrap">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" class="radio radio-primary radio-sm" value="local" v-model="embeddingProvider" />
+              <span class="text-sm">Local <span class="text-xs text-base-content/50">(sentence-transformers)</span></span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" class="radio radio-primary radio-sm" value="ollama" v-model="embeddingProvider" @change="detectEmbeddingOllama" />
+              <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(fully local, no HF download)</span></span>
+            </label>
+          </div>
         </div>
 
-        <div v-if="llmSchemaInferenceEnabled" class="space-y-4">
+        <!-- Local: model name -->
+        <div v-if="embeddingProvider === 'local'" class="form-control">
+          <label class="label p-0 pb-1" for="embedding-model-local"><span class="label-text font-medium">Model</span></label>
+          <input
+            id="embedding-model-local"
+            v-model="embeddingModel"
+            type="text"
+            placeholder="all-MiniLM-L6-v2"
+            class="input input-bordered input-sm w-full max-w-sm"
+          />
+          <p class="text-xs text-base-content/50 mt-1">
+            Any <a href="https://www.sbert.net/docs/pretrained_models.html" target="_blank" class="link link-primary">sentence-transformers</a> model.
+            Downloaded from HuggingFace on first use.
+          </p>
+        </div>
+
+        <!-- Ollama: base URL + model -->
+        <div v-if="embeddingProvider === 'ollama'" class="space-y-3">
           <div class="form-control">
-            <label class="label">
-              <span class="label-text">Unmapped Column Threshold</span>
-              <span class="label-text-alt">{{ Math.round(llmSchemaInferenceThreshold * 100) }}%</span>
-            </label>
+            <label class="label p-0 pb-1" for="embedding-ollama-url"><span class="label-text font-medium">Ollama URL</span></label>
             <input
-              type="range"
-              min="0.1"
-              max="1.0"
-              step="0.1"
-              class="range range-primary range-sm"
-              v-model.number="llmSchemaInferenceThreshold"
-              @change="saveInferenceSettings"
+              id="embedding-ollama-url"
+              v-model="ollamaBaseUrl"
+              type="url"
+              placeholder="http://localhost:11434"
+              class="input input-bordered input-sm w-full max-w-sm"
             />
-            <p class="text-xs text-base-content/50 mt-1">
-              LLM inference triggers when this percentage or more of columns have no role after heuristic detection.
+          </div>
+
+          <div class="form-control">
+            <label class="label p-0 pb-1" for="embedding-ollama-model"><span class="label-text font-medium">Embedding Model</span></label>
+            <div class="flex gap-2 items-start flex-wrap">
+              <div class="flex-1 min-w-[180px] max-w-xs">
+                <select
+                  v-if="embeddingOllamaModels.length"
+                  id="embedding-ollama-model"
+                  v-model="ollamaEmbeddingModel"
+                  class="select select-bordered select-sm w-full"
+                >
+                  <option v-for="m in embeddingOllamaModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+                </select>
+                <input
+                  v-else
+                  id="embedding-ollama-model"
+                  v-model="ollamaEmbeddingModel"
+                  type="text"
+                  placeholder="nomic-embed-text"
+                  class="input input-bordered input-sm w-full"
+                />
+              </div>
+              <button class="btn btn-sm btn-ghost flex-shrink-0" @click="detectEmbeddingOllama" :disabled="embeddingOllamaStatus === 'checking'">
+                <span v-if="embeddingOllamaStatus === 'checking'" class="loading loading-spinner loading-xs"></span>
+                <span v-else>Detect</span>
+              </button>
+            </div>
+            <p v-if="embeddingOllamaStatus === 'error'" class="text-xs text-warning mt-1">
+              Ollama not reachable at <code>{{ ollamaBaseUrl }}</code>. Check that Ollama is running.
+              <span v-if="ollamaBaseUrl.includes('localhost') || ollamaBaseUrl.includes('127.0.0.1')">
+                Running in Docker? Use <code>http://host.docker.internal:11434</code> instead.
+              </span>
+            </p>
+            <p v-else class="text-xs text-base-content/50 mt-1">
+              Recommended: <code>nomic-embed-text</code> or <code>mxbai-embed-large</code>.
+              Pull first: <code>ollama pull nomic-embed-text</code>
             </p>
           </div>
         </div>
 
-        <div v-if="inferenceSettingsSaved" class="alert alert-success mt-3">
-          <span>Inference settings saved.</span>
+        <!-- Save row -->
+        <div class="flex items-center gap-3 flex-wrap">
+          <button class="btn btn-sm btn-primary" @click="saveEmbeddingSettings">Save</button>
+          <span v-if="embeddingSettingsSaved && !embeddingNeedsReindex" class="text-success text-sm">Saved</span>
+          <span v-if="embeddingSettingsSaved && embeddingNeedsReindex" class="text-warning text-sm font-medium">
+            Saved — restart the server and re-index all collections to apply changes.
+          </span>
         </div>
       </div>
     </div>
@@ -633,7 +623,7 @@
         <div>
           <h3 class="card-title text-base">Re-index Collection</h3>
           <p class="text-sm text-base-content/70 mt-0.5">
-            Re-process all documents using current settings. Useful after changing indexing, OCR, or vendor profile configuration.
+            Re-process all documents using current settings. Useful after changing indexing or OCR configuration.
           </p>
         </div>
 
@@ -676,9 +666,6 @@
             </p>
           </div>
         </div>
-        <p class="text-xs text-base-content/60">
-          Changes take effect on the next re-index.
-        </p>
 
         <div v-if="chunkSettingsSaved" class="alert alert-success py-2 text-sm">
           <span>Chunk settings saved. Re-index to apply.</span>
@@ -690,11 +677,9 @@
         <div v-if="reindexSuccess" class="alert alert-success">
           <span>Re-indexing started. Progress is shown in the status bar.</span>
         </div>
-
         <div v-if="reindexCompleted" class="alert alert-success">
           <span>Re-index complete. Sources have been refreshed.</span>
         </div>
-
         <div v-if="reindexError" class="alert alert-error">
           <span>{{ reindexError }}</span>
         </div>
@@ -708,6 +693,57 @@
       </div>
     </div>
 
+    <!-- LLM Column Inference -->
+    <div class="card bg-base-200">
+      <div class="card-body space-y-3">
+        <div>
+          <h3 class="card-title text-base">Table Column Inference</h3>
+          <p class="text-sm text-base-content/70 mt-0.5">
+            When importing CSV or Excel files, use AI to identify column roles that heuristics can't determine automatically. Requires an AI provider configured above.
+          </p>
+        </div>
+
+        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+          <label class="flex cursor-pointer items-start gap-4">
+            <input
+              type="checkbox"
+              class="toggle toggle-primary toggle-sm flex-shrink-0"
+              v-model="llmSchemaInferenceEnabled"
+              @change="saveInferenceSettings"
+            />
+            <div class="min-w-0">
+              <span class="label-text font-medium">Enable AI Column Detection</span>
+              <p class="text-xs text-base-content/60">
+                Column names and sample values are sent to your AI provider for role assignment.
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <div v-if="inferenceSettingsSaved" class="alert alert-success py-2">
+          <span>Saved.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- System Info -->
+    <div class="rounded-xl border border-base-300 bg-base-100 px-4 py-3 flex flex-wrap gap-x-6 gap-y-1 items-center text-sm">
+      <span class="text-xs font-semibold uppercase tracking-widest text-base-content/40">System</span>
+      <span class="text-base-content/70">
+        <span class="text-base-content/40 text-xs mr-1">DB</span>
+        <span class="font-medium">{{ systemInfo.db_backend === 'postgresql' ? 'PostgreSQL' : 'SQLite' }}</span>
+      </span>
+      <span class="text-base-content/70">
+        <span class="text-base-content/40 text-xs mr-1">Multi-user</span>
+        <span class="font-medium">{{ systemInfo.multi_user ? 'On' : 'Off' }}</span>
+      </span>
+      <span class="text-base-content/70">
+        <span class="text-base-content/40 text-xs mr-1">User</span>
+        <span class="font-medium">{{ systemInfo.user_id || 'default' }}</span>
+      </span>
+      <span class="text-base-content/30 text-xs ml-auto hidden sm:block">Configure via .env</span>
+    </div>
+
     <!-- Danger Zone -->
     <div class="card bg-error/10 border border-error">
       <div class="card-body space-y-3">
@@ -719,7 +755,6 @@
         <div v-if="clearSuccess" class="alert alert-success">
           <span>All data has been cleared successfully!</span>
         </div>
-
         <div v-if="clearError" class="alert alert-error">
           <span>{{ clearError }}</span>
         </div>
@@ -769,8 +804,8 @@ import {
   getProviderConfig,
   upsertProviderConfig,
   removeProviderConfig,
-  getAISettings,
   getConfiguredProviderIds,
+  getProviderDisplayName,
   migrateLegacySettings,
 } from '../utils/aiProviders.js'
 
@@ -804,9 +839,31 @@ const ocrOllamaVisionLoading = ref(false)
 const ocrOllamaVisionTotal = ref(0)
 const ocrOllamaAllModels = ref([])
 
+// Local Ollama context window (server-side setting; applies to all Ollama calls)
+const ollamaNumCtx = ref(8192)
+
+// Embedding settings
+const embeddingProvider = ref('local')  // 'local' | 'ollama'
+const embeddingModel = ref('all-MiniLM-L6-v2')  // local sentence-transformers model
+const ollamaEmbeddingModel = ref('nomic-embed-text')  // ollama model for embeddings
+const ollamaBaseUrl = ref('http://localhost:11434')
+const embeddingSettingsSaved = ref(false)
+const embeddingNeedsReindex = ref(false)
+const embeddingOllamaModels = ref([])
+const embeddingOllamaStatus = ref(null)  // null | 'checking' | 'ok' | 'error'
+
+// Preferred *vision-capable* model per provider for OCR. OCR needs image input,
+// so we default to a known multimodal model rather than blindly reusing the
+// provider's chat model (which may be text-only, e.g. gpt-oss). The user can
+// still override in the model field.
 const OCR_DEFAULT_MODELS = {
   openai: 'gpt-4o',
   anthropic: 'claude-opus-4-6',
+  google: 'gemini-2.0-flash',
+  grok: 'grok-2-vision-1212',
+  github: 'openai/gpt-4o',
+  openrouter: 'openai/gpt-4o',
+  ollama_cloud: 'gemma4:31b',
   ollama: '',
   none: '',
 }
@@ -829,14 +886,54 @@ const loadVisionKeyFromStorage = (provider) => {
   }
 }
 
+// Providers OCR can reuse: everything the user configured for chat, minus
+// custom OpenAI-compatible endpoints (those need a base_url OCR doesn't carry yet).
+// Local Ollama is handled with its own vision-model detection.
+const ocrConfiguredProviders = computed(() =>
+  configuredProviderIds.value
+    .filter((id) => !(getProviderConfig(id)?.isCustom))
+    .map((id) => ({ value: id, label: getProviderDisplayName(id) }))
+)
+
+const visionIsCloud = computed(
+  () => visionProvider.value !== 'none' && visionProvider.value !== 'ollama'
+)
+
+const visionProviderLabel = computed(() =>
+  visionProvider.value && visionProvider.value !== 'none'
+    ? getProviderDisplayName(visionProvider.value)
+    : ''
+)
+
 const onOcrProviderChange = () => {
-  visionModel.value = OCR_DEFAULT_MODELS[visionProvider.value] || ''
+  const id = visionProvider.value
   visionCleanupModel.value = ''
-  loadVisionKeyFromStorage(visionProvider.value)
-  if (visionProvider.value === 'ollama') {
+
+  if (id === 'none') {
+    visionModel.value = ''
+    visionApiKey.value = ''
+    saveOCRSettings()
+    return
+  }
+
+  if (id === 'ollama') {
+    visionModel.value = ''
+    visionApiKey.value = ''
+    const cfg = getProviderConfig('ollama')
+    if (cfg?.baseUrl) visionOllamaUrl.value = cfg.baseUrl
     refreshOcrOllamaVisionModels()
     fetchOcrAllOllamaModels()
+    saveOCRSettings()
+    return
   }
+
+  // Cloud / hosted provider: reuse the key from its saved config so the user
+  // doesn't re-enter anything. For the model, prefer the provider's known
+  // vision-capable default (OCR needs image input) over its chat model, which
+  // may be text-only. The user can still override below.
+  const cfg = getProviderConfig(id) || {}
+  visionApiKey.value = cfg.apiKey || ''
+  visionModel.value = OCR_DEFAULT_MODELS[id] || cfg.model || ''
   saveOCRSettings()
 }
 
@@ -866,6 +963,18 @@ const fetchOcrAllOllamaModels = async () => {
   }
 }
 
+const saveOllamaNumCtx = async () => {
+  let v = Number(ollamaNumCtx.value)
+  if (!Number.isFinite(v) || v < 512) v = 8192
+  v = Math.round(v)
+  ollamaNumCtx.value = v
+  try {
+    await axios.post('/api/config', { ollama_num_ctx: v })
+  } catch {
+    // non-fatal; keep the entered value
+  }
+}
+
 const saveChatTabSetting = async () => {
   try {
     await axios.post('/api/config', { enable_chat_tab: chatTabEnabled.value })
@@ -876,10 +985,55 @@ const saveChatTabSetting = async () => {
   }
 }
 
+const loadEmbeddingSettings = async () => {
+  try {
+    const response = await axios.get('/api/config')
+    embeddingProvider.value = response.data.embedding_provider || 'local'
+    embeddingModel.value = response.data.embedding_model || 'all-MiniLM-L6-v2'
+    ollamaEmbeddingModel.value = response.data.ollama_embedding_model || 'nomic-embed-text'
+    ollamaBaseUrl.value = response.data.ollama_base_url || 'http://localhost:11434'
+  } catch {
+    // use defaults
+  }
+}
+
+const saveEmbeddingSettings = async () => {
+  try {
+    const result = await axios.post('/api/config', {
+      embedding_provider: embeddingProvider.value,
+      embedding_model: embeddingModel.value,
+      ollama_embedding_model: ollamaEmbeddingModel.value,
+      ollama_base_url: ollamaBaseUrl.value,
+    })
+    embeddingSettingsSaved.value = true
+    embeddingNeedsReindex.value = result.data.requires_reindex || false
+    setTimeout(() => { embeddingSettingsSaved.value = false }, 5000)
+  } catch (error) {
+    console.error('Failed to save embedding settings:', error.response?.data?.detail || error)
+  }
+}
+
+const detectEmbeddingOllama = async () => {
+  embeddingOllamaStatus.value = 'checking'
+  embeddingOllamaModels.value = []
+  try {
+    const resp = await axios.get('/api/ollama/status')
+    if (resp.data.available) {
+      embeddingOllamaModels.value = resp.data.models || []
+      embeddingOllamaStatus.value = 'ok'
+    } else {
+      embeddingOllamaStatus.value = 'error'
+    }
+  } catch {
+    embeddingOllamaStatus.value = 'error'
+  }
+}
+
 const loadOCRSettings = async () => {
   try {
     const response = await axios.get('/api/config')
     chatTabEnabled.value = response.data.enable_chat_tab ?? true
+    ollamaNumCtx.value = response.data.ollama_num_ctx ?? 8192
     ocrEnabled.value = response.data.enable_ocr || false
     ocrMaxPages.value = response.data.ocr_max_pages ?? 25
     ocrMaxFileMb.value = response.data.ocr_max_file_mb ?? 50
@@ -893,8 +1047,19 @@ const loadOCRSettings = async () => {
     visionCleanupModel.value = response.data.vision_ocr_cleanup_model || ''
     visionFormMode.value = response.data.vision_ocr_form_mode ?? false
 
-    if (!visionApiKey.value) {
-      loadVisionKeyFromStorage(visionProvider.value)
+    // If no key is stored server-side, inherit it from the matching provider's
+    // saved config so OCR works without re-entering credentials.
+    if (!visionApiKey.value && visionProvider.value !== 'none' && visionProvider.value !== 'ollama') {
+      const cfg = getProviderConfig(visionProvider.value)
+      if (cfg?.apiKey) {
+        visionApiKey.value = cfg.apiKey
+        visionKeyFromStorage.value = true
+      } else {
+        loadVisionKeyFromStorage(visionProvider.value)
+      }
+      if (!visionModel.value) {
+        visionModel.value = OCR_DEFAULT_MODELS[visionProvider.value] || cfg?.model || ''
+      }
     } else {
       visionKeyFromStorage.value = false
     }
@@ -1071,10 +1236,7 @@ const clearSuccess = ref(false)
 const clearError = ref('')
 const clearModal = ref(null)
 
-// AI integration state
-const aiSettings = ref({ rerank: false, synthesize: false })
-
-// Ids of all currently-configured providers (drives AI Features visibility)
+// Ids of all currently-configured providers
 const configuredProviderIds = computed(() => getConfiguredProviderIds())
 
 // Expand/edit state
@@ -1130,12 +1292,6 @@ const toggleExpand = (id) => {
   if (id === 'ollama' && ollamaCheckStatus.value === null) {
     detectOllama()
   }
-}
-
-const toggleAIFeature = (feature) => {
-  aiSettings.value[feature] = !aiSettings.value[feature]
-  const settings = getAISettings()
-  localStorage.setItem('ai_settings', JSON.stringify({ ...settings, ...aiSettings.value }))
 }
 
 const validateAndSave = async (id) => {
@@ -1250,15 +1406,7 @@ const formatBytes = (bytes) => {
 
 const loadAIState = () => {
   migrateLegacySettings()
-  const settings = getAISettings()
-  aiSettings.value = {
-    rerank: !!settings.rerank,
-    synthesize: !!settings.synthesize,
-  }
 }
-
-
-
 
 // Theme
 const applyTheme = () => {
@@ -1322,11 +1470,8 @@ onMounted(() => {
     selectedTheme.value = prefersDark ? 'dark' : 'light'
   }
 
+  loadEmbeddingSettings()
   loadOCRSettings()
   loadInferenceSettings()
 })
 </script>
-
-
-
-

@@ -9,6 +9,13 @@ import re
 import pdfplumber
 from pypdf import PdfReader
 
+# pdfminer.six (pdfplumber's backend) logs a WARNING per glyph for PDFs with a
+# malformed font descriptor — e.g. "Could not get FontBBox ... cannot be parsed
+# as 4 floats". These are benign: text extraction proceeds normally and the
+# glyphs are still read. Left at WARNING they flood the console (hundreds of
+# lines per file) and bury real indexing errors, so quiet them to ERROR.
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
 # Code extraction
 from services.code_extractor import (
     CodeExtractor, CodeChunk, CodeLanguage,
@@ -25,6 +32,17 @@ from services.audio_transcriber import AUDIO_EXTENSIONS, is_audio_file
 from services.prompt_injection_detector import PromptInjectionDetector, InjectionScanResult
 
 logger = logging.getLogger(__name__)
+
+
+# Vision-OCR providers that require an API key. Local Ollama, Bedrock (AWS
+# credential chain), "auto" (resolves to local Ollama), and "none" do not.
+_KEY_REQUIRED_PROVIDERS = frozenset(
+    {"anthropic", "openai", "grok", "google", "github", "openrouter", "ollama_cloud"}
+)
+
+
+def _provider_needs_key(provider_name: str) -> bool:
+    return provider_name in _KEY_REQUIRED_PROVIDERS
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +361,60 @@ class DocumentExtractor:
 
         return "\n".join(cleaned_lines).strip()
 
+    def _resolve_ollama_vision_model(self) -> Optional[str]:
+        """Pick a vision-capable model from the running Ollama instance.
+
+        Used by the 'auto' OCR provider so the user doesn't have to configure a
+        model separately — if they already pulled a multimodal model (gemma3,
+        llava, llama3.2-vision, qwen-vl, …) we just use it. An explicitly
+        configured `vision_ocr_model` always wins. Returns None if Ollama is
+        unreachable or has no vision model.
+        """
+        if self.vision_ocr_model:
+            return self.vision_ocr_model
+
+        base = (self.vision_ocr_ollama_url or "http://localhost:11434").rstrip("/")
+        # Name patterns for the common multimodal families on Ollama.
+        vision_patterns = (
+            "llava", "vl", "vision", "minicpm-v", "moondream", "bakllava",
+            "cogvlm", "internvl", "gemma3", "llama3.2-vision", "qwen2-vl",
+            "qwen2.5vl", "qwen2.5-vl",
+        )
+        try:
+            import httpx
+
+            with httpx.Client(timeout=5.0) as client:
+                tags = client.get(f"{base}/api/tags").json()
+                models = [m.get("name") for m in tags.get("models", []) if m.get("name")]
+                if not models:
+                    logger.warning("Vision OCR 'auto': Ollama has no models installed")
+                    return None
+
+                # Prefer authoritative detection: a multimodal Ollama model lists
+                # 'clip' or 'mllama' in its architecture families.
+                for name in models:
+                    try:
+                        show = client.post(f"{base}/api/show", json={"name": name}).json()
+                        families = (show.get("details") or {}).get("families") or []
+                        if "clip" in families or "mllama" in families:
+                            return name
+                    except Exception:
+                        continue
+
+                # Fall back to a name heuristic.
+                for name in models:
+                    if any(p in name.lower() for p in vision_patterns):
+                        return name
+
+                logger.warning(
+                    "Vision OCR 'auto': no vision-capable model found in Ollama "
+                    f"(installed: {', '.join(models)})"
+                )
+                return None
+        except Exception as e:
+            logger.warning(f"Vision OCR 'auto': could not reach Ollama at {base}: {e}")
+            return None
+
     def _get_vision_ocr_engine(self) -> Optional["OCREngine"]:
         """Get or create a VisionOCREngine if vision OCR is configured."""
         if self._vision_ocr_engine_instance is not None:
@@ -351,9 +423,23 @@ class DocumentExtractor:
         if not self.vision_ocr_provider or self.vision_ocr_provider == "none":
             return None
 
-        needs_key = self.vision_ocr_provider in ("anthropic", "openai")
-        if needs_key and not self.vision_ocr_api_key:
-            logger.warning(f"Vision OCR provider '{self.vision_ocr_provider}' requires an API key")
+        # 'auto' = zero-config: use whatever vision model the local Ollama has.
+        provider_name = self.vision_ocr_provider
+        model = self.vision_ocr_model
+        if provider_name == "auto":
+            resolved = self._resolve_ollama_vision_model()
+            if not resolved:
+                logger.warning(
+                    "Vision OCR 'auto' could not find an Ollama vision model; "
+                    "falling back to free local OCR (Docling/Tesseract) if available."
+                )
+                return None
+            provider_name = "ollama"
+            model = resolved
+            logger.info(f"Vision OCR 'auto' resolved to Ollama model: {model}")
+
+        if _provider_needs_key(provider_name) and not self.vision_ocr_api_key:
+            logger.warning(f"Vision OCR provider '{provider_name}' requires an API key")
             return None
 
         try:
@@ -361,21 +447,21 @@ class DocumentExtractor:
             from services.ocr_engine import VisionOCREngine
 
             provider_kwargs: dict = {}
-            if self.vision_ocr_provider == "ollama":
+            if provider_name == "ollama":
                 provider_kwargs["base_url"] = self.vision_ocr_ollama_url
-                provider_kwargs["model"] = self.vision_ocr_model
+                provider_kwargs["model"] = model
 
             provider = create_provider(
-                provider_name=self.vision_ocr_provider,
+                provider_name=provider_name,
                 api_key=self.vision_ocr_api_key or "",
                 **provider_kwargs,
             )
 
-            cleanup_model = self.vision_ocr_cleanup_model or self.vision_ocr_model
+            cleanup_model = self.vision_ocr_cleanup_model or model
 
             self._vision_ocr_engine_instance = VisionOCREngine(
                 provider=provider,
-                model=self.vision_ocr_model,
+                model=model,
                 cleanup_pass=self.vision_ocr_cleanup_pass,
                 cleanup_provider=provider,
                 cleanup_model=cleanup_model,
@@ -384,7 +470,7 @@ class DocumentExtractor:
                 enhance_image=self.vision_ocr_enhance_image,
                 form_mode=self.vision_ocr_form_mode,
             )
-            logger.info(f"Vision OCR engine initialized: {self.vision_ocr_provider}/{self.vision_ocr_model}")
+            logger.info(f"Vision OCR engine initialized: {provider_name}/{model}")
         except Exception as e:
             logger.warning(f"Failed to initialize Vision OCR engine: {e}")
             return None
@@ -556,7 +642,17 @@ class DocumentExtractor:
 
         with pdfplumber.open(pdf_path) as pdf:
             for page_num, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
+                # Isolate per-page failures: a single page with a broken font or
+                # malformed content stream shouldn't abandon the whole document
+                # (which would force a fall-back to pypdf or OCR for every page).
+                try:
+                    text = page.extract_text() or ""
+                except Exception as e:
+                    logger.warning(
+                        f"pdfplumber: page {page_num} of {pdf_path.name} failed "
+                        f"to extract ({e}); leaving it empty"
+                    )
+                    text = ""
                 page_texts[page_num] = text.strip()
 
         return page_texts
@@ -625,8 +721,7 @@ class DocumentExtractor:
     def is_ocr_available(self) -> bool:
         """Check if OCR is available with current configuration."""
         if self.vision_ocr_provider and self.vision_ocr_provider != "none":
-            needs_key = self.vision_ocr_provider in ("anthropic", "openai")
-            return not needs_key or bool(self.vision_ocr_api_key)
+            return not _provider_needs_key(self.vision_ocr_provider) or bool(self.vision_ocr_api_key)
         return DOCLING_AVAILABLE
 
     def get_ocr_engine_name(self) -> Optional[str]:

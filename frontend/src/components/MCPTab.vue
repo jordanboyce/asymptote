@@ -1,9 +1,36 @@
 <template>
   <div class="space-y-6">
-    <p class="text-sm text-base-content/70">
-      Connect Claude Code, Codex, GitHub Copilot, or any MCP-compatible tool to your indexed collections.
-      The server exposes tools for searching documents, listing what's indexed, and getting collection info.
-    </p>
+    <!-- What this server exposes -->
+    <div class="rounded-xl border border-base-300 bg-base-200/40 px-4 py-3 space-y-2">
+      <p class="text-xs font-semibold text-base-content/60 uppercase tracking-wide">What the MCP server exposes</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs text-base-content/70">
+        <div>
+          <p class="font-medium text-base-content/80 mb-0.5">Tools (call these)</p>
+          <ul class="space-y-0.5 font-mono">
+            <li>search_all_collections</li>
+            <li>search_collection</li>
+            <li>list_recent_documents</li>
+            <li>get_document_context</li>
+            <li>find_in_documents</li>
+            <li>list_tables · query_table</li>
+            <li>aggregate_table · get_table_rows</li>
+            <li>list_collections · health_check</li>
+          </ul>
+        </div>
+        <div>
+          <p class="font-medium text-base-content/80 mb-0.5">Resources (load as context)</p>
+          <ul class="space-y-0.5 font-mono">
+            <li>collections://all</li>
+            <li>collection://&#123;id&#125;</li>
+            <li>collection://&#123;id&#125;/guide</li>
+            <li>collection://&#123;id&#125;/schema</li>
+            <li>collection://&#123;id&#125;/tables</li>
+            <li>document://&#123;id&#125;</li>
+            <li>table://&#123;id&#125;</li>
+          </ul>
+        </div>
+      </div>
+    </div>
 
     <!-- Enable toggle -->
     <div class="card bg-base-200">
@@ -33,7 +60,10 @@
             <div>
               <h3 class="card-title text-base">Project Connections</h3>
               <p class="mt-1 text-sm text-base-content/60">
-                Map a collection to a project. Add the config to your repo and your agent searches that collection automatically.
+                Pin a collection to a specific repo. The generated config bakes a <code class="font-mono text-xs">?collection_id=</code> into the MCP URL so your agent always searches that collection by default — no need to pass it on every call.
+              </p>
+              <p class="mt-1 text-xs text-base-content/40">
+                Drop the file in the project root (Claude Code) or <code class="font-mono">.vscode/mcp.json</code> (Copilot). One connection per collection.
               </p>
             </div>
             <button class="btn btn-sm btn-primary shrink-0" :disabled="availableCollections.length === 0" @click="openAddResource">+ Add</button>

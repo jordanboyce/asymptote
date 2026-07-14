@@ -1,4 +1,8 @@
 services:
-  finn:
+  asymptote:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DISCARD_ORIGINALS_AFTER_INDEX=true
+      # Ollama inference (not embeddings — EMBEDDING_PROVIDER=local is pinned in docker-compose.yml)
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434

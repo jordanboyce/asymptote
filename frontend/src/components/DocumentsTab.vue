@@ -26,23 +26,66 @@
 
         <!-- File/Folder Picker Buttons -->
         <div class="flex flex-wrap gap-3 mt-2">
-          <button
-            @click="openFilePicker"
-            class="btn btn-primary"
-            :disabled="indexing"
-          >
-            <FileText :size="20" />
-            Select Files...
-          </button>
-          <button
-            @click="openFolderPicker"
-            class="btn btn-outline"
-            :disabled="indexing"
-          >
-            <FolderOpen :size="20" />
-            Select Folder...
-          </button>
+          <template v-if="capabilities.native_file_picker === false">
+            <!-- Headless/Docker: labels directly trigger hidden inputs (no JS click chain needed) -->
+            <label for="dt-file-input" class="btn btn-primary cursor-pointer" :class="{ 'btn-disabled pointer-events-none': indexing }">
+              <FileText :size="20" />
+              Select Files...
+            </label>
+            <label for="dt-folder-input" class="btn btn-outline cursor-pointer" :class="{ 'btn-disabled pointer-events-none': indexing }">
+              <FolderOpen :size="20" />
+              Select Folder...
+            </label>
+            <input id="dt-file-input" type="file" multiple class="sr-only" @change="handleBrowserFiles" :disabled="indexing" />
+            <input id="dt-folder-input" type="file" webkitdirectory class="sr-only" @change="handleBrowserFolder" :disabled="indexing" />
+          </template>
+          <template v-else>
+            <!-- Desktop: buttons call native OS file picker via backend -->
+            <button @click="openFilePicker" class="btn btn-primary" :disabled="indexing">
+              <FileText :size="20" />
+              Select Files...
+            </button>
+            <button @click="openFolderPicker" class="btn btn-outline" :disabled="indexing">
+              <FolderOpen :size="20" />
+              Select Folder...
+            </button>
+          </template>
         </div>
+
+        <!-- Upload-mode notice (shown in Docker/headless environments) -->
+        <div v-if="capabilities.native_file_picker === false" class="alert alert-info alert-sm mt-2 py-2 text-sm">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-4 h-4">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          Running in server/Docker mode — files are uploaded through the browser and copied to the library.
+        </div>
+
+        <!-- Indexing options — always visible so users know they exist before picking files -->
+        <div class="flex flex-wrap items-center gap-x-6 gap-y-2 mt-3">
+          <label class="label cursor-pointer gap-2 py-0">
+            <span class="label-text text-sm">Copy to library</span>
+            <input
+              type="checkbox"
+              class="toggle toggle-sm"
+              v-model="copyToLibrary"
+              :disabled="indexing"
+            />
+          </label>
+          <label class="label cursor-pointer gap-2 py-0">
+            <span class="label-text text-sm">Background indexing</span>
+            <input
+              type="checkbox"
+              class="toggle toggle-sm toggle-secondary"
+              v-model="useBackgroundIndexing"
+              :disabled="indexing"
+            />
+          </label>
+        </div>
+        <p class="text-xs text-base-content/50 mt-1">
+          <span v-if="copyToLibrary">Files will be copied to the library — safe to move or delete originals.</span>
+          <span v-else>Files indexed in-place — search breaks if originals are moved.</span>
+          <span v-if="useBackgroundIndexing" class="text-secondary"> Indexing runs in the background; track progress via the notification bell.</span>
+        </p>
 
         <p class="text-sm text-base-content/60 mt-2">
           <span v-if="isSourceCode">
@@ -94,60 +137,23 @@
             <span class="text-sm font-semibold">
               {{ selectedPaths.length }} item{{ selectedPaths.length !== 1 ? 's' : '' }} selected
             </span>
-            <div class="flex items-center gap-4">
-              <!-- Copy Toggle -->
-              <label class="label cursor-pointer gap-2">
-                <span class="label-text text-sm">Copy to library</span>
-                <input
-                  type="checkbox"
-                  class="toggle toggle-sm"
-                  v-model="copyToLibrary"
-                  :disabled="indexing"
-                />
-              </label>
-              <!-- Background Toggle -->
-              <label class="label cursor-pointer gap-2">
-                <span class="label-text text-sm">Background</span>
-                <input
-                  type="checkbox"
-                  class="toggle toggle-sm toggle-secondary"
-                  v-model="useBackgroundIndexing"
-                  :disabled="indexing"
-                />
-              </label>
-              <div class="flex gap-2">
-                <button
-                  class="btn btn-ghost btn-sm"
-                  @click="clearAllPaths"
-                  :disabled="indexing"
-                >
-                  Clear
-                </button>
-                <button
-                  class="btn btn-primary btn-sm"
-                  @click="indexFiles"
-                  :disabled="indexing || selectedPaths.length === 0"
-                >
-                  <span v-if="indexing" class="loading loading-spinner loading-sm"></span>
-                  <FileSearch v-else :size="16" />
-                  {{ indexing ? 'Indexing...' : 'Index' }}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Mode explanations -->
-          <div class="text-xs text-base-content/50 space-y-1">
-            <div>
-              <span v-if="copyToLibrary">
-                Files will be copied to the library. Safe if you move or delete originals.
-              </span>
-              <span v-else>
-                Files will be indexed in-place. No duplication, but search breaks if files are moved.
-              </span>
-            </div>
-            <div v-if="useBackgroundIndexing" class="text-secondary">
-              Background mode: Indexing will run in the background. Track progress via the notification bell.
+            <div class="flex gap-2">
+              <button
+                class="btn btn-ghost btn-sm"
+                @click="clearAllPaths"
+                :disabled="indexing"
+              >
+                Clear
+              </button>
+              <button
+                class="btn btn-primary btn-sm"
+                @click="indexFiles"
+                :disabled="indexing || selectedPaths.length === 0"
+              >
+                <span v-if="indexing" class="loading loading-spinner loading-sm"></span>
+                <FileSearch v-else :size="16" />
+                {{ indexing ? 'Indexing...' : 'Index' }}
+              </button>
             </div>
           </div>
 
@@ -377,6 +383,12 @@
             </li>
           </ul>
         </div>
+        <div v-if="deleting && deleteProgress.total > 1" class="mb-3">
+          <div class="flex justify-between text-sm text-base-content/70 mb-1">
+            <span>Deleting {{ deleteProgress.current }} of {{ deleteProgress.total }}...</span>
+          </div>
+          <progress class="progress progress-error w-full" :value="deleteProgress.current" :max="deleteProgress.total"></progress>
+        </div>
         <div class="modal-action">
           <button class="btn" @click="closeDeleteModal" :disabled="deleting">Cancel</button>
           <button class="btn btn-error" @click="documentToDelete ? deleteDocument() : deleteBulk()" :disabled="deleting">
@@ -543,8 +555,11 @@ const fileExtensions = ref([
 ])
 const recentRepos = ref([])
 
-// Index state (using native file picker)
-const selectedPaths = ref([]) // Array of { path: string, name: string, isFolder?: boolean, size?: number }
+// Server capability flags (hydrated on mount); native_file_picker=false → Docker/headless mode
+const capabilities = ref({})
+
+// Index state (using native file picker or browser upload)
+const selectedPaths = ref([]) // Array of { path: string, name: string, isFolder?: boolean, size?: number, file?: File }
 const copyToLibrary = ref(false) // Default OFF - index in-place
 const useBackgroundIndexing = ref(false) // Default OFF - synchronous indexing
 const indexing = ref(false)
@@ -559,6 +574,7 @@ const indexResult = ref({ count: 0, chunks: 0 })
 const documents = ref([])
 const loading = ref(false)
 const deleting = ref(false)
+const deleteProgress = ref({ current: 0, total: 0 })
 const error = ref('')
 const deleteModal = ref(null)
 const documentToDelete = ref(null)
@@ -598,7 +614,7 @@ const getFilename = (path) => {
   return path.split(/[/\\]/).pop()
 }
 
-// Open native file picker via backend API
+// Open native OS file picker (desktop only — headless uses label/input directly in template)
 const openFilePicker = async () => {
   try {
     indexError.value = ''
@@ -625,7 +641,45 @@ const openFilePicker = async () => {
   }
 }
 
-// Open native folder picker via backend API
+// Handle files selected via browser <input type="file"> (headless/Docker mode)
+const handleBrowserFiles = (event) => {
+  const files = Array.from(event.target.files || [])
+  const existingNames = new Set(selectedPaths.value.map(p => p.name))
+  for (const file of files) {
+    if (!existingNames.has(file.name)) {
+      selectedPaths.value.push({ path: '', name: file.name, size: file.size, file })
+    }
+  }
+  // Reset so the same file can be re-selected if cleared
+  event.target.value = ''
+}
+
+// Handle folder selected via browser <input webkitdirectory> (headless/Docker mode)
+const handleBrowserFolder = (event) => {
+  let files = Array.from(event.target.files || [])
+  if (isSourceCode.value) {
+    const enabledExts = new Set(
+      fileExtensions.value.filter(e => e.enabled).flatMap(e => e.exts)
+    )
+    if (includeDocumentation.value) {
+      ['.txt', '.md', '.json', '.jsonl'].forEach(e => enabledExts.add(e))
+    }
+    files = files.filter(f => {
+      const ext = '.' + f.name.split('.').pop().toLowerCase()
+      return enabledExts.has(ext)
+    })
+  }
+  const existingNames = new Set(selectedPaths.value.map(p => p.name))
+  for (const file of files) {
+    const relativeName = file.webkitRelativePath || file.name
+    if (!existingNames.has(relativeName)) {
+      selectedPaths.value.push({ path: '', name: relativeName, size: file.size, file })
+    }
+  }
+  event.target.value = ''
+}
+
+// Open native OS folder picker (desktop only — headless uses label/input directly in template)
 const openFolderPicker = async () => {
   try {
     indexError.value = ''
@@ -694,9 +748,14 @@ const clearAllPaths = () => {
 const indexFiles = async () => {
   if (selectedPaths.value.length === 0) return
 
-  // Separate files and folders
-  const files = selectedPaths.value.filter(p => !p.isFolder)
+  // Separate browser-uploaded File objects from server-side path references.
+  // In practice these modes are mutually exclusive (desktop vs headless/Docker),
+  // but we handle both defensively.
+  const browserItems = selectedPaths.value.filter(p => p.file)
+  const pathItems = selectedPaths.value.filter(p => !p.file)
+  const files = pathItems.filter(p => !p.isFolder)
   const filePaths = files.map(p => p.path)
+  const folders = pathItems.filter(p => p.isFolder)
 
   indexing.value = true
   indexProgress.value = 0
@@ -705,50 +764,96 @@ const indexFiles = async () => {
   indexSuccess.value = false
   indexError.value = ''
 
-  const folders = selectedPaths.value.filter(p => p.isFolder)
-
-  // Use background indexing based on toggle
-  const useBackground = useBackgroundIndexing.value
-
   let successCount = 0
   let totalChunks = 0
   const errors = []
+  let backgroundStarted = false
 
   try {
+    // Browser-uploaded File objects (headless/Docker mode).
+    // Uses upload-async + SSE stream so progress updates render while indexing runs.
+    if (browserItems.length > 0) {
+      try {
+        const formData = new FormData()
+        for (const item of browserItems) formData.append('files', item.file, item.name)
+        formData.append('collection_id', collectionStore.currentCollectionId)
+
+        const jobResp = await axios.post('/documents/upload-async', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
+        const jobId = jobResp.data.job_id
+
+        await new Promise((resolve, reject) => {
+          const es = new EventSource(`/documents/upload/${jobId}/stream`)
+
+          es.addEventListener('file_start', (e) => {
+            const data = JSON.parse(e.data)
+            currentIndexingFile.value = data.current_file || ''
+            indexProgressPercent.value = data.overall_percent || 0
+            indexProgress.value = data.file_index || 0
+          })
+
+          es.addEventListener('phase_progress', (e) => {
+            const data = JSON.parse(e.data)
+            indexProgressPercent.value = data.overall_percent || 0
+            if (data.current_file) currentIndexingFile.value = data.current_file
+          })
+
+          es.addEventListener('file_complete', (e) => {
+            const data = JSON.parse(e.data)
+            successCount++
+            totalChunks += data.chunks_total || 0
+            indexProgressPercent.value = data.overall_percent || 0
+            indexProgress.value = data.file_index || 0
+          })
+
+          es.addEventListener('job_complete', () => {
+            es.close()
+            resolve()
+          })
+
+          es.addEventListener('job_error', (e) => {
+            const data = JSON.parse(e.data)
+            es.close()
+            reject(new Error(data.error || 'Upload job failed'))
+          })
+
+          es.addEventListener('job_cancelled', () => {
+            es.close()
+            reject(new Error('Upload was cancelled'))
+          })
+
+          es.onerror = () => {
+            es.close()
+            reject(new Error('Connection lost during upload'))
+          }
+        })
+      } catch (err) {
+        errors.push(`Upload: ${err.message || err.response?.data?.detail || 'Upload failed'}`)
+      }
+    }
+
+    // Path-based files
     if (filePaths.length > 0) {
-      if (useBackground) {
-        // Use background indexing for large file sets
+      if (useBackgroundIndexing.value) {
         try {
           const response = await axios.post('/documents/index-local-async', {
             file_paths: filePaths,
             collection_id: collectionStore.currentCollectionId,
             copy_to_library: copyToLibrary.value
           })
-
-          // Add job to background jobs store for tracking
           backgroundJobsStore.addUploadJob(response.data)
-
-          // Emit event to open the jobs drawer
           emit('background-job-started')
-
-          // Show background notification
-          indexSuccess.value = true
-          indexResult.value = { count: filePaths.length, chunks: 0, background: true }
-          selectedPaths.value = folders.length > 0 ? folders : []
-
+          backgroundStarted = true
         } catch (err) {
-          const errorMsg = err.response?.data?.detail || err.message
-          errors.push(`Files: ${errorMsg}`)
-          console.error('Failed to start background indexing:', err)
+          errors.push(`Files: ${err.response?.data?.detail || err.message}`)
         }
       } else {
-        // Use synchronous indexing
         for (let i = 0; i < filePaths.length; i++) {
           const filename = getFilename(filePaths[i])
           currentIndexingFile.value = filename
           indexProgress.value = i + 1
-          indexProgressPercent.value = ((i) / filePaths.length) * 100
-
+          indexProgressPercent.value = (i / filePaths.length) * 100
           try {
             const response = await axios.post('/documents/index-local', {
               file_path: filePaths[i],
@@ -757,31 +862,19 @@ const indexFiles = async () => {
             })
             successCount++
             totalChunks += response.data.total_chunks || 0
-            // Update progress after successful index
             indexProgressPercent.value = ((i + 1) / filePaths.length) * 100
           } catch (err) {
-            const errorMsg = err.response?.data?.detail || err.message
-            errors.push(`${filename}: ${errorMsg}`)
-            console.error(`Failed to index ${filePaths[i]}:`, err)
+            errors.push(`${filename}: ${err.response?.data?.detail || err.message}`)
           }
-        }
-
-        if (successCount > 0) {
-          indexSuccess.value = true
-          indexResult.value = { count: successCount, chunks: totalChunks }
-          selectedPaths.value = folders
-          loadDocuments()
-          emit('document-deleted')
         }
       }
     }
 
-    // Index folders via repo endpoint (synchronous)
+    // Folders are always indexed synchronously via the repo endpoint
     for (let i = 0; i < folders.length; i++) {
       const folder = folders[i]
       currentIndexingFile.value = folder.name
       indexProgress.value = filePaths.length + i + 1
-
       try {
         const response = await axios.post('/documents/upload-repo', {
           path: folder.path,
@@ -791,19 +884,8 @@ const indexFiles = async () => {
         successCount += response.data.files_indexed || 0
         totalChunks += response.data.total_chunks || 0
       } catch (err) {
-        const errorMsg = err.response?.data?.detail || err.message
-        errors.push(`${folder.name}: ${errorMsg}`)
-        console.error(`Failed to index ${folder.path}:`, err)
+        errors.push(`${folder.name}: ${err.response?.data?.detail || err.message}`)
       }
-    }
-
-    // If we indexed folders synchronously, show results
-    if (folders.length > 0 && successCount > 0) {
-      indexSuccess.value = true
-      indexResult.value = { count: successCount, chunks: totalChunks }
-      selectedPaths.value = []
-      loadDocuments()
-      emit('document-deleted')
     }
 
   } finally {
@@ -812,13 +894,22 @@ const indexFiles = async () => {
     indexProgressPercent.value = 0
   }
 
-  if (errors.length > 0) {
-    indexError.value = errors.join('; ')
+  // Show outcome once, after all work completes
+  if (backgroundStarted) {
+    indexSuccess.value = true
+    indexResult.value = { count: filePaths.length, chunks: 0, background: true }
+    // Keep any folders in the list (they were not submitted)
+    selectedPaths.value = selectedPaths.value.filter(p => p.isFolder)
+  } else if (successCount > 0) {
+    indexSuccess.value = true
+    indexResult.value = { count: successCount, chunks: totalChunks }
+    loadDocuments()
+    emit('document-deleted')
+    if (errors.length === 0) selectedPaths.value = []
   }
 
-  // Clear selection if everything was submitted successfully
-  if (errors.length === 0) {
-    selectedPaths.value = []
+  if (errors.length > 0) {
+    indexError.value = errors.join('; ')
   }
 }
 
@@ -983,23 +1074,37 @@ const deleteBulk = async () => {
 
   deleting.value = true
   error.value = ''
+  deleteProgress.value = { current: 0, total: selectedDocuments.value.length }
+
+  const toDelete = [...selectedDocuments.value]
+  const failed = []
 
   try {
     const collectionId = collectionStore.currentCollectionId
-    for (const docId of selectedDocuments.value) {
-      await axios.delete(`/documents/${docId}?collection_id=${collectionId}`)
+    for (const docId of toDelete) {
+      try {
+        await axios.delete(`/documents/${docId}?collection_id=${collectionId}`)
+      } catch {
+        failed.push(docId)
+      }
+      deleteProgress.value.current++
     }
 
-    documents.value = documents.value.filter(
-      doc => !selectedDocuments.value.includes(doc.document_id)
-    )
+    const deletedIds = new Set(toDelete.filter(id => !failed.includes(id)))
+    documents.value = documents.value.filter(doc => !deletedIds.has(doc.document_id))
+    selectedDocuments.value = failed
 
-    selectedDocuments.value = []
+    if (failed.length > 0) {
+      error.value = `${failed.length} file(s) could not be deleted.`
+    }
+
     emit('document-deleted')
+    await loadDocuments()
   } catch (err) {
     error.value = err.response?.data?.detail || 'Failed to delete sources'
   } finally {
     deleting.value = false
+    deleteProgress.value = { current: 0, total: 0 }
     closeDeleteModal()
   }
 }
@@ -1082,10 +1187,16 @@ const formatRepoDate = (timestamp) => {
   return new Date(timestamp).toLocaleDateString()
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadDocuments()
   loadRecentRepos()
   window.addEventListener('beforeunload', beforeUnloadHandler)
+  try {
+    const resp = await axios.get('/api/capabilities')
+    capabilities.value = resp.data
+  } catch {
+    // If check fails, leave capabilities empty — native picker remains the default
+  }
 })
 
 onBeforeUnmount(() => {

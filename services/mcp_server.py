@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -340,6 +341,63 @@ def _serialize_result(result: Any, rank: int, max_source_length: int) -> dict[st
 
 
 @_asymptote_mcp.tool()
+def health_check() -> dict[str, Any]:
+    """Check that the Asymptote MCP server is reachable and report its status.
+
+    Call this FIRST when connecting to a new server, or whenever tools start
+    returning errors, to verify the server is healthy before spending context
+    on retries.
+
+    Returns:
+      - status: "ok" when the server is healthy
+      - server_id: unique identifier for this Asymptote instance
+      - version: schema/data version
+      - embedding: active embedding provider and model name
+      - mcp: key MCP settings (mode, top_k, default_collection)
+      - collections: list of all available collection ids and names
+    """
+    _ensure_enabled()
+
+    try:
+        collections = collection_service.get_all_collections()
+        col_summary = [
+            {
+                "collection_id": c.get("id", ""),
+                "name": c.get("mcp_display_name") or c.get("name", c.get("id", "")),
+                "document_count": c.get("document_count", 0),
+            }
+            for c in collections
+            if c.get("id")
+        ]
+    except Exception as e:
+        col_summary = []
+        logger.warning(f"health_check: could not list collections: {e}")
+
+    embedding_info: dict[str, Any] = {
+        "provider": settings.embedding_provider,
+    }
+    if settings.embedding_provider == "ollama":
+        embedding_info["model"] = settings.ollama_embedding_model
+        embedding_info["base_url"] = settings.ollama_base_url
+    else:
+        embedding_info["model"] = settings.embedding_model
+
+    return _tool_response({
+        "status": "ok",
+        "server_id": settings.mcp_server_id or "asymptote",
+        "version": settings.schema_version,
+        "embedding": embedding_info,
+        "mcp": {
+            "mode": settings.mcp_mode,
+            "top_k": settings.mcp_top_k,
+            "default_collection": settings.mcp_default_collection,
+            "semantic_weight": settings.mcp_semantic_weight,
+        },
+        "collections": col_summary,
+    }, "health_check")
+
+
+@_asymptote_mcp.tool()
 def list_collections() -> dict[str, Any]:
     """List every document collection available on this MCP server.
 
@@ -463,60 +521,260 @@ def get_collection_info(
     return _tool_response(payload, "get_collection_info")
 
 
+_FILTER_KEYS = ("document_ids", "filenames", "source_formats", "date_from", "date_to")
+
+
+def _normalize_search_filters(filters: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Validate and normalize a raw filters dict into the indexer's shape.
+
+    Drops unknown/empty keys, coerces single strings into lists for the
+    list-valued filters, and returns None when nothing usable remains so the
+    search path stays on its unfiltered fast track.
+    """
+    if not filters or not isinstance(filters, dict):
+        return None
+
+    out: dict[str, Any] = {}
+    for key in ("document_ids", "filenames", "source_formats"):
+        val = filters.get(key)
+        if val is None:
+            continue
+        if isinstance(val, str):
+            val = [val]
+        cleaned = [str(v).strip() for v in val if str(v).strip()]
+        if cleaned:
+            out[key] = cleaned
+
+    for key in ("date_from", "date_to"):
+        val = filters.get(key)
+        if val and str(val).strip():
+            out[key] = str(val).strip()
+
+    unknown = set(filters) - set(_FILTER_KEYS)
+    if unknown:
+        logger.info("search filters: ignoring unknown keys %s", sorted(unknown))
+
+    return out or None
+
+
 @_asymptote_mcp.tool()
-def search_collection(
+def get_collection_facets(collection_id: str | None = None) -> dict[str, Any]:
+    """List the filterable metadata for a collection.
+
+    Returns the distinct `source_formats` present and the `documents`
+    (document_id, filename, source_format, upload_timestamp) so you can build a
+    precise `filters` argument for search_collection — e.g. restrict a query to
+    a single PDF, to all spreadsheets, or to a date range.
+    """
+    _ensure_enabled()
+    resolved_collection = _resolve_collection_id(collection_id)
+    indexer = indexer_manager.get_indexer(resolved_collection)
+    facets = indexer.vector_store.metadata_store.get_filter_facets()
+    return _tool_response(
+        {"collection_id": resolved_collection, **facets},
+        "get_collection_facets",
+    )
+
+
+def search_all_collections_sync(
+    query: str,
+    mode: Literal["semantic", "keyword", "hybrid"] | None = None,
+    top_k_per_collection: int = 3,
+    collection_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Synchronous implementation of search_all_collections.
+
+    Safe for in-process callers already running off the event loop; the MCP
+    tool below wraps it in a worker thread.
+    """
+    _ensure_enabled()
+    normalized_query = query.strip()
+    if not normalized_query:
+        raise ValueError("query must not be empty")
+
+    all_cols = collection_service.get_all_collections()
+    if collection_ids:
+        target_ids = [c.get("id") for c in all_cols if c.get("id") in set(collection_ids)]
+    else:
+        target_ids = [c.get("id") for c in all_cols if c.get("id")]
+
+    if not target_ids:
+        raise ValueError("No collections available to search.")
+
+    request_profile = get_request_mcp_profile()
+    per_k = max(1, min(int(top_k_per_collection), 10))
+    mode_source = mode or request_profile.get("mode") or settings.mcp_mode
+    try:
+        resolved_mode = SearchMode(mode_source)
+    except ValueError:
+        resolved_mode = SearchMode(settings.mcp_mode)
+    resolved_weight = max(0.0, min(
+        float(request_profile.get("semantic_weight", settings.mcp_semantic_weight)), 1.0
+    ))
+    resolved_max_len = max(100, min(
+        int(request_profile.get("max_source_length") or settings.mcp_max_source_length), 2000
+    ))
+
+    collection_results = []
+    best_score = -1.0
+    best_collection_id: str | None = None
+
+    for cid in target_ids:
+        collection = collection_service.get_collection(cid)
+        try:
+            indexer = indexer_manager.get_indexer(cid)
+            search_result = indexer.search(
+                query=normalized_query,
+                top_k=per_k,
+                mode=resolved_mode,
+                semantic_weight=resolved_weight,
+            )
+            hits = search_result.get("results", [])
+        except Exception as e:
+            logger.warning("search_all_collections: failed for collection %s: %s", cid, e)
+            continue
+
+        if not hits:
+            continue
+
+        top_score = round(float(hits[0].similarity_score), 4)
+        if top_score > best_score:
+            best_score = top_score
+            best_collection_id = cid
+
+        collection_results.append({
+            "collection_id": cid,
+            "collection_name": _mcp_safe_name(collection, cid),
+            "top_score": top_score,
+            "results": [
+                _serialize_result(r, rank, resolved_max_len)
+                for rank, r in enumerate(hits, start=1)
+            ],
+        })
+
+    collection_results.sort(key=lambda x: x["top_score"], reverse=True)
+
+    return _tool_response({
+        "query": normalized_query,
+        "mode": resolved_mode.value,
+        "top_k_per_collection": per_k,
+        "collections_searched": len(collection_results),
+        "best_collection": best_collection_id,
+        "results_by_collection": collection_results,
+    }, "search_all_collections")
+
+
+@_asymptote_mcp.tool()
+async def search_all_collections(
+    query: str,
+    mode: Literal["semantic", "keyword", "hybrid"] | None = None,
+    top_k_per_collection: int = 3,
+    collection_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Search across ALL collections (or a named subset) in one call.
+
+    Use this when the user's question isn't obviously scoped to a single
+    collection, when you want to find which collection holds the most
+    relevant content, or when explicitly asked to "search everything."
+
+    Parameters:
+      - query: Natural-language or keyword query.
+      - mode: "semantic", "keyword", or "hybrid". Defaults to server setting.
+      - top_k_per_collection: Results returned per collection (1–10, default 3).
+        Kept small to avoid context explosion across many collections.
+      - collection_ids: Optional list of specific collection IDs to include.
+        If omitted, all collections are searched.
+
+    Returns results grouped by collection and ranked by top score. The
+    top-level `best_collection` field names the collection with the single
+    highest-scoring result — start there for single-collection follow-up
+    calls to `search_collection` or `get_document_context`.
+    """
+    # Embedding + FAISS are synchronous CPU work; run the sync implementation
+    # in a worker thread so concurrent UI/MCP requests stay responsive.
+    return await asyncio.to_thread(
+        search_all_collections_sync,
+        query,
+        mode=mode,
+        top_k_per_collection=top_k_per_collection,
+        collection_ids=collection_ids,
+    )
+
+
+@_asymptote_mcp.tool()
+def list_recent_documents(
+    limit: int = 10,
+    collection_id: str | None = None,
+) -> dict[str, Any]:
+    """List the most recently indexed documents, newest first.
+
+    Parameters:
+      - limit: max documents to return (default 10, cap 50).
+      - collection_id: if omitted, returns recent documents across ALL
+        collections (up to `limit` total, sorted by upload time). Pass an
+        explicit id to scope to one collection.
+
+    Useful for "what did I just add?", "what's new?", or orientation after
+    a fresh indexing run.
+    """
+    _ensure_enabled()
+    capped = max(1, min(int(limit), 50))
+
+    def _docs_for_collection(cid: str) -> list[dict[str, Any]]:
+        try:
+            indexer = indexer_manager.get_indexer(cid)
+            docs = indexer.list_documents()
+        except Exception:
+            return []
+        results = []
+        for d in docs:
+            results.append({
+                "collection_id": cid,
+                "collection_name": _mcp_safe_name(
+                    collection_service.get_collection(cid), cid
+                ),
+                "document_id": d.get("document_id"),
+                "filename": d.get("filename", "unknown"),
+                "source_format": d.get("source_format"),
+                "num_pages": d.get("num_pages", 0),
+                "num_chunks": d.get("num_chunks", 0),
+                "upload_timestamp": d.get("upload_timestamp") or "",
+            })
+        return results
+
+    if collection_id:
+        resolved = _resolve_collection_id(collection_id)
+        all_docs = _docs_for_collection(resolved)
+    else:
+        all_docs = []
+        for c in collection_service.get_all_collections():
+            cid = c.get("id")
+            if cid:
+                all_docs.extend(_docs_for_collection(cid))
+
+    all_docs.sort(key=lambda d: d.get("upload_timestamp") or "", reverse=True)
+    recent = all_docs[:capped]
+
+    return _tool_response({
+        "total_returned": len(recent),
+        "scope": collection_id or "all_collections",
+        "documents": recent,
+    }, "list_recent_documents")
+
+
+def search_collection_sync(
     query: str,
     collection_id: str | None = None,
     mode: Literal["semantic", "keyword", "hybrid"] | None = None,
     top_k: int | None = None,
+    filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Search indexed documents using semantic, keyword, or hybrid retrieval.
+    """Synchronous implementation of search_collection.
 
-    Parameters:
-      - query: Natural-language query for semantic mode or exact terms for keyword.
-      - collection_id: Optional. If omitted, uses the server's default
-        collection. When the user asks about a specific client / account /
-        project, first call `list_collections` to find the right id, then
-        pass it here.
-      - mode: Retrieval strategy. "semantic" uses vector similarity (best for
-        conceptual / paraphrased questions). "keyword" uses BM25 and is the
-        right pick for exact phrases, proper nouns, identifiers, or quoted
-        strings the user cites verbatim. "hybrid" blends both and is a safe
-        default. Omit to use the server-configured default.
-      - top_k: Max number of chunks to return (1-20). Omit to use the
-        server-configured default. Smaller values produce tighter, more
-        focused context; larger values widen the recall net.
-
-    When NOT to use this tool:
-    For any numeric, aggregation, sum, count, average, ranking, filter, or
-    date-range question about CSV / Excel data, DO NOT use search_collection.
-    Chunk retrieval truncates tabular data and the excerpts you get back will
-    be a subset of rows — answering numeric questions from them leads to
-    hallucinated totals. Instead use:
-      - `list_tables` → `get_table_rows` (small tables, read full data)
-      - `list_tables` → `aggregate_table` (group-by / aggregation, no SQL)
-      - `list_tables` → `query_table` (ad-hoc SQL for any domain)
-
-    When this tool IS the right choice:
-    - Narrative / prose / conceptual questions about PDFs, text, code, notes.
-    - "How does X work", "where is Y described", "what does the doc say about Z".
-
-    For exact-string lookups (ticker symbols, CUSIPs, quoted phrases, policy
-    numbers, any verbatim identifier the user cites word-for-word), prefer
-    `find_in_documents` — it does a literal substring match and doesn't
-    drop stopwords or tokenize the query.
-
-    Convenience: the response auto-inlines the full contents of any small
-    CSV/XLSX table in the collection as `structured_tables` — each entry
-    carries `columns` and `rows` (list of lists). Any question involving
-    numbers from those files must be answered DIRECTLY and EXCLUSIVELY from
-    `structured_tables` — not from the `results` excerpts. Chunks for
-    fully-inlined files are dropped from `results` so you aren't tempted to
-    use them.
-
-    The response always includes a `collection_summary` field with document,
-    page, and chunk counts so you can answer meta-questions about the
-    collection without a separate get_collection_info() call.
+    Called directly by in-process consumers that already run off the event
+    loop (the chat tool executor in structured_chat, sync endpoints); the MCP
+    tool below wraps it in a worker thread. Full parameter docs live on the
+    MCP wrapper.
     """
     _ensure_enabled()
 
@@ -593,6 +851,8 @@ def search_collection(
         except Exception as e:
             logger.warning(f"MCP search_collection: structured context failed: {e}")
 
+    resolved_filters = _normalize_search_filters(filters)
+
     indexer = indexer_manager.get_indexer(resolved_collection)
     search_result = indexer.search(
         query=normalized_query,
@@ -600,6 +860,7 @@ def search_collection(
         mode=resolved_mode,
         semantic_weight=resolved_weight,
         skip_filenames=inlined_filenames or None,
+        filters=resolved_filters,
     )
 
     # Always include collection stats inline so the MCP client can answer
@@ -631,6 +892,8 @@ def search_collection(
         "top_k": resolved_top_k,
         "total_results": len(search_result.get("results", [])),
     }
+    if resolved_filters:
+        response["filters_applied"] = resolved_filters
 
     suggested_next: list[dict[str, str]] = []
     if _detect_numeric_intent(normalized_query):
@@ -690,6 +953,82 @@ def search_collection(
         ]
 
     return _tool_response(response, "search_collection")
+
+
+@_asymptote_mcp.tool()
+async def search_collection(
+    query: str,
+    collection_id: str | None = None,
+    mode: Literal["semantic", "keyword", "hybrid"] | None = None,
+    top_k: int | None = None,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Search indexed documents using semantic, keyword, or hybrid retrieval.
+
+    Parameters:
+      - query: Natural-language query for semantic mode or exact terms for keyword.
+      - collection_id: Optional. If omitted, uses the server's default
+        collection. When the user asks about a specific client / account /
+        project, first call `list_collections` to find the right id, then
+        pass it here.
+      - mode: Retrieval strategy. "semantic" uses vector similarity (best for
+        conceptual / paraphrased questions). "keyword" uses BM25 and is the
+        right pick for exact phrases, proper nouns, identifiers, or quoted
+        strings the user cites verbatim. "hybrid" blends both and is a safe
+        default. Omit to use the server-configured default.
+      - top_k: Max number of chunks to return (1-20). Omit to use the
+        server-configured default. Smaller values produce tighter, more
+        focused context; larger values widen the recall net.
+      - filters: Optional metadata pre-filter to narrow retrieval BEFORE ranking
+        — strongly recommended on large collections. A dict with any of:
+          - document_ids: list of document_id strings (restrict to these docs)
+          - filenames: list of exact filenames
+          - source_formats: list of file types, e.g. ["pdf", "docx"]
+          - date_from / date_to: ISO timestamps bounding the document upload time
+        Call get_collection_info() (or get_collection_facets) first to discover
+        document ids, filenames, and available formats.
+
+    When NOT to use this tool:
+    For any numeric, aggregation, sum, count, average, ranking, filter, or
+    date-range question about CSV / Excel data, DO NOT use search_collection.
+    Chunk retrieval truncates tabular data and the excerpts you get back will
+    be a subset of rows — answering numeric questions from them leads to
+    hallucinated totals. Instead use:
+      - `list_tables` → `get_table_rows` (small tables, read full data)
+      - `list_tables` → `aggregate_table` (group-by / aggregation, no SQL)
+      - `list_tables` → `query_table` (ad-hoc SQL for any domain)
+
+    When this tool IS the right choice:
+    - Narrative / prose / conceptual questions about PDFs, text, code, notes.
+    - "How does X work", "where is Y described", "what does the doc say about Z".
+
+    For exact-string lookups (ticker symbols, CUSIPs, quoted phrases, policy
+    numbers, any verbatim identifier the user cites word-for-word), prefer
+    `find_in_documents` — it does a literal substring match and doesn't
+    drop stopwords or tokenize the query.
+
+    Convenience: the response auto-inlines the full contents of any small
+    CSV/XLSX table in the collection as `structured_tables` — each entry
+    carries `columns` and `rows` (list of lists). Any question involving
+    numbers from those files must be answered DIRECTLY and EXCLUSIVELY from
+    `structured_tables` — not from the `results` excerpts. Chunks for
+    fully-inlined files are dropped from `results` so you aren't tempted to
+    use them.
+
+    The response always includes a `collection_summary` field with document,
+    page, and chunk counts so you can answer meta-questions about the
+    collection without a separate get_collection_info() call.
+    """
+    # Embedding + FAISS are synchronous CPU work; run the sync implementation
+    # in a worker thread so concurrent UI/MCP requests stay responsive.
+    return await asyncio.to_thread(
+        search_collection_sync,
+        query,
+        collection_id=collection_id,
+        mode=mode,
+        top_k=top_k,
+        filters=filters,
+    )
 
 
 _DOC_CONTEXT_MAX_CHARS_DEFAULT = 12000
@@ -884,8 +1223,92 @@ def _find_regex_excerpt(
     return idx, excerpt, matched
 
 
+def find_in_documents_sync(
+    pattern: str,
+    literal: bool = True,
+    case_sensitive: bool = False,
+    collection_id: str | None = None,
+    max_results: int = 20,
+) -> dict[str, Any]:
+    """Synchronous implementation of find_in_documents.
+
+    Safe for in-process callers already running off the event loop; the MCP
+    tool below wraps it in a worker thread. Full parameter docs live on the
+    MCP wrapper.
+    """
+    _ensure_enabled()
+    if not pattern or not pattern.strip():
+        raise ValueError("pattern must not be empty")
+
+    regex: "_re.Pattern[str] | None" = None
+    if not literal:
+        flags = 0 if case_sensitive else _re.IGNORECASE
+        try:
+            regex = _re.compile(pattern, flags)
+        except _re.error as e:
+            raise ValueError(f"Invalid regular expression: {e}")
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    capped = max(1, min(int(max_results), _FIND_MAX_RESULTS))
+
+    indexer = indexer_manager.get_indexer(resolved_collection)
+    metadata_store = indexer.vector_store.metadata_store
+
+    def _scan() -> tuple[list[dict[str, Any]], int]:
+        # Literal ASCII patterns are prefiltered in SQL (INSTR), so only
+        # candidate chunks stream out of the database; regex and non-ASCII
+        # patterns stream the whole corpus through a cursor without ever
+        # materializing it in memory. Matches are always re-verified here.
+        sql_prefilter = pattern if (literal and pattern.isascii()) else None
+        rows = metadata_store.iter_chunk_texts(
+            substring=sql_prefilter, case_sensitive=case_sensitive
+        )
+
+        matches: list[dict[str, Any]] = []
+        scanned = 0
+        for chunk_id, document_id, filename, page_number, text in rows:
+            scanned += 1
+            text = text or ""
+            if regex is not None:
+                hit = _find_regex_excerpt(text, regex)
+                if not hit:
+                    continue
+                offset, excerpt, matched = hit
+            else:
+                literal_hit = _find_literal_excerpt(text, pattern, case_insensitive=not case_sensitive)
+                if not literal_hit:
+                    continue
+                offset, excerpt = literal_hit
+                matched = pattern
+            matches.append({
+                "filename": filename,
+                "document_id": document_id,
+                "chunk_id": chunk_id,
+                "page_number": page_number,
+                "offset": offset,
+                "excerpt": excerpt,
+                "match": matched,
+            })
+            if len(matches) >= capped:
+                break
+        return matches, scanned
+
+    matches, scanned = _scan()
+
+    return _tool_response({
+        "collection_id": resolved_collection,
+        "pattern": pattern,
+        "literal": bool(literal),
+        "case_sensitive": bool(case_sensitive),
+        "total_matches": len(matches),
+        "chunks_scanned": scanned,
+        "truncated": len(matches) >= capped,
+        "matches": matches,
+    }, "find_in_documents")
+
+
 @_asymptote_mcp.tool()
-def find_in_documents(
+async def find_in_documents(
     pattern: str,
     literal: bool = True,
     case_sensitive: bool = False,
@@ -940,62 +1363,15 @@ def find_in_documents(
         `get_table_rows`, `aggregate_table`, or `query_table` instead;
         tabular chunks are truncated and an exact match may miss rows.
     """
-    _ensure_enabled()
-    if not pattern or not pattern.strip():
-        raise ValueError("pattern must not be empty")
-
-    regex: "_re.Pattern[str] | None" = None
-    if not literal:
-        flags = 0 if case_sensitive else _re.IGNORECASE
-        try:
-            regex = _re.compile(pattern, flags)
-        except _re.error as e:
-            raise ValueError(f"Invalid regular expression: {e}")
-
-    resolved_collection = _resolve_collection_id(collection_id)
-    capped = max(1, min(int(max_results), _FIND_MAX_RESULTS))
-
-    indexer = indexer_manager.get_indexer(resolved_collection)
-    metadata_store = indexer.vector_store.metadata_store
-
-    matches: list[dict[str, Any]] = []
-    scanned = 0
-    for chunk in metadata_store.get_all_chunks_ordered():
-        scanned += 1
-        text = chunk.get("text") or ""
-        if regex is not None:
-            hit = _find_regex_excerpt(text, regex)
-            if not hit:
-                continue
-            offset, excerpt, matched = hit
-        else:
-            literal_hit = _find_literal_excerpt(text, pattern, case_insensitive=not case_sensitive)
-            if not literal_hit:
-                continue
-            offset, excerpt = literal_hit
-            matched = pattern
-        matches.append({
-            "filename": chunk.get("filename"),
-            "document_id": chunk.get("document_id"),
-            "chunk_id": chunk.get("chunk_id"),
-            "page_number": chunk.get("page_number"),
-            "offset": offset,
-            "excerpt": excerpt,
-            "match": matched,
-        })
-        if len(matches) >= capped:
-            break
-
-    return _tool_response({
-        "collection_id": resolved_collection,
-        "pattern": pattern,
-        "literal": bool(literal),
-        "case_sensitive": bool(case_sensitive),
-        "total_matches": len(matches),
-        "chunks_scanned": scanned,
-        "truncated": len(matches) >= capped,
-        "matches": matches,
-    }, "find_in_documents")
+    # The corpus scan is synchronous CPU work; run it off the event loop.
+    return await asyncio.to_thread(
+        find_in_documents_sync,
+        pattern,
+        literal=literal,
+        case_sensitive=case_sensitive,
+        collection_id=collection_id,
+        max_results=max_results,
+    )
 
 
 def _get_structured_store(collection_id: str) -> StructuredStore:
@@ -1431,6 +1807,38 @@ def get_document_metadata(
 # ---------------------------------------------------------------------------
 
 
+def _find_collection_for_document(document_id: str) -> tuple[str, dict[str, Any]] | None:
+    """Search all collections for a document_id. Returns (collection_id, doc_info) or None."""
+    for c in collection_service.get_all_collections():
+        cid = c.get("id")
+        if not cid:
+            continue
+        try:
+            indexer = indexer_manager.get_indexer(cid)
+            doc_info = indexer.vector_store.metadata_store.get_document_info(document_id)
+            if doc_info:
+                return cid, doc_info
+        except Exception:
+            continue
+    return None
+
+
+def _find_collection_for_table(identifier: str) -> tuple[str, dict[str, Any]] | None:
+    """Search all collections for a table identifier. Returns (collection_id, schema) or None."""
+    for c in collection_service.get_all_collections():
+        cid = c.get("id")
+        if not cid:
+            continue
+        try:
+            store = _get_structured_store(cid)
+            schema = store.get_schema(identifier)
+            if schema:
+                return cid, schema
+        except Exception:
+            continue
+    return None
+
+
 @_asymptote_mcp.resource("collection://{id}")
 def resource_collection(id: str) -> dict[str, Any]:
     """Collection metadata and document inventory.
@@ -1504,31 +1912,140 @@ def resource_collection_schema(id: str) -> dict[str, Any]:
     }, "resource_collection_schema")
 
 
+@_asymptote_mcp.resource("collections://all")
+def resource_all_collections() -> dict[str, Any]:
+    """Complete workspace map — every collection with stats and document inventory.
+
+    URI: collections://all
+
+    Load this ONCE at the start of a session to understand everything that is
+    indexed: every collection's name, description, document list, and chunk/
+    page counts. Eliminates the need for list_collections() + repeated
+    get_collection_info() calls when getting oriented.
+    """
+    _ensure_enabled()
+    all_cols = collection_service.get_all_collections()
+    default_id = (settings.mcp_default_collection or "").strip() or None
+
+    entries = []
+    for c in all_cols:
+        cid = c.get("id")
+        if not cid:
+            continue
+        stats = indexer_manager.get_collection_stats(cid)
+        try:
+            indexer = indexer_manager.get_indexer(cid)
+            raw_docs = indexer.list_documents()
+        except Exception:
+            raw_docs = []
+
+        doc_list = []
+        for doc in raw_docs:
+            entry: dict[str, Any] = {
+                "filename": doc.get("filename", "unknown"),
+                "document_id": doc.get("document_id"),
+                "chunks": doc.get("num_chunks", 0),
+                "pages": doc.get("num_pages", 0),
+                "source_type": doc.get("source_type", "upload"),
+                "upload_timestamp": doc.get("upload_timestamp") or "",
+            }
+            if doc.get("source_path"):
+                entry["source_path"] = doc["source_path"]
+            doc_list.append(entry)
+
+        guide_text = c.get("guide") or ""
+        entries.append({
+            "collection_id": cid,
+            "name": _mcp_safe_name(c, cid),
+            "description": _mcp_safe_description(c, ""),
+            "is_default": cid == default_id,
+            "has_guide": bool(guide_text.strip()),
+            "total_documents": stats.get("total_documents", 0),
+            "total_chunks": stats.get("total_chunks", 0),
+            "total_pages": stats.get("total_pages", 0),
+            "documents": doc_list,
+        })
+
+    return _tool_response({
+        "total_collections": len(entries),
+        "default_collection_id": default_id,
+        "tip": (
+            "To read a collection's guide: collection://{id}/guide  |  "
+            "To see its tables: collection://{id}/schema  |  "
+            "To search everything: search_all_collections(query)"
+        ),
+        "collections": entries,
+    }, "resource_all_collections")
+
+
+@_asymptote_mcp.resource("collection://{id}/guide")
+def resource_collection_guide(id: str) -> dict[str, Any]:
+    """The full user-authored guide for a collection.
+
+    URI: collection://{collection_id}/guide
+
+    Guides encode durable context that can't be recovered from source files
+    alone: entity aliases, date conventions, currency assumptions, column
+    meanings, known quirks. Read this at the start of any session that
+    touches this collection — it's the most important orientation document.
+    """
+    _ensure_enabled()
+    resolved = _resolve_collection_id(id)
+    collection = collection_service.get_collection(resolved)
+    guide = (collection or {}).get("guide") or ""
+    return _tool_response({
+        "collection_id": resolved,
+        "collection_name": _mcp_safe_name(collection, resolved),
+        "has_guide": bool(guide.strip()),
+        "guide": guide,
+    }, "resource_collection_guide")
+
+
+@_asymptote_mcp.resource("collection://{id}/tables")
+def resource_collection_tables(id: str) -> dict[str, Any]:
+    """All structured table listings for a collection.
+
+    URI: collection://{collection_id}/tables
+
+    Returns every CSV / Excel sheet ingested as a typed SQL table —
+    table_name, filename, sheet_name, and row/column counts. Use this as a
+    fast orientation resource before running list_tables() or writing SQL.
+    For full column schemas load collection://{id}/schema instead.
+    """
+    _ensure_enabled()
+    resolved = _resolve_collection_id(id)
+    store = _get_structured_store(resolved)
+    raw_tables = store.list_tables()
+    tables = [
+        {k: v for k, v in t.items() if k != "financial_roles"}
+        for t in raw_tables
+    ]
+    return _tool_response({
+        "collection_id": resolved,
+        "total_tables": len(tables),
+        "tables": tables,
+    }, "resource_collection_tables")
+
+
 @_asymptote_mcp.resource("document://{id}")
 def resource_document(id: str) -> dict[str, Any]:
-    """Full document metadata record.
+    """Full document metadata record — searched across ALL collections.
 
     URI: document://{document_id}
 
     Returns the complete metadata for a single document — source format,
     extraction method, embedding model, chunk parameters, schema version,
-    page/chunk counts, and upload timestamp. This is the same data exposed
-    by get_document_metadata() but accessible as a passive resource.
-
-    Note: document_id must be resolvable against the server's default
-    collection. For documents in other collections, use
-    get_document_metadata(document_id, collection_id) instead.
+    page/chunk counts, and upload timestamp. Searches every collection
+    automatically so you don't need to know which collection owns the document.
     """
     _ensure_enabled()
-    resolved = _resolve_collection_id(None)
-    indexer = indexer_manager.get_indexer(resolved)
-    metadata_store = indexer.vector_store.metadata_store
-    doc_info = metadata_store.get_document_info(id)
-    if not doc_info:
+    found = _find_collection_for_document(id)
+    if not found:
         raise ValueError(
-            f"Document '{id}' not found in collection '{resolved}'. "
+            f"Document '{id}' not found in any collection. "
             f"Call get_collection_info() to see available document_ids."
         )
+    resolved, doc_info = found
     return _tool_response({
         "collection_id": resolved,
         "document_id": doc_info.get("document_id"),
@@ -1549,24 +2066,26 @@ def resource_document(id: str) -> dict[str, Any]:
 
 @_asymptote_mcp.resource("table://{id}")
 def resource_table(id: str) -> dict[str, Any]:
-    """Table schema and sample rows in one fetch.
+    """Table schema and sample rows in one fetch — searched across ALL collections.
 
     URI: table://{identifier}   where identifier is a table_name, filename,
     or document_id.
 
     Combines get_table_schema() + the first 10 rows in a single resource
     load, giving the host LLM enough context to write queries or answer
-    basic questions without any tool calls. For the full row set use the
-    get_table_rows() tool.
-
-    Note: resolves against the server's default collection.
+    basic questions without any tool calls. Searches every collection
+    automatically so you don't need to know which collection owns the table.
+    For the full row set use the get_table_rows() tool.
     """
     _ensure_enabled()
-    resolved = _resolve_collection_id(None)
+    found = _find_collection_for_table(id)
+    if not found:
+        raise ValueError(
+            f"No structured table found for '{id}' in any collection. "
+            f"Call list_tables() to see available tables."
+        )
+    resolved, schema = found
     store = _get_structured_store(resolved)
-    schema = store.get_schema(id)
-    if not schema:
-        raise _no_table_error(store, id, resolved)
     summary = _format_schema_summary(schema)
 
     table_name = schema["table_name"]
