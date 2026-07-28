@@ -27,8 +27,22 @@ if [ ! -f ".env" ]; then
     cp .env.example .env
 fi
 
-# Auto-generate self-signed dev cert if none exists
-if [ ! -f "certs/server.crt" ]; then
+# Build the frontend if no build exists yet (requires Node.js)
+if [ ! -f "frontend/dist/index.html" ]; then
+    echo ""
+    if command -v npm >/dev/null 2>&1; then
+        echo "No frontend build found. Building (one-time)..."
+        (cd frontend && npm install --no-fund --no-audit && npm run build)
+    else
+        echo "WARNING: frontend/dist not found and npm is not installed."
+        echo "The API will run, but the web UI won't be served."
+        echo "Install Node.js 20+ and run: cd frontend && npm install && npm run build"
+    fi
+    echo ""
+fi
+
+# Auto-generate self-signed dev cert if none exists (optional helper script)
+if [ ! -f "certs/server.crt" ] && [ -f "certs/generate-cert.sh" ]; then
     echo ""
     echo "No TLS certificate found. Generating self-signed dev cert..."
     bash certs/generate-cert.sh

@@ -4,6 +4,9 @@
  * and build API request headers in a consistent way.
  */
 
+// `models` here are curated RECOMMENDATIONS only (2-3 per provider) — the
+// full list is fetched live from the provider via fetchProviderModels(),
+// so we never ship a stale 60-model catalog again.
 export const PROVIDER_DEFS = [
   {
     id: 'anthropic',
@@ -15,10 +18,6 @@ export const PROVIDER_DEFS = [
     models: [
       { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 (quality)' },
       { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)' },
-      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-      { id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
-      { id: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
-      { id: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
     ],
   },
   {
@@ -31,12 +30,6 @@ export const PROVIDER_DEFS = [
     models: [
       { id: 'gpt-4o', label: 'GPT-4o (quality)' },
       { id: 'gpt-4o-mini', label: 'GPT-4o Mini (fast)' },
-      { id: 'o3', label: 'o3' },
-      { id: 'o3-mini', label: 'o3-mini' },
-      { id: 'o1', label: 'o1' },
-      { id: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
-      { id: 'gpt-4', label: 'GPT-4' },
-      { id: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
     ],
   },
   {
@@ -49,8 +42,6 @@ export const PROVIDER_DEFS = [
     models: [
       { id: 'grok-3', label: 'Grok-3 (quality)' },
       { id: 'grok-3-mini', label: 'Grok-3 Mini (fast)' },
-      { id: 'grok-2-1212', label: 'Grok-2' },
-      { id: 'grok-2-vision-1212', label: 'Grok-2 Vision' },
     ],
   },
   {
@@ -63,9 +54,6 @@ export const PROVIDER_DEFS = [
     models: [
       { id: 'gemini-2.5-pro-preview-03-25', label: 'Gemini 2.5 Pro (quality)' },
       { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (fast)' },
-      { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite' },
-      { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
-      { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
     ],
   },
   {
@@ -78,18 +66,7 @@ export const PROVIDER_DEFS = [
     models: [
       { id: 'openai/gpt-4o', label: 'GPT-4o (quality)' },
       { id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini (fast)' },
-      { id: 'openai/o1', label: 'o1' },
-      { id: 'openai/o1-mini', label: 'o1-mini' },
-      { id: 'openai/o3-mini', label: 'o3-mini' },
       { id: 'meta/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B' },
-      { id: 'meta/Meta-Llama-3.1-405B-Instruct', label: 'Llama 3.1 405B' },
-      { id: 'mistral-ai/Mistral-Large-2411', label: 'Mistral Large' },
-      { id: 'mistral-ai/Mistral-Nemo', label: 'Mistral Nemo' },
-      { id: 'microsoft/Phi-3.5-MoE-instruct', label: 'Phi 3.5 MoE' },
-      { id: 'microsoft/Phi-3.5-mini-instruct', label: 'Phi 3.5 Mini' },
-      { id: 'deepseek/DeepSeek-R1', label: 'DeepSeek R1' },
-      { id: 'cohere/Cohere-command-r-plus-08-2024', label: 'Command R+' },
-      { id: 'ai21-labs/AI21-Jamba-1.5-Large', label: 'Jamba 1.5 Large' },
     ],
   },
   {
@@ -102,13 +79,7 @@ export const PROVIDER_DEFS = [
     models: [
       { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet (quality)' },
       { id: 'anthropic/claude-3.5-haiku', label: 'Claude 3.5 Haiku (fast)' },
-      { id: 'openai/gpt-4o', label: 'GPT-4o' },
-      { id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
-      { id: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash' },
-      { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
-      { id: 'mistralai/mistral-large', label: 'Mistral Large' },
       { id: 'deepseek/deepseek-chat', label: 'DeepSeek V3' },
-      { id: 'qwen/qwen-2.5-72b-instruct', label: 'Qwen 2.5 72B' },
     ],
   },
   {
@@ -130,19 +101,49 @@ export const PROVIDER_DEFS = [
     models: [
       { id: 'gpt-oss:120b', label: 'GPT-OSS 120B (quality)' },
       { id: 'gpt-oss:20b', label: 'GPT-OSS 20B (fast)' },
-      { id: 'gemma4:31b', label: 'Gemma 4 31B' },
-      { id: 'qwen3-coder-next', label: 'Qwen3 Coder Next' },
-      { id: 'kimi-k2.6', label: 'Kimi K2.6' },
-      { id: 'deepseek-v3.2', label: 'DeepSeek v3.2' },
-      { id: 'glm-4.7', label: 'GLM 4.7' },
-      { id: 'glm-5.1', label: 'GLM 5.1' },
-      { id: 'minimax-m2.7', label: 'MiniMax M2.7' },
     ],
   },
 ]
 
+// Popular OpenAI-compatible endpoints offered as presets when adding a
+// custom endpoint. `baseUrl: null` means the user supplies it.
+export const CUSTOM_ENDPOINT_PRESETS = [
+  { id: 'lmstudio', name: 'LM Studio', baseUrl: 'http://localhost:1234/v1', needsKey: false },
+  { id: 'vllm', name: 'vLLM', baseUrl: 'http://localhost:8000/v1', needsKey: false },
+  { id: 'litellm', name: 'LiteLLM proxy', baseUrl: 'http://localhost:4000', needsKey: true },
+  { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', needsKey: true, keyLink: 'https://console.groq.com/keys' },
+  { id: 'together', name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', needsKey: true, keyLink: 'https://api.together.ai/settings/api-keys' },
+  { id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', needsKey: true, keyLink: 'https://console.mistral.ai/api-keys' },
+  { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', needsKey: true, keyLink: 'https://platform.deepseek.com/api_keys' },
+  { id: 'other', name: 'Other (any OpenAI-compatible URL)', baseUrl: null, needsKey: false },
+]
+
 const CONFIG_KEY = 'ai_providers_config'
 const SETTINGS_KEY = 'ai_settings'
+
+// Providers with a server-stored team key (set via /api/agent/config on a
+// hosted instance). Requests for these send no X-AI-Key header — the backend
+// falls back to its stored key — so coworkers never enter credentials.
+let _serverProviderIds = []
+
+/** Fetch which providers have a server-stored team key. Cached per page load. */
+export async function fetchServerProviderIds() {
+  try {
+    const { default: axios } = await import('axios')
+    const resp = await axios.get('/api/agent/config')
+    _serverProviderIds = Object.entries(resp.data?.providers || {})
+      .filter(([, v]) => v?.configured)
+      .map(([id]) => id)
+  } catch {
+    _serverProviderIds = []
+  }
+  return _serverProviderIds
+}
+
+/** Server-side team-key providers (call fetchServerProviderIds() first). */
+export function getServerProviderIds() {
+  return _serverProviderIds
+}
 
 /** Return all provider configs (built-in + custom) from localStorage. */
 export function getProvidersConfig() {
@@ -203,7 +204,8 @@ export function setActiveProviderLS(id) {
 
 /**
  * Returns ids of all providers that are considered "configured":
- *  - cloud provider: has a non-empty apiKey
+ *  - cloud provider: has a non-empty apiKey in this browser, OR a
+ *    server-stored team key (see fetchServerProviderIds)
  *  - ollama: marked available=true
  *  - custom: has a non-empty baseUrl
  */
@@ -213,11 +215,10 @@ export function getConfiguredProviderIds() {
 
   for (const def of PROVIDER_DEFS) {
     const cfg = configs.find(c => c.id === def.id)
-    if (!cfg) continue
     if (def.type === 'local') {
-      if (cfg.available) result.push(def.id)
-    } else {
-      if (cfg.apiKey) result.push(def.id)
+      if (cfg?.available) result.push(def.id)
+    } else if (cfg?.apiKey || _serverProviderIds.includes(def.id)) {
+      result.push(def.id)
     }
   }
 
@@ -266,6 +267,8 @@ export function buildProviderHeaders(providerId, modelOverride = null) {
 export function getAPIProviderName(providerId) {
   const cfg = getProviderConfig(providerId)
   if (cfg?.isCustom) return 'openai_compatible'
+  // Unknown ids (e.g. a custom endpoint not yet saved) are OpenAI-compatible
+  if (!PROVIDER_DEFS.find(d => d.id === providerId)) return 'openai_compatible'
   return providerId
 }
 
@@ -277,9 +280,78 @@ export function getProviderDisplayName(providerId) {
   return cfg?.name || providerId
 }
 
-/** Available model list for a provider id. Empty array for custom/unknown. */
+/** Curated recommended models for a provider id. Empty for custom/unknown. */
 export function getProviderModels(providerId) {
   return PROVIDER_DEFS.find(d => d.id === providerId)?.models ?? []
+}
+
+// ── Live model listing & connection testing ────────────────────────────────
+
+const _modelCache = new Map()
+
+/**
+ * Fetch the models a provider actually offers, using the stored credentials
+ * (or explicit overrides before they're saved). Returns
+ *   { models: [{id, label, recommended}], error: string|null }
+ * Curated recommendations come first, then every other live model. Falls
+ * back to recommendations alone when the provider can't enumerate models.
+ * Cached per page load; pass { force: true } after changing credentials.
+ */
+export async function fetchProviderModels(providerId, { force = false, apiKey = undefined, baseUrl = undefined } = {}) {
+  const cacheKey = providerId
+  if (!force && apiKey === undefined && baseUrl === undefined && _modelCache.has(cacheKey)) {
+    return _modelCache.get(cacheKey)
+  }
+
+  const cfg = getProviderConfig(providerId) || {}
+  const headers = { 'X-AI-Provider': getAPIProviderName(providerId) }
+  const key = apiKey !== undefined ? apiKey : cfg.apiKey
+  if (key && key !== 'none') headers['X-AI-Key'] = key
+  const url = baseUrl !== undefined ? baseUrl : cfg.baseUrl
+  if (url) headers['X-AI-Base-URL'] = url
+
+  const recommended = getProviderModels(providerId).map(m => ({ ...m, recommended: true }))
+  let result
+  try {
+    const { default: axios } = await import('axios')
+    const resp = await axios.post('/api/ai/models', null, { headers })
+    const liveIds = resp.data?.models || []
+    const seen = new Set(recommended.map(m => m.id))
+    const live = liveIds.filter(id => !seen.has(id)).map(id => ({ id, label: id, recommended: false }))
+    result = { models: [...recommended, ...live], error: resp.data?.error || null }
+  } catch (err) {
+    result = { models: recommended, error: err?.response?.data?.detail || err.message }
+  }
+
+  if (!result.error && apiKey === undefined && baseUrl === undefined) {
+    _modelCache.set(cacheKey, result)
+  }
+  return result
+}
+
+/** Drop the cached model list for a provider (call after key/URL changes). */
+export function invalidateModelCache(providerId) {
+  if (providerId) _modelCache.delete(providerId)
+  else _modelCache.clear()
+}
+
+/**
+ * Test a provider connection WITHOUT saving it. Accepts explicit credentials
+ * so setup UIs can validate before persisting. Returns { valid, error }.
+ * providerId may be a custom endpoint id (maps to openai_compatible).
+ */
+export async function testProviderConnection(providerId, { apiKey = '', baseUrl = '', model = '' } = {}) {
+  const headers = { 'X-AI-Provider': getAPIProviderName(providerId) }
+  if (apiKey && apiKey !== 'none') headers['X-AI-Key'] = apiKey
+  if (baseUrl) headers['X-AI-Base-URL'] = baseUrl
+  if (model) headers['X-AI-Model'] = model
+  try {
+    const { default: axios } = await import('axios')
+    const resp = await axios.post('/api/ai/validate-key', null, { headers })
+    return { valid: !!resp.data?.valid, error: resp.data?.error || null }
+  } catch (err) {
+    return { valid: false, error: err?.response?.data?.detail || err.message }
+  }
 }
 
 /** Whether a provider is local/private (not cloud). */

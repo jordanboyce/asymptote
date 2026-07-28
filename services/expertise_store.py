@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from services.sqlite_utils import sqlite_connect
 from models.schemas import (
     ExpertisePack,
     ExpertisePackCreate,
@@ -38,7 +39,7 @@ class ExpertiseStore:
 
         Safe to call on every startup — all statements use IF NOT EXISTS.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS expertise_packs (
                     id          TEXT PRIMARY KEY,
@@ -82,7 +83,7 @@ class ExpertiseStore:
 
     def list_packs(self) -> list[ExpertisePack]:
         """Return all expertise packs ordered by name."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "SELECT id, name, description, body, created_at, updated_at "
                 "FROM expertise_packs ORDER BY name COLLATE NOCASE"
@@ -91,7 +92,7 @@ class ExpertiseStore:
 
     def get_pack(self, pack_id: str) -> Optional[ExpertisePack]:
         """Return a single pack or None if not found."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "SELECT id, name, description, body, created_at, updated_at "
                 "FROM expertise_packs WHERE id = ?",
@@ -104,7 +105,7 @@ class ExpertiseStore:
         """Insert a new expertise pack and return it."""
         now = datetime.utcnow().isoformat()
         pack_id = str(uuid.uuid4())
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO expertise_packs (id, name, description, body, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -132,7 +133,7 @@ class ExpertiseStore:
         new_desc = data.description if data.description is not None else pack.description
         new_body = data.body if data.body is not None else pack.body
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE expertise_packs SET name=?, description=?, body=?, updated_at=? WHERE id=?",
                 (new_name, new_desc, new_body, now, pack_id),
@@ -151,7 +152,7 @@ class ExpertiseStore:
 
     def delete_pack(self, pack_id: str) -> bool:
         """Delete a pack (and its collection links via CASCADE). Returns True if deleted."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM expertise_packs WHERE id = ?", (pack_id,)
             )
@@ -165,7 +166,7 @@ class ExpertiseStore:
 
     def get_packs_for_collection(self, collection_id: str) -> list[ExpertisePack]:
         """Return all packs currently attached to a collection."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
                 SELECT ep.id, ep.name, ep.description, ep.body, ep.created_at, ep.updated_at
@@ -180,7 +181,7 @@ class ExpertiseStore:
 
     def get_attached_pack_ids(self, collection_id: str) -> list[str]:
         """Return only the pack IDs attached to a collection (lighter than full objects)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "SELECT pack_id FROM collection_expertise WHERE collection_id = ?",
                 (collection_id,),
@@ -190,7 +191,7 @@ class ExpertiseStore:
     def set_packs_for_collection(self, collection_id: str, pack_ids: list[str]) -> None:
         """Replace the full set of packs attached to a collection atomically."""
         now = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 "DELETE FROM collection_expertise WHERE collection_id = ?",
                 (collection_id,),

@@ -87,8 +87,9 @@ desktop.ini
 # Docker
 .docker/
 
-# SSL Certificates
-certs/
+# SSL Certificates (keep the dir marker so Docker's optional-cert COPY works)
+certs/*
+!certs/.gitkeep
 
 # MyPy
 .mypy_cache/
@@ -100,11 +101,8 @@ dmypy.json
 *.temp
 ~*
 
-# Desktop build artifacts
-desktop/dist/
-desktop/build/
-installer_output/
-*.spec.log
+# Frontend build output (served by the backend; built by Vite / Docker)
+frontend/dist/
 
 .claude
 .continue

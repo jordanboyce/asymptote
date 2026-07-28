@@ -84,6 +84,14 @@ class AIProvider(ABC):
         """Whether this provider implements `complete_with_tools`."""
         return False
 
+    def list_models(self) -> List[str]:
+        """Return available model ids for this provider, best effort.
+
+        Providers that can't enumerate models return []; the frontend falls
+        back to its curated recommendations.
+        """
+        return []
+
     def complete_with_tools(
         self,
         messages: list,
@@ -263,6 +271,15 @@ class AnthropicProvider(AIProvider):
             logger.error(f"Anthropic validation error: {e}")
             raise
 
+    def list_models(self) -> List[str]:
+        try:
+            page = self.client.models.list(limit=100)
+            # API returns newest first — keep that order
+            return [m.id for m in page.data]
+        except Exception as e:
+            logger.warning(f"Anthropic model listing failed: {e}")
+            return []
+
 
 class OpenAIProvider(AIProvider):
     """OpenAI provider."""
@@ -295,6 +312,19 @@ class OpenAIProvider(AIProvider):
                 "model": model,
             },
         }
+
+    def list_models(self) -> List[str]:
+        """List models via the OpenAI-style /models endpoint.
+
+        Inherited by every OpenAI-compatible subclass (Grok, Google, GitHub,
+        Ollama Cloud, OpenRouter, custom endpoints) — vLLM, LM Studio, and
+        LiteLLM all implement /models too.
+        """
+        try:
+            return sorted(m.id for m in self.client.models.list())
+        except Exception as e:
+            logger.warning(f"{self.__class__.__name__} model listing failed: {e}")
+            return []
 
     def complete_with_image(self, prompt: str, image_base64: str, media_type: str, max_tokens: int, model: str) -> dict:
         from openai import OpenAI
@@ -437,6 +467,10 @@ class OllamaProvider(AIProvider):
             return value if value > 0 else 8192
         except Exception:
             return 8192
+
+    def list_models(self) -> List[str]:
+        result = detect_ollama(self.base_url)
+        return [m["name"] for m in result.get("models", [])]
 
     def _openai_client(self):
         """Return an OpenAI client pointed at Ollama's OpenAI-compatible /v1/ endpoint."""

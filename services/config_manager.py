@@ -45,17 +45,9 @@ class ConfigManager:
             "port": settings.port,
             # OCR settings
             "enable_ocr": settings.enable_ocr,
-            "ocr_max_pages": settings.ocr_max_pages,
-            "ocr_max_file_mb": settings.ocr_max_file_mb,
             "vision_ocr_provider": settings.vision_ocr_provider,
             "vision_ocr_model": settings.vision_ocr_model,
             "vision_ocr_api_key": settings.vision_ocr_api_key,
-            "vision_ocr_dpi": settings.vision_ocr_dpi,
-            "vision_ocr_enhance_image": settings.vision_ocr_enhance_image,
-            "vision_ocr_cleanup_pass": settings.vision_ocr_cleanup_pass,
-            "vision_ocr_cleanup_model": settings.vision_ocr_cleanup_model,
-            "vision_ocr_ollama_url": settings.vision_ocr_ollama_url,
-            "vision_ocr_form_mode": settings.vision_ocr_form_mode,
             "ollama_num_ctx": settings.ollama_num_ctx,
             # MCP settings
             "enable_mcp": settings.enable_mcp,
@@ -111,11 +103,8 @@ class ConfigManager:
         reindex_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "chunk_size", "chunk_overlap"}
         # OCR fields that can be applied at runtime (no restart needed)
         ocr_fields = {
-            "enable_ocr", "ocr_max_pages", "ocr_max_file_mb",
+            "enable_ocr",
             "vision_ocr_provider", "vision_ocr_model", "vision_ocr_api_key",
-            "vision_ocr_dpi", "vision_ocr_enhance_image",
-            "vision_ocr_cleanup_pass", "vision_ocr_cleanup_model",
-            "vision_ocr_ollama_url", "vision_ocr_form_mode",
         }
         mcp_fields = {"enable_mcp", "mcp_server_id", "mcp_default_collection", "mcp_top_k",
                       "mcp_mode", "mcp_semantic_weight", "mcp_include_sources",
@@ -128,11 +117,8 @@ class ConfigManager:
             "embedding_model", "embedding_provider", "ollama_base_url", "ollama_embedding_model",
             "chunk_size", "chunk_overlap",
             "default_top_k", "max_top_k",
-            "enable_ocr", "ocr_max_pages", "ocr_max_file_mb",
+            "enable_ocr",
             "vision_ocr_provider", "vision_ocr_model", "vision_ocr_api_key",
-            "vision_ocr_dpi", "vision_ocr_enhance_image",
-            "vision_ocr_cleanup_pass", "vision_ocr_cleanup_model",
-            "vision_ocr_ollama_url", "vision_ocr_form_mode",
             "enable_mcp", "mcp_server_id", "mcp_default_collection",
             "mcp_top_k", "mcp_mode", "mcp_semantic_weight",
             "mcp_include_sources", "mcp_max_source_length",

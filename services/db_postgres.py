@@ -154,15 +154,6 @@ class PostgresBackend(DatabaseBackend):
                     )
                 """)
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS mcp_resources (
-                        id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        collection_id TEXT NOT NULL,
-                        repo_url TEXT,
-                        created_at TEXT NOT NULL
-                    )
-                """)
-                cur.execute("""
                     CREATE TABLE IF NOT EXISTS collection_shares (
                         id TEXT PRIMARY KEY,
                         collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
@@ -879,8 +870,9 @@ class PostgresBackend(DatabaseBackend):
             self._put(conn)
 
     def get_agent_config(self) -> Dict[str, Any]:
+        from config import CLOUD_AI_PROVIDERS
         config = {"providers": {}}
-        for provider in ["anthropic", "openai"]:
+        for provider in CLOUD_AI_PROVIDERS:
             key = self.get_agent_api_key(provider)
             if key:
                 masked = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
@@ -891,62 +883,3 @@ class PostgresBackend(DatabaseBackend):
 
     # ── MCP Resources ────────────────────────────────────────
 
-    def get_all_mcp_resources(self) -> List[Dict[str, Any]]:
-        conn = self._conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM mcp_resources ORDER BY created_at ASC")
-                return self._fetchall_dict(cur)
-        finally:
-            self._put(conn)
-
-    def get_mcp_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
-        conn = self._conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM mcp_resources WHERE id = %s", (resource_id,))
-                return self._fetchone_dict(cur)
-        finally:
-            self._put(conn)
-
-    def create_mcp_resource(self, resource_id: str, name: str, collection_id: str, repo_url: Optional[str] = None) -> Dict[str, Any]:
-        now = datetime.utcnow().isoformat()
-        conn = self._conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO mcp_resources (id, name, collection_id, repo_url, created_at) VALUES (%s, %s, %s, %s, %s)",
-                            (resource_id, name, collection_id, repo_url, now))
-            conn.commit()
-            return {"id": resource_id, "name": name, "collection_id": collection_id, "repo_url": repo_url, "created_at": now}
-        finally:
-            self._put(conn)
-
-    def update_mcp_resource(self, resource_id: str, name=None, collection_id=None, repo_url=None) -> Optional[Dict[str, Any]]:
-        resource = self.get_mcp_resource(resource_id)
-        if not resource:
-            return None
-        updated = {
-            "name": name if name is not None else resource["name"],
-            "collection_id": collection_id if collection_id is not None else resource["collection_id"],
-            "repo_url": repo_url if repo_url is not None else resource.get("repo_url"),
-        }
-        conn = self._conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE mcp_resources SET name = %s, collection_id = %s, repo_url = %s WHERE id = %s",
-                            (updated["name"], updated["collection_id"], updated["repo_url"], resource_id))
-            conn.commit()
-            return {**resource, **updated}
-        finally:
-            self._put(conn)
-
-    def delete_mcp_resource(self, resource_id: str) -> bool:
-        conn = self._conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM mcp_resources WHERE id = %s", (resource_id,))
-                deleted = cur.rowcount > 0
-            conn.commit()
-            return deleted
-        finally:
-            self._put(conn)

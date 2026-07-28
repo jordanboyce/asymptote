@@ -1,5 +1,6 @@
 """FAISS-based vector store with SQLite metadata for scalability."""
 
+import os
 from pathlib import Path
 from typing import List, Optional, Dict
 import logging
@@ -71,6 +72,17 @@ class VectorStore:
             logger.info("Loading existing FAISS index")
             loaded = faiss.read_index(str(self.index_path))
 
+            # Refuse a dimension mismatch up front. Without this check, an
+            # embedding-model change fails deep inside add_with_ids — after
+            # the chunk metadata has already been committed to SQLite.
+            if loaded.d != self.embedding_dim:
+                raise RuntimeError(
+                    f"FAISS index at {self.index_path} has dimension {loaded.d}, "
+                    f"but the configured embedding model produces {self.embedding_dim}. "
+                    f"Either restore the previous embedding model or re-index the "
+                    f"collection to rebuild the index."
+                )
+
             if isinstance(faiss.downcast_index(loaded), faiss.IndexIDMap2):
                 self.index = loaded
             else:
@@ -115,7 +127,7 @@ class VectorStore:
         if n > 0:
             new_index.add_with_ids(vectors[:n], np.asarray(row_ids[:n], dtype=np.int64))
 
-        faiss.write_index(new_index, str(self.index_path))
+        self._write_index_atomic(new_index)
         if self.embeddings_path.exists():
             try:
                 self.embeddings_path.unlink()
@@ -400,10 +412,6 @@ class VectorStore:
             source_path=doc_info.get("source_path") if doc_info else None,
         )
 
-    def _get_chunk_by_id(self, chunk_id: str) -> Optional[dict]:
-        """Get chunk metadata by chunk_id (indexed lookup)."""
-        return self.metadata_store.get_chunks_by_chunk_ids([chunk_id]).get(chunk_id)
-
     def delete_document(self, document_id: str) -> int:
         """
         Delete all chunks belonging to a document.
@@ -416,20 +424,19 @@ class VectorStore:
         Returns:
             Number of chunks deleted
         """
-        # Capture row ids before the metadata rows disappear
+        # Capture row ids before the metadata rows disappear. Tabular documents
+        # (CSV/XLSX) are indexed with zero chunks by design — they must still
+        # fall through so their documents row and structured tables are removed.
         row_ids = self.metadata_store.get_document_chunk_rowids(document_id)
-
-        if not row_ids:
-            logger.warning(f"Document {document_id} not found in index")
-            return 0
-
         num_deleted = len(row_ids)
         logger.info(f"Deleting {num_deleted} chunks for document {document_id}")
 
-        # Delete from BM25 index
-        self.bm25_index.remove_documents_by_document_id(document_id, self.metadata_db_path)
+        if row_ids:
+            # Delete from BM25 index (reads chunk ids from metadata.db, so
+            # this must run before the metadata rows are deleted)
+            self.bm25_index.remove_documents_by_document_id(document_id, self.metadata_db_path)
 
-        # Delete from metadata (SQLite)
+        # Delete from metadata (SQLite) — removes chunks and the documents row
         self.metadata_store.delete_document(document_id)
 
         # Drop any structured tables (CSV/XLSX) created for this document
@@ -438,9 +445,10 @@ class VectorStore:
         except Exception as e:
             logger.warning(f"Failed to drop structured tables for {document_id}: {e}")
 
-        # Remove the vectors in place
-        removed = self.index.remove_ids(np.asarray(row_ids, dtype=np.int64))
-        logger.info(f"Removed {removed} vectors from FAISS index for document {document_id}")
+        if row_ids:
+            # Remove the vectors in place
+            removed = self.index.remove_ids(np.asarray(row_ids, dtype=np.int64))
+            logger.info(f"Removed {removed} vectors from FAISS index for document {document_id}")
 
         return num_deleted
 
@@ -456,8 +464,19 @@ class VectorStore:
     def save(self):
         """Persist the FAISS index to disk (metadata is already in SQLite)."""
         logger.info(f"Saving FAISS index with {self.index.ntotal} vectors")
-        faiss.write_index(self.index, str(self.index_path))
+        self._write_index_atomic(self.index)
         logger.info("Index saved successfully")
+
+    def _write_index_atomic(self, index: faiss.Index):
+        """Write the FAISS index via temp file + rename.
+
+        A crash mid-write must never leave a truncated faiss.index behind —
+        faiss.read_index refuses truncated files, which would make the whole
+        collection unopenable.
+        """
+        tmp_path = self.index_path.with_suffix(".index.tmp")
+        faiss.write_index(index, str(tmp_path))
+        os.replace(tmp_path, self.index_path)
 
     def get_total_chunks(self) -> int:
         """Get the total number of chunks in the index."""

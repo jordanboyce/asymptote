@@ -7,6 +7,7 @@ Each collection has its own:
 """
 
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -28,6 +29,11 @@ class IndexerManager:
         """Initialize the indexer manager."""
         self._indexers: Dict[str, DocumentIndexer] = {}
         self._embedding_services: Dict[str, EmbeddingService] = {}
+        # get_indexer is called from request threads and background indexing
+        # threads. Without this lock, two concurrent first-touches of a
+        # collection each construct a VectorStore over the same directory and
+        # the loser's in-memory FAISS index silently wins the next save().
+        self._creation_lock = threading.Lock()
 
         # Apply any DB config overrides to settings before creating the extractor
         self._apply_db_config()
@@ -46,11 +52,8 @@ class IndexerManager:
             from services.app_database import app_db
             db_config = app_db.get_all_config()
             ocr_fields = {
-                "enable_ocr", "ocr_max_pages", "ocr_max_file_mb",
+                "enable_ocr",
                 "vision_ocr_provider", "vision_ocr_model", "vision_ocr_api_key",
-                "vision_ocr_dpi", "vision_ocr_enhance_image",
-                "vision_ocr_cleanup_pass", "vision_ocr_cleanup_model",
-                "vision_ocr_ollama_url",
             }
             mcp_fields = {
                 "enable_mcp", "mcp_server_id", "mcp_default_collection",
@@ -77,12 +80,7 @@ class IndexerManager:
             vision_ocr_provider=settings.vision_ocr_provider,
             vision_ocr_model=settings.vision_ocr_model,
             vision_ocr_api_key=settings.vision_ocr_api_key,
-            vision_ocr_dpi=settings.vision_ocr_dpi,
-            vision_ocr_enhance_image=settings.vision_ocr_enhance_image,
-            vision_ocr_cleanup_pass=settings.vision_ocr_cleanup_pass,
-            vision_ocr_cleanup_model=settings.vision_ocr_cleanup_model,
-            vision_ocr_ollama_url=settings.vision_ocr_ollama_url,
-            vision_ocr_form_mode=settings.vision_ocr_form_mode,
+            ollama_base_url=settings.ollama_base_url,
         )
 
     def reload_document_extractor(self):
@@ -109,17 +107,22 @@ class IndexerManager:
         if collection_id in self._indexers:
             return self._indexers[collection_id]
 
-        # Get collection settings
-        collection = collection_service.get_collection(collection_id)
-        if not collection:
-            raise ValueError(f"Collection '{collection_id}' not found")
+        with self._creation_lock:
+            # Double-checked: another thread may have created it while we waited
+            if collection_id in self._indexers:
+                return self._indexers[collection_id]
 
-        # Create indexer for this collection
-        indexer = self._create_indexer(collection)
-        self._indexers[collection_id] = indexer
+            # Get collection settings
+            collection = collection_service.get_collection(collection_id)
+            if not collection:
+                raise ValueError(f"Collection '{collection_id}' not found")
 
-        logger.info(f"Created indexer for collection '{collection_id}'")
-        return indexer
+            # Create indexer for this collection
+            indexer = self._create_indexer(collection)
+            self._indexers[collection_id] = indexer
+
+            logger.info(f"Created indexer for collection '{collection_id}'")
+            return indexer
 
     def _get_embedding_service(self, collection_embedding_model: str):
         """Return the appropriate embedding service based on config.
@@ -192,18 +195,6 @@ class IndexerManager:
         if collection_id in self._indexers:
             self._indexers[collection_id].vector_store.load()
             logger.info(f"Reloaded indexer for collection '{collection_id}'")
-
-    def invalidate_indexer(self, collection_id: str):
-        """Remove a cached indexer (e.g., after settings change).
-
-        Args:
-            collection_id: Collection ID
-        """
-        if collection_id in self._indexers:
-            # Save before removing
-            self._indexers[collection_id].save_index()
-            del self._indexers[collection_id]
-            logger.info(f"Invalidated indexer for collection '{collection_id}'")
 
     def remove_indexer(self, collection_id: str):
         """Remove a cached indexer without saving (e.g., after collection deletion).

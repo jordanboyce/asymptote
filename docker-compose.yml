@@ -1,32 +1,33 @@
+# Asymptote — docker compose deployment.
+#
+#   docker compose up -d
+#   open http://localhost:8473
+#
+# No .env required to start; drop one next to this file to override defaults
+# (see .env.example). Documents and indexes persist in ./data.
+
 services:
   asymptote:
-    build:
-      context: .
-      dockerfile: Dockerfile.corporate
-    container_name: asymptote-api
+    build: .
+    container_name: asymptote
     ports:
       - "8473:8473"
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
       - ./data:/app/data
-      - hf_cache:/root/.cache/huggingface
     environment:
-      # These override .env so the container always uses local sentence-transformers
-      # for embeddings regardless of what .env says — Ollama embedding has hardware
-      # requirements that make it impractical in the container.
       - DATA_DIR=/app/data
       - HOST=0.0.0.0
       - PORT=8473
+      # Embeddings always run locally in the container (sentence-transformers);
+      # external AI providers are configured in the app's Settings tab.
       - EMBEDDING_PROVIDER=local
       - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      # Reach an Ollama instance on the docker host, if you run one
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8473/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-volumes:
-  hf_cache:
+    # Healthcheck comes from the Dockerfile (curl /health).

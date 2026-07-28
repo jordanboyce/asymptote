@@ -143,7 +143,7 @@
                   Uploading {{ uploadingCount }} file{{ uploadingCount !== 1 ? 's' : '' }}…
                 </div>
               </template>
-              <template v-else-if="!useBackgroundIndexing">
+              <template v-else>
                 <progress class="progress progress-primary w-full h-1.5" :value="indexProgressPercent" max="100"></progress>
                 <div v-if="currentIndexingFile" class="text-xs text-base-content/50 truncate">{{ currentIndexingFile }}</div>
               </template>
@@ -153,8 +153,7 @@
           <!-- Success -->
           <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
             <CheckCircle :size="12" aria-hidden="true" />
-            <span v-if="indexResult.background">Started in background</span>
-            <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
+            <span>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
             <button
               class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0"
               @click="indexSuccess = false"
@@ -167,8 +166,6 @@
             {{ indexError }}
             <button class="ml-1 underline" @click="indexError = ''">Dismiss</button>
           </div>
-
-          <!-- Advanced options hidden for financial advisor build -->
 
         </div>
       </div>
@@ -369,7 +366,7 @@
 
     </div>
 
-    <!-- Delete confirmation modal (same as DocumentsTab) -->
+    <!-- Delete confirmation modal -->
     <dialog ref="deleteModal" class="modal" aria-labelledby="sidebar-delete-title">
       <div class="modal-box">
         <h3 id="sidebar-delete-title" class="font-bold text-lg">Confirm Delete</h3>
@@ -391,7 +388,7 @@
       <form method="dialog" class="modal-backdrop"><button @click="closeDeleteModal">close</button></form>
     </dialog>
 
-    <!-- Chunks viewer modal (same as DocumentsTab) -->
+    <!-- Chunks viewer modal -->
     <dialog ref="chunksModal" class="modal" aria-labelledby="sidebar-chunks-title">
       <div class="modal-box max-w-6xl">
         <h3 id="sidebar-chunks-title" class="font-bold text-lg">Indexed Chunks</h3>
@@ -500,7 +497,7 @@ import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useExpertiseStore } from '../stores/expertiseStore'
 
-const emit = defineEmits(['document-deleted', 'background-job-started', 'close'])
+const emit = defineEmits(['document-deleted', 'close'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
@@ -508,41 +505,15 @@ const expertiseStore = useExpertiseStore()
 
 // Sidebar-specific state
 const addSectionOpen = ref(true)
-const advancedOpen = ref(false)
 const expertiseSectionOpen = ref(false)
 const expertiseLoading = ref(false)
-
-// Source code mode
-const isSourceCode = ref(false)
-const includeDocumentation = ref(true)
-const fileExtensions = ref([
-  { value: 'python', label: 'Python', enabled: true, exts: ['.py', '.pyw', '.pyi'] },
-  { value: 'javascript', label: 'JS/TS', enabled: true, exts: ['.js', '.jsx', '.mjs', '.ts', '.tsx', '.mts'] },
-  { value: 'csharp', label: 'C#', enabled: true, exts: ['.cs'] },
-  { value: 'java', label: 'Java', enabled: true, exts: ['.java'] },
-  { value: 'go', label: 'Go', enabled: true, exts: ['.go'] },
-  { value: 'rust', label: 'Rust', enabled: true, exts: ['.rs'] },
-  { value: 'cpp', label: 'C/C++', enabled: true, exts: ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'] },
-  { value: 'php', label: 'PHP', enabled: true, exts: ['.php', '.phtml'] },
-  { value: 'ruby', label: 'Ruby', enabled: true, exts: ['.rb', '.rake'] },
-  { value: 'swift', label: 'Swift', enabled: true, exts: ['.swift'] },
-  { value: 'kotlin', label: 'Kotlin', enabled: true, exts: ['.kt', '.kts'] },
-  { value: 'scala', label: 'Scala', enabled: true, exts: ['.scala', '.sc'] },
-  { value: 'pascal', label: 'Pascal/Delphi', enabled: true, exts: ['.pas', '.dpr', '.dpk', '.pp', '.inc', '.dfm'] },
-  { value: 'modula2', label: 'Modula-2', enabled: false, exts: ['.mod', '.def', '.mi'] },
-  { value: 'assembly', label: 'Assembly', enabled: false, exts: ['.asm', '.s'] },
-])
-const recentRepos = ref([])
 
 // Server capability flags (fetched on mount); native_file_picker=false → Docker/headless mode
 const capabilities = ref({})
 
 // Index state
 const selectedPaths = ref([]) // Array of { path: string, name: string, isFolder?: boolean, size?: number, file?: File }
-const copyToLibrary = ref(false) // Default OFF - index in-place
-const useBackgroundIndexing = ref(false) // Default OFF - synchronous indexing
 const indexing = ref(false)
-const indexProgress = ref(0)
 const indexProgressPercent = ref(0)
 const currentIndexingFile = ref('')
 const indexSuccess = ref(false)
@@ -788,19 +759,7 @@ const handleBrowserFiles = (event) => {
 
 // Handle folder selected via browser <input webkitdirectory> (headless/Docker mode)
 const handleBrowserFolder = (event) => {
-  let files = Array.from(event.target.files || [])
-  if (isSourceCode.value) {
-    const enabledExts = new Set(
-      fileExtensions.value.filter(e => e.enabled).flatMap(e => e.exts)
-    )
-    if (includeDocumentation.value) {
-      ['.txt', '.md', '.json', '.jsonl'].forEach(e => enabledExts.add(e))
-    }
-    files = files.filter(f => {
-      const ext = '.' + f.name.split('.').pop().toLowerCase()
-      return enabledExts.has(ext)
-    })
-  }
+  const files = Array.from(event.target.files || [])
   const existingNames = new Set(selectedPaths.value.map(p => p.name))
   for (const file of files) {
     const relativeName = file.webkitRelativePath || file.name
@@ -847,56 +806,25 @@ const openFolderPicker = async () => {
     if (response.data.path) {
       const folderPath = response.data.path
 
-      if (isSourceCode.value) {
-        // In code mode: scan folder with extension filter, add individual files
-        const enabledExts = fileExtensions.value
-          .filter(e => e.enabled)
-          .flatMap(e => e.exts)
-        if (includeDocumentation.value) {
-          enabledExts.push('.txt', '.md', '.json', '.jsonl')
-        }
+      // Scan folder for supported document types, add individual files
+      const scanResponse = await axios.post('/api/scan-folder', {
+        path: folderPath,
+        recursive: true,
+        file_extensions: ['.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl']
+      })
 
-        const scanResponse = await axios.post('/api/scan-folder', {
-          path: folderPath,
-          recursive: true,
-          file_extensions: enabledExts.length > 0 ? enabledExts : undefined
-        })
-
-        if (scanResponse.data.files && scanResponse.data.files.length > 0) {
-          const existingPaths = new Set(selectedPaths.value.map(p => p.path))
-          for (const f of scanResponse.data.files) {
-            if (!existingPaths.has(f.path)) {
-              selectedPaths.value.push({
-                path: f.path,
-                name: f.relative_path || f.name
-              })
-            }
+      if (scanResponse.data.files && scanResponse.data.files.length > 0) {
+        const existingPaths = new Set(selectedPaths.value.map(p => p.path))
+        for (const f of scanResponse.data.files) {
+          if (!existingPaths.has(f.path)) {
+            selectedPaths.value.push({
+              path: f.path,
+              name: f.relative_path || f.name
+            })
           }
-          saveRecentRepo(folderPath)
-        } else {
-          indexError.value = 'No matching files found in the selected folder'
         }
       } else {
-        // In document mode: scan folder for supported document types, add individual files
-        const scanResponse = await axios.post('/api/scan-folder', {
-          path: folderPath,
-          recursive: true,
-          file_extensions: ['.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl']
-        })
-
-        if (scanResponse.data.files && scanResponse.data.files.length > 0) {
-          const existingPaths = new Set(selectedPaths.value.map(p => p.path))
-          for (const f of scanResponse.data.files) {
-            if (!existingPaths.has(f.path)) {
-              selectedPaths.value.push({
-                path: f.path,
-                name: f.relative_path || f.name
-              })
-            }
-          }
-        } else {
-          indexError.value = 'No supported files found (.pdf, .txt, .docx, .csv, .xlsx, .xls, .md, .json)'
-        }
+        indexError.value = 'No supported files found (.pdf, .txt, .docx, .csv, .xlsx, .xls, .md, .json)'
       }
     }
   } catch (err) {
@@ -928,16 +856,12 @@ const indexFiles = async () => {
   const filePaths = files.map(p => p.path)
 
   indexing.value = true
-  indexProgress.value = 0
   indexProgressPercent.value = 0
   currentIndexingFile.value = ''
   indexSuccess.value = false
   indexError.value = ''
 
   const folders = pathItems.filter(p => p.isFolder)
-
-  // Use background indexing based on toggle
-  const useBackground = useBackgroundIndexing.value
 
   let successCount = 0
   let totalChunks = 0
@@ -979,66 +903,37 @@ const indexFiles = async () => {
     }
 
     if (filePaths.length > 0) {
-      if (useBackground) {
-        // Use background indexing for large file sets
+      // Synchronous indexing
+      for (let i = 0; i < filePaths.length; i++) {
+        const filename = getFilename(filePaths[i])
+        currentIndexingFile.value = filename
+        indexProgressPercent.value = ((i) / filePaths.length) * 100
+
         try {
-          const response = await axios.post('/documents/index-local-async', {
-            file_paths: filePaths,
-            collection_id: collectionStore.currentCollectionId,
-            copy_to_library: copyToLibrary.value
+          const response = await axios.post('/documents/index-local', {
+            file_path: filePaths[i],
+            collection_id: collectionStore.currentCollectionId
           })
-
-          // Add job to background jobs store for tracking
-          backgroundJobsStore.addUploadJob(response.data)
-
-          // Emit event to open the jobs drawer
-          emit('background-job-started')
-
-          // Show background notification
-          indexSuccess.value = true
-          indexResult.value = { count: filePaths.length, chunks: 0, background: true }
-          selectedPaths.value = folders.length > 0 ? folders : []
-
+          successCount++
+          totalChunks += response.data.total_chunks || 0
+          // Update progress after successful index
+          indexProgressPercent.value = ((i + 1) / filePaths.length) * 100
         } catch (err) {
           const errorMsg = err.response?.data?.detail || err.message
-          errors.push(`Files: ${errorMsg}`)
-          console.error('Failed to start background indexing:', err)
+          errors.push(`${filename}: ${errorMsg}`)
+          console.error(`Failed to index ${filePaths[i]}:`, err)
         }
-      } else {
-        // Use synchronous indexing
-        for (let i = 0; i < filePaths.length; i++) {
-          const filename = getFilename(filePaths[i])
-          currentIndexingFile.value = filename
-          indexProgress.value = i + 1
-          indexProgressPercent.value = ((i) / filePaths.length) * 100
+      }
 
-          try {
-            const response = await axios.post('/documents/index-local', {
-              file_path: filePaths[i],
-              collection_id: collectionStore.currentCollectionId,
-              copy_to_library: copyToLibrary.value
-            })
-            successCount++
-            totalChunks += response.data.total_chunks || 0
-            // Update progress after successful index
-            indexProgressPercent.value = ((i + 1) / filePaths.length) * 100
-          } catch (err) {
-            const errorMsg = err.response?.data?.detail || err.message
-            errors.push(`${filename}: ${errorMsg}`)
-            console.error(`Failed to index ${filePaths[i]}:`, err)
-          }
-        }
-
-        if (successCount > 0) {
-          indexSuccess.value = true
-          indexResult.value = { count: successCount, chunks: totalChunks }
-          selectedPaths.value = folders
-          justIndexed.value = true
-          addSectionOpen.value = false
-          loadDocuments()
-          setTimeout(() => loadDocuments(), 1500)
-          emit('document-deleted')
-        }
+      if (successCount > 0) {
+        indexSuccess.value = true
+        indexResult.value = { count: successCount, chunks: totalChunks }
+        selectedPaths.value = folders
+        justIndexed.value = true
+        addSectionOpen.value = false
+        loadDocuments()
+        setTimeout(() => loadDocuments(), 1500)
+        emit('document-deleted')
       }
     }
 
@@ -1046,7 +941,6 @@ const indexFiles = async () => {
     for (let i = 0; i < folders.length; i++) {
       const folder = folders[i]
       currentIndexingFile.value = folder.name
-      indexProgress.value = filePaths.length + i + 1
 
       try {
         const response = await axios.post('/documents/upload-repo', {
@@ -1351,55 +1245,8 @@ const beforeUnloadHandler = (e) => {
   }
 }
 
-const saveRecentRepo = (path) => {
-  const repos = JSON.parse(localStorage.getItem('recentCodeRepos') || '[]')
-  const name = path.split(/[/\\]/).pop() || path
-  const filtered = repos.filter(r => r.path !== path)
-  filtered.unshift({ path, name, indexedAt: Date.now() })
-  localStorage.setItem('recentCodeRepos', JSON.stringify(filtered.slice(0, 5)))
-  recentRepos.value = filtered.slice(0, 5)
-}
-
-const loadRecentRepos = () => {
-  try {
-    recentRepos.value = JSON.parse(localStorage.getItem('recentCodeRepos') || '[]')
-  } catch {
-    recentRepos.value = []
-  }
-}
-
-const selectRecentRepo = async (repo) => {
-  indexError.value = ''
-  const enabledExts = fileExtensions.value
-    .filter(e => e.enabled)
-    .flatMap(e => e.exts)
-  if (includeDocumentation.value) {
-    enabledExts.push('.txt', '.md', '.json', '.jsonl')
-  }
-
-  try {
-    const scanResponse = await axios.post('/api/scan-folder', {
-      path: repo.path,
-      recursive: true,
-      file_extensions: enabledExts.length > 0 ? enabledExts : undefined
-    })
-    if (scanResponse.data.files && scanResponse.data.files.length > 0) {
-      selectedPaths.value = scanResponse.data.files.map(f => ({
-        path: f.path,
-        name: f.relative_path || f.name
-      }))
-    } else {
-      indexError.value = 'No matching files found in the selected folder'
-    }
-  } catch (err) {
-    indexError.value = err.response?.data?.detail || 'Failed to scan folder'
-  }
-}
-
-
 onMounted(async () => {
   loadDocuments()
-  loadRecentRepos()
   loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
   try {

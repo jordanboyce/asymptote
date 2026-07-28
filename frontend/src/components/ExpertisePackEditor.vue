@@ -55,14 +55,14 @@
           class="textarea textarea-bordered font-mono text-sm leading-relaxed w-full resize-y"
           :class="{ 'textarea-error': errors.body }"
           rows="14"
-          placeholder="Write your advisor guidelines, investment policies, or analysis frameworks here.
+          placeholder="Write domain guidance, terminology, or analysis frameworks here.
 
 Example:
-## Investment Policy
-- Minimum credit quality: Investment grade (BBB- or higher)
-- Maximum single-issuer concentration: 5% of portfolio
-- Duration target: 4–6 years
-- Preferred sectors: Utilities, healthcare, consumer staples"
+## Literature Review Method
+- Prefer primary sources over summaries; cite page numbers
+- 'RCT' = randomized controlled trial; flag studies with n < 30
+- When findings conflict, present both and note the stronger evidence
+- Always distinguish correlation from causation in conclusions"
           @input="errors.body = ''"
         />
         <label v-if="errors.body" class="label pt-1">

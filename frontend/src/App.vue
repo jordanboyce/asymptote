@@ -62,33 +62,6 @@
         </button>
       </template>
 
-      <!-- Tools dropdown (hidden on collections overview) -->
-      <div v-if="!isCollectionsView" class="dropdown dropdown-bottom">
-        <label
-          tabindex="0"
-          class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
-          :class="toolTabs.some(t => t.id === activeTab) ? 'bg-base-200 font-semibold' : 'font-normal'"
-          aria-label="Tools menu"
-          aria-haspopup="menu"
-        >
-          <Wrench :size="14" />
-          <span class="hidden sm:inline">{{ toolTabs.find(t => t.id === activeTab)?.label || 'Tools' }}</span>
-          <ChevronDown :size="11" />
-        </label>
-        <ul tabindex="0" class="dropdown-content z-[100] menu p-1 shadow-lg bg-base-100 border border-base-300 rounded-box w-48">
-          <li v-for="tool in toolTabs" :key="tool.id">
-            <a
-              @click="activeTab = tool.id"
-              :class="{ 'active': activeTab === tool.id }"
-              class="gap-2 text-sm"
-            >
-              <component :is="tool.icon" :size="14" />
-              {{ tool.label }}
-            </a>
-          </li>
-        </ul>
-      </div>
-
       <!-- Spacer -->
       <div class="flex-1"></div>
 
@@ -104,8 +77,8 @@
         class="btn btn-ghost btn-circle btn-sm"
         :class="{ 'bg-base-300': analysisSidebarOpen }"
         @click="analysisSidebarOpen = !analysisSidebarOpen"
-        title="Toggle analysis panel"
-        aria-label="Toggle analysis panel"
+        title="Toggle Studio panel"
+        aria-label="Toggle Studio panel"
         :aria-pressed="analysisSidebarOpen"
       >
         <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
@@ -441,15 +414,13 @@
             <ArtifactsTab v-if="activeTab === 'generate'" />
             <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
-            <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
-            <TokenizerTab v-if="activeTab === 'tokenizer'" />
             <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
           </div>
         </div>
 
       </main>
 
-      <!-- Right sidebar: analysis (resizable, hidden on collections overview) -->
+      <!-- Right sidebar: Studio (resizable, hidden on collections overview) -->
       <aside
         v-show="!isCollectionsView"
         class="bg-base-100 overflow-hidden flex flex-col border-l border-base-300"
@@ -476,9 +447,10 @@
         </div>
 
         <div class="h-full flex flex-col" :style="{ width: effectiveAnalysisWidth + 'px' }">
-          <AnalysisSidebar
+          <StudioSidebar
             @close="analysisSidebarOpen = false"
             @send-to-chat="handleSendToChat"
+            @switch-tab="switchTab"
           />
         </div>
       </aside>
@@ -807,7 +779,7 @@
       aria-labelledby="jobs-drawer-title"
     >
       <!-- Backdrop -->
-      <div class="absolute inset-0 bg-black/30" @click="showJobsDrawer = false" aria-hidden="true"></div>
+      <div class="absolute inset-0 bg-base-content/20" @click="showJobsDrawer = false" aria-hidden="true"></div>
 
       <!-- Drawer Panel -->
       <div class="absolute right-0 top-0 h-full w-96 max-w-[90vw] bg-base-100 shadow-2xl flex flex-col">
@@ -927,7 +899,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, FileSearch, MessageSquare, Hash, Library, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Sparkles } from 'lucide-vue-next'
+import { Search, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles } from 'lucide-vue-next'
 
 const chatTabEnabled = ref(true)
 
@@ -937,25 +909,18 @@ const tabs = computed(() => {
   t.push({ id: 'search', label: 'Search', icon: Search })
   t.push({ id: 'generate', label: 'Generate', icon: Sparkles })
   t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
+  t.push({ id: 'mcp', label: 'MCP', icon: Plug })
   return t
 })
 
-const toolTabs = [
-  { id: 'mcp', label: 'MCP Server', icon: Plug },
-  { id: 'ocr', label: 'OCR Preview', icon: FileSearch },
-  { id: 'tokenizer', label: 'Token Visualizer', icon: Hash },
-]
 // Core layout + default tab load eagerly; every other tab is code-split so
-// the initial bundle stays small (TokenizerTab alone pulls in gpt-tokenizer's
-// multi-MB token tables, which nobody should pay for on first paint).
+// the initial bundle stays small.
 import SourcesSidebar from './components/SourcesSidebar.vue'
-import AnalysisSidebar from './components/AnalysisSidebar.vue'
+import StudioSidebar from './components/StudioSidebar.vue'
 import ChatTab from './components/ChatTab.vue'
 
 const SearchTab = defineAsyncComponent(() => import('./components/SearchTab.vue'))
 const ArtifactsTab = defineAsyncComponent(() => import('./components/ArtifactsTab.vue'))
-const OCRPlaygroundTab = defineAsyncComponent(() => import('./components/OCRPlaygroundTab.vue'))
-const TokenizerTab = defineAsyncComponent(() => import('./components/TokenizerTab.vue'))
 const SettingsTab = defineAsyncComponent(() => import('./components/SettingsTab.vue'))
 const MCPTab = defineAsyncComponent(() => import('./components/MCPTab.vue'))
 const ShareModal = defineAsyncComponent(() => import('./components/ShareModal.vue'))
@@ -972,8 +937,11 @@ const searchStore = useSearchStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const userStore = useUserStore()
 
-const activeTab = ref('chat')
-const currentTheme = ref('light')
+// Restore the last active tab so a refresh doesn't dump the user back in Chat
+const VALID_TABS = ['chat', 'search', 'generate', 'expertise', 'mcp', 'settings', 'collections']
+const savedTab = localStorage.getItem('active_tab')
+const activeTab = ref(VALID_TABS.includes(savedTab) ? savedTab : 'chat')
+watch(activeTab, (tab) => localStorage.setItem('active_tab', tab))
 
 // Resizable sidebar
 const SIDEBAR_MIN = 220
@@ -1129,7 +1097,7 @@ const shareCollectionName = ref('')
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
 
-// First-run onboarding: a full-screen takeover shown when the advisor has
+// First-run onboarding: a full-screen takeover shown when the user has
 // never configured an AI provider. Resolves the "you installed the app but
 // nothing works until you curl an endpoint" problem we hit earlier.
 const showOnboarding = ref(false)
@@ -1137,20 +1105,14 @@ const showOnboarding = ref(false)
 const checkOnboardingNeeded = () => {
   // If any provider is already configured in localStorage, skip onboarding.
   // We intentionally don't also check server-side embedding keys — the
-  // primary gate is "can this advisor have a chat conversation yet."
-  // Advisors who pre-configured a chat provider via another path (e.g. the
+  // primary gate is "can this user have a chat conversation yet."
+  // Users who pre-configured a chat provider via another path (e.g. the
   // MCP setup flow) shouldn't be blocked by this screen.
   showOnboarding.value = getConfiguredProviderIds().length === 0
 }
 
 const handleOnboardingComplete = () => {
   showOnboarding.value = false
-  // Nudge any in-flight consumers of the provider config (ChatTab etc.)
-  // to refresh their "configured providers" computed state. Vue's reactivity
-  // doesn't cover localStorage, so dispatch a synthetic event the
-  // components can listen to — or simply rely on re-mount on next tab
-  // switch. For now a page-agnostic event is cheapest.
-  window.dispatchEvent(new CustomEvent('asymptote:providers-changed'))
 }
 
 const handleOnboardingSkip = () => {
@@ -1216,12 +1178,10 @@ const filteredCollections = computed(() => {
 const updateThemeFromStorage = () => {
   const savedTheme = localStorage.getItem('theme')
   if (savedTheme) {
-    currentTheme.value = savedTheme
     document.documentElement.setAttribute('data-theme', savedTheme)
   } else {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    currentTheme.value = prefersDark ? 'dark' : 'light'
-    document.documentElement.setAttribute('data-theme', currentTheme.value)
+    document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light')
   }
 }
 
@@ -1266,10 +1226,6 @@ const onChatTabToggled = (enabled) => {
 
 const switchTab = (tabName) => {
   activeTab.value = tabName
-}
-
-const selectCollection = (collectionId) => {
-  collectionStore.setCurrentCollection(collectionId)
 }
 
 const selectCollectionAndNavigate = (collectionId) => {

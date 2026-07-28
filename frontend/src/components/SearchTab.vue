@@ -16,128 +16,23 @@
     </div>
 
     <!-- Search Settings Drawer -->
-    <div
-      v-if="searchSettingsOpen"
-      class="fixed inset-0 z-[200]"
-      @click.self="searchSettingsOpen = false"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="search-settings-title"
-    >
-      <div class="absolute inset-0 bg-black/30" @click="searchSettingsOpen = false" aria-hidden="true"></div>
-      <div class="absolute right-0 top-0 h-full w-80 max-w-[85vw] bg-base-100 shadow-2xl flex flex-col">
-        <div class="flex items-center justify-between p-4 border-b border-base-300">
-          <h3 id="search-settings-title" class="text-sm font-bold">Search Settings</h3>
-          <button
-            class="btn btn-ghost btn-sm btn-circle"
-            @click="searchSettingsOpen = false"
-            aria-label="Close search settings"
-          >
-            <X :size="18" />
-          </button>
-        </div>
-        <div class="flex-1 overflow-y-auto p-4 space-y-5">
-
-          <!-- Retrieval -->
-          <div class="space-y-3">
-            <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Retrieval</span>
-
-            <label class="flex items-center justify-between">
-              <span class="text-sm">Max results</span>
-              <input
-                v-model.number="searchStore.topK"
-                type="number"
-                min="1"
-                max="50"
-                class="input input-bordered input-xs w-16 text-center"
-                aria-label="Maximum number of results"
-              />
-            </label>
-
-            <label class="flex items-center justify-between">
-              <span class="text-sm">Search mode</span>
-              <select v-model="searchMode" class="select select-bordered select-xs" aria-label="Search mode">
-                <option value="semantic">Semantic</option>
-                <option value="keyword">Keyword</option>
-                <option value="hybrid">Hybrid</option>
-              </select>
-            </label>
-
-            <label v-if="searchMode === 'hybrid'" class="space-y-1 block">
-              <span class="text-sm">Semantic weight: {{ Math.round(semanticWeight * 100) }}%</span>
-              <input
-                v-model.number="semanticWeight"
-                type="range"
-                min="0"
-                max="1"
-                step="0.1"
-                class="range range-primary range-xs"
-                :aria-label="`Semantic weight: ${Math.round(semanticWeight * 100)} percent`"
-              />
-              <div class="w-full flex justify-between text-xs px-1 text-base-content/40" aria-hidden="true">
-                <span>Keywords</span><span>Balanced</span><span>Semantic</span>
-              </div>
-            </label>
-          </div>
-
-          <!-- AI Enhancements -->
-          <template v-if="hasAnyProvider">
-            <div class="space-y-3">
-              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">AI Enhancements</span>
-
-              <label class="flex items-center justify-between cursor-pointer select-none">
-                <span class="text-sm">Rerank</span>
-                <input type="checkbox" class="toggle toggle-sm toggle-primary" v-model="localRerank" />
-              </label>
-
-              <label class="flex items-center justify-between cursor-pointer select-none">
-                <span class="text-sm">Synthesize</span>
-                <input type="checkbox" class="toggle toggle-sm toggle-secondary" v-model="localSynthesize" />
-              </label>
-
-              <p v-if="selectedExternalCount > 0" class="text-xs text-warning/80">Cloud providers will receive your query.</p>
-            </div>
-
-            <!-- Providers -->
-            <div class="space-y-2">
-              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Providers</span>
-              <div class="space-y-1.5">
-                <label
-                  v-for="pid in configuredProviderIds"
-                  :key="pid"
-                  class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors text-sm"
-                  :class="selectedProviders.includes(pid) ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
-                >
-                  <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" :checked="selectedProviders.includes(pid)" @change="toggleProvider(pid)" />
-                  <span class="flex-1">{{ getProviderDisplayNameLocal(pid) }}</span>
-                  <span class="badge badge-xs badge-outline" :class="isLocalProvider(pid) ? 'badge-info' : 'badge-warning'">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
-                </label>
-              </div>
-
-              <!-- Model overrides -->
-              <div v-for="pid in selectedProviders" :key="'model-' + pid">
-                <div v-if="getModelsForProvider(pid).length > 1" class="flex items-center justify-between mt-1 px-1">
-                  <span class="text-xs text-base-content/50">{{ getProviderDisplayNameLocal(pid) }} model</span>
-                  <select v-model="providerModelOverrides[pid]" class="select select-xs select-bordered max-w-[160px]">
-                    <option value="">Default ({{ getDefaultModelLabel(pid) }})</option>
-                    <option v-for="m in getModelsForProvider(pid)" :key="m.id" :value="m.id">{{ m.label }}</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-          </template>
-
-          <!-- No-provider nudge -->
-          <div v-if="!hasAnyProvider" class="flex items-center gap-3 rounded-lg border border-info/30 bg-info/5 px-3 py-2.5">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-4 h-4">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-            </svg>
-            <p class="text-sm flex-1">Add an AI provider in Settings to enable reranking and synthesis.</p>
-            <button class="btn btn-xs btn-primary flex-shrink-0" @click="$emit('switch-tab', 'settings')">Settings</button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <AISettingsDrawer
+      v-model:open="searchSettingsOpen"
+      mode="multi"
+      title="Search Settings"
+      :configured-providers="configuredProviderIds"
+      :selected-providers="selectedProviders"
+      @update:selected-providers="onSelectedProvidersUpdate"
+      v-model:top-k="searchStore.topK"
+      v-model:search-mode="searchMode"
+      v-model:semantic-weight="semanticWeight"
+      v-model:rerank="localRerank"
+      v-model:synthesize="localSynthesize"
+      v-model:model-overrides="providerModelOverrides"
+      top-k-label="Max results"
+      :top-k-max="50"
+      @switch-tab="$emit('switch-tab', $event)"
+    />
 
     <!-- Search input area -->
     <div class="flex-shrink-0 pt-3">
@@ -246,49 +141,6 @@
       <progress class="progress progress-primary w-full mt-2"></progress>
     </div>
 
-    <!-- Cache Prompt Dialog -->
-    <div v-if="showCachePrompt && cachedData" class="flex-shrink-0 mt-3 alert shadow-lg"
-      :class="cacheMatchType === 'semantic' ? 'alert-warning' : 'alert-success'">
-      <svg v-if="cacheMatchType === 'exact'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-6 h-6">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-      </svg>
-      <svg v-else xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-6 h-6">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
-      </svg>
-      <div class="flex-1">
-        <h4 class="font-semibold">
-          <span v-if="cacheMatchType === 'exact'">Cached results found!</span>
-          <span v-else>Semantically similar search found <span class="badge badge-sm badge-warning ml-1">{{ (cacheSimilarityScore * 100).toFixed(0) }}% match</span></span>
-        </h4>
-        <p class="text-sm">
-          <span v-if="cacheMatchType === 'semantic'">
-            Similar to: <em>"{{ cachedData.query }}"</em> &middot; searched {{ formatTimeAgo(cachedData.timestamp) }}.
-            Reuse the cached AI results to save tokens, or run a fresh search for your exact query.
-          </span>
-          <span v-else>
-            This search was performed {{ formatTimeAgo(cachedData.timestamp) }}.
-            You can use the cached results instantly (no tokens used) or perform a fresh search.
-          </span>
-        </p>
-        <p class="text-xs text-base-content/70 mt-1">
-          Cached: {{ cachedData.results?.length || 0 }} results
-          <span v-if="cachedData.aiResponses && cachedData.aiResponses.length > 0">
-            &middot; {{ cachedData.aiResponses.length }} AI response(s)
-          </span>
-        </p>
-      </div>
-      <div class="flex gap-2">
-        <button class="btn btn-sm btn-ghost" @click="useCachedResults">
-          Use Cached
-        </button>
-        <button class="btn btn-sm btn-primary" @click="performFreshSearch">
-          Fresh Search
-        </button>
-      </div>
-    </div>
-
     <!-- Error Alert -->
     <div v-if="error" class="flex-shrink-0 mt-3 alert alert-error">
       <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
@@ -300,6 +152,38 @@
 
     <!-- Results area (scrollable) -->
     <div class="flex-1 overflow-y-auto min-h-0 space-y-4 mt-4 pr-1">
+
+    <!-- Empty state (no search run yet) -->
+    <div
+      v-if="showEmptyState"
+      class="flex flex-col items-center justify-center h-full text-center gap-5 py-8 px-4"
+    >
+      <div class="flex flex-col items-center gap-2">
+        <div class="w-11 h-11 rounded-full bg-base-200 flex items-center justify-center">
+          <SearchIcon :size="20" class="text-base-content/50" aria-hidden="true" />
+        </div>
+        <h3 class="text-sm font-medium text-base-content/80">Search your sources</h3>
+        <p class="text-xs text-base-content/40">Find relevant passages across everything indexed in this collection.</p>
+      </div>
+      <div class="flex flex-col gap-1.5 w-full max-w-md">
+        <button
+          v-for="suggestion in searchSuggestions"
+          :key="suggestion"
+          class="btn btn-sm btn-ghost justify-start font-normal text-base-content/70 hover:text-base-content border border-base-300 hover:border-base-content/20"
+          @click="useSearchSuggestion(suggestion)"
+        >
+          <Sparkles :size="13" class="text-base-content/30 flex-shrink-0" aria-hidden="true" />
+          <span class="truncate">{{ suggestion }}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Cached-result notice (served instantly from the local search cache) -->
+    <div v-if="servedFromCache && !loading" class="flex items-center gap-1.5 text-xs text-base-content/50">
+      <span>cached &middot; {{ formatTimeAgo(servedFromCache.timestamp) }}</span>
+      <span aria-hidden="true">&middot;</span>
+      <button class="link link-hover text-primary" @click="refreshSearch">Refresh</button>
+    </div>
 
     <!-- AI Synthesis (Multiple Providers) -->
     <div v-if="searchStore.aiResponses && searchStore.aiResponses.length > 0" class="space-y-4">
@@ -324,21 +208,6 @@
               &middot; {{ aiResponse.aiUsage.total_input_tokens + aiResponse.aiUsage.total_output_tokens }} tokens
             </span>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- AI Synthesis (Legacy Single Provider) -->
-    <div v-else-if="searchStore.synthesis" class="card bg-primary/5 border border-primary/20">
-      <div class="card-body">
-        <h3 class="card-title text-base">
-          <span class="badge badge-primary badge-sm">AI</span>
-          Answer
-        </h3>
-        <div class="prose prose-sm max-w-none whitespace-pre-wrap">{{ searchStore.synthesis }}</div>
-        <div v-if="searchStore.aiUsage" class="text-xs text-base-content/40 mt-1">
-          {{ searchStore.aiUsage.features_used.join(', ') }}
-          &middot; {{ searchStore.aiUsage.total_input_tokens + searchStore.aiUsage.total_output_tokens }} tokens
         </div>
       </div>
     </div>
@@ -575,22 +444,20 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
-import { Plus, History, SlidersHorizontal, X, Search as SearchIcon } from 'lucide-vue-next'
+import { Plus, History, SlidersHorizontal, Sparkles, X, Search as SearchIcon } from 'lucide-vue-next'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
+import AISettingsDrawer from './AISettingsDrawer.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
-import { nextTick } from 'vue'
 import {
   getConfiguredProviderIds,
+  fetchServerProviderIds,
   buildProviderHeaders,
   getAPIProviderName,
   getProviderDisplayName,
-  getProviderModels,
-  getProviderConfig,
-  isLocalProvider,
   getAISettings,
   migrateLegacySettings,
 } from '../utils/aiProviders.js'
@@ -667,10 +534,27 @@ const runInlineSlashCommand = async (input) => {
   slashOutput.value = result
   // Clear any stale search results so the slash output is the primary view.
   searchStore.clearResults()
+  servedFromCache.value = null
 }
 
 const dismissSlashOutput = () => {
   slashOutput.value = null
+}
+
+// Empty state (no search run yet, nothing else on screen)
+const searchSuggestions = [
+  'summarize the key points of these sources',
+  'important dates and deadlines',
+  'definitions of key terms',
+]
+
+const showEmptyState = computed(() =>
+  !searchStore.searched && !loading.value && !slashOutput.value && !error.value
+)
+
+const useSearchSuggestion = (suggestion) => {
+  searchStore.query = suggestion
+  nextTick(() => searchInputRef.value?.focus())
 }
 
 // Search mode options
@@ -686,12 +570,9 @@ const searchModeLabel = computed(() => {
 // AbortController for cancelling ongoing searches
 let abortController = null
 
-// Cache prompt state
-const showCachePrompt = ref(false)
-const cachedData = ref(null)
-const cacheMatchType = ref('exact')   // 'exact' | 'semantic'
-const cacheSimilarityScore = ref(0)
-const pendingEmbedding = ref(null)
+// When the current results were served from the local search cache:
+// { timestamp } of the cached entry (null after a fresh search).
+const servedFromCache = ref(null)
 
 // History modal state
 const showHistoryModal = ref(false)
@@ -699,42 +580,17 @@ const showHistoryModal = ref(false)
 // Settings drawer state
 const searchSettingsOpen = ref(false)
 
-// Collapsible settings state (legacy, kept for localStorage compat)
-const SEARCH_SETTINGS_COLLAPSED_KEY = 'asymptote_search_settings_collapsed'
-const searchSettingsCollapsed = ref(true)
-
-// AI Settings - Read from Settings tab's localStorage values
-// API keys and feature toggles (rerank/synthesize) are managed in Settings
-// Provider selection for each search is managed here
-
 // Check which providers are configured
 const configuredProviderIds = ref([])
 const hasAnyProvider = computed(() => configuredProviderIds.value.length > 0)
-
-// Provider availability (for backwards compat)
-const ollamaAvailable = computed(() => configuredProviderIds.value.includes('ollama'))
 
 // Selected providers for this search session
 const PROVIDER_SELECTION_KEY = 'asymptote_selected_providers'
 const PROVIDER_MODEL_OVERRIDES_KEY = 'asymptote_search_model_overrides'
 const selectedProviders = ref([])
-const selectedPrivateCount = computed(() => selectedProviders.value.filter(p => isLocalProvider(p)).length)
-const selectedExternalCount = computed(() => selectedProviders.value.filter(p => !isLocalProvider(p)).length)
 
 // Per-search model overrides: { providerId: 'model-id' | '' }
 const providerModelOverrides = ref({})
-
-// Get available models for a provider (delegates to PROVIDER_DEFS)
-const getModelsForProvider = (pid) => getProviderModels(pid)
-
-// Get the display label for a provider's currently configured (default) model
-const getDefaultModelLabel = (pid) => {
-  const cfg = getProviderConfig(pid)
-  if (!cfg?.model) return ''
-  const models = getProviderModels(pid)
-  const found = models.find(m => m.id === cfg.model)
-  return found ? found.label : cfg.model
-}
 
 // Persist model override changes
 watch(providerModelOverrides, (val) => {
@@ -777,23 +633,19 @@ const initializeProviders = () => {
   }
 }
 
-// Toggle a provider on/off
-const toggleProvider = (provider) => {
-  const index = selectedProviders.value.indexOf(provider)
-  if (index > -1) {
-    selectedProviders.value.splice(index, 1)
-  } else {
-    selectedProviders.value.push(provider)
-  }
-  localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(selectedProviders.value))
+// Provider selection updates from the settings drawer (persisted)
+const onSelectedProvidersUpdate = (list) => {
+  selectedProviders.value = list
+  localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(list))
 }
 
-onMounted(() => {
+onMounted(async () => {
   initializeProviders()
-  const savedCollapsed = localStorage.getItem(SEARCH_SETTINGS_COLLAPSED_KEY)
-  if (savedCollapsed !== null) {
-    searchSettingsCollapsed.value = savedCollapsed === 'true'
-  }
+
+  // Server-stored team keys (hosted deployments) count as configured —
+  // re-run provider init once we know which providers the server covers.
+  await fetchServerProviderIds()
+  initializeProviders()
 })
 
 onBeforeUnmount(() => {
@@ -803,8 +655,8 @@ onBeforeUnmount(() => {
 // Get configured AI settings from Settings tab (features only - rerank/synthesize)
 // Inline AI feature toggles (read initial value from shared ai_settings, write back on change)
 const _initialAISettings = getAISettings()
-const localRerank = ref(_initialAISettings.rerank ?? false)
-const localSynthesize = ref(_initialAISettings.synthesize ?? false)
+const localRerank = ref(_initialAISettings.rerank ?? true)
+const localSynthesize = ref(_initialAISettings.synthesize ?? true)
 
 watch([localRerank, localSynthesize], () => {
   try {
@@ -871,19 +723,6 @@ watch(loading, (isLoading) => {
   }
 })
 
-watch(searchSettingsCollapsed, (collapsed) => {
-  localStorage.setItem(SEARCH_SETTINGS_COLLAPSED_KEY, collapsed ? 'true' : 'false')
-})
-
-
-const activeFeaturesList = computed(() => {
-  const settings = getAISettings()
-  const features = []
-  if (settings.rerank) features.push('Reranking')
-  if (settings.synthesize) features.push('Synthesis')
-  return features.length > 0 ? features.join(' + ') : 'None'
-})
-
 const cacheStats = computed(() => searchStore.getCacheStats())
 
 const historyEntries = computed(() => {
@@ -918,7 +757,7 @@ const highlightText = (text, searchQuery) => {
 
   keywords.forEach(keyword => {
     const regex = new RegExp(`(${escapeRegExp(keyword)})`, 'gi')
-    result = result.replace(regex, '<mark class="bg-yellow-300 dark:bg-yellow-600 px-1 rounded">$1</mark>')
+    result = result.replace(regex, '<mark class="bg-warning text-warning-content px-1 rounded">$1</mark>')
   })
 
   return result
@@ -933,54 +772,31 @@ const formatTimeAgo = (timestamp) => {
   return `${Math.floor(seconds / 86400)} days ago`
 }
 
-const useCachedResults = () => {
-  if (!cachedData.value) return
-
-  // For semantic matches, file under the current query so future exact lookups work
-  const effectiveQuery = cacheMatchType.value === 'semantic'
-    ? searchStore.query.toLowerCase().trim()
-    : cachedData.value.query
-
-  searchStore.setSearchResults({
-    query: effectiveQuery,
-    results: cachedData.value.results,
-    synthesis: cachedData.value.synthesis,
-    ai_usage: cachedData.value.ai_usage,
-    aiResponses: cachedData.value.aiResponses,
-    embedding: pendingEmbedding.value  // Store embedding for current query too
-  })
-
-  showCachePrompt.value = false
-  cachedData.value = null
-  pendingEmbedding.value = null
-  emit('stats-updated')
-}
-
-const performFreshSearch = async () => {
-  showCachePrompt.value = false
-  const embedding = pendingEmbedding.value
-  cachedData.value = null
-  pendingEmbedding.value = null
-  searchSettingsCollapsed.value = true
-  await executeSearch(embedding)
-}
-
-const loadHistoryEntry = (entry) => {
-  // Load the cached entry
+// Serve a cached entry immediately (no re-cache: the original timestamp
+// drives both the "cached · N ago" label and history ordering).
+const serveCachedResult = (entry) => {
   searchStore.setSearchResults({
     query: entry.query,
     results: entry.results,
-    synthesis: entry.synthesis,
-    ai_usage: entry.ai_usage,
     aiResponses: entry.aiResponses
-  })
+  }, { cache: false })
+  servedFromCache.value = { timestamp: entry.timestamp }
+  emit('stats-updated')
+}
+
+// Re-run the current query, bypassing the cache.
+const refreshSearch = async () => {
+  await executeSearch()
+}
+
+const loadHistoryEntry = (entry) => {
+  serveCachedResult(entry)
 
   // Update the query and topK values
   searchStore.setQuery(entry.query)
   searchStore.setTopK(entry.topK)
 
   showHistoryModal.value = false
-  emit('stats-updated')
 }
 
 const deleteHistoryEntry = (entry) => {
@@ -999,9 +815,7 @@ const startNewSearch = () => {
   searchStore.clearResults()
   searchStore.setQuery('')
   error.value = ''
-  showCachePrompt.value = false
-  cachedData.value = null
-  pendingEmbedding.value = null
+  servedFromCache.value = null
 }
 
 const search = async () => {
@@ -1020,40 +834,15 @@ const search = async () => {
   // Clear any prior slash output when running a real search.
   slashOutput.value = null
 
-  // 1. Exact cache hit — instant
+  // Exact cache hit — serve instantly; the "cached · N ago · Refresh" line
+  // above the results lets the user re-run it fresh.
   const cached = searchStore.getCachedResult(searchStore.query, searchStore.topK)
   if (cached) {
-    cachedData.value = cached
-    cacheMatchType.value = 'exact'
-    cacheSimilarityScore.value = 1
-    showCachePrompt.value = true
+    serveCachedResult(cached)
     return
   }
 
-  // 2. Always fetch embedding so cache entries are always populated for future semantic checks
-  try {
-    const embedResponse = await axios.post('/api/embed', { text: searchStore.query.toLowerCase().trim() })
-    pendingEmbedding.value = embedResponse.data.embedding
-  } catch {
-    pendingEmbedding.value = null
-  }
-
-  // 3. Semantic similarity check — only run if there are cached entries to compare against
-  const stats = searchStore.getCacheStats()
-  if (stats.count > 0 && pendingEmbedding.value) {
-    const semanticMatch = searchStore.findSemanticallySimilar(pendingEmbedding.value)
-    if (semanticMatch) {
-      cachedData.value = semanticMatch
-      cacheMatchType.value = 'semantic'
-      cacheSimilarityScore.value = semanticMatch.similarityScore
-      showCachePrompt.value = true
-      return
-    }
-  }
-
-  // 4. No match found — run fresh search
-  searchSettingsCollapsed.value = true
-  await executeSearch(pendingEmbedding.value)
+  await executeSearch()
 }
 
 const cancelSearch = () => {
@@ -1066,13 +855,14 @@ const cancelSearch = () => {
   error.value = 'Search cancelled (backend may still be processing)'
 }
 
-const executeSearch = async (queryEmbedding = null) => {
+const executeSearch = async () => {
   // Create new AbortController for this search
   abortController = new AbortController()
   const signal = abortController.signal
 
   loading.value = true
   error.value = ''
+  servedFromCache.value = null
 
   try {
     const aiSettings = getAISettings()
@@ -1129,8 +919,7 @@ const executeSearch = async (queryEmbedding = null) => {
       searchStore.setSearchResults({
         query: searchStore.query,
         results: successfulResults[0].results,
-        aiResponses,
-        embedding: queryEmbedding
+        aiResponses
       })
     } else {
       // Regular search without AI
@@ -1144,8 +933,7 @@ const executeSearch = async (queryEmbedding = null) => {
       const response = await axios.post(`/search?collection_id=${collectionId}`, body, { signal })
       searchStore.setSearchResults({
         query: searchStore.query,
-        results: response.data.results,
-        embedding: queryEmbedding
+        results: response.data.results
       })
     }
 
@@ -1161,10 +949,6 @@ const executeSearch = async (queryEmbedding = null) => {
   } finally {
     loading.value = false
     abortController = null
-    pendingEmbedding.value = null
   }
 }
 </script>
-
-
-

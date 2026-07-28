@@ -261,45 +261,6 @@ class DocumentChunksResponse(BaseModel):
     chunks: List[DocumentChunkView] = Field(..., description="Chunk records")
 
 
-# Agent API schemas
-class AskRequest(BaseModel):
-    """Request for the /api/ask endpoint optimized for coding agents."""
-
-    question: str = Field(..., description="The question to answer", min_length=1)
-    collection_id: str = Field("default", description="Collection to search")
-    top_k: int = Field(5, description="Number of source chunks to consider", ge=1, le=20)
-    rerank: bool = Field(True, description="Rerank results using AI before synthesis (improves answer quality)")
-    include_sources: bool = Field(True, description="Include source excerpts in response")
-    max_source_length: int = Field(500, description="Max characters per source excerpt", ge=100, le=2000)
-    format: str = Field("markdown", description="Response format: 'text', 'markdown', or 'json'")
-    mode: SearchMode = Field(SearchMode.SEMANTIC, description="Search mode: semantic, keyword, or hybrid")
-    semantic_weight: float = Field(
-        0.7,
-        description="Weight for semantic search in hybrid mode (0-1). Higher = more semantic.",
-        ge=0.0,
-        le=1.0
-    )
-
-
-class AskSource(BaseModel):
-    """A source used to answer the question."""
-
-    filename: str = Field(..., description="Source document filename")
-    page: int = Field(..., description="Page or section number")
-    excerpt: str = Field(..., description="Relevant text excerpt")
-    relevance: float = Field(..., description="Similarity score (0-1)")
-
-
-class AskResponse(BaseModel):
-    """Response from the /api/ask endpoint."""
-
-    answer: str = Field(..., description="The synthesized answer to the question")
-    sources: List[AskSource] = Field(default_factory=list, description="Sources used for the answer")
-    collection_id: str = Field(..., description="Collection that was searched")
-    model: str = Field(..., description="AI model used for synthesis")
-    tokens_used: int = Field(0, description="Total tokens consumed")
-
-
 # Chat schemas
 class ChatMessage(BaseModel):
     """A single message in a chat conversation."""

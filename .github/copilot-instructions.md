@@ -32,6 +32,6 @@ Emotional target: trust, focus, quiet confidence. The user should feel like they
 
 4. **Reading-first typography and rhythm.** This is a product for people who read for a living. Generous line-height in long-form areas (chat, answers, passages), tight and functional in tool surfaces. A clear type hierarchy with real contrast between steps. No monospace-as-personality.
 
-5. **Progressive disclosure over tabs of tabs.** The primary job (ask → answer → cite) should be reachable in one surface. Advanced tools (OCR playground, tokenizer, code indexing, MCP) are real features but live one level down — they should feel discoverable, not ever-present.
+5. **Progressive disclosure over tabs of tabs.** The primary job (ask → answer → cite) should be reachable in one surface. Everything else — search, generation, expertise packs, MCP — supports that job and should stay visually secondary to the chat surface.
 
 6. **Intelligent by silence.** The product shouldn't narrate itself. No redundant headers, no "Welcome to X" banners, no onboarding copy on return visits, no button that says "Click to search" next to a search box. Fewer words, more signal.

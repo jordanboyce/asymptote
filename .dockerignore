@@ -29,7 +29,6 @@ data/
 .env
 .env.*
 !.env.example
-!.env.enterprise
 
 # Documentation
 *.md
@@ -44,14 +43,10 @@ Dockerfile.*
 docker-compose*.yml
 .dockerignore
 
-# Nginx config (mounted as volume, not baked in)
-nginx/
+# Electron wrapper (not needed in server image)
+electron/
+electron-dist/
 
-# Desktop app (not needed in server image)
-desktop/
-
-# Frontend source (pre-built assets are in static/)
+# Frontend dependencies & local builds (installed/built inside the image)
 frontend/node_modules/
-
-# SSL certs dir marker (actual certs handled by Dockerfile COPY)
-nginx/ssl/
+frontend/dist/

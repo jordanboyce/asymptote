@@ -84,108 +84,46 @@
       </div>
 
       <!-- Chat Settings Drawer -->
-      <div
-        v-if="settingsDrawerOpen"
-        class="fixed inset-0 z-[200]"
-        @click.self="settingsDrawerOpen = false"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="chat-settings-title"
+      <AISettingsDrawer
+        v-model:open="settingsDrawerOpen"
+        mode="single"
+        title="Chat Settings"
+        :configured-providers="configuredProviders"
+        :provider="selectedProvider"
+        @update:provider="selectProvider"
+        v-model:top-k="topK"
+        v-model:search-mode="searchMode"
+        v-model:rerank="rerank"
+        v-model:model-overrides="chatModelOverrides"
+        top-k-label="Context chunks"
+        :top-k-max="20"
+        @switch-tab="$emit('switch-tab', $event)"
       >
-        <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/30" @click="settingsDrawerOpen = false" aria-hidden="true"></div>
-
-        <!-- Drawer Panel -->
-        <div class="absolute right-0 top-0 h-full w-80 max-w-[85vw] bg-base-100 shadow-2xl flex flex-col">
-          <!-- Header -->
-          <div class="flex items-center justify-between p-4 border-b border-base-300">
-            <h3 id="chat-settings-title" class="text-sm font-bold">Chat Settings</h3>
-            <button
-              class="btn btn-ghost btn-sm btn-circle"
-              @click="settingsDrawerOpen = false"
-              aria-label="Close chat settings"
-            >
-              <X :size="18" />
-            </button>
+        <template #advanced>
+          <!-- Scope -->
+          <div class="space-y-2">
+            <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Scope</span>
+            <div class="flex items-center gap-1 rounded-lg border border-base-300 p-1 bg-base-200/60">
+              <button
+                class="btn btn-xs gap-1 flex-1 transition-all"
+                :class="scope === 'current' ? 'btn-primary' : 'btn-ghost'"
+                @click="scope = 'current'"
+              >
+                <Layers :size="12" />
+                Current
+              </button>
+              <button
+                class="btn btn-xs gap-1 flex-1 transition-all"
+                :class="scope === 'all' ? 'btn-secondary' : 'btn-ghost'"
+                @click="scope = 'all'"
+              >
+                <Database :size="12" />
+                All
+              </button>
+            </div>
           </div>
-
-          <!-- Content -->
-          <div class="flex-1 overflow-y-auto p-4 space-y-5">
-
-            <!-- Scope -->
-            <div class="space-y-2">
-              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Scope</span>
-              <div class="flex items-center gap-1 rounded-lg border border-base-300 p-1 bg-base-200/60">
-                <button
-                  class="btn btn-xs gap-1 flex-1 transition-all"
-                  :class="scope === 'current' ? 'btn-primary' : 'btn-ghost'"
-                  @click="scope = 'current'"
-                >
-                  <Layers :size="12" />
-                  Current
-                </button>
-                <button
-                  class="btn btn-xs gap-1 flex-1 transition-all"
-                  :class="scope === 'all' ? 'btn-secondary' : 'btn-ghost'"
-                  @click="scope = 'all'"
-                >
-                  <Database :size="12" />
-                  All
-                </button>
-              </div>
-            </div>
-
-            <!-- Retrieval -->
-            <div class="space-y-2">
-              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">Retrieval</span>
-
-              <label class="flex items-center justify-between cursor-pointer select-none">
-                <span class="text-sm">Rerank context</span>
-                <input type="checkbox" class="toggle toggle-sm toggle-primary" v-model="rerank" />
-              </label>
-
-              <label class="flex items-center justify-between">
-                <span class="text-sm">Context chunks</span>
-                <input
-                  v-model.number="topK"
-                  type="number"
-                  min="1"
-                  max="20"
-                  class="input input-bordered input-xs w-16 text-center"
-                  aria-label="Number of context chunks"
-                />
-              </label>
-
-              <label class="flex items-center justify-between">
-                <span class="text-sm">Search mode</span>
-                <select v-model="searchMode" class="select select-bordered select-xs" aria-label="Search mode">
-                  <option value="semantic">Semantic</option>
-                  <option value="keyword">Keyword</option>
-                  <option value="hybrid">Hybrid</option>
-                </select>
-              </label>
-            </div>
-
-            <!-- Provider -->
-            <div v-if="hasAnyProvider" class="space-y-2">
-              <span class="text-xs font-semibold text-base-content/60 uppercase tracking-wider">AI Provider</span>
-              <div class="space-y-1.5">
-                <label
-                  v-for="pid in configuredProviders"
-                  :key="pid"
-                  class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors text-sm"
-                  :class="selectedProvider === pid ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
-                >
-                  <input type="radio" class="radio radio-xs radio-primary" :checked="selectedProvider === pid" @change="selectProvider(pid)" />
-                  <span class="flex-1">{{ providerDisplayName(pid) }}</span>
-                  <span class="badge badge-xs badge-outline">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
-                </label>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      </div>
+        </template>
+      </AISettingsDrawer>
 
       <!-- No data notice -->
       <div v-if="documentCount === 0" class="alert alert-warning flex-shrink-0 py-2">
@@ -307,7 +245,7 @@
                     <!-- Error -->
                     <div v-if="sr.error" class="px-3 py-2 text-xs text-error">{{ sr.error }}</div>
 
-                    <!-- Tabular result (query / top_holdings / etc.) -->
+                    <!-- Tabular result (query_table / get_table_rows / etc.) -->
                     <div
                       v-else-if="sr.result && sr.result.columns && sr.result.rows"
                       class="overflow-x-auto max-h-80"
@@ -597,25 +535,25 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, X, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
+import AISettingsDrawer from './AISettingsDrawer.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
 import {
   getConfiguredProviderIds,
+  fetchServerProviderIds,
   buildProviderHeaders,
   getAPIProviderName,
   getProviderDisplayName,
-  isLocalProvider,
 } from '../utils/aiProviders.js'
 
 const props = defineProps({
-  chunkCount: { type: Number, default: 0 },
   // documentCount is the real "is there anything indexed" signal — CSV/XLSX
   // files live entirely in the structured SQL store and produce zero chunks,
-  // so chunkCount alone would falsely trigger the "no data" banner for
-  // advisors whose only sources are tabular.
+  // so a chunk count alone would falsely trigger the "no data" banner for
+  // users whose only sources are tabular.
   documentCount: { type: Number, default: 0 },
 })
 const emit = defineEmits(['switch-tab'])
@@ -628,6 +566,7 @@ const loading = ref(false)
 const error = ref('')
 const inputMessage = ref('')
 const messagesEnd = ref(null)
+const messagesContainer = ref(null)
 const settingsDrawerOpen = ref(false)
 
 // Chat options (persisted)
@@ -636,10 +575,21 @@ const searchMode = ref(localStorage.getItem('chat_search_mode') || 'semantic')
 const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 
-// Provider state
-const configuredProviders = computed(() => getConfiguredProviderIds())
+// Provider state. A ref (not computed) because the list can grow after mount:
+// server-stored team keys are fetched async and count as configured.
+const configuredProviders = ref(getConfiguredProviderIds())
 const selectedProvider = ref(localStorage.getItem('chat_provider') || '')
 const hasAnyProvider = computed(() => configuredProviders.value.length > 0)
+
+// Per-provider model overrides for chat: { providerId: modelId | '' }.
+// '' / absent means the provider's configured default model.
+const CHAT_MODEL_OVERRIDES_KEY = 'asymptote_chat_model_overrides'
+const chatModelOverrides = ref((() => {
+  try { return JSON.parse(localStorage.getItem(CHAT_MODEL_OVERRIDES_KEY) || '{}') } catch { return {} }
+})())
+watch(chatModelOverrides, (v) => {
+  try { localStorage.setItem(CHAT_MODEL_OVERRIDES_KEY, JSON.stringify(v)) } catch { /* ignore */ }
+}, { deep: true })
 
 const sendDisabled = computed(() => {
   if (!inputMessage.value.trim() || loading.value) return true
@@ -734,7 +684,7 @@ const toolIconClass = (name) => toolMeta(name).color
 const toolLabel = (sr) => toolMeta(sr.tool).label
 const toolDetail = (sr) => {
   const a = sr.args || {}
-  return a.query || a.identifier || a.symbol || a.table || a.filename || a.document_id || ''
+  return a.query || a.identifier || a.table || a.filename || a.document_id || ''
 }
 
 const formatCell = (v) => {
@@ -787,6 +737,29 @@ const ensureValidProvider = () => {
 const scrollToBottom = async () => {
   await nextTick()
   messagesEnd.value?.scrollIntoView({ behavior: 'smooth' })
+}
+
+// ── Streaming auto-scroll ────────────────────────────────────────────────
+// A single throttled scroll driven by the deep watch on messages (below):
+// per-event scrolling during streaming thrashed layout on every token.
+// Auto-scroll is skipped when the user has scrolled up to read.
+const NEAR_BOTTOM_PX = 100
+
+const isNearBottom = () => {
+  const el = messagesContainer.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX
+}
+
+let autoScrollTimer = null
+const throttledAutoScroll = () => {
+  if (autoScrollTimer) return
+  autoScrollTimer = setTimeout(async () => {
+    autoScrollTimer = null
+    if (!isNearBottom()) return
+    await nextTick()
+    messagesEnd.value?.scrollIntoView({ behavior: 'auto' })
+  }, 100)
 }
 
 // ── Copy answer to clipboard ─────────────────────────────────────────────
@@ -901,7 +874,10 @@ const sendMessage = async () => {
   await scrollToBottom()
 
   try {
-    const providerHeaders = buildProviderHeaders(selectedProvider.value)
+    const providerHeaders = buildProviderHeaders(
+      selectedProvider.value,
+      chatModelOverrides.value[selectedProvider.value] || null,
+    )
     // Pass only role+content to the API (strip UI-only fields like timestamps).
     const apiMessages = messages.value
       .filter(m => !m.streaming)
@@ -950,17 +926,16 @@ const sendMessage = async () => {
         let event
         try { event = JSON.parse(raw) } catch { continue }
 
+        // Scrolling during streaming is handled by the throttled deep watch
+        // on messages — no per-event scroll calls here.
         if (event.type === 'tool_start') {
           chatStore.addStreamingToolCall(collectionId, event.tool, event.args || {})
-          await scrollToBottom()
         } else if (event.type === 'tool_end') {
           chatStore.resolveStreamingToolCall(collectionId, event.tool, event.result || {})
         } else if (event.type === 'thinking') {
           chatStore.addStreamingThinking(collectionId, event.text || '')
-          await scrollToBottom()
         } else if (event.type === 'text_delta') {
           chatStore.appendStreamingText(collectionId, event.delta || '')
-          await scrollToBottom()
         } else if (event.type === 'sources') {
           // Sources will be committed in 'done'
         } else if (event.type === 'done') {
@@ -978,7 +953,6 @@ const sendMessage = async () => {
               break
             }
           }
-          await scrollToBottom()
         } else if (event.type === 'error') {
           chatStore.removeLastStreamingMessage(collectionId)
           error.value = event.message || 'Chat failed. Please try again.'
@@ -1005,7 +979,7 @@ watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
 watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
 
-watch(messages, async () => { await scrollToBottom() }, { deep: true })
+watch(messages, () => { throttledAutoScroll() }, { deep: true })
 
 const handlePrefill = (e) => {
   const prompt = e?.detail?.prompt
@@ -1017,13 +991,23 @@ const handlePrefill = (e) => {
   })
 }
 
-onMounted(() => {
+onMounted(async () => {
   ensureValidProvider()
   scrollToBottom()
   window.addEventListener('asymptote:prefill-chat', handlePrefill)
+
+  // Pick up providers whose key lives on the server (team deployments):
+  // they become selectable without the user ever entering a key.
+  await fetchServerProviderIds()
+  configuredProviders.value = getConfiguredProviderIds()
+  ensureValidProvider()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('asymptote:prefill-chat', handlePrefill)
+  if (autoScrollTimer) {
+    clearTimeout(autoScrollTimer)
+    autoScrollTimer = null
+  }
 })
 </script>

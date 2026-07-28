@@ -6,7 +6,8 @@ Asymptote is a privacy-focused tool for indexing your own documents and data, ch
 
 ## Backend (Python / FastAPI)
 
-- [main.py](../main.py) — single-file FastAPI app. All HTTP endpoints live here; business logic lives under `services/`. The lifespan handler initializes the embedding model, vector store, indexer manager, MCP server, and collection service.
+- [main.py](../main.py) — thin app assembly: middleware, lifespan (initializes the embedding model, vector store, indexer manager, MCP server, and collection service), router includes, and frontend serving.
+- [api/](../api/) — HTTP endpoints, one router module per domain: `documents`, `search`, `chat`, `artifacts`, `collections`, `mcp`, `sharing`, `expertise`, `system`. Shared helpers/state (e.g. `get_indexer`, the expertise store singleton) live in [api/deps.py](../api/deps.py). Routers carry their full URL paths — no prefixes — so the public API matches the module layout one-to-one. Business logic belongs in `services/`, not in routers.
 - [config.py](../config.py) — pydantic-settings `Settings` loaded from `.env`. Defaults work for solo use; multi-user mode and a Postgres backend are opt-in.
 - [models/schemas.py](../models/schemas.py) — every Pydantic request/response model.
 - [services/](../services/) — feature modules:
@@ -17,7 +18,6 @@ Asymptote is a privacy-focused tool for indexing your own documents and data, ch
   - `services/structured_chat.py` — the provider-agnostic chat tool registry and dispatcher (see below).
   - `services/agent_tools.py` — the same tool registry rendered as native Anthropic / OpenAI tool schemas.
   - `services/mcp_server.py` — embedded HTTP MCP endpoint mounted at `/mcp`.
-  - `services/tabular/` — generic tabular inference (header detection, type/role mapping) shared by CSV/XLSX/PDF tables.
   - `services/expertise_store.py` — named, markdown-body "Expertise" packs: reusable research frameworks/instructions a user can attach to a collection.
 - [middleware/](../middleware/) — `user_context` resolves `X-User-ID` for multi-user mode.
 
@@ -37,9 +37,9 @@ The in-app chat is the primary surface; the MCP endpoint is secondary.
 
 ## Frontend (Vue 3 + Vite)
 
-- [frontend/src/App.vue](../frontend/src/App.vue) — shell with tab navigation; per-tab components in [frontend/src/components/](../frontend/src/components/) (ChatTab, SearchTab, DocumentsTab, MCPTab, OCRPlaygroundTab, TokenizerTab, SettingsTab, ExpertiseLibrary, …).
+- [frontend/src/App.vue](../frontend/src/App.vue) — NotebookLM-style shell: Sources sidebar (left), main surface with tab navigation (Chat, Search, Generate, Expertise, MCP), Studio sidebar (right). Per-tab components in [frontend/src/components/](../frontend/src/components/) (ChatTab, SearchTab, ArtifactsTab, ExpertiseLibrary, MCPTab, SettingsTab, …).
 - Pinia stores in [frontend/src/stores/](../frontend/src/stores/).
-- The Vite dev server runs at `:5173` and proxies to the backend at `:8473`. The production build lands in [static/](../static/) and is served by FastAPI; do not hand-edit `static/assets/*` — they are build outputs.
+- The Vite dev server runs at `:5173` and proxies to the backend at `:8473`. The production build lands in `frontend/dist/` (gitignored) and is served by FastAPI with long-lived immutable caching for hashed `/assets/*` files; Docker images build it in a dedicated node stage.
 
 ## Design language
 

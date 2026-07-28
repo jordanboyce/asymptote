@@ -1208,6 +1208,7 @@ class CodeExtractor:
                 if len(symbol.text) > self.chunk_size:
                     sub_chunks = self._split_large_symbol(symbol, document_id, filename, language, unit_name)
                     for sub_chunk in sub_chunks:
+                        sub_chunk.chunk_id = f"{document_id}_{chunk_index}"
                         sub_chunk.chunk_index = chunk_index
                         chunks.append(sub_chunk)
                         chunk_index += 1

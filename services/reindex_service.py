@@ -135,11 +135,7 @@ class ReindexService:
                 vision_ocr_provider=settings.vision_ocr_provider,
                 vision_ocr_model=settings.vision_ocr_model,
                 vision_ocr_api_key=settings.vision_ocr_api_key,
-                vision_ocr_dpi=settings.vision_ocr_dpi,
-                vision_ocr_enhance_image=settings.vision_ocr_enhance_image,
-                vision_ocr_cleanup_pass=settings.vision_ocr_cleanup_pass,
-                vision_ocr_cleanup_model=settings.vision_ocr_cleanup_model,
-                vision_ocr_ollama_url=settings.vision_ocr_ollama_url,
+                ollama_base_url=settings.ollama_base_url,
             )
 
             # Create new vector store in collection's indexes directory
@@ -433,11 +429,7 @@ class ReindexService:
                 vision_ocr_provider=settings.vision_ocr_provider,
                 vision_ocr_model=settings.vision_ocr_model,
                 vision_ocr_api_key=settings.vision_ocr_api_key,
-                vision_ocr_dpi=settings.vision_ocr_dpi,
-                vision_ocr_enhance_image=settings.vision_ocr_enhance_image,
-                vision_ocr_cleanup_pass=settings.vision_ocr_cleanup_pass,
-                vision_ocr_cleanup_model=settings.vision_ocr_cleanup_model,
-                vision_ocr_ollama_url=settings.vision_ocr_ollama_url,
+                ollama_base_url=settings.ollama_base_url,
             )
 
             # Create new vector store

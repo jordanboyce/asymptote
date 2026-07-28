@@ -8,8 +8,6 @@ export const useSearchStore = defineStore('search', () => {
   const topK = ref(parseInt(localStorage.getItem('asymptote_default_top_k')) || 10)
   const results = ref([])
   const lastQuery = ref('')
-  const synthesis = ref('')
-  const aiUsage = ref(null)
   const searched = ref(false)
 
   // Support for multiple AI providers
@@ -18,48 +16,18 @@ export const useSearchStore = defineStore('search', () => {
   // Search cache - now collection-aware
   const CACHE_KEY = 'asymptote_search_cache_v2'  // New key to avoid conflicts with old cache
   const MAX_CACHE_SIZE = 20
-  const SEMANTIC_SIMILARITY_THRESHOLD = 0.75
   const cacheCount = ref(0) // Reactive cache count for UI updates
   const cache = ref({}) // Reactive cache data for UI updates - keyed by collection_id
 
-  // Cosine similarity between two pre-normalized unit vectors
-  function cosineSimilarity(a, b) {
-    if (!a || !b || a.length !== b.length) return 0
-    let dot = 0
-    for (let i = 0; i < a.length; i++) dot += a[i] * b[i]
-    return dot
-  }
-
-  // Find the most semantically similar cached entry above threshold
-  function findSemanticallySimilar(queryEmbedding, threshold = SEMANTIC_SIMILARITY_THRESHOLD) {
-    if (!queryEmbedding || queryEmbedding.length === 0) return null
-    const collectionCache = getCollectionCache()
-    let bestMatch = null
-    let bestScore = threshold
-    for (const entry of Object.values(collectionCache)) {
-      if (!entry.embedding || entry.embedding.length !== queryEmbedding.length) continue
-      const score = cosineSimilarity(queryEmbedding, entry.embedding)
-      if (score > bestScore) {
-        bestScore = score
-        bestMatch = { ...entry, similarityScore: score }
-      }
-    }
-    return bestMatch
-  }
-
   // Actions
-  function setSearchResults(data) {
+  // Pass { cache: false } when re-serving an already-cached entry so the
+  // original timestamp (and history order) is preserved.
+  function setSearchResults(data, { cache: shouldCache = true } = {}) {
     results.value = data.results || []
     lastQuery.value = data.query || ''
     searched.value = true
 
-    // Handle single AI response (backward compatibility)
-    if (data.synthesis || data.ai_usage) {
-      synthesis.value = data.synthesis || ''
-      aiUsage.value = data.ai_usage || null
-    }
-
-    // Handle multiple AI responses
+    // AI responses (one per provider)
     if (data.aiResponses && data.aiResponses.length > 0) {
       aiResponses.value = data.aiResponses
     } else {
@@ -67,7 +35,7 @@ export const useSearchStore = defineStore('search', () => {
     }
 
     // Cache the search results
-    if (data.query) {
+    if (shouldCache && data.query) {
       cacheSearchResult(data)
     }
   }
@@ -105,11 +73,8 @@ export const useSearchStore = defineStore('search', () => {
         topK: topK.value,
         results: data.results,
         aiResponses: data.aiResponses || [],
-        synthesis: data.synthesis,
-        ai_usage: data.ai_usage,
         timestamp: Date.now(),
-        collectionId: collectionId,
-        embedding: data.embedding || null
+        collectionId: collectionId
       }
 
       // Ensure collection cache exists
@@ -242,8 +207,6 @@ export const useSearchStore = defineStore('search', () => {
 
   function clearResults() {
     results.value = []
-    synthesis.value = ''
-    aiUsage.value = null
     aiResponses.value = []
     searched.value = false
   }
@@ -262,8 +225,6 @@ export const useSearchStore = defineStore('search', () => {
     topK,
     results,
     lastQuery,
-    synthesis,
-    aiUsage,
     searched,
     aiResponses,
     cache, // Reactive cache ref
@@ -274,7 +235,6 @@ export const useSearchStore = defineStore('search', () => {
     setTopK,
     // Cache functions
     getCachedResult,
-    findSemanticallySimilar,
     getSearchCache,
     clearSearchCache,
     clearCollectionCache,

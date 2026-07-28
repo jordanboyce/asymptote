@@ -21,7 +21,9 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../static',
+    // Default Vite output (frontend/dist). Not committed to git — the backend
+    // serves it directly and Docker builds it in a dedicated stage.
+    outDir: 'dist',
     emptyOutDir: true,
   },
   server: {

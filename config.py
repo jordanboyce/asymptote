@@ -4,6 +4,13 @@ from pathlib import Path
 from typing import Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Cloud providers that authenticate with a simple API key, passed per-request
+# via the X-AI-Key header or stored server-side as a team key via
+# /api/agent/config. AWS Bedrock is intentionally absent: it uses the AWS
+# SigV4 credential chain (configured server-side), not a header key.
+CLOUD_AI_PROVIDERS = ("anthropic", "openai", "grok", "google", "github", "openrouter", "ollama_cloud", "openai_compatible")
+ALL_AI_PROVIDERS = CLOUD_AI_PROVIDERS + ("ollama",)
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables or .env file."""
@@ -69,23 +76,25 @@ class Settings(BaseSettings):
     enable_multi_user: bool = False  # Set to True for per-user data isolation
     default_user_id: str = "default"  # User ID used in single-user mode
 
-    # OCR configuration
-    enable_ocr: bool = False  # Enable OCR for scanned PDFs
-    ocr_max_pages: int = 25  # Skip OCR for PDFs with more pages than this (0 = no limit)
-    ocr_max_file_mb: int = 50  # Skip OCR for files larger than this in MB (0 = no limit)
+    # Optional shared-secret auth for public deployments. When set, every
+    # request (except /health) must present this password via HTTP Basic auth
+    # (any username) or `Authorization: Bearer <password>`. Browsers prompt
+    # natively, so no login UI is needed. Leave empty on trusted networks.
+    auth_password: str = ""
 
-    # Vision AI OCR - used when enable_ocr=True and vision_ocr_provider is set
+    # OCR configuration — deliberately minimal: an on/off switch and an engine.
+    # Scanned pages either go through a vision-capable LLM (best quality) or the
+    # free local engine (Docling/Tesseract) when no provider is set. Rendering
+    # and image-prep details are fixed at sensible defaults in the extractor.
+    enable_ocr: bool = False  # OCR scanned PDFs during indexing
+    ocr_max_pages: int = 25  # Cost guard: skip OCR for PDFs with more pages (0 = no limit; env-only)
+    ocr_max_file_mb: int = 50  # Cost guard: skip OCR for files larger than this in MB (0 = no limit; env-only)
+
     # "auto" = zero-config: auto-pick a vision model from the local Ollama
-    # install (no API key, no model selection needed).
+    # install (no API key, no model selection needed). "none" = local OCR.
     vision_ocr_provider: str = "none"  # "auto" | "anthropic" | "openai" | "ollama" | "none"
-    vision_ocr_model: str = ""  # Leave empty with "auto" to auto-detect the Ollama model
-    vision_ocr_api_key: str = ""  # Stored locally for indexing use
-    vision_ocr_dpi: int = 150  # PDF render DPI (higher = better quality, slower)
-    vision_ocr_enhance_image: bool = True  # Boost contrast/sharpness before sending to model
-    vision_ocr_cleanup_pass: bool = True   # Run a second LLM pass to fix OCR errors
-    vision_ocr_cleanup_model: str = ""  # Model for cleanup (empty = same as vision model)
-    vision_ocr_ollama_url: str = "http://localhost:11434"
-    vision_ocr_form_mode: bool = False      # Form-aware prompt + ruled-line image preprocessing
+    vision_ocr_model: str = ""  # Leave empty with "auto"/"ollama" to auto-detect the Ollama model
+    vision_ocr_api_key: str = ""  # Stored locally so background indexing can use it
 
     # Local Ollama context window (num_ctx). Ollama defaults to a small context
     # (~2048 tokens) and SILENTLY truncates anything longer — which drops most of
@@ -106,7 +115,6 @@ class Settings(BaseSettings):
 
     # v3.0: CSV indexing configuration
     csv_row_level_indexing: bool = True  # Index CSV rows individually
-    csv_rows_per_chunk: int = 5  # Number of rows per chunk when not row-level
 
     # Audio transcription (meeting recordings via local Whisper)
     # Model size: tiny | base | small | medium | large-v3

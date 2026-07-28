@@ -255,29 +255,25 @@ class DocumentExtractor:
     TABULAR_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
     AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
 
+    # Fixed rendering defaults for vision OCR. These used to be user settings,
+    # but modern vision models handle ordinary scans fine at these values —
+    # the only decisions worth surfacing are on/off and which engine.
+    VISION_OCR_DPI = 150
+    VISION_OCR_ENHANCE_IMAGE = True
+
     def __init__(self, enable_ocr: bool = False,
                  ocr_max_pages: int = 25, ocr_max_file_mb: int = 50,
                  vision_ocr_provider: str = "none",
                  vision_ocr_model: str = "",
                  vision_ocr_api_key: str = "",
-                 vision_ocr_dpi: int = 150,
-                 vision_ocr_enhance_image: bool = True,
-                 vision_ocr_cleanup_pass: bool = False,
-                 vision_ocr_cleanup_model: str = "",
-                 vision_ocr_ollama_url: str = "http://localhost:11434",
-                 vision_ocr_form_mode: bool = False):
+                 ollama_base_url: str = "http://localhost:11434"):
         self.enable_ocr = enable_ocr
         self.ocr_max_pages = ocr_max_pages
         self.ocr_max_file_mb = ocr_max_file_mb
         self.vision_ocr_provider = vision_ocr_provider
         self.vision_ocr_model = vision_ocr_model
         self.vision_ocr_api_key = vision_ocr_api_key
-        self.vision_ocr_dpi = vision_ocr_dpi
-        self.vision_ocr_enhance_image = vision_ocr_enhance_image
-        self.vision_ocr_cleanup_pass = vision_ocr_cleanup_pass
-        self.vision_ocr_cleanup_model = vision_ocr_cleanup_model
-        self.vision_ocr_ollama_url = vision_ocr_ollama_url
-        self.vision_ocr_form_mode = vision_ocr_form_mode
+        self.ollama_base_url = ollama_base_url
         self._vision_ocr_engine_instance = None
         self._code_extractor = CodeExtractor()
         self._injection_detector = PromptInjectionDetector()
@@ -373,7 +369,7 @@ class DocumentExtractor:
         if self.vision_ocr_model:
             return self.vision_ocr_model
 
-        base = (self.vision_ocr_ollama_url or "http://localhost:11434").rstrip("/")
+        base = (self.ollama_base_url or "http://localhost:11434").rstrip("/")
         # Name patterns for the common multimodal families on Ollama.
         vision_patterns = (
             "llava", "vl", "vision", "minicpm-v", "moondream", "bakllava",
@@ -448,7 +444,7 @@ class DocumentExtractor:
 
             provider_kwargs: dict = {}
             if provider_name == "ollama":
-                provider_kwargs["base_url"] = self.vision_ocr_ollama_url
+                provider_kwargs["base_url"] = self.ollama_base_url
                 provider_kwargs["model"] = model
 
             provider = create_provider(
@@ -457,18 +453,13 @@ class DocumentExtractor:
                 **provider_kwargs,
             )
 
-            cleanup_model = self.vision_ocr_cleanup_model or model
-
             self._vision_ocr_engine_instance = VisionOCREngine(
                 provider=provider,
                 model=model,
-                cleanup_pass=self.vision_ocr_cleanup_pass,
-                cleanup_provider=provider,
-                cleanup_model=cleanup_model,
-                dpi=self.vision_ocr_dpi,
+                cleanup_pass=False,
+                dpi=self.VISION_OCR_DPI,
                 max_pages=self.ocr_max_pages,
-                enhance_image=self.vision_ocr_enhance_image,
-                form_mode=self.vision_ocr_form_mode,
+                enhance_image=self.VISION_OCR_ENHANCE_IMAGE,
             )
             logger.info(f"Vision OCR engine initialized: {provider_name}/{model}")
         except Exception as e:
@@ -850,69 +841,6 @@ class DocumentExtractor:
             page_texts[page_num] = "\n".join(lines)
 
         return page_texts
-
-    def extract_csv_rows(self, csv_path: Path) -> List[Dict[str, Any]]:
-        """
-        Extract CSV file as individual rows with column metadata (v3.0 row-level indexing).
-
-        Args:
-            csv_path: Path to CSV file
-
-        Returns:
-            List of dictionaries, each containing:
-                - row_number: Original row number (1-indexed, excluding header)
-                - columns: List of column names
-                - values: Dictionary of column name -> value
-                - text: Formatted text representation for embedding
-        """
-        try:
-            import pandas as pd
-        except ImportError:
-            raise ImportError(
-                "pandas is required for CSV support. "
-                "Install it with: pip install pandas"
-            )
-
-        # Read CSV — sniff header row to skip brokerage-style preamble lines
-        header_idx, _ = _sniff_csv_header(csv_path)
-        try:
-            df = pd.read_csv(csv_path, skiprows=header_idx)
-        except Exception as e:
-            logger.error(f"Failed to read CSV {csv_path.name}: {e}")
-            raise Exception(f"Failed to read CSV file: {e}")
-
-        if df.empty:
-            logger.warning(f"Empty CSV file: {csv_path.name}")
-            return []
-
-        columns = [str(col) for col in df.columns]
-        rows = []
-
-        for idx, (_, row) in enumerate(df.iterrows(), start=1):
-            # Create a dictionary of column -> value
-            values = {}
-            text_parts = []
-
-            for col in columns:
-                val = row[col]
-                # Handle NaN values
-                if pd.isna(val):
-                    val = ""
-                else:
-                    val = str(val)
-                values[col] = val
-                # Include column name in text for better semantic understanding
-                text_parts.append(f"{col}: {val}")
-
-            rows.append({
-                "row_number": idx,
-                "columns": columns,
-                "values": values,
-                "text": " | ".join(text_parts)
-            })
-
-        logger.info(f"Extracted {len(rows)} rows from CSV {csv_path.name}")
-        return rows
 
     def _extract_xlsx(self, xlsx_path: Path) -> Dict[int, str]:
         """

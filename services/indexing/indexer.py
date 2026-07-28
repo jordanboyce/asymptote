@@ -132,20 +132,13 @@ class DocumentIndexer:
         logger.debug(f"Extracting text from {filename}")
         extraction_result = self.document_extractor.extract_text(document_path)
 
-        # Handle ExtractionResult object
-        if isinstance(extraction_result, ExtractionResult):
-            page_texts = extraction_result.page_texts
-            extraction_method = extraction_result.method
-            injection_warnings = {
-                page: scan.to_dict()
-                for page, scan in extraction_result.injection_warnings.items()
-                if scan.is_flagged
-            } or None
-        else:
-            # Backward compatibility: plain dict
-            page_texts = extraction_result
-            extraction_method = "text"
-            injection_warnings = None
+        page_texts = extraction_result.page_texts
+        extraction_method = extraction_result.method
+        injection_warnings = {
+            page: scan.to_dict()
+            for page, scan in extraction_result.injection_warnings.items()
+            if scan.is_flagged
+        } or None
 
         num_pages = len(page_texts)
         report("extracting", 100, f"Extracted {num_pages} pages")
@@ -178,22 +171,16 @@ class DocumentIndexer:
 
         chunk_texts = [chunk.text for chunk in chunks]
 
-        # For large files, embed in batches with progress updates
-        batch_size = 32  # Match embedding service batch size
-        if num_chunks > batch_size and progress_callback:
-            embeddings = []
-            for i in range(0, num_chunks, batch_size):
-                batch = chunk_texts[i:i + batch_size]
-                batch_embeddings = self.embedding_service.embed_texts(batch)
-                embeddings.extend(batch_embeddings)
+        # The embedding service batches internally; we just relay progress.
+        def _embed_progress(done: int, total: int):
+            report("embedding", min(100, int(done / total * 100)),
+                   f"Embedded {done}/{total} chunks", done, total)
 
-                progress = min(100, int((i + len(batch)) / num_chunks * 100))
-                report("embedding", progress,
-                       f"Embedded {min(i + len(batch), num_chunks)}/{num_chunks} chunks",
-                       min(i + len(batch), num_chunks), num_chunks)
-        else:
-            embeddings = self.embedding_service.embed_texts(chunk_texts)
-            report("embedding", 100, f"Embedded {num_chunks} chunks", num_chunks, num_chunks)
+        embeddings = self.embedding_service.embed_texts(
+            chunk_texts,
+            progress_callback=_embed_progress if progress_callback else None,
+        )
+        report("embedding", 100, f"Embedded {num_chunks} chunks", num_chunks, num_chunks)
 
         # Phase 4: Add to vector store
         report("saving", 0, f"Saving {num_chunks} chunks to index")
@@ -211,8 +198,8 @@ class DocumentIndexer:
             source_format=source_format,
             extraction_method=extraction_method,
             embedding_model=self.embedding_service.model_name,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=self.text_chunker.chunk_size,
+            chunk_overlap=self.text_chunker.chunk_overlap,
             injection_warnings=injection_warnings,
         )
         report("saving", 100, f"Saved {num_chunks} chunks")
@@ -227,8 +214,8 @@ class DocumentIndexer:
             source_format=source_format,
             extraction_method=extraction_method,
             embedding_model=self.embedding_service.model_name,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=self.text_chunker.chunk_size,
+            chunk_overlap=self.text_chunker.chunk_overlap,
         )
 
         logger.info(
@@ -284,21 +271,19 @@ class DocumentIndexer:
             columns = sheet['columns']
             rows = sheet['rows']
 
-            try:
-                self.vector_store.structured_store.create_table(
-                    document_id=document_id,
-                    filename=filename,
-                    columns=columns,
-                    rows=rows,
-                    sheet_name=sheet_name,
-                    role_overrides=sheet.get('role_overrides') or {},
-                    type_overrides=sheet.get('type_overrides') or {},
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Structured table creation failed for {filename} "
-                    f"(sheet='{sheet_name}'): {e}"
-                )
+            # A tabular document with no structured table AND no chunks is
+            # completely unqueryable — surfacing that as success would hide
+            # the failure from the user, so let the exception propagate and
+            # fail the file (batch endpoints already report per-file errors).
+            self.vector_store.structured_store.create_table(
+                document_id=document_id,
+                filename=filename,
+                columns=columns,
+                rows=rows,
+                sheet_name=sheet_name,
+                role_overrides=sheet.get('role_overrides') or {},
+                type_overrides=sheet.get('type_overrides') or {},
+            )
 
         report("saving", 0, f"Recording {total_rows} rows")
         indexed_at = datetime.utcnow().isoformat()
@@ -311,8 +296,8 @@ class DocumentIndexer:
             source_format=source_format,
             extraction_method="text",
             embedding_model=self.embedding_service.model_name,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=self.text_chunker.chunk_size,
+            chunk_overlap=self.text_chunker.chunk_overlap,
         )
         report("saving", 100, f"Recorded {total_rows} rows")
 
@@ -325,8 +310,8 @@ class DocumentIndexer:
             source_format=source_format,
             extraction_method="text",
             embedding_model=self.embedding_service.model_name,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=self.text_chunker.chunk_size,
+            chunk_overlap=self.text_chunker.chunk_overlap,
         )
 
         logger.info(
@@ -334,11 +319,6 @@ class DocumentIndexer:
             f"{total_rows} rows across {len(sheets)} sheet(s) (structured-only)"
         )
         return metadata
-
-    # Back-compat alias: older call sites still reference the CSV-only name.
-    def _index_csv_rows(self, document_path: Path, filename: str,
-                        document_id: str) -> DocumentMetadata:
-        return self._index_tabular_document(document_path, filename, document_id, source_format="csv")
 
     def _index_code_file(
         self,
@@ -399,20 +379,17 @@ class DocumentIndexer:
 
         report("embedding", 0, f"Generating embeddings for {num_chunks} chunks", 0, num_chunks)
         chunk_texts = [c.text for c in chunks]
-        batch_size = 32
-        if num_chunks > batch_size and progress_callback:
-            embeddings = []
-            for i in range(0, num_chunks, batch_size):
-                batch = chunk_texts[i:i + batch_size]
-                batch_embeddings = self.embedding_service.embed_texts(batch)
-                embeddings.extend(batch_embeddings)
-                progress = min(100, int((i + len(batch)) / num_chunks * 100))
-                report("embedding", progress,
-                       f"Embedded {min(i + len(batch), num_chunks)}/{num_chunks} chunks",
-                       min(i + len(batch), num_chunks), num_chunks)
-        else:
-            embeddings = self.embedding_service.embed_texts(chunk_texts)
-            report("embedding", 100, f"Embedded {num_chunks} chunks", num_chunks, num_chunks)
+
+        # The embedding service batches internally; we just relay progress.
+        def _embed_progress(done: int, total: int):
+            report("embedding", min(100, int(done / total * 100)),
+                   f"Embedded {done}/{total} chunks", done, total)
+
+        embeddings = self.embedding_service.embed_texts(
+            chunk_texts,
+            progress_callback=_embed_progress if progress_callback else None,
+        )
+        report("embedding", 100, f"Embedded {num_chunks} chunks", num_chunks, num_chunks)
 
         report("saving", 0, f"Saving {num_chunks} chunks to index")
         self.vector_store.add_chunks(chunks, embeddings)
@@ -427,8 +404,8 @@ class DocumentIndexer:
             source_format=source_format,
             extraction_method="text",
             embedding_model=self.embedding_service.model_name,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=self.text_chunker.chunk_size,
+            chunk_overlap=self.text_chunker.chunk_overlap,
         )
         report("saving", 100, f"Saved {num_chunks} chunks")
 
@@ -441,8 +418,8 @@ class DocumentIndexer:
             source_format=source_format,
             extraction_method="text",
             embedding_model=self.embedding_service.model_name,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=self.text_chunker.chunk_size,
+            chunk_overlap=self.text_chunker.chunk_overlap,
         )
 
         logger.info(f"Successfully indexed code file {filename}: {num_chunks} symbol chunks")

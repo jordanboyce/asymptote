@@ -1,9 +1,0 @@
-Vanguard — Holdings as of 03/15/2024
-Account,Investment Name,Symbol,Shares,Share Price,Total Value,% of Total Portfolio,Return YTD (%),Average Cost Basis,Unrealized Gain/Loss,Asset Class
-Brokerage-7890,Vanguard 500 Index Fund Admiral,VFIAX,250.432,$455.12,"$113,990.64",42.30%,8.15%,"$380.00","$18,740.64",Stock
-Brokerage-7890,Vanguard Total Bond Market Index Admiral,VBTLX,500.000,$10.12,"$5,060.00",1.88%,-1.20%,"$10.50","($190.00)",Bond
-Brokerage-7890,Vanguard Total International Stock Index Admiral,VTIAX,300.000,$33.45,"$10,035.00",3.73%,2.40%,"$30.00","$1,035.00",Stock
-Brokerage-7890,Apple Inc,AAPL,100.000,$191.24,"$19,124.00",7.10%,12.50%,"$150.00","$4,124.00",Stock
-Brokerage-7890,Microsoft Corp,MSFT,60.000,$415.50,"$24,930.00",9.25%,8.30%,"$330.00","$5,130.00",Stock
-Brokerage-7890,Vanguard Real Estate Index Fund Admiral,VGSLX,150.000,$115.32,"$17,298.00",6.42%,-3.10%,"$120.00","($702.00)",Real Estate
-Brokerage-7890,Cash,--,--,"$1.00","$79,562.36",29.52%,4.80%,"$1.00","$0.00",Cash

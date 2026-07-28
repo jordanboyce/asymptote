@@ -1,13 +1,23 @@
-"""Embedding services: local sentence-transformers or remote Ollama."""
+"""Embedding services: local sentence-transformers or remote Ollama.
+
+Both services share the same duck-typed surface: `model_name`,
+`embedding_dim`, `embed_texts(texts, progress_callback=None)`, and
+`embed_query(query)`. Batching lives HERE, not in callers — the indexer
+passes a progress_callback instead of re-batching on its own.
+"""
 
 import json
 import logging
+import threading
 import urllib.request
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# One shared batch size for document embedding. Callers must not re-batch.
+EMBED_BATCH_SIZE = 32
 
 
 class OllamaEmbeddingService:
@@ -53,7 +63,11 @@ class OllamaEmbeddingService:
             raise ValueError(f"Ollama /api/embed returned no embeddings: {data}")
         return embeddings
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
+    def embed_texts(
+        self,
+        texts: List[str],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> np.ndarray:
         if not texts:
             return np.array([]).reshape(0, self.embedding_dim)
         logger.debug(f"Ollama embed_texts: {len(texts)} texts")
@@ -61,6 +75,8 @@ class OllamaEmbeddingService:
         results: List[List[float]] = []
         for i in range(0, len(texts), 64):
             results.extend(self._call_api(texts[i : i + 64]))
+            if progress_callback:
+                progress_callback(min(i + 64, len(texts)), len(texts))
         return np.array(results, dtype=np.float32)
 
     def embed_query(self, query: str) -> np.ndarray:
@@ -112,6 +128,10 @@ class EmbeddingService:
                 raise
 
         self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        # encode() is reached from background indexing threads and live search
+        # requests at once; PyTorch inference isn't guaranteed re-entrant on a
+        # shared model, so serialize per batch (bounded wait for queries).
+        self._encode_lock = threading.Lock()
         self._query_prompt_name: Optional[str] = None
         self._document_prompt_name: Optional[str] = None
         self._query_prompt: Optional[str] = None
@@ -162,36 +182,48 @@ class EmbeddingService:
         prompt: Optional[str] = None,
     ) -> np.ndarray:
         """Encode text with optional prompt support and compatibility fallback."""
+        import torch  # dependency of sentence-transformers; lazy like the model import
+
         encode_kwargs = {
             "show_progress_bar": False,
             "convert_to_numpy": True,
         }
 
-        if prompt_name:
-            try:
-                return self.model.encode(texts, prompt_name=prompt_name, **encode_kwargs)
-            except TypeError:
-                logger.debug("Model encode() does not support prompt_name; falling back")
-            except Exception as e:
-                logger.debug(f"Prompt-name encoding failed ({prompt_name}): {e}")
+        with self._encode_lock, torch.inference_mode():
+            if prompt_name:
+                try:
+                    return self.model.encode(texts, prompt_name=prompt_name, **encode_kwargs)
+                except TypeError:
+                    logger.debug("Model encode() does not support prompt_name; falling back")
+                except Exception as e:
+                    logger.debug(f"Prompt-name encoding failed ({prompt_name}): {e}")
 
-        if prompt:
-            try:
-                return self.model.encode(texts, prompt=prompt, **encode_kwargs)
-            except TypeError:
-                logger.debug("Model encode() does not support prompt; prefixing manually")
-            except Exception as e:
-                logger.debug(f"Prompt encoding failed; prefixing manually: {e}")
-            texts = self._apply_prompt(texts, prompt)
+            if prompt:
+                try:
+                    return self.model.encode(texts, prompt=prompt, **encode_kwargs)
+                except TypeError:
+                    logger.debug("Model encode() does not support prompt; prefixing manually")
+                except Exception as e:
+                    logger.debug(f"Prompt encoding failed; prefixing manually: {e}")
+                texts = self._apply_prompt(texts, prompt)
 
-        return self.model.encode(texts, **encode_kwargs)
+            return self.model.encode(texts, **encode_kwargs)
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
+    def embed_texts(
+        self,
+        texts: List[str],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> np.ndarray:
         """
         Generate embeddings for a list of texts.
 
+        Batches internally (EMBED_BATCH_SIZE) so a large document never holds
+        the encode lock for its full duration, and progress can be reported
+        without callers re-implementing batching.
+
         Args:
             texts: List of text strings to embed
+            progress_callback: Optional (done, total) callback per batch
 
         Returns:
             NumPy array of shape (len(texts), embedding_dim)
@@ -200,11 +232,17 @@ class EmbeddingService:
             return np.array([]).reshape(0, self.embedding_dim)
 
         logger.debug(f"Generating embeddings for {len(texts)} texts")
-        return self._encode(
-            texts,
-            prompt_name=self._document_prompt_name,
-            prompt=self._document_prompt,
-        )
+        batches = []
+        for start in range(0, len(texts), EMBED_BATCH_SIZE):
+            batch = texts[start:start + EMBED_BATCH_SIZE]
+            batches.append(self._encode(
+                batch,
+                prompt_name=self._document_prompt_name,
+                prompt=self._document_prompt,
+            ))
+            if progress_callback:
+                progress_callback(min(start + len(batch), len(texts)), len(texts))
+        return np.vstack(batches)
 
     def embed_query(self, query: str) -> np.ndarray:
         """

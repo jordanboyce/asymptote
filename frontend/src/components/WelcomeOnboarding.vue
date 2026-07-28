@@ -6,70 +6,185 @@
     aria-modal="true"
     aria-labelledby="welcome-title"
   >
-    <div class="max-w-md w-full my-auto">
+    <div class="max-w-lg w-full my-auto">
       <!-- Logo + welcome -->
-      <div class="text-center mb-8">
+      <div class="text-center mb-6">
         <img src="/icon_black.svg" alt="" class="w-14 h-14 mx-auto mb-5 opacity-90" />
         <h1 id="welcome-title" class="text-2xl font-semibold tracking-tight">
           Welcome to Asymptote
         </h1>
         <p class="text-sm text-base-content/60 mt-2 max-w-sm mx-auto leading-relaxed">
-          Paste your Ollama Cloud API key to get started. Free tier — no credit card required.
+          Connect the AI you trust. You can change this anytime in Settings.
         </p>
       </div>
 
-      <!-- Form -->
-      <div class="space-y-3">
-        <div class="form-control w-full">
-          <label class="label py-1" for="welcome-api-key">
-            <span class="label-text text-sm">Ollama Cloud API Key</span>
-          </label>
+      <!-- Step 1: choose how to connect -->
+      <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Choose a provider">
+        <button
+          v-for="card in CARDS"
+          :key="card.id"
+          type="button"
+          role="radio"
+          :aria-checked="selected === card.id"
+          class="rounded-box border text-left p-3 transition-colors"
+          :class="selected === card.id
+            ? 'border-primary bg-primary/5'
+            : 'border-base-300 bg-base-100 hover:border-base-content/30'"
+          @click="selectCard(card.id)"
+        >
+          <div class="font-medium text-sm">{{ card.title }}</div>
+          <div class="text-xs text-base-content/60 mt-0.5 leading-snug">{{ card.desc }}</div>
+        </button>
+      </div>
+
+      <!-- Step 2: inline connect panel -->
+      <div v-if="selected" class="mt-4 space-y-3">
+        <!-- Anthropic / OpenAI: API key -->
+        <template v-if="selected === 'anthropic' || selected === 'openai'">
           <input
-            id="welcome-api-key"
+            ref="inputRef"
             v-model="apiKey"
             type="password"
             autocomplete="off"
             spellcheck="false"
-            placeholder="Paste your key"
+            :placeholder="selectedDef?.keyPlaceholder"
             class="input input-bordered w-full font-mono text-sm"
-            :disabled="saving"
-            @keyup.enter="handleSave"
-            ref="keyInputRef"
+            :disabled="busy"
+            :aria-label="`${selectedDef?.name} API key`"
+            @keyup.enter="connectKey"
           />
-        </div>
+          <div class="flex items-center justify-between">
+            <a
+              :href="selectedDef?.keyLink"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="link link-hover text-xs text-base-content/60"
+            >
+              Get your key →
+            </a>
+            <button class="btn btn-primary btn-sm" :disabled="!apiKey.trim() || busy" @click="connectKey">
+              <span v-if="busy" class="loading loading-spinner loading-xs"></span>
+              {{ busy ? 'Verifying…' : 'Connect' }}
+            </button>
+          </div>
+        </template>
 
-        <!-- Validation error -->
-        <div v-if="error" class="alert alert-error text-sm py-2" role="alert">
-          <span>{{ error }}</span>
-        </div>
+        <!-- Ollama (local): detect, pick a model -->
+        <template v-else-if="selected === 'ollama'">
+          <div class="join w-full">
+            <input
+              ref="inputRef"
+              v-model="baseUrl"
+              type="text"
+              spellcheck="false"
+              class="input input-bordered input-sm join-item w-full font-mono text-sm"
+              :disabled="busy"
+              aria-label="Ollama base URL"
+              @keyup.enter="models.length ? connectOllama() : detectOllama()"
+            />
+            <button class="btn btn-sm join-item" :disabled="busy" @click="detectOllama">
+              <span v-if="busy" class="loading loading-spinner loading-xs"></span>
+              Detect
+            </button>
+          </div>
+          <template v-if="models.length">
+            <select v-model="model" class="select select-bordered select-sm w-full" aria-label="Model">
+              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.label || m.id }}</option>
+            </select>
+            <button class="btn btn-primary btn-sm w-full" :disabled="!model" @click="connectOllama">
+              Connect
+            </button>
+          </template>
+        </template>
 
-        <button
-          class="btn btn-primary w-full"
-          :disabled="!apiKey.trim() || saving"
-          @click="handleSave"
-        >
-          <span v-if="saving" class="loading loading-spinner loading-sm"></span>
-          {{ saving ? 'Verifying…' : 'Get Started' }}
-        </button>
-
-        <div class="text-center text-xs text-base-content/55 pt-3 space-x-2">
+        <!-- Custom OpenAI-compatible endpoint -->
+        <template v-else-if="selected === 'custom'">
+          <select v-model="presetId" class="select select-bordered select-sm w-full" aria-label="Endpoint preset">
+            <option v-for="p in CUSTOM_ENDPOINT_PRESETS" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <input
+            v-if="presetId === 'other'"
+            v-model="customName"
+            type="text"
+            placeholder="Name (e.g. My server)"
+            class="input input-bordered input-sm w-full text-sm"
+            :disabled="busy"
+            aria-label="Endpoint name"
+          />
+          <input
+            ref="inputRef"
+            v-model="baseUrl"
+            type="text"
+            spellcheck="false"
+            placeholder="https://your-endpoint/v1"
+            class="input input-bordered input-sm w-full font-mono text-sm"
+            :disabled="busy"
+            aria-label="Base URL"
+            @keyup.enter="customPrimary"
+          />
+          <input
+            v-model="apiKey"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            :placeholder="preset?.needsKey ? 'API key' : 'API key (optional)'"
+            class="input input-bordered input-sm w-full font-mono text-sm"
+            :disabled="busy"
+            aria-label="API key"
+            @keyup.enter="customPrimary"
+          />
           <a
-            href="https://ollama.com/settings/keys"
+            v-if="preset?.keyLink"
+            :href="preset.keyLink"
             target="_blank"
             rel="noopener noreferrer"
-            class="link link-hover"
+            class="link link-hover text-xs text-base-content/60 block"
           >
             Get your key →
           </a>
-          <span class="text-base-content/30" aria-hidden="true">·</span>
-          <button class="link link-hover" @click="handleSkip">
-            Use a different provider
+          <select
+            v-if="customId && models.length"
+            v-model="model"
+            class="select select-bordered select-sm w-full"
+            aria-label="Model"
+          >
+            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.label || m.id }}</option>
+          </select>
+          <input
+            v-else-if="customId"
+            v-model="model"
+            type="text"
+            spellcheck="false"
+            placeholder="Model id (optional)"
+            class="input input-bordered input-sm w-full font-mono text-sm"
+            aria-label="Model id"
+            @keyup.enter="customPrimary"
+          />
+          <button
+            class="btn btn-primary btn-sm w-full"
+            :disabled="!baseUrl.trim() || busy"
+            @click="customPrimary"
+          >
+            <span v-if="busy" class="loading loading-spinner loading-xs"></span>
+            {{ busy ? 'Testing…' : customId ? 'Connect' : 'Test & Connect' }}
           </button>
+        </template>
+
+        <!-- Inline error -->
+        <div v-if="error" class="alert alert-error text-sm py-2" role="alert">
+          <span>{{ error }}</span>
         </div>
       </div>
 
+      <!-- Quiet footer: more providers + skip -->
+      <div class="text-center text-xs text-base-content/55 mt-6 leading-relaxed">
+        More providers (Gemini, Grok, OpenRouter, GitHub, Ollama Cloud) are available in Settings.
+        <span class="text-base-content/30" aria-hidden="true">·</span>
+        <button class="link link-hover" @click="emit('skip')">Set up later</button>
+      </div>
+
       <!-- Trust copy footer -->
-      <div class="mt-10 text-center text-[11px] text-base-content/45 leading-relaxed">
+      <div class="mt-8 text-center text-[11px] text-base-content/45 leading-relaxed">
         Your documents stay on this device.
       </div>
     </div>
@@ -77,9 +192,16 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import axios from 'axios'
-import { upsertProviderConfig, setActiveProviderLS } from '../utils/aiProviders.js'
+import {
+  PROVIDER_DEFS,
+  CUSTOM_ENDPOINT_PRESETS,
+  upsertProviderConfig,
+  setActiveProviderLS,
+  testProviderConnection,
+  fetchProviderModels,
+} from '../utils/aiProviders.js'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -87,55 +209,156 @@ const props = defineProps({
 
 const emit = defineEmits(['complete', 'skip'])
 
+const CARDS = [
+  { id: 'anthropic', title: 'Anthropic', desc: 'Claude models' },
+  { id: 'openai', title: 'OpenAI', desc: 'GPT models' },
+  { id: 'ollama', title: 'Ollama (local)', desc: 'Private, runs on this machine' },
+  { id: 'custom', title: 'Your own endpoint', desc: 'LM Studio, vLLM, Groq, any OpenAI-compatible URL' },
+]
+
+const selected = ref(null)
 const apiKey = ref('')
-const saving = ref(false)
+const baseUrl = ref('')
+const model = ref('')
+const models = ref([])
+const presetId = ref(CUSTOM_ENDPOINT_PRESETS[0].id)
+const customName = ref('')
+const customId = ref('') // set once the endpoint has been validated
+const busy = ref(false)
 const error = ref('')
-const keyInputRef = ref(null)
+const inputRef = ref(null)
 
-// Focus the input whenever the onboarding becomes visible so the advisor can
-// paste immediately without tabbing in.
-watch(
-  () => props.show,
-  (isShown) => {
-    if (isShown) {
-      nextTick(() => keyInputRef.value?.focus())
-    }
-  },
-)
+const selectedDef = computed(() => PROVIDER_DEFS.find((d) => d.id === selected.value) || null)
+const preset = computed(() => CUSTOM_ENDPOINT_PRESETS.find((p) => p.id === presetId.value) || null)
 
-const handleSave = async () => {
-  const key = apiKey.value.trim()
-  if (!key || saving.value) return
+const focusInput = () => nextTick(() => inputRef.value?.focus())
 
-  saving.value = true
+const selectCard = (id) => {
+  if (busy.value) return
+  selected.value = id
   error.value = ''
+  apiKey.value = ''
+  model.value = ''
+  models.value = []
+  customId.value = ''
+  if (id === 'ollama') baseUrl.value = 'http://localhost:11434'
+  else if (id === 'custom') baseUrl.value = preset.value?.baseUrl || ''
+  else baseUrl.value = ''
+  focusInput()
+}
+
+watch(presetId, () => {
+  baseUrl.value = preset.value?.baseUrl || ''
+  customName.value = ''
+  customId.value = ''
+  models.value = []
+  model.value = ''
+  error.value = ''
+  focusInput()
+})
+
+// Editing credentials invalidates a previous detect/test result.
+watch([baseUrl, apiKey], () => {
+  if (selected.value === 'custom') customId.value = ''
+  if (selected.value === 'ollama' || selected.value === 'custom') {
+    models.value = []
+    model.value = ''
+  }
+})
+
+// Anthropic / OpenAI: validate the key, save, activate.
+const connectKey = async () => {
+  const id = selected.value
+  const key = apiKey.value.trim()
+  if (!key || busy.value) return
+  busy.value = true
+  error.value = ''
+  const { valid, error: err } = await testProviderConnection(id, { apiKey: key })
+  if (!valid) {
+    error.value = err || 'Could not verify that key. Double-check you copied it correctly.'
+    busy.value = false
+    return
+  }
+  upsertProviderConfig(id, { apiKey: key, model: selectedDef.value?.models?.[0]?.id || '' })
   try {
-    // Server-side: validates the key and stores it in the agent_api_keys table
-    // so the MCP chat path can use it without per-request headers.
-    await axios.post('/api/agent/config', null, {
-      params: { provider: 'ollama_cloud', api_key: key },
-    })
+    // Best-effort server-side store so the MCP chat path can use it too.
+    await axios.post('/api/agent/config', null, { params: { provider: id, api_key: key } })
+  } catch (e) {
+    console.warn('Could not store key server-side:', e?.message || e)
+  }
+  setActiveProviderLS(id)
+  busy.value = false
+  emit('complete')
+}
 
-    // Client-side: persist for chat requests (X-AI-Key header on each call)
-    // and set as the default selected provider so the chat UI picks it up.
-    upsertProviderConfig('ollama_cloud', {
-      apiKey: key,
-      model: 'gpt-oss:120b',
-    })
-    setActiveProviderLS('ollama_cloud')
-
-    emit('complete')
-  } catch (err) {
-    const detail = err?.response?.data?.detail
-    error.value =
-      detail ||
-      'Could not verify that key. Double-check you copied it correctly from ollama.com/settings/keys.'
-  } finally {
-    saving.value = false
+// Ollama: probe the local server for models.
+const detectOllama = async () => {
+  if (busy.value) return
+  busy.value = true
+  error.value = ''
+  const url = baseUrl.value.trim() || 'http://localhost:11434'
+  const { models: found } = await fetchProviderModels('ollama', { baseUrl: url })
+  busy.value = false
+  if (found.length) {
+    models.value = found
+    model.value = found[0].id
+  } else {
+    error.value = "Ollama isn't reachable — is it running?"
   }
 }
 
-const handleSkip = () => {
-  emit('skip')
+const connectOllama = () => {
+  if (!model.value) return
+  upsertProviderConfig('ollama', {
+    baseUrl: baseUrl.value.trim() || 'http://localhost:11434',
+    model: model.value,
+    available: true,
+  })
+  setActiveProviderLS('ollama')
+  emit('complete')
 }
+
+// Custom endpoint: first click validates + lists models, second click saves.
+const customPrimary = () => (customId.value ? connectCustom() : testCustom())
+
+const testCustom = async () => {
+  const url = baseUrl.value.trim()
+  if (!url || busy.value) return
+  busy.value = true
+  error.value = ''
+  const id = `custom_${preset.value?.id || 'other'}_${Date.now()}`
+  const key = apiKey.value.trim()
+  const { valid, error: err } = await testProviderConnection(id, { apiKey: key, baseUrl: url })
+  if (!valid) {
+    error.value = err || 'Could not reach that endpoint. Check the URL and key.'
+    busy.value = false
+    return
+  }
+  const { models: found } = await fetchProviderModels(id, { apiKey: key, baseUrl: url })
+  customId.value = id
+  models.value = found
+  model.value = found[0]?.id || ''
+  busy.value = false
+}
+
+const connectCustom = () => {
+  if (!customId.value) return
+  upsertProviderConfig(customId.value, {
+    id: customId.value,
+    name: customName.value.trim() || preset.value?.name || 'Custom endpoint',
+    baseUrl: baseUrl.value.trim(),
+    apiKey: apiKey.value.trim() || 'none',
+    model: model.value || '',
+    isCustom: true,
+  })
+  setActiveProviderLS(customId.value)
+  emit('complete')
+}
+
+watch(
+  () => props.show,
+  (isShown) => {
+    if (isShown && selected.value) focusInput()
+  },
+)
 </script>

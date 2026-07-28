@@ -246,25 +246,3 @@ class DatabaseBackend(ABC):
     @abstractmethod
     def get_agent_config(self) -> Dict[str, Any]:
         ...
-
-    # ── MCP Resources ────────────────────────────────────────
-
-    @abstractmethod
-    def get_all_mcp_resources(self) -> List[Dict[str, Any]]:
-        ...
-
-    @abstractmethod
-    def get_mcp_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
-        ...
-
-    @abstractmethod
-    def create_mcp_resource(self, resource_id: str, name: str, collection_id: str, repo_url: Optional[str] = None) -> Dict[str, Any]:
-        ...
-
-    @abstractmethod
-    def update_mcp_resource(self, resource_id: str, name: Optional[str] = None, collection_id: Optional[str] = None, repo_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        ...
-
-    @abstractmethod
-    def delete_mcp_resource(self, resource_id: str) -> bool:
-        ...

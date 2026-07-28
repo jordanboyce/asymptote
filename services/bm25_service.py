@@ -16,6 +16,8 @@ without needing the original text.
 import re
 import sqlite3
 from pathlib import Path
+
+from services.sqlite_utils import sqlite_connect
 from typing import List, Dict, Tuple
 import logging
 
@@ -63,7 +65,7 @@ class BM25Index:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        return sqlite_connect(self.db_path)
 
     def _init_db(self):
         """Initialize FTS5 tables and migrate any legacy index in place."""
@@ -100,7 +102,7 @@ class BM25Index:
         if migrated:
             # Reclaim the space freed by dropping the legacy tables (they were
             # the bulk of the file). VACUUM needs its own autocommit connection.
-            vac = sqlite3.connect(self.db_path, isolation_level=None)
+            vac = sqlite_connect(self.db_path, isolation_level=None)
             try:
                 vac.execute("VACUUM")
             finally:
@@ -236,7 +238,7 @@ class BM25Index:
             document_id: Document identifier
             metadata_db_path: Path to metadata database to get chunk IDs
         """
-        with sqlite3.connect(metadata_db_path) as meta_conn:
+        with sqlite_connect(metadata_db_path) as meta_conn:
             cursor = meta_conn.execute(
                 "SELECT chunk_id FROM chunks WHERE document_id = ?",
                 (document_id,)

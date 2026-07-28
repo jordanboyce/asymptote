@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 from config import settings
 from services.db_backend import DatabaseBackend
+from services.sqlite_utils import sqlite_connect
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ def _get_document_count_from_metadata(collection_id: str, data_dir: Path = None)
         return 0
 
     try:
-        with sqlite3.connect(metadata_db_path) as conn:
+        with sqlite_connect(metadata_db_path) as conn:
             cursor = conn.execute("SELECT COUNT(DISTINCT document_id) FROM chunks")
             return cursor.fetchone()[0]
     except Exception as e:
@@ -60,7 +61,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def _init_db(self):
         """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS config (
                     key TEXT PRIMARY KEY,
@@ -175,16 +176,6 @@ class SQLiteBackend(DatabaseBackend):
                     chunks_processed INTEGER DEFAULT 0,
                     chunks_total INTEGER DEFAULT 0,
                     job_type TEXT DEFAULT 'upload'
-                )
-            """)
-
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS mcp_resources (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    collection_id TEXT NOT NULL UNIQUE,
-                    repo_url TEXT,
-                    created_at TEXT NOT NULL
                 )
             """)
 
@@ -333,7 +324,7 @@ class SQLiteBackend(DatabaseBackend):
     # ── Configuration ────────────────────────────────────────
 
     def get_config(self, key: str, default: Any = None) -> Any:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("SELECT value FROM config WHERE key = ?", (key,))
             row = cursor.fetchone()
             if row:
@@ -346,7 +337,7 @@ class SQLiteBackend(DatabaseBackend):
     def set_config(self, key: str, value: Any):
         value_str = json.dumps(value) if not isinstance(value, str) else value
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)
@@ -358,7 +349,7 @@ class SQLiteBackend(DatabaseBackend):
             logger.info(f"Config updated: {key} = {value}")
 
     def get_all_config(self) -> Dict[str, Any]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("SELECT key, value FROM config")
             config = {}
             for key, value in cursor.fetchall():
@@ -369,7 +360,7 @@ class SQLiteBackend(DatabaseBackend):
             return config
 
     def delete_config(self, key: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("DELETE FROM config WHERE key = ?", (key,))
             conn.commit()
 
@@ -377,7 +368,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def upsert_user(self, user_id: str, display_name: Optional[str] = None) -> Dict[str, Any]:
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             existing = conn.execute("SELECT id, display_name, first_seen_at FROM users WHERE id = ?", (user_id,)).fetchone()
             if existing:
                 if display_name:
@@ -396,13 +387,13 @@ class SQLiteBackend(DatabaseBackend):
                 return {"id": user_id, "display_name": dname, "first_seen_at": timestamp, "last_seen_at": timestamp}
 
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             return dict(row) if row else None
 
     def get_all_users(self) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             return [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY first_seen_at ASC").fetchall()]
 
@@ -424,7 +415,7 @@ class SQLiteBackend(DatabaseBackend):
             embedding_model = settings.embedding_model
         collection_id = str(uuid.uuid4())[:8]
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO collections
@@ -438,7 +429,7 @@ class SQLiteBackend(DatabaseBackend):
             return collection_id
 
     def get_collection(self, collection_id: str) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM collections WHERE id = ?", (collection_id,)).fetchone()
             if row:
@@ -448,7 +439,7 @@ class SQLiteBackend(DatabaseBackend):
             return None
 
     def get_all_collections(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if owner_id:
                 cursor = conn.execute(
@@ -493,14 +484,14 @@ class SQLiteBackend(DatabaseBackend):
         updates.append("updated_at = ?")
         params.append(datetime.utcnow().isoformat())
         params.append(collection_id)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(f"UPDATE collections SET {', '.join(updates)} WHERE id = ?", params)
             conn.commit()
 
     def delete_collection(self, collection_id: str) -> bool:
         if collection_id == "default":
             return False
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
             conn.commit()
             return cursor.rowcount > 0
@@ -509,7 +500,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def add_document_to_collection(self, collection_id: str, document_id: str):
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO collection_documents (collection_id, document_id, added_at) VALUES (?, ?, ?)",
                 (collection_id, document_id, timestamp)
@@ -517,18 +508,18 @@ class SQLiteBackend(DatabaseBackend):
             conn.commit()
 
     def remove_document_from_collection(self, collection_id: str, document_id: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("DELETE FROM collection_documents WHERE collection_id = ? AND document_id = ?", (collection_id, document_id))
             conn.commit()
 
     def get_collection_documents(self, collection_id: str) -> List[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             return [r[0] for r in conn.execute(
                 "SELECT document_id FROM collection_documents WHERE collection_id = ?", (collection_id,)
             ).fetchall()]
 
     def get_document_collections(self, document_id: str) -> List[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             return [r[0] for r in conn.execute(
                 "SELECT collection_id FROM collection_documents WHERE document_id = ?", (document_id,)
             ).fetchall()]
@@ -538,7 +529,7 @@ class SQLiteBackend(DatabaseBackend):
     def create_share(self, collection_id: str, owner_id: str, permission: str = "read", expires_at: Optional[str] = None) -> str:
         share_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 """INSERT INTO collection_shares (id, collection_id, owner_id, permission, created_at, expires_at, is_active)
                    VALUES (?, ?, ?, ?, ?, ?, 1)""",
@@ -548,7 +539,7 @@ class SQLiteBackend(DatabaseBackend):
         return share_id
 
     def get_share(self, share_id: str) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM collection_shares WHERE id = ?", (share_id,)).fetchone()
             if row:
@@ -564,7 +555,7 @@ class SQLiteBackend(DatabaseBackend):
             return None
 
     def get_shares_for_collection(self, collection_id: str) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM collection_shares WHERE collection_id = ? AND is_active = 1 ORDER BY created_at DESC",
@@ -584,7 +575,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def accept_share(self, share_id: str, user_id: str):
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO collection_share_users (share_id, user_id, accepted_at) VALUES (?, ?, ?)",
                 (share_id, user_id, timestamp)
@@ -592,7 +583,7 @@ class SQLiteBackend(DatabaseBackend):
             conn.commit()
 
     def get_shared_collections(self, user_id: str) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -614,12 +605,12 @@ class SQLiteBackend(DatabaseBackend):
             return results
 
     def revoke_share(self, share_id: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("UPDATE collection_shares SET is_active = 0 WHERE id = ?", (share_id,))
             conn.commit()
 
     def check_share_access(self, collection_id: str, user_id: str) -> Optional[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT cs.permission FROM collection_shares cs
@@ -652,7 +643,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def create_upload_job(self, collection_id: str, total_files: int, job_type: str = "upload") -> int:
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO upload_jobs (collection_id, status, total_files, started_at, job_type) VALUES (?, ?, ?, ?, ?)",
                 (collection_id, "pending", total_files, timestamp, job_type)
@@ -682,12 +673,12 @@ class SQLiteBackend(DatabaseBackend):
         if not updates:
             return
         params.append(job_id)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(f"UPDATE upload_jobs SET {', '.join(updates)} WHERE id = ?", params)
             conn.commit()
 
     def get_upload_job(self, job_id: int) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """SELECT id, collection_id, status, total_files, processed_files,
@@ -698,7 +689,7 @@ class SQLiteBackend(DatabaseBackend):
             return dict(row) if row else None
 
     def get_active_upload_job(self, collection_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if collection_id:
                 row = conn.execute(
@@ -719,7 +710,7 @@ class SQLiteBackend(DatabaseBackend):
             return dict(row) if row else None
 
     def get_all_active_upload_jobs(self) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             return [dict(r) for r in conn.execute(
                 """SELECT id, collection_id, status, total_files, processed_files,
@@ -732,7 +723,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def create_reindex_job(self, config_snapshot: Dict[str, Any]) -> int:
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO reindex_jobs (status, started_at, config_snapshot) VALUES (?, ?, ?)",
                 ("pending", timestamp, json.dumps(config_snapshot))
@@ -754,7 +745,7 @@ class SQLiteBackend(DatabaseBackend):
         if not updates:
             return
         params.append(job_id)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(f"UPDATE reindex_jobs SET {', '.join(updates)} WHERE id = ?", params)
             conn.commit()
 
@@ -764,7 +755,7 @@ class SQLiteBackend(DatabaseBackend):
         return dict(row) if row else None
 
     def get_reindex_job(self, job_id: int) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
                 """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
@@ -773,7 +764,7 @@ class SQLiteBackend(DatabaseBackend):
             )
 
     def get_latest_reindex_job(self) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
                 """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
@@ -781,7 +772,7 @@ class SQLiteBackend(DatabaseBackend):
             )
 
     def get_active_reindex_job(self) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
                 """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
@@ -791,7 +782,7 @@ class SQLiteBackend(DatabaseBackend):
     # ── AI Preferences ───────────────────────────────────────
 
     def get_ai_preferences(self) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM ai_preferences WHERE id = 1").fetchone()
             if row:
@@ -811,7 +802,7 @@ class SQLiteBackend(DatabaseBackend):
         default_provider = kwargs.get("default_provider")
         timestamp = datetime.utcnow().isoformat()
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             row = conn.execute("SELECT * FROM ai_preferences WHERE id = 1").fetchone()
             if row:
                 updates = []
@@ -846,7 +837,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def add_search_history(self, query: str, top_k: int, results_count: int, **kwargs) -> int:
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 """INSERT INTO search_history (query, timestamp, top_k, results_count, ai_provider, ai_used, results_json, execution_time_ms)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -858,7 +849,7 @@ class SQLiteBackend(DatabaseBackend):
             return cursor.lastrowid
 
     def get_search_history(self, limit: int = 50) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             return [dict(r) for r in conn.execute(
                 """SELECT id, query, timestamp, top_k, results_count, ai_provider, ai_used, execution_time_ms
@@ -866,7 +857,7 @@ class SQLiteBackend(DatabaseBackend):
             ).fetchall()]
 
     def get_search_by_id(self, search_id: int) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM search_history WHERE id = ?", (search_id,)).fetchone()
             if row:
@@ -881,7 +872,7 @@ class SQLiteBackend(DatabaseBackend):
 
     def delete_old_search_history(self, days: int = 30):
         cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM search_history WHERE timestamp < ?", (cutoff,))
             deleted = cursor.rowcount
             conn.commit()
@@ -890,7 +881,7 @@ class SQLiteBackend(DatabaseBackend):
     # ── User Preferences ─────────────────────────────────────
 
     def get_user_preference(self, key: str, default: Any = None) -> Any:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             row = conn.execute("SELECT value FROM user_preferences WHERE key = ?", (key,)).fetchone()
             if row:
                 try:
@@ -902,7 +893,7 @@ class SQLiteBackend(DatabaseBackend):
     def set_user_preference(self, key: str, value: Any):
         value_str = json.dumps(value) if not isinstance(value, str) else value
         timestamp = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(
                 """INSERT INTO user_preferences (key, value, updated_at) VALUES (?, ?, ?)
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
@@ -911,7 +902,7 @@ class SQLiteBackend(DatabaseBackend):
             conn.commit()
 
     def get_all_user_preferences(self) -> Dict[str, Any]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             prefs = {}
             for key, value in conn.execute("SELECT key, value FROM user_preferences").fetchall():
                 try:
@@ -929,13 +920,14 @@ class SQLiteBackend(DatabaseBackend):
         return self.get_user_preference(f"agent_api_key_{provider}")
 
     def delete_agent_api_key(self, provider: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("DELETE FROM user_preferences WHERE key = ?", (f"agent_api_key_{provider}",))
             conn.commit()
 
     def get_agent_config(self) -> Dict[str, Any]:
+        from config import CLOUD_AI_PROVIDERS
         config = {"providers": {}}
-        for provider in ["anthropic", "openai"]:
+        for provider in CLOUD_AI_PROVIDERS:
             key = self.get_agent_api_key(provider)
             if key:
                 masked = key[:8] + "..." + key[-4:] if len(key) > 12 else "***"
@@ -945,51 +937,6 @@ class SQLiteBackend(DatabaseBackend):
         return config
 
     # ── MCP Resources ────────────────────────────────────────
-
-    def get_all_mcp_resources(self) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            return [dict(r) for r in conn.execute("SELECT * FROM mcp_resources ORDER BY created_at ASC").fetchall()]
-
-    def get_mcp_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM mcp_resources WHERE id = ?", (resource_id,)).fetchone()
-            return dict(row) if row else None
-
-    def create_mcp_resource(self, resource_id: str, name: str, collection_id: str, repo_url: Optional[str] = None) -> Dict[str, Any]:
-        now = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO mcp_resources (id, name, collection_id, repo_url, created_at) VALUES (?, ?, ?, ?, ?)",
-                (resource_id, name, collection_id, repo_url, now)
-            )
-            conn.commit()
-        return {"id": resource_id, "name": name, "collection_id": collection_id, "repo_url": repo_url, "created_at": now}
-
-    def update_mcp_resource(self, resource_id: str, name: Optional[str] = None, collection_id: Optional[str] = None, repo_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        resource = self.get_mcp_resource(resource_id)
-        if not resource:
-            return None
-        updated = {
-            "name": name if name is not None else resource["name"],
-            "collection_id": collection_id if collection_id is not None else resource["collection_id"],
-            "repo_url": repo_url if repo_url is not None else resource.get("repo_url"),
-        }
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE mcp_resources SET name = ?, collection_id = ?, repo_url = ? WHERE id = ?",
-                (updated["name"], updated["collection_id"], updated["repo_url"], resource_id)
-            )
-            conn.commit()
-        return {**resource, **updated}
-
-    def delete_mcp_resource(self, resource_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("DELETE FROM mcp_resources WHERE id = ?", (resource_id,))
-            conn.commit()
-            return cursor.rowcount > 0
-
 
 def create_app_db() -> DatabaseBackend:
     """Factory: create the appropriate database backend based on configuration."""

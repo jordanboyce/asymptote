@@ -1,7 +1,7 @@
 {
   "name": "asymptote",
   "version": "3.0.1",
-  "description": "Privacy-focused document intelligence for financial advisors",
+  "description": "Privacy-focused document indexing, grounded chat, and MCP access for your own sources",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

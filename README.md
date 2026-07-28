@@ -43,43 +43,55 @@ Optional feature sets (each pulls in large ML runtimes — install only what you
 ```bash
 pip install -r requirements-ocr.txt       # OCR for scanned PDFs
 pip install -r requirements-audio.txt     # audio transcription (Whisper)
-pip install -r requirements-postgres.txt  # enterprise PostgreSQL backend
+pip install -r requirements-postgres.txt  # optional PostgreSQL backend (multi-user mode)
 ```
 
-### Docker
+### Docker (recommended for internal-network deployment)
 
 ```bash
-# Standard deployment
-docker-compose up -d
+docker compose up -d
 open http://localhost:8473
-
-# Corporate environment (with custom SSL certificates)
-docker-compose -f docker-compose.yml up -d --build
-# Note: Edit docker-compose.yml to use Dockerfile.corporate if needed
 ```
 
-### Desktop Application (Windows)
+That's the whole setup — the image builds the frontend, bundles OCR (Tesseract + Poppler), bakes the embedding model into the image, and persists documents/indexes in `./data`. No `.env` is required to start; add one to override defaults. For corporate CA certificates, drop `.crt` files into `certs/` before building (see [Corporate SSL Configuration](#corporate-ssl-configuration)).
 
-For a native Windows experience with system tray integration:
+### Hosting on a PaaS (Railway, Render, Fly.io, Coolify, …)
+
+The image is designed to deploy anywhere that builds from a Dockerfile. Three things to configure:
+
+1. **Port** — the container listens on the platform's injected `PORT` (falls back to `8473`). Platforms that ask for an internal port instead (Fly, Coolify): use `8473`.
+2. **Persistent volume** — mount one at `/app/data`. Everything stateful (documents, vector indexes, app database) lives under that single path. Without a volume the app still runs, but data is lost on redeploy.
+3. **Auth** — the app has no login of its own, so before exposing a public URL set `AUTH_PASSWORD=<secret>` in the environment. Browsers prompt for it natively (HTTP Basic, any username); API and MCP clients send `Authorization: Bearer <secret>`. `/health` stays open for platform health checks. Alternatively, put the app behind Cloudflare Access, Tailscale, or your platform's auth layer.
+
+The embedding model is baked into the image at build time, so cold starts don't download anything and the container works on fully ephemeral filesystems (as long as `/app/data` is a volume). TLS is the platform's job — leave `SSL_CERTFILE`/`SSL_KEYFILE` unset and let the platform terminate HTTPS.
+
+#### Railway
+
+The repo ships a [railway.json](railway.json) (Dockerfile builder, `/health` healthcheck, restart-on-failure), so deploying is:
+
+1. **New Project → Deploy from GitHub repo** — Railway detects the Dockerfile and builds it (the image is large: CPU torch + OCR + Whisper; expect a long first build).
+2. **Attach a volume** to the service (right-click the service → *Attach Volume*) with mount path `/app/data`.
+3. **Set the `AUTH_PASSWORD` variable** on the service before generating a public domain — the app is unauthenticated without it.
+4. **Settings → Networking → Generate Domain.** Railway injects `PORT` and terminates HTTPS at the edge automatically; when prompted for a target port, any value works since the app listens on `$PORT`.
+
+API and MCP clients then authenticate with `Authorization: Bearer <AUTH_PASSWORD>` against `https://<your-app>.up.railway.app`.
+
+### Desktop Application (Electron)
+
+For a native desktop experience:
 
 ```bash
-# Build Windows executable
-cd desktop
-build_windows.bat
+# Windows: build installer (electron-dist/Asymptote Setup <version>.exe)
+build_electron_win.bat
 
-# Run the desktop app
-dist\AsymptoteDesktop.exe
-
-# Create installer (requires Inno Setup)
-build_installer.bat
+# macOS
+./build_electron_mac.sh
 ```
 
 **Desktop Features:**
-- System tray icon with quick access
-- Automatic port management (finds free port if 8473 is taken)
-- Native Windows application (no terminal needed)
-- Same functionality as web version
-- Opens browser automatically on startup
+- Native window wrapping the same Vue frontend
+- Bundled backend with automatic port management
+- Same functionality as the web version
 
 **First time setup**: The embedding model (~90MB) will download automatically on first run.
 
@@ -297,7 +309,7 @@ cd frontend
 npm run build
 ```
 
-This compiles the Vue app and outputs static files to the `static/` directory (one level up), which the FastAPI backend serves automatically at http://localhost:8473.
+This compiles the Vue app into `frontend/dist/` (gitignored), which the FastAPI backend serves automatically at http://localhost:8473 — hashed assets get long-lived immutable cache headers, so repeat loads are fast and deploys are picked up immediately. Docker images build the frontend in a dedicated stage; `run.sh`/`run.bat` build it on first run.
 
 ### Frontend Stack
 
@@ -378,30 +390,13 @@ Asymptote supports optional AI integration for enhanced search results:
 
 For organizations using custom SSL certificates or corporate proxies:
 
-**Option 1: Use Dockerfile.corporate**
+**Option 1: Docker (built in)**
 
-Create a `certs/` directory and place your certificate file(s) inside:
+Place your corporate CA certificate(s) — `.crt` files — into the `certs/` directory and rebuild; the standard Dockerfile installs anything it finds there automatically (a no-op when the directory is empty):
 
 ```bash
-mkdir certs
-# Copy your corporate CA certificate(s) - must be .crt files
 cp /path/to/your/cert.crt certs/
-```
-
-Build and run with the corporate Dockerfile:
-
-```bash
-# Option A: Direct docker build
-docker build -f Dockerfile.corporate -t asymptote-corporate .
-docker run -d -p 8473:8473 -v $(pwd)/data:/app/data asymptote-corporate
-
-# Option B: Edit docker-compose.yml to use Dockerfile.corporate
-# Change the dockerfile line under build:
-#   build:
-#     context: .
-#     dockerfile: Dockerfile.corporate
-# Then run:
-docker-compose up -d
+docker compose up -d --build
 ```
 
 **Important Notes:**
@@ -543,25 +538,6 @@ open "http://localhost:8473/documents/abc123/pdf#page=42"
 curl "http://localhost:8473/documents"
 ```
 
-### OCR Playground Preview
-
-```bash
-# Preview OCR extraction without indexing
-curl -X POST "http://localhost:8473/api/ocr/playground" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "file_path": "C:/path/to/scanned-form.pdf",
-    "ocr_engine": "docling",
-    "ocr_fallback_only": false,
-    "ocr_char_threshold": 20,
-    "ocr_render_dpi": 300,
-    "ocr_auto_rotate": true,
-    "tesseract_psm": 3
-  }'
-```
-
-This returns page-level OCR text previews and extracted form-like field/value pairs.
-
 ### Download Document
 
 ```bash
@@ -658,7 +634,7 @@ SSL: CERTIFICATE_VERIFY_FAILED
 **Solutions:**
 
 1. **Pre-download the model** (Recommended):
-   Run this command once with regular Python (not the exe) before using the desktop app:
+   Run this command once with regular Python before using the desktop app:
    ```bash
    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
    ```
@@ -697,18 +673,10 @@ file -i yourfile.txt
 
 This means text extraction returned empty content and OCR could not recover text.
 
-For Windows desktop/exe builds:
-
-1. Enable OCR in **Settings -> PDF Processing**
-2. If using `pytesseract`, install both:
-   - **Tesseract OCR** (`tesseract.exe`)
-   - **Poppler** (`pdfinfo.exe`, `pdftoppm.exe`)
-3. Either add both to `PATH`, or place portable folders next to `Asymptote.exe`:
-   - `poppler/bin/...`
-   - `tesseract/tesseract.exe`
-4. Re-index the PDF after changing OCR settings/dependencies
-
-If OCR still fails, switch OCR engine to `docling` in settings and try again.
+1. Enable OCR in **Settings → OCR** and pick an engine:
+   - **Vision AI** (recommended): uses a vision-capable model from an AI provider you've already configured — most accurate for complex layouts and degraded scans.
+   - **Local**: free/offline via Docling or Tesseract. Requires `pip install -r requirements-ocr.txt`; on bare-metal Windows also install **Tesseract OCR** and **Poppler** and add them to `PATH`. The Docker image ships with both preinstalled.
+2. Re-index the PDF after changing OCR settings.
 
 #### 6. "Out of memory"
 
@@ -889,9 +857,21 @@ python main.py
 
 ```
 asymptote/
-├── main.py                    # FastAPI app entry point
+├── main.py                    # App assembly: middleware, lifespan, routers, frontend serving
 ├── config.py                  # Settings from .env
 ├── requirements.txt           # Python dependencies
+│
+├── api/                       # HTTP endpoints — one router module per domain
+│   ├── deps.py               # Shared helpers/state (get_indexer, expertise store)
+│   ├── documents.py          # Upload, indexing, document management
+│   ├── search.py             # Semantic search, facets, embeddings
+│   ├── chat.py               # Chat, streaming chat, ask, provider config
+│   ├── artifacts.py          # Source-grounded document generation
+│   ├── collections.py        # Collection CRUD + re-indexing
+│   ├── mcp.py                # MCP server configuration
+│   ├── sharing.py            # Users + collection sharing
+│   ├── expertise.py          # Expertise packs
+│   └── system.py             # Health, capabilities, config, local file pickers
 │
 ├── models/                    # Data models
 │   └── schemas.py            # Pydantic request/response models
@@ -915,25 +895,17 @@ asymptote/
 │       ├── main.js           # Vue app entry point
 │       ├── App.vue           # Root Vue component with sticky tabs & theme toggle
 │       ├── style.css         # Global styles (Tailwind imports)
-│       ├── stores/
-│       │   └── searchStore.js    # Pinia store for search state & caching
-│       └── components/
-│           ├── SearchTab.vue      # Search interface with AI & history
-│           ├── DocumentsTab.vue   # Document upload & management
-│           └── SettingsTab.vue    # AI API keys & settings
+│       ├── stores/           # Pinia stores (collections, chat, search, jobs, user)
+│       ├── components/
+│       │   ├── ChatTab.vue        # Grounded chat (primary surface)
+│       │   ├── SourcesSidebar.vue # Source upload & management
+│       │   ├── StudioSidebar.vue  # Studio panel (generate, tables, notes)
+│       │   ├── SearchTab.vue      # Search interface with history
+│       │   ├── MCPTab.vue         # MCP server status & setup
+│       │   └── SettingsTab.vue    # AI API keys & settings
+│       └── dist/             # Built frontend (gitignored; generated by npm run build)
 │
-├── static/                    # Built frontend (generated by npm run build)
-│   ├── index.html            # Production HTML
-│   └── assets/               # JS/CSS bundles
-│
-├── desktop/                   # Windows desktop application
-│   ├── asymptote_desktop.py  # Desktop wrapper with system tray
-│   ├── icon.ico              # Application icon
-│   ├── installer.iss         # Inno Setup installer script
-│   ├── build_windows.bat     # Build executable script
-│   ├── build_installer.bat   # Build installer script
-│   ├── requirements_desktop.txt  # Desktop-specific dependencies
-│   └── utils/                # Icon generation utilities
+├── electron/                  # Electron desktop wrapper
 │
 ├── tests/                     # Test suite
 │   └── test_api.py           # API tests (placeholder)
@@ -944,15 +916,11 @@ asymptote/
 │       ├── json/             # JSON metadata storage
 │       └── sqlite/           # SQLite metadata storage
 │
-├── certs/                     # SSL certificates (gitignored)
-│   └── *.crt                 # Corporate CA certificates
+├── certs/                     # Corporate CA certs (.crt, gitignored) — auto-installed by Docker build
 │
 ├── .env.example              # Configuration template
-├── Dockerfile                # Docker image (standard)
-├── Dockerfile.corporate      # Docker image (with SSL certificates)
-├── docker-compose.yml        # Docker setup
-├── .dockerignore             # Docker build exclusions
-├── .gitignore                # Git exclusions (includes certs/)
+├── Dockerfile                # Multi-stage image: frontend build + Python runtime (OCR included)
+├── docker-compose.yml        # One-command deployment (docker compose up -d)
 ├── example_usage.py          # Python client example
 └── verify_setup.py           # Installation checker
 ```

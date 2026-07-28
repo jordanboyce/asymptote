@@ -1,0 +1,348 @@
+"""System, environment, and configuration endpoints."""
+
+import logging
+from typing import List, Optional
+from pathlib import Path
+
+from fastapi import HTTPException, status
+from pydantic import BaseModel
+
+from config import settings
+from services.document_extractor import DocumentExtractor
+from services.ai_service import detect_ollama
+from services.config_manager import config_manager
+from services.indexer_manager import indexer_manager
+
+from fastapi import APIRouter
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.get("/health", tags=["health"])
+async def health(collection_id: str = "default"):
+    """Health check endpoint."""
+    try:
+        stats = indexer_manager.get_collection_stats(collection_id)
+        return {
+            "status": "healthy",
+            "collection_id": collection_id,
+            "indexed_chunks": stats["total_chunks"],
+            "total_documents": stats["total_documents"],
+            "total_pages": stats["total_pages"],
+        }
+    except Exception as e:
+        return {
+            "status": "healthy",
+            "indexed_chunks": 0,
+            "error": str(e),
+        }
+
+@router.post(
+    "/api/file-picker",
+    summary="Open native file picker dialog",
+    tags=["desktop"],
+)
+def open_file_picker(multiple: bool = True, include_sizes: bool = False):
+    # sync: the tkinter dialog blocks until dismissed — in the threadpool that
+    # stalls one worker, not the whole server (UI + MCP kept freezing before)
+    """
+    Open a native OS file picker dialog.
+
+    This endpoint is designed for desktop app usage where the server
+    runs locally on the user's machine.
+
+    Args:
+        multiple: If True, allow selecting multiple files (default: True)
+        include_sizes: If True, include file sizes in response (default: False)
+
+    Returns:
+        {"paths": ["C:/path/to/file1.pdf", ...], "sizes": {"C:/path/to/file1.pdf": 12345, ...}}
+    """
+    from services.file_picker import open_file_dialog
+    import os
+
+    try:
+        paths = open_file_dialog(multiple=multiple)
+        result = {"paths": paths}
+
+        if include_sizes and paths:
+            sizes = {}
+            for path in paths:
+                try:
+                    sizes[path] = os.path.getsize(path)
+                except OSError:
+                    sizes[path] = 0
+            result["sizes"] = sizes
+
+        return result
+    except Exception as e:
+        logger.error(f"File picker error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to open file picker: {str(e)}",
+        )
+
+
+@router.post(
+    "/api/folder-picker",
+    summary="Open native folder picker dialog",
+    tags=["desktop"],
+)
+def open_folder_picker_endpoint():  # sync: see open_file_picker
+    """
+    Open a native OS folder picker dialog.
+
+    This endpoint is designed for desktop app usage where the server
+    runs locally on the user's machine.
+
+    Returns:
+        {"path": "C:/path/to/folder"} or {"path": null} if cancelled
+    """
+    from services.file_picker import open_folder_dialog
+
+    try:
+        path = open_folder_dialog()
+        return {"path": path}
+    except Exception as e:
+        logger.error(f"Folder picker error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to open folder picker: {str(e)}",
+        )
+
+
+@router.get(
+    "/api/capabilities",
+    summary="Query server capabilities for adaptive UI",
+    tags=["system"],
+)
+async def get_capabilities():
+    """
+    Returns server-side capability flags so the frontend can adapt.
+
+    native_file_picker: False in headless/Docker environments where
+    tkinter cannot open a display; the frontend should fall back to
+    browser-native <input type="file"> upload in that case.
+
+    ocr_available / audio_available / postgres_available: whether the
+    corresponding optional dependency set (requirements-ocr.txt,
+    requirements-audio.txt, requirements-postgres.txt) is installed, so the
+    UI can hide or annotate features that need an extra install.
+    """
+    from importlib.util import find_spec
+    from services.file_picker import is_native_picker_available
+    return {
+        "native_file_picker": is_native_picker_available(),
+        "ocr_available": find_spec("docling") is not None or find_spec("pytesseract") is not None,
+        "audio_available": find_spec("faster_whisper") is not None,
+        "postgres_available": find_spec("psycopg2") is not None,
+    }
+
+
+class ScanFolderRequest(BaseModel):
+    """Request body for scanning a folder."""
+    path: str
+    recursive: bool = True
+    file_extensions: Optional[List[str]] = None
+
+
+@router.post(
+    "/api/scan-folder",
+    summary="Scan folder and return list of supported files",
+    tags=["desktop"],
+)
+def scan_folder(request: ScanFolderRequest):  # sync: filesystem walk runs in the threadpool
+    """
+    Scan a folder and return the list of supported files found.
+
+    This is a lightweight operation that just lists files - no indexing.
+    Use this to preview what files will be indexed before starting.
+    """
+    import os
+
+    folder_path = Path(request.path)
+
+    if not folder_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Path does not exist: {request.path}",
+        )
+
+    if not folder_path.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Path is not a directory: {request.path}",
+        )
+
+    # Default exclude patterns
+    default_excludes = [
+        'node_modules', '.git', '__pycache__', 'venv', '.venv',
+        'dist', 'build', '.idea', '.vscode', 'target', 'bin', 'obj'
+    ]
+
+    # Determine which extensions to look for
+    all_supported = DocumentExtractor.SUPPORTED_EXTENSIONS
+    extensions_filter = set(request.file_extensions) if request.file_extensions else all_supported
+
+    files_found = []
+
+    def should_skip_dir(dirname: str) -> bool:
+        return dirname in default_excludes or dirname.startswith('.')
+
+    if request.recursive:
+        for root, dirs, files in os.walk(folder_path):
+            # Filter out excluded directories
+            dirs[:] = [d for d in dirs if not should_skip_dir(d)]
+
+            for filename in files:
+                file_path = Path(root) / filename
+                if file_path.suffix.lower() in extensions_filter:
+                    files_found.append({
+                        "path": str(file_path),
+                        "name": filename,
+                        "relative_path": str(file_path.relative_to(folder_path)),
+                        "size": file_path.stat().st_size if file_path.exists() else 0
+                    })
+    else:
+        for file_path in folder_path.iterdir():
+            if file_path.is_file() and file_path.suffix.lower() in extensions_filter:
+                files_found.append({
+                    "path": str(file_path),
+                    "name": file_path.name,
+                    "relative_path": file_path.name,
+                    "size": file_path.stat().st_size if file_path.exists() else 0
+                })
+
+    # Sort by relative path for consistent display
+    files_found.sort(key=lambda f: f["relative_path"])
+
+    return {
+        "folder": request.path,
+        "files": files_found,
+        "total": len(files_found)
+    }
+
+@router.get(
+    "/api/config",
+    summary="Get current configuration",
+    tags=["config"],
+)
+async def get_config():
+    """
+    Get current configuration settings.
+
+    Returns all configurable settings including embedding model,
+    chunking parameters, and storage type.
+    """
+    return config_manager.get_current_config()
+
+
+@router.post(
+    "/api/config",
+    summary="Update configuration",
+    tags=["config"],
+)
+async def update_config(updates: dict):
+    """
+    Update configuration settings.
+
+    Args:
+        updates: Dictionary of configuration key-value pairs
+
+    Returns:
+        Object with success status, whether restart/reindex needed,
+        and list of updated fields.
+
+    Note: Some changes (like embedding model) require server restart
+    and re-indexing all documents.
+    """
+    result = config_manager.update_config(updates)
+    return result
+
+
+
+@router.get(
+    "/api/ollama/status",
+    summary="Check Ollama availability",
+    tags=["ai"],
+)
+async def get_ollama_status():
+    """
+    Check if Ollama is running and list available models.
+
+    Returns:
+        - available: Whether Ollama is accessible
+        - models: List of available models with names and sizes
+        - error: Error message if detection failed
+    """
+    return detect_ollama(settings.ollama_base_url)
+
+
+@router.get(
+    "/api/ollama/vision-models",
+    summary="List Ollama models that support vision/image input",
+    tags=["ai"],
+)
+async def get_ollama_vision_models():
+    """
+    Return only Ollama models that support vision by checking each model's
+    architecture families via /api/show. Vision models include 'clip' in their
+    families list (CLIP is the vision encoder used by all multimodal Ollama models).
+    Falls back to name-based detection if /api/show is unavailable.
+    """
+    import httpx
+    import asyncio
+
+    status = detect_ollama(settings.ollama_base_url)
+    if not status.get("available"):
+        return {"available": False, "models": [], "error": status.get("error")}
+
+    base_url = status.get("base_url", settings.ollama_base_url).rstrip("/")
+    all_models = status.get("models", [])
+
+    # Known vision model name patterns as a fallback
+    VISION_NAME_PATTERNS = [
+        "llava", "vl", "vision", "minicpm-v", "moondream",
+        "bakllava", "cogvlm", "internvl", "clip",
+    ]
+
+    def name_looks_like_vision(name: str) -> bool:
+        name_lower = name.lower()
+        return any(p in name_lower for p in VISION_NAME_PATTERNS)
+
+    async def check_model_vision(client: httpx.AsyncClient, model: dict) -> Optional[dict]:
+        try:
+            resp = await client.post(
+                f"{base_url}/api/show",
+                json={"name": model["name"]},
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                families = data.get("details", {}).get("families") or []
+                if "clip" in families or "mllama" in families:
+                    return {**model, "vision_detected_by": "families"}
+            # Fall back to name heuristic
+            if name_looks_like_vision(model["name"]):
+                return {**model, "vision_detected_by": "name"}
+            return None
+        except Exception:
+            # If /api/show fails entirely, use name heuristic
+            if name_looks_like_vision(model["name"]):
+                return {**model, "vision_detected_by": "name"}
+            return None
+
+    async def gather_vision_models():
+        async with httpx.AsyncClient() as client:
+            tasks = [check_model_vision(client, m) for m in all_models]
+            results = await asyncio.gather(*tasks)
+        return [r for r in results if r is not None]
+
+    vision_models = await gather_vision_models()
+    return {
+        "available": True,
+        "models": vision_models,
+        "total_models": len(all_models),
+    }

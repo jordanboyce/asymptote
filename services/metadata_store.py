@@ -2,6 +2,8 @@
 
 import sqlite3
 from pathlib import Path
+
+from services.sqlite_utils import sqlite_connect
 from typing import List, Optional, Dict, Any
 import json
 import logging
@@ -30,7 +32,7 @@ class MetadataStore:
 
     def _init_db(self):
         """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             # Schema version tracking table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS schema_info (
@@ -112,7 +114,7 @@ class MetadataStore:
 
     def _migrate_schema(self):
         """Run schema migrations for existing databases."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             # Check current schema version
             try:
                 cursor = conn.execute(
@@ -270,7 +272,7 @@ class MetadataStore:
         Args:
             chunks: List of chunk metadata dictionaries
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.executemany("""
                 INSERT OR REPLACE INTO chunks
                 (chunk_id, document_id, filename, page_number, chunk_index, text,
@@ -310,55 +312,6 @@ class MetadataStore:
     # expanding IN (...) clauses.
     _IN_CLAUSE_BATCH = 900
 
-    def get_chunk_by_index(self, index: int) -> Optional[dict]:
-        """
-        Get chunk metadata by its sequential index.
-
-        Args:
-            index: Sequential index (0-based, matches FAISS index)
-
-        Returns:
-            Chunk metadata dictionary or None
-        """
-        return self.get_chunks_by_indices([index]).get(index)
-
-    def get_chunks_by_indices(self, indices: List[int]) -> Dict[int, dict]:
-        """
-        Batch-fetch chunk metadata by sequential (FAISS) positions.
-
-        One query per ~900 positions instead of one OFFSET-scan per position,
-        which is what makes search over large collections tractable.
-
-        Args:
-            indices: Sequential 0-based positions matching the FAISS index
-
-        Returns:
-            Dict mapping position -> chunk metadata dict (missing positions omitted)
-        """
-        wanted = sorted({int(i) for i in indices})
-        if not wanted:
-            return {}
-
-        results: Dict[int, dict] = {}
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
-                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
-                placeholders = ",".join("?" for _ in batch)
-                cursor = conn.execute(f"""
-                    SELECT * FROM (
-                        SELECT chunk_id, document_id, filename, page_number, chunk_index, text,
-                               source_format, extraction_method, csv_row_number, csv_columns, csv_values,
-                               (ROW_NUMBER() OVER (ORDER BY id) - 1) AS pos
-                        FROM chunks
-                    ) WHERE pos IN ({placeholders})
-                """, batch)
-                for row in cursor.fetchall():
-                    chunk = self._row_to_chunk(row)
-                    pos = chunk.pop("pos")
-                    results[pos] = chunk
-        return results
-
     def get_chunks_by_chunk_ids(self, chunk_ids: List[str]) -> Dict[str, dict]:
         """
         Batch-fetch chunk metadata by chunk_id (uses the idx_chunk_id index).
@@ -374,7 +327,7 @@ class MetadataStore:
             return {}
 
         results: Dict[str, dict] = {}
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
                 batch = wanted[start:start + self._IN_CLAUSE_BATCH]
@@ -388,38 +341,6 @@ class MetadataStore:
                 for row in cursor.fetchall():
                     chunk = self._row_to_chunk(row)
                     results[chunk["chunk_id"]] = chunk
-        return results
-
-    def get_positions_for_chunk_ids(self, chunk_ids) -> Dict[str, int]:
-        """
-        Map chunk_ids to their sequential (FAISS) positions.
-
-        Lets search pre-filter FAISS hits by position before fetching any
-        metadata, instead of fetching metadata for every hit and filtering after.
-
-        Args:
-            chunk_ids: Iterable of chunk identifiers
-
-        Returns:
-            Dict mapping chunk_id -> 0-based position
-        """
-        wanted = list(dict.fromkeys(chunk_ids))
-        if not wanted:
-            return {}
-
-        results: Dict[str, int] = {}
-        with sqlite3.connect(self.db_path) as conn:
-            for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
-                batch = wanted[start:start + self._IN_CLAUSE_BATCH]
-                placeholders = ",".join("?" for _ in batch)
-                cursor = conn.execute(f"""
-                    SELECT chunk_id, pos FROM (
-                        SELECT chunk_id, (ROW_NUMBER() OVER (ORDER BY id) - 1) AS pos
-                        FROM chunks
-                    ) WHERE chunk_id IN ({placeholders})
-                """, batch)
-                for chunk_id, pos in cursor.fetchall():
-                    results[chunk_id] = pos
         return results
 
     def get_ids_for_chunk_ids(self, chunk_ids) -> Dict[str, int]:
@@ -437,7 +358,7 @@ class MetadataStore:
             return {}
 
         results: Dict[str, int] = {}
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
                 batch = wanted[start:start + self._IN_CLAUSE_BATCH]
                 placeholders = ",".join("?" for _ in batch)
@@ -464,7 +385,7 @@ class MetadataStore:
             return {}
 
         results: Dict[int, dict] = {}
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
                 batch = wanted[start:start + self._IN_CLAUSE_BATCH]
@@ -490,7 +411,7 @@ class MetadataStore:
         Returns:
             List of chunks.id values, ordered by insertion
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 "SELECT id FROM chunks WHERE document_id = ? ORDER BY id",
                 (document_id,),
@@ -504,7 +425,7 @@ class MetadataStore:
         Position i in this list corresponds to FAISS position i in a legacy
         (pre-IDMap) index — used once to migrate old indexes to id-mapped ones.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("SELECT id FROM chunks ORDER BY id")
             return [row[0] for row in cursor.fetchall()]
 
@@ -523,7 +444,7 @@ class MetadataStore:
             return {}
 
         results: Dict[str, dict] = {}
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             self._ensure_v3_1_columns(conn)
             conn.row_factory = sqlite3.Row
             for start in range(0, len(wanted), self._IN_CLAUSE_BATCH):
@@ -551,7 +472,7 @@ class MetadataStore:
         Returns:
             List of chunk metadata dictionaries
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT chunk_id, document_id, filename, page_number, chunk_index, text,
@@ -582,7 +503,7 @@ class MetadataStore:
         Returns:
             Number of chunks deleted
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("""
                 DELETE FROM chunks
                 WHERE document_id = ?
@@ -602,7 +523,7 @@ class MetadataStore:
 
     def get_total_chunks(self) -> int:
         """Get total number of chunks in the store."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM chunks")
             return cursor.fetchone()[0]
 
@@ -619,7 +540,7 @@ class MetadataStore:
         Returns:
             List of document metadata dictionaries including source_type and source_path
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             # Ensure v3.1 columns exist
             self._ensure_v3_1_columns(conn)
 
@@ -669,7 +590,7 @@ class MetadataStore:
             source_path: Original filesystem path (for local references)
             source_type: Source type: 'upload' or 'local_reference'
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             # Ensure v3.1 columns exist (defensive migration for cached instances)
             self._ensure_v3_1_columns(conn)
 
@@ -692,7 +613,7 @@ class MetadataStore:
         Returns:
             List of all chunk metadata dictionaries
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT chunk_id, document_id, filename, page_number, chunk_index, text,
@@ -721,7 +642,7 @@ class MetadataStore:
         is ASCII-only. Without it, all chunks stream through a server-side
         cursor in id order, never materializing the corpus in memory.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite_connect(self.db_path)
         try:
             base = """
                 SELECT chunk_id, document_id, filename, page_number, text
@@ -749,7 +670,7 @@ class MetadataStore:
 
     def get_schema_version(self) -> str:
         """Get the current schema version."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             try:
                 cursor = conn.execute(
                     "SELECT value FROM schema_info WHERE key = 'version'"
@@ -769,7 +690,7 @@ class MetadataStore:
         Returns:
             Document metadata dictionary or None
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             # Ensure v3.1 columns exist (defensive migration for cached instances)
             self._ensure_v3_1_columns(conn)
 
@@ -797,31 +718,11 @@ class MetadataStore:
         Returns:
             True if document exists
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("""
                 SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1
             """, (document_id,))
             return cursor.fetchone() is not None
-
-    def get_document_chunk_indices(self, document_id: str) -> List[int]:
-        """
-        Get the FAISS indices for all chunks of a document.
-
-        Args:
-            document_id: Document identifier
-
-        Returns:
-            List of chunk indices (0-based, ordered by insertion)
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT (ROW_NUMBER() OVER (ORDER BY id) - 1) as idx
-                FROM chunks
-                WHERE document_id = ?
-                ORDER BY id
-            """, (document_id,))
-
-            return [row[0] for row in cursor.fetchall()]
 
     def update_document_source(self, document_id: str, source_path: str,
                                 source_type: str = "local_reference"):
@@ -833,7 +734,7 @@ class MetadataStore:
             source_path: Original filesystem path
             source_type: Source type: 'upload' or 'local_reference'
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             # Ensure v3.1 columns exist (defensive migration for cached instances)
             self._ensure_v3_1_columns(conn)
 
@@ -902,7 +803,7 @@ class MetadataStore:
             params.append(date_to)
 
         where = " AND ".join(clauses)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 f"""
                 SELECT c.chunk_id
@@ -921,7 +822,7 @@ class MetadataStore:
         the distinct source formats present, and the list of documents (id,
         filename, format, timestamp). Cheap — reads only the documents table.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             self._ensure_v3_1_columns(conn)
             conn.row_factory = sqlite3.Row
 
@@ -957,22 +858,8 @@ class MetadataStore:
 
     def clear_all(self):
         """Clear all chunks and documents from the metadata store."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute("DELETE FROM chunks")
             conn.execute("DELETE FROM documents")
             conn.commit()
             logger.info("Cleared all metadata from database")
-
-    def clear_all_chunks(self):
-        """Drop chunk rows but keep document rows.
-
-        Used when the embedding backend changed and we need to invalidate
-        stored vectors without losing the advisor's uploaded-documents list.
-        Structured-SQL tables (csv_schemas and csv_data_*) are in the same
-        database but deliberately untouched — tabular data doesn't depend on
-        embeddings and re-ingesting it would be pointless work.
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM chunks")
-            conn.commit()
-            logger.info("Cleared chunk rows (documents and structured tables preserved)")

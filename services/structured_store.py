@@ -36,6 +36,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
+from services.sqlite_utils import sqlite_connect
+
 logger = logging.getLogger(__name__)
 
 
@@ -509,7 +511,7 @@ class StructuredStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(f'''
                 CREATE TABLE IF NOT EXISTS {self.SCHEMA_REGISTRY} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -621,7 +623,7 @@ class StructuredStore:
         for ext in _type_extensions:
             type_to_sqlite[ext.name] = ext.sqlite_type
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
             col_defs = ['__row_number INTEGER PRIMARY KEY']
             for info in col_infos:
@@ -821,7 +823,7 @@ class StructuredStore:
             f'WHERE {" AND ".join(where_clauses)}\n'
             f'GROUP BY {group_key}'
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
             conn.execute(sql)
             conn.commit()
@@ -833,7 +835,7 @@ class StructuredStore:
     def delete_document(self, document_id: str) -> int:
         """Drop all structured tables + schema rows belonging to a document."""
         dropped = 0
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
                 f'SELECT table_name FROM {self.SCHEMA_REGISTRY} WHERE document_id = ?',
                 (document_id,),
@@ -852,7 +854,7 @@ class StructuredStore:
         return dropped
 
     def clear_all(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(f'SELECT table_name FROM {self.SCHEMA_REGISTRY}')
             for (table_name,) in cursor.fetchall():
                 conn.execute(f'DROP VIEW IF EXISTS "{table_name}__by_symbol"')
@@ -861,7 +863,7 @@ class StructuredStore:
             conn.commit()
 
     def list_tables(self) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 f'''SELECT document_id, sheet_name, filename, table_name,
@@ -913,7 +915,7 @@ class StructuredStore:
                 f"'document_id', or None; got {identifier_type!r}"
             )
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if identifier_type is not None:
                 cursor = conn.execute(
@@ -959,7 +961,7 @@ class StructuredStore:
         if not norm_guess:
             return []
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 f'''SELECT document_id, sheet_name, filename, table_name
@@ -993,7 +995,7 @@ class StructuredStore:
         return [entry for _, entry in scored[:limit]]
 
     def get_schemas_for_document(self, document_id: str) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 f'''SELECT schema_json FROM {self.SCHEMA_REGISTRY}
@@ -1011,7 +1013,7 @@ class StructuredStore:
         cleaned = validate_select(sql)
 
         uri = f'file:{self.db_path}?mode=ro'
-        with sqlite3.connect(uri, uri=True) as conn:
+        with sqlite_connect(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             try:
                 cursor = conn.execute(cleaned)
