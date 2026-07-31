@@ -878,6 +878,19 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
             region        – AWS region (for bedrock)
             aws_access_key, aws_secret_key – explicit AWS creds (for bedrock; omit to use the default chain)
     """
+    # Air-gap enforcement: this factory is the single chokepoint every AI
+    # surface goes through (chat, artifacts, vision OCR, schema inference,
+    # connection tests). In offline mode only providers that stay on the
+    # user's own network are allowed — local Ollama and self-hosted
+    # OpenAI-compatible endpoints (vLLM, LM Studio, llama.cpp, …).
+    from config import settings
+    if settings.offline_mode and provider_name not in ("ollama", "openai_compatible"):
+        raise ValueError(
+            f"Provider '{provider_name}' is disabled: this deployment runs in "
+            f"offline (air-gapped) mode. Use 'ollama' or a self-hosted "
+            f"'openai_compatible' endpoint, or unset OFFLINE_MODE."
+        )
+
     if provider_name == "anthropic":
         if not api_key:
             raise ValueError("API key required for Anthropic")

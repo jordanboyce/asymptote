@@ -16,7 +16,6 @@ from typing import List, Dict, Optional, Any
 import logging
 import os
 import shutil
-import sys
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +24,7 @@ def _find_poppler_path() -> Optional[str]:
     """Find poppler binaries for pdf2image, checking bundled/portable locations first."""
     candidates = []
 
-    # 1. Folder next to the exe (portable: drop poppler\bin beside Asymptote.exe)
-    if getattr(sys, 'frozen', False):
-        exe_dir = os.path.dirname(sys.executable)
-        candidates.append(os.path.join(exe_dir, 'poppler', 'bin'))
-        candidates.append(os.path.join(exe_dir, 'poppler', 'Library', 'bin'))
-
-    # 2. Bundled inside the PyInstaller package (_MEIPASS)
-    meipass = getattr(sys, '_MEIPASS', None)
-    if meipass:
-        candidates.append(os.path.join(meipass, 'poppler'))
-
-    # 3. Common Windows install locations (helps when PATH changes after app start)
+    # Common Windows install locations (helps when PATH changes after app start)
     if os.name == "nt":
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         if local_appdata:
@@ -81,19 +69,7 @@ def _find_tesseract_cmd() -> Optional[str]:
     if env_cmd:
         candidates.append(env_cmd)
 
-    # 1. Folder next to the exe (portable: drop tesseract beside Asymptote.exe)
-    if getattr(sys, 'frozen', False):
-        exe_dir = os.path.dirname(sys.executable)
-        candidates.append(os.path.join(exe_dir, "tesseract", "tesseract.exe"))
-        candidates.append(os.path.join(exe_dir, "tesseract.exe"))
-
-    # 2. Bundled inside the PyInstaller package (_MEIPASS)
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        candidates.append(os.path.join(meipass, "tesseract", "tesseract.exe"))
-        candidates.append(os.path.join(meipass, "tesseract.exe"))
-
-    # 3. Common Windows install locations (helps when PATH changes after app start)
+    # Common Windows install locations (helps when PATH changes after app start)
     if os.name == "nt":
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         if local_appdata:

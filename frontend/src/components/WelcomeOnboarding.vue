@@ -21,7 +21,7 @@
       <!-- Step 1: choose how to connect -->
       <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Choose a provider">
         <button
-          v-for="card in CARDS"
+          v-for="card in cards"
           :key="card.id"
           type="button"
           role="radio"
@@ -100,7 +100,7 @@
         <!-- Custom OpenAI-compatible endpoint -->
         <template v-else-if="selected === 'custom'">
           <select v-model="presetId" class="select select-bordered select-sm w-full" aria-label="Endpoint preset">
-            <option v-for="p in CUSTOM_ENDPOINT_PRESETS" :key="p.id" :value="p.id">{{ p.name }}</option>
+            <option v-for="p in availablePresets" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
           <input
             v-if="presetId === 'other'"
@@ -178,8 +178,14 @@
 
       <!-- Quiet footer: more providers + skip -->
       <div class="text-center text-xs text-base-content/55 mt-6 leading-relaxed">
-        More providers (Gemini, Grok, OpenRouter, GitHub, Ollama Cloud) are available in Settings.
-        <span class="text-base-content/30" aria-hidden="true">·</span>
+        <template v-if="!offline">
+          More providers (Gemini, Grok, OpenRouter, GitHub, Ollama Cloud) are available in Settings.
+          <span class="text-base-content/30" aria-hidden="true">·</span>
+        </template>
+        <template v-else>
+          This deployment runs air-gapped — only local and self-hosted models are available.
+          <span class="text-base-content/30" aria-hidden="true">·</span>
+        </template>
         <button class="link link-hover" @click="emit('skip')">Set up later</button>
       </div>
 
@@ -192,7 +198,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import axios from 'axios'
 import {
   PROVIDER_DEFS,
@@ -215,6 +221,31 @@ const CARDS = [
   { id: 'ollama', title: 'Ollama (local)', desc: 'Private, runs on this machine' },
   { id: 'custom', title: 'Your own endpoint', desc: 'LM Studio, vLLM, Groq, any OpenAI-compatible URL' },
 ]
+
+// Air-gapped deployments (OFFLINE_MODE=1): the backend rejects cloud
+// providers, so only offer the local paths here.
+const offline = ref(false)
+onMounted(async () => {
+  try {
+    const h = await axios.get('/health')
+    offline.value = !!h.data.offline_mode
+  } catch { /* assume standard */ }
+})
+
+const cards = computed(() =>
+  offline.value
+    ? [
+        { id: 'ollama', title: 'Ollama (local)', desc: 'Private, runs on this machine' },
+        { id: 'custom', title: 'Your own endpoint', desc: 'LM Studio, vLLM, any self-hosted OpenAI-compatible URL' },
+      ]
+    : CARDS
+)
+
+const availablePresets = computed(() =>
+  offline.value
+    ? CUSTOM_ENDPOINT_PRESETS.filter(p => !p.baseUrl || !p.baseUrl.startsWith('https://'))
+    : CUSTOM_ENDPOINT_PRESETS
+)
 
 const selected = ref(null)
 const apiKey = ref('')

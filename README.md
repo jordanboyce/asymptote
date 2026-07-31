@@ -55,13 +55,23 @@ open http://localhost:8473
 
 That's the whole setup — the image builds the frontend, bundles OCR (Tesseract + Poppler), bakes the embedding model into the image, and persists documents/indexes in `./data`. No `.env` is required to start; add one to override defaults. For corporate CA certificates, drop `.crt` files into `certs/` before building (see [Corporate SSL Configuration](#corporate-ssl-configuration)).
 
+Note that `docker compose up -d` publishes port 8473 to your network, and the app is unauthenticated by default. Before sharing the URL with anyone, read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — everyone who can reach Asymptote sees the whole corpus.
+
+### Sharing it with a team
+
+Asymptote is a shared appliance, not a multi-tenant service: there are no per-user permissions, so the only thing to configure is who can reach it. The recommended setup is an SSO proxy (Cloudflare Access, Tailscale, oauth2-proxy, Authelia) with the app bound so the proxy is the only route in — colleagues sign in with the identity they already have, and you write no code. Walkthrough and verification steps: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+### Air-gapped / offline deployment
+
+Asymptote runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, guaranteeing zero egress beyond the local Ollama or self-hosted endpoints you configure. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
+
 ### Hosting on a PaaS (Railway, Render, Fly.io, Coolify, …)
 
 The image is designed to deploy anywhere that builds from a Dockerfile. Three things to configure:
 
 1. **Port** — the container listens on the platform's injected `PORT` (falls back to `8473`). Platforms that ask for an internal port instead (Fly, Coolify): use `8473`.
 2. **Persistent volume** — mount one at `/app/data`. Everything stateful (documents, vector indexes, app database) lives under that single path. Without a volume the app still runs, but data is lost on redeploy.
-3. **Auth** — the app has no login of its own, so before exposing a public URL set `AUTH_PASSWORD=<secret>` in the environment. Browsers prompt for it natively (HTTP Basic, any username); API and MCP clients send `Authorization: Bearer <secret>`. `/health` stays open for platform health checks. Alternatively, put the app behind Cloudflare Access, Tailscale, or your platform's auth layer.
+3. **Auth** — the app has no login of its own, so before exposing a public URL set `AUTH_PASSWORD=<secret>` in the environment. Browsers prompt for it natively (HTTP Basic, any username); API and MCP clients send `Authorization: Bearer <secret>`. `/health` stays open for platform health checks. A shared password gives no per-person revocation or audit trail — for a standing team deployment prefer an SSO proxy ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 The embedding model is baked into the image at build time, so cold starts don't download anything and the container works on fully ephemeral filesystems (as long as `/app/data` is a volume). TLS is the platform's job — leave `SSL_CERTFILE`/`SSL_KEYFILE` unset and let the platform terminate HTTPS.
 
@@ -76,32 +86,16 @@ The repo ships a [railway.json](railway.json) (Dockerfile builder, `/health` hea
 
 API and MCP clients then authenticate with `Authorization: Bearer <AUTH_PASSWORD>` against `https://<your-app>.up.railway.app`.
 
-### Desktop Application (Electron)
-
-For a native desktop experience:
-
-```bash
-# Windows: build installer (electron-dist/Asymptote Setup <version>.exe)
-build_electron_win.bat
-
-# macOS
-./build_electron_mac.sh
-```
-
-**Desktop Features:**
-- Native window wrapping the same Vue frontend
-- Bundled backend with automatic port management
-- Same functionality as the web version
-
-**First time setup**: The embedding model (~90MB) will download automatically on first run.
-
-**SSL/TLS Support**: For corporate environments with custom CA certificates, see the [Corporate SSL Configuration](#corporate-ssl-configuration) section below.
-
 ### What You Get
 
 - **Web Interface**: http://localhost:8473 - Simple UI for searching, uploading, and managing documents
 - **API Docs**: http://localhost:8473/docs - Interactive OpenAPI documentation
 - **API Endpoint**: http://localhost:8473/api - REST API for programmatic access
+- **MCP Endpoint**: http://localhost:8473/mcp - Streamable-HTTP MCP server for external agents
+
+**First time setup**: The embedding model (~90MB) will download automatically on first run.
+
+**SSL/TLS Support**: For corporate environments with custom CA certificates, see the [Corporate SSL Configuration](#corporate-ssl-configuration) section below.
 
 ---
 
@@ -250,12 +244,16 @@ python main.py
 INFO - Loading embedding model: all-MiniLM-L6-v2
 INFO - Initializing vector store (metadata: json)
 INFO - Asymptote API ready
-INFO - Uvicorn running on http://0.0.0.0:8473
+INFO - Uvicorn running on http://127.0.0.1:8473
 ```
 
 **Access the API:**
 - Interactive docs: http://localhost:8473/docs
 - Health check: http://localhost:8473/health
+
+To reach it from another machine, set `HOST=0.0.0.0` — and read
+[Security Considerations](#security-considerations) first, since the app is
+unauthenticated until you set `AUTH_PASSWORD`.
 
 ### MCP Integration
 
@@ -350,7 +348,8 @@ DEFAULT_TOP_K=10                        # Default number of results
 MAX_TOP_K=50                            # Maximum results allowed
 
 # Server
-HOST=0.0.0.0
+HOST=127.0.0.1                          # This machine only. See Security below
+                                        # before changing to 0.0.0.0.
 PORT=8473
 ```
 
@@ -622,9 +621,9 @@ pip install faiss-cpu
   1. Get model from https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
   2. Place in `~/.cache/torch/sentence_transformers/`
 
-#### 4. "SSL certificate error" (Windows Executable)
+#### 4. "SSL certificate error" downloading the model
 
-**Why:** The packaged Windows executable may have trouble with SSL certificates when downloading the embedding model from HuggingFace.
+**Why:** Corporate TLS interception can break the HuggingFace download of the embedding model.
 
 **Error looks like:**
 ```
@@ -633,21 +632,12 @@ SSL: CERTIFICATE_VERIFY_FAILED
 
 **Solutions:**
 
-1. **Pre-download the model** (Recommended):
-   Run this command once with regular Python before using the desktop app:
-   ```bash
-   python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
-   ```
-   This downloads the model to `~/.cache/huggingface/` which the exe will then find automatically.
+1. **Install your corporate CA** — see [Corporate SSL Configuration](#corporate-ssl-configuration) below.
 
-2. **Run from source instead of exe:**
-   ```bash
-   pip install -r requirements.txt
-   python main.py
-   ```
-
-3. **Use the model cache from another machine:**
+2. **Use the model cache from another machine:**
    Copy the folder `~/.cache/huggingface/hub/models--sentence-transformers--all-MiniLM-L6-v2/` from a working machine to the same location on the problem machine.
+
+3. **Run fully offline** — pre-fetch the models with `scripts/prefetch_offline_models.py` and set `OFFLINE_MODE=true`. See [docs/AIRGAP.md](docs/AIRGAP.md).
 
 #### 5. "Document extraction failed"
 
@@ -812,15 +802,49 @@ echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env
 
 ### Security Considerations
 
-**This is a local-only service by default. For production:**
+**Asymptote is a shared team appliance: everyone who can reach it sees the whole
+corpus.** There are no per-user permissions inside the app — every route
+(search, upload, delete, chat on your stored provider keys, and the whole `/mcp`
+tool surface) is available to anyone who can open the port. So the only question
+to answer is *who can reach it*, and two settings decide:
 
-1. **Add authentication** (FastAPI supports OAuth2, JWT, API keys)
-2. **Restrict CORS** (currently allows all origins)
-3. **Use HTTPS** (run behind reverse proxy like nginx)
-4. **Rate limiting** (prevent abuse)
-5. **Input validation** (check file sizes, types)
+| Setting | Default | Meaning |
+|---|---|---|
+| `HOST` | `127.0.0.1` | This machine only. Docker sets `0.0.0.0` itself, where the published port controls exposure. |
+| `AUTH_PASSWORD` | empty | No auth. Required for anything reachable beyond loopback. |
 
-**Not recommended for public internet exposure without these protections.**
+The defaults are safe together: a loopback-only bind needs no password. Change
+one and you must change the other — the app warns loudly at startup if it is
+bound to the network with no password set.
+
+**For a team deployment, put an SSO proxy in front** (Cloudflare Access,
+Tailscale, oauth2-proxy, Authelia) and bind the app so the proxy is the only
+route in. Colleagues get in with the SSO they already have — no password to
+type, share, or rotate — and you get per-person revocation and an access log
+without writing any code. Full walkthrough, including how to verify the bypass
+is closed: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+
+There is no multi-user mode. `ENABLE_MULTI_USER` refuses to start: it filtered
+the collection list by owner but never checked ownership on search, document
+retrieval, chat, or MCP, so it looked like an isolation boundary without being
+one. Scope access to a group cleared for the whole corpus, and run a separate
+instance for material with a different audience.
+
+**Also worth setting:**
+
+1. **HTTPS** (`SSL_CERTFILE`/`SSL_KEYFILE`, or terminate at the proxy)
+2. **Leave `CORS_ALLOW_ORIGINS` empty** unless a separate web app needs it. Empty
+   sends no CORS headers, so other sites cannot read responses; `*` lets any page
+   your browser visits read this API. Non-browser clients (MCP, curl, SDKs) are
+   unaffected either way. Credentialed cross-origin requests are never allowed
+   for the wildcard.
+3. **Rate limiting** — not implemented; front with a proxy that provides it if
+   abuse is a concern
+4. **Air-gapped environments** — set `OFFLINE_MODE=1` to disable cloud AI
+   providers and model downloads entirely (see [docs/AIRGAP.md](docs/AIRGAP.md))
+
+Stored credentials (the OCR vision key) are masked in `GET /api/config` and
+never returned to a client.
 
 ### Backup & Recovery
 
@@ -904,8 +928,6 @@ asymptote/
 │       │   ├── MCPTab.vue         # MCP server status & setup
 │       │   └── SettingsTab.vue    # AI API keys & settings
 │       └── dist/             # Built frontend (gitignored; generated by npm run build)
-│
-├── electron/                  # Electron desktop wrapper
 │
 ├── tests/                     # Test suite
 │   └── test_api.py           # API tests (placeholder)
@@ -995,7 +1017,11 @@ A: Yes, but no built-in auth. Add authentication for multi-user.
 
 ## License
 
-This project is provided as-is for educational and internal use.
+Licensed under the [Apache License 2.0](LICENSE). You're free to use, modify,
+and deploy this on internal systems — including commercial use — provided the
+license and notices are retained. The license includes an express patent grant
+from contributors, which is why it's the usual choice for software adopted
+inside enterprises and laboratories.
 
 ---
 

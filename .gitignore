@@ -52,6 +52,7 @@ venv.bak/
 !.env.*.example
 # Data directory (contains uploaded PDFs and indexes)
 data/
+data.docker-backup-*/
 
 # Backup files
 *.backup
@@ -109,6 +110,3 @@ frontend/dist/
 CLAUDE.md
 AGENTS.md
 .mcp.json
-# Electron build artifacts (source lives in electron/, outputs go here)
-electron/renderer/
-electron-dist/

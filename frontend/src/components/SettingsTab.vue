@@ -1,197 +1,393 @@
 <template>
-  <div class="space-y-6">
+  <div class="max-w-4xl mx-auto">
 
-    <!-- Appearance -->
-    <div class="card bg-base-200">
-      <div class="card-body space-y-4">
-        <div>
-          <h3 class="card-title text-base">Appearance</h3>
-          <p class="text-sm text-base-content/70 mt-0.5">Visual theme and interface options.</p>
-        </div>
-
-        <div class="form-control">
-          <label class="label p-0 pb-1" for="theme-select">
-            <span class="label-text font-medium">Theme</span>
-          </label>
-          <select
-            id="theme-select"
-            v-model="selectedTheme"
-            class="select select-bordered w-full max-w-xs"
-            @change="applyTheme"
-          >
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="cupcake">Cupcake</option>
-            <option value="dracula">Dracula</option>
-            <option value="nord">Nord</option>
-          </select>
-        </div>
+    <!-- ── Page header: title + basic/advanced depth switch ── -->
+    <header class="flex items-end justify-between gap-6 flex-wrap pb-5 mb-6 border-b border-base-300/60">
+      <div class="min-w-0">
+        <h1 class="text-[22px] leading-none font-semibold tracking-tight">Settings</h1>
+        <p class="mt-2 text-xs text-base-content/50">
+          {{ advanced ? 'Everything, including expert tuning' : 'The essentials — switch to Advanced for expert tuning' }}
+        </p>
       </div>
-    </div>
 
-    <!-- AI Providers -->
-    <div class="card bg-base-200">
-      <div class="card-body space-y-4">
-        <div>
-          <h3 class="card-title text-base">AI Providers</h3>
-          <p class="text-sm text-base-content/70 mt-0.5">
-            Connect the AI you trust — a cloud key, a local model, or your own OpenAI-compatible endpoint. Keys live in your browser; on connect they're also stored on your self-hosted server so background features can use them.
-          </p>
-        </div>
+      <div class="join" role="group" aria-label="Settings depth">
+        <button
+          class="btn btn-xs join-item px-3"
+          :class="!advanced ? 'btn-active' : 'btn-ghost'"
+          @click="settingsMode = 'basic'"
+          :aria-pressed="!advanced"
+        >Basic</button>
+        <button
+          class="btn btn-xs join-item px-3"
+          :class="advanced ? 'btn-active' : 'btn-ghost'"
+          @click="settingsMode = 'advanced'"
+          :aria-pressed="advanced"
+        >Advanced</button>
+      </div>
+    </header>
 
-        <!-- Empty state: nothing connected yet -->
-        <div v-if="!hasAnyProvider" class="rounded-xl border border-dashed border-base-300 bg-base-100 px-4 py-3 space-y-1">
-          <p class="text-sm font-medium">Nothing connected yet — three quick ways to start:</p>
-          <ul class="text-xs text-base-content/60 list-disc list-inside space-y-0.5">
-            <li>Paste a cloud API key (Anthropic, OpenAI, …) into a provider below and hit Connect.</li>
-            <li>Run <a href="https://ollama.com" target="_blank" rel="noopener" class="link link-primary">Ollama</a> locally, then open the Ollama row.</li>
-            <li>Connect LM Studio, vLLM, or any OpenAI-compatible server via "Add your own endpoint" below.</li>
-          </ul>
-        </div>
+    <div class="flex gap-10 items-start">
 
-        <!-- Provider Table -->
-        <div class="rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
+      <!-- ── Section rail ── -->
+      <nav class="w-40 flex-shrink-0 sticky top-2 hidden sm:block" aria-label="Settings sections">
+        <ul class="space-y-0.5">
+          <li v-for="s in SECTIONS" :key="s.id">
+            <button
+              class="w-full text-left px-2.5 py-1.5 rounded-md text-[13px] transition-colors"
+              :class="activeSection === s.id
+                ? 'bg-base-200 font-semibold text-base-content'
+                : 'text-base-content/55 hover:text-base-content hover:bg-base-200/50'"
+              @click="activeSection = s.id"
+              :aria-current="activeSection === s.id ? 'true' : undefined"
+            >{{ s.label }}</button>
+          </li>
+        </ul>
+      </nav>
 
-          <!-- Built-in Provider Rows -->
-          <div v-for="def in PROVIDER_DEFS" :key="def.id">
-            <div
-              class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
-              @click="toggleExpand(def.id)"
-            >
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-medium text-sm">{{ def.name }}</span>
-                  <span v-if="def.type === 'local'" class="badge badge-info badge-xs badge-outline">local</span>
-                </div>
-                <div v-if="getProviderModelLabel(def.id)" class="text-xs text-base-content/50 mt-0.5 truncate">{{ getProviderModelLabel(def.id) }}</div>
-              </div>
-              <div class="flex items-center gap-2 flex-shrink-0">
-                <span v-if="isServerProvider(def.id) && !hasLocalKey(def.id)" class="badge badge-success badge-xs">Team key</span>
-                <span v-else-if="isProviderConfigured(def.id)" class="badge badge-success badge-xs">Connected</span>
-                <span v-else class="text-base-content/35 text-xs hidden sm:block">Not connected</span>
-                <span class="text-base-content/35 text-xs">{{ expandedProvider === def.id ? '▲' : '▼' }}</span>
-              </div>
-            </div>
+      <!-- Mobile: section picker replaces the rail -->
+      <div class="sm:hidden fixed bottom-8 left-0 right-0 px-6 z-20 pointer-events-none">
+        <select
+          v-model="activeSection"
+          class="select select-bordered select-sm w-full shadow-lg pointer-events-auto"
+          aria-label="Settings section"
+        >
+          <option v-for="s in SECTIONS" :key="s.id" :value="s.id">{{ s.label }}</option>
+        </select>
+      </div>
 
-            <div v-if="expandedProvider === def.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+      <!-- ── Content column ── -->
+      <div class="flex-1 min-w-0 max-w-2xl pb-20">
 
-              <!-- Ollama config -->
-              <template v-if="def.id === 'ollama'">
-                <div class="form-control">
-                  <label class="label p-0 pb-1" for="ollama-base-url">
-                    <span class="label-text font-medium">Base URL</span>
-                  </label>
-                  <input
-                    id="ollama-base-url"
-                    v-model="editBuffer.baseUrl"
-                    type="url"
-                    placeholder="http://localhost:11434"
-                    class="input input-bordered input-sm w-full"
-                  />
-                  <p class="text-xs text-base-content/50 mt-1">Change this to connect to a remote Ollama instance.</p>
-                </div>
+        <!-- ═══ General ═══ -->
+        <section v-show="activeSection === 'general'" aria-labelledby="settings-general">
+          <h2 id="settings-general" class="sr-only">General</h2>
 
-                <div v-if="ollamaCheckStatus === 'checking'" class="flex items-center gap-2 text-sm text-base-content/60">
-                  <span class="loading loading-spinner loading-xs"></span> Detecting models…
-                </div>
-                <div v-else-if="ollamaCheckStatus === 'available'" class="space-y-2">
-                  <div class="alert alert-success py-2 text-sm">
-                    Ollama running · {{ modelsFor('ollama').length }} model(s) available
+          <!-- Theme -->
+          <div class="pb-8">
+            <div class="text-sm font-medium">Theme</div>
+            <p class="text-xs text-base-content/55 mt-1 mb-4">Follows your system until you choose one.</p>
+            <div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); max-width: 36rem;">
+              <button
+                v-for="t in THEMES"
+                :key="t.id"
+                type="button"
+                class="rounded-lg p-0 overflow-hidden text-left border transition-all"
+                :class="selectedTheme === t.id
+                  ? 'border-base-content/50 ring-1 ring-base-content/25'
+                  : 'border-base-300 hover:border-base-content/30'"
+                @click="selectedTheme = t.id; applyTheme()"
+                :aria-pressed="selectedTheme === t.id"
+                :aria-label="`Theme: ${t.label}`"
+              >
+                <!-- The inner div renders IN the candidate theme, so the
+                     swatch is a live preview, not a hard-coded palette. -->
+                <div :data-theme="t.id" class="bg-base-100 px-3 pt-3 pb-2.5">
+                  <div class="flex gap-1" aria-hidden="true">
+                    <span class="w-3.5 h-3.5 rounded-full bg-primary"></span>
+                    <span class="w-3.5 h-3.5 rounded-full bg-secondary"></span>
+                    <span class="w-3.5 h-3.5 rounded-full bg-accent"></span>
                   </div>
+                  <div class="mt-2 text-[11px] font-medium text-base-content flex items-center justify-between gap-1">
+                    {{ t.label }}
+                    <Check v-if="selectedTheme === t.id" :size="11" aria-hidden="true" />
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Interface (advanced) -->
+          <div v-if="advanced" class="pt-6 border-t border-base-300/60">
+            <p class="text-[10px] uppercase tracking-[0.18em] font-semibold text-base-content/35 mb-4">Advanced</p>
+            <div class="flex items-start justify-between gap-8">
+              <div class="min-w-0">
+                <div class="text-sm font-medium">Chat tab</div>
+                <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
+                  The built-in chat interface. Turn off if you work through Claude Desktop or another MCP client instead.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                class="toggle toggle-primary toggle-sm flex-shrink-0 mt-0.5"
+                v-model="chatTabEnabled"
+                @change="saveChatTabSetting"
+                aria-label="Enable chat tab"
+              />
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ AI Providers ═══ -->
+        <section v-show="activeSection === 'providers'" aria-labelledby="settings-providers">
+          <h2 id="settings-providers" class="sr-only">AI Providers</h2>
+
+          <p v-if="!systemInfo.offline_mode" class="text-[13px] text-base-content/55 leading-relaxed max-w-[60ch] mb-5">
+            Connect the AI you trust — a cloud key, a local model, or your own OpenAI-compatible
+            endpoint. Keys live in your browser; on connect they're also stored on your self-hosted
+            server so background features can use them.
+          </p>
+          <p v-else class="text-[13px] text-base-content/55 leading-relaxed max-w-[60ch] mb-5">
+            <ShieldCheck :size="13" class="inline -mt-0.5 mr-1 text-success" aria-hidden="true" />This
+            deployment runs air-gapped — cloud AI providers are disabled. Connect a local Ollama
+            instance or a self-hosted OpenAI-compatible server on your network.
+          </p>
+
+          <!-- Empty state: nothing connected yet -->
+          <div v-if="!hasAnyProvider" class="rounded-xl border border-dashed border-base-300 px-4 py-3 space-y-1 mb-4">
+            <template v-if="!systemInfo.offline_mode">
+              <p class="text-sm font-medium">Nothing connected yet — three quick ways to start:</p>
+              <ul class="text-xs text-base-content/60 list-disc list-inside space-y-0.5">
+                <li>Paste a cloud API key (Anthropic, OpenAI, …) into a provider below and hit Connect.</li>
+                <li>Run <a href="https://ollama.com" target="_blank" rel="noopener" class="link link-primary">Ollama</a> locally, then open the Ollama row.</li>
+                <li>Connect LM Studio, vLLM, or any OpenAI-compatible server via "Add your own endpoint" below.</li>
+              </ul>
+            </template>
+            <template v-else>
+              <p class="text-sm font-medium">Nothing connected yet — two ways to start:</p>
+              <ul class="text-xs text-base-content/60 list-disc list-inside space-y-0.5">
+                <li>Run Ollama on this machine or your network, then open the Ollama row.</li>
+                <li>Connect LM Studio, vLLM, or any OpenAI-compatible server via "Add your own endpoint" below.</li>
+              </ul>
+            </template>
+          </div>
+
+          <!-- Provider table -->
+          <div class="rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
+
+            <!-- Built-in provider rows -->
+            <div v-for="def in visibleProviderDefs" :key="def.id">
+              <div
+                class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
+                @click="toggleExpand(def.id)"
+                role="button"
+                :aria-expanded="expandedProvider === def.id"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-medium text-sm">{{ def.name }}</span>
+                    <span v-if="def.type === 'local'" class="badge badge-info badge-xs badge-outline">local</span>
+                  </div>
+                  <div v-if="getProviderModelLabel(def.id)" class="text-xs text-base-content/50 mt-0.5 truncate">{{ getProviderModelLabel(def.id) }}</div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <span v-if="isServerProvider(def.id) && !hasLocalKey(def.id)" class="badge badge-success badge-xs">Team key</span>
+                  <span v-else-if="isProviderConfigured(def.id)" class="badge badge-success badge-xs">Connected</span>
+                  <span v-else class="text-base-content/35 text-xs hidden sm:block">Not connected</span>
+                  <ChevronDown
+                    :size="14"
+                    class="text-base-content/35 transition-transform"
+                    :class="{ 'rotate-180': expandedProvider === def.id }"
+                    aria-hidden="true"
+                  />
+                </div>
+              </div>
+
+              <div v-if="expandedProvider === def.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+
+                <!-- Ollama config -->
+                <template v-if="def.id === 'ollama'">
                   <div class="form-control">
-                    <label class="label p-0 pb-1" for="ollama-model">
+                    <label class="label p-0 pb-1" for="ollama-base-url">
+                      <span class="label-text font-medium">Base URL</span>
+                    </label>
+                    <input
+                      id="ollama-base-url"
+                      v-model="editBuffer.baseUrl"
+                      type="url"
+                      placeholder="http://localhost:11434"
+                      class="input input-bordered input-sm w-full"
+                    />
+                    <p class="text-xs text-base-content/50 mt-1">Change this to connect to a remote Ollama instance.</p>
+                  </div>
+
+                  <div v-if="ollamaCheckStatus === 'checking'" class="flex items-center gap-2 text-sm text-base-content/60">
+                    <span class="loading loading-spinner loading-xs"></span> Detecting models…
+                  </div>
+                  <div v-else-if="ollamaCheckStatus === 'available'" class="space-y-2">
+                    <div class="alert alert-success py-2 text-sm">
+                      Ollama running · {{ modelsFor('ollama').length }} model(s) available
+                    </div>
+                    <div class="form-control">
+                      <label class="label p-0 pb-1" for="ollama-model">
+                        <span class="label-text font-medium">Model</span>
+                        <button
+                          class="label-text-alt btn btn-xs btn-ghost"
+                          @click="detectOllama"
+                          aria-label="Refresh Ollama model list"
+                        >Refresh</button>
+                      </label>
+                      <select
+                        id="ollama-model"
+                        class="select select-bordered select-sm w-full"
+                        :value="editBuffer.model"
+                        @change="onModelSelect('ollama', $event.target.value)"
+                      >
+                        <option v-for="m in modelsFor('ollama')" :key="m.id" :value="m.id">{{ m.label }}</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div v-else-if="ollamaCheckStatus === 'unavailable'" class="alert alert-warning py-2 text-sm">
+                    Ollama not detected at <code class="font-mono">{{ editBuffer.baseUrl || 'http://localhost:11434' }}</code>.
+                    <a href="https://ollama.com" target="_blank" class="link link-primary ml-1">Install Ollama</a>
+                  </div>
+                  <p v-if="ollamaError && ollamaCheckStatus === 'unavailable'" class="text-error text-sm">{{ ollamaError }}</p>
+
+                  <div class="flex gap-2">
+                    <button
+                      class="btn btn-sm btn-primary"
+                      @click="connectOllama"
+                      :disabled="savingProvider === 'ollama' || ollamaCheckStatus === 'checking'"
+                    >
+                      <span v-if="savingProvider === 'ollama'" class="loading loading-spinner loading-xs"></span>
+                      Connect
+                    </button>
+                    <button
+                      v-if="isProviderConfigured('ollama')"
+                      class="btn btn-sm btn-ghost text-error"
+                      @click="removeProvider('ollama')"
+                    >Remove</button>
+                  </div>
+                </template>
+
+                <!-- Cloud provider config -->
+                <template v-else>
+                  <p v-if="isServerProvider(def.id)" class="text-xs text-base-content/50">
+                    This server already has a team key for {{ def.name }}. Add your own key only if you want to override it.
+                  </p>
+                  <div class="form-control">
+                    <label class="label p-0 pb-1" :for="`provider-apikey-${def.id}`">
+                      <span class="label-text font-medium">API Key</span>
+                      <a v-if="def.keyLink" :href="def.keyLink" target="_blank" rel="noopener" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
+                    </label>
+                    <div class="join w-full">
+                      <input
+                        :id="`provider-apikey-${def.id}`"
+                        v-model="editBuffer.apiKey"
+                        :type="showEditKey ? 'text' : 'password'"
+                        :placeholder="def.keyPlaceholder || 'API key…'"
+                        class="input input-bordered input-sm join-item flex-1"
+                        @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''; editBuffer.keyError = ''"
+                      />
+                      <button
+                        class="btn btn-sm join-item"
+                        @click="showEditKey = !showEditKey"
+                        :aria-label="showEditKey ? 'Hide API key' : 'Show API key'"
+                      >
+                        {{ showEditKey ? 'Hide' : 'Show' }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="form-control">
+                    <label class="label p-0 pb-1" :for="`provider-model-${def.id}`">
                       <span class="label-text font-medium">Model</span>
                       <button
                         class="label-text-alt btn btn-xs btn-ghost"
-                        @click="detectOllama"
-                        aria-label="Refresh Ollama model list"
-                      >Refresh</button>
+                        @click="loadModels(def.id, { force: true })"
+                        :disabled="modelState[def.id]?.loading"
+                        aria-label="Refresh model list"
+                      >{{ modelState[def.id]?.loading ? '…' : 'Refresh' }}</button>
                     </label>
+                    <p class="text-xs text-base-content/50 mb-1">Leave on provider defaults, pick a model, or type any model id.</p>
                     <select
-                      id="ollama-model"
+                      :id="`provider-model-${def.id}`"
                       class="select select-bordered select-sm w-full"
-                      :value="editBuffer.model"
-                      @change="onModelSelect('ollama', $event.target.value)"
+                      :value="modelSelectValue()"
+                      @change="onModelSelect(def.id, $event.target.value)"
                     >
-                      <option v-for="m in modelsFor('ollama')" :key="m.id" :value="m.id">{{ m.label }}</option>
+                      <option value="">Use provider defaults</option>
+                      <optgroup v-if="recommendedModels(def.id).length" label="Recommended">
+                        <option v-for="m in recommendedModels(def.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                      </optgroup>
+                      <optgroup v-if="otherModels(def.id).length" label="All models">
+                        <option v-for="m in otherModels(def.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                      </optgroup>
+                      <option value="__custom__">Custom model id…</option>
                     </select>
+                    <input
+                      v-if="editBuffer.customModelMode"
+                      v-model="editBuffer.model"
+                      type="text"
+                      placeholder="exact model id"
+                      class="input input-bordered input-sm w-full mt-2"
+                      @change="saveModelIfConfigured(def.id)"
+                    />
+                    <p v-if="modelState[def.id]?.error" class="text-error text-sm mt-1">{{ modelState[def.id].error }}</p>
                   </div>
-                </div>
-                <div v-else-if="ollamaCheckStatus === 'unavailable'" class="alert alert-warning py-2 text-sm">
-                  Ollama not detected at <code class="font-mono">{{ editBuffer.baseUrl || 'http://localhost:11434' }}</code>.
-                  <a href="https://ollama.com" target="_blank" class="link link-primary ml-1">Install Ollama</a>
-                </div>
-                <p v-if="ollamaError && ollamaCheckStatus === 'unavailable'" class="text-error text-sm">{{ ollamaError }}</p>
 
-                <div class="flex gap-2">
-                  <button
-                    class="btn btn-sm btn-primary"
-                    @click="connectOllama"
-                    :disabled="savingProvider === 'ollama' || ollamaCheckStatus === 'checking'"
-                  >
-                    <span v-if="savingProvider === 'ollama'" class="loading loading-spinner loading-xs"></span>
-                    Connect
-                  </button>
-                  <button
-                    v-if="isProviderConfigured('ollama')"
-                    class="btn btn-sm btn-ghost text-error"
-                    @click="removeProvider('ollama')"
-                  >Remove</button>
-                </div>
-              </template>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <button
+                      class="btn btn-sm btn-primary"
+                      @click="connectProvider(def.id)"
+                      :disabled="connectingProvider === def.id || !editBuffer.apiKey?.trim()"
+                    >
+                      <span v-if="connectingProvider === def.id" class="loading loading-spinner loading-xs"></span>
+                      {{ connectingProvider === def.id ? '' : 'Connect' }}
+                    </button>
+                    <button
+                      v-if="isProviderConfigured(def.id) && !editBuffer.keyDirty"
+                      class="btn btn-sm btn-ghost text-error"
+                      @click="removeProvider(def.id)"
+                    >Remove</button>
+                    <span v-if="editBuffer.keyStatus === 'valid'" class="text-success text-sm font-semibold">✓ Connected</span>
+                    <span v-if="editBuffer.keyError" class="text-error text-sm">{{ editBuffer.keyError }}</span>
+                  </div>
+                </template>
+              </div>
+            </div>
 
-              <!-- Cloud provider config -->
-              <template v-else>
-                <p v-if="isServerProvider(def.id)" class="text-xs text-base-content/50">
-                  This server already has a team key for {{ def.name }}. Add your own key only if you want to override it.
+            <!-- Custom endpoint rows (added via "Add your own endpoint") -->
+            <div v-for="cp in customProvidersConfig" :key="cp.id">
+              <div
+                class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
+                @click="toggleExpand(cp.id)"
+                role="button"
+                :aria-expanded="expandedProvider === cp.id"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-medium text-sm">{{ cp.name }}</span>
+                    <span class="badge badge-neutral badge-xs badge-outline">custom</span>
+                  </div>
+                  <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <span class="badge badge-success badge-xs">Connected</span>
+                  <ChevronDown
+                    :size="14"
+                    class="text-base-content/35 transition-transform"
+                    :class="{ 'rotate-180': expandedProvider === cp.id }"
+                    aria-hidden="true"
+                  />
+                </div>
+              </div>
+
+              <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
+                <p class="text-xs text-base-content/50">
+                  Endpoint <code class="font-mono">{{ cp.baseUrl }}</code>
                 </p>
                 <div class="form-control">
-                  <label class="label p-0 pb-1" :for="`provider-apikey-${def.id}`">
-                    <span class="label-text font-medium">API Key</span>
-                    <a v-if="def.keyLink" :href="def.keyLink" target="_blank" rel="noopener" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
-                  </label>
-                  <div class="join w-full">
-                    <input
-                      :id="`provider-apikey-${def.id}`"
-                      v-model="editBuffer.apiKey"
-                      :type="showEditKey ? 'text' : 'password'"
-                      :placeholder="def.keyPlaceholder || 'API key…'"
-                      class="input input-bordered input-sm join-item flex-1"
-                      @input="editBuffer.keyDirty = true; editBuffer.keyStatus = ''; editBuffer.keyError = ''"
-                    />
-                    <button
-                      class="btn btn-sm join-item"
-                      @click="showEditKey = !showEditKey"
-                      :aria-label="showEditKey ? 'Hide API key' : 'Show API key'"
-                    >
-                      {{ showEditKey ? 'Hide' : 'Show' }}
-                    </button>
-                  </div>
-                </div>
-
-                <div class="form-control">
-                  <label class="label p-0 pb-1" :for="`provider-model-${def.id}`">
+                  <label class="label p-0 pb-1" :for="`custom-model-${cp.id}`">
                     <span class="label-text font-medium">Model</span>
                     <button
                       class="label-text-alt btn btn-xs btn-ghost"
-                      @click="loadModels(def.id, { force: true })"
-                      :disabled="modelState[def.id]?.loading"
+                      @click="loadModels(cp.id, { force: true })"
+                      :disabled="modelState[cp.id]?.loading"
                       aria-label="Refresh model list"
-                    >{{ modelState[def.id]?.loading ? '…' : 'Refresh' }}</button>
+                    >{{ modelState[cp.id]?.loading ? '…' : 'Refresh' }}</button>
                   </label>
-                  <p class="text-xs text-base-content/50 mb-1">Leave on provider defaults, pick a model, or type any model id.</p>
                   <select
-                    :id="`provider-model-${def.id}`"
+                    :id="`custom-model-${cp.id}`"
                     class="select select-bordered select-sm w-full"
                     :value="modelSelectValue()"
-                    @change="onModelSelect(def.id, $event.target.value)"
+                    @change="onModelSelect(cp.id, $event.target.value)"
                   >
-                    <option value="">Use provider defaults</option>
-                    <optgroup v-if="recommendedModels(def.id).length" label="Recommended">
-                      <option v-for="m in recommendedModels(def.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                    <option value="">Use endpoint default</option>
+                    <optgroup v-if="recommendedModels(cp.id).length" label="Recommended">
+                      <option v-for="m in recommendedModels(cp.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
                     </optgroup>
-                    <optgroup v-if="otherModels(def.id).length" label="All models">
-                      <option v-for="m in otherModels(def.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                    <optgroup v-if="otherModels(cp.id).length" label="All models">
+                      <option v-for="m in otherModels(cp.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
                     </optgroup>
                     <option value="__custom__">Custom model id…</option>
                   </select>
@@ -201,532 +397,425 @@
                     type="text"
                     placeholder="exact model id"
                     class="input input-bordered input-sm w-full mt-2"
-                    @change="saveModelIfConfigured(def.id)"
+                    @change="saveModelIfConfigured(cp.id)"
                   />
-                  <p v-if="modelState[def.id]?.error" class="text-error text-sm mt-1">{{ modelState[def.id].error }}</p>
+                  <p v-if="modelState[cp.id]?.error" class="text-error text-sm mt-1">{{ modelState[cp.id].error }}</p>
                 </div>
-
-                <div class="flex items-center gap-2 flex-wrap">
-                  <button
-                    class="btn btn-sm btn-primary"
-                    @click="connectProvider(def.id)"
-                    :disabled="connectingProvider === def.id || !editBuffer.apiKey?.trim()"
-                  >
-                    <span v-if="connectingProvider === def.id" class="loading loading-spinner loading-xs"></span>
-                    {{ connectingProvider === def.id ? '' : 'Connect' }}
-                  </button>
-                  <button
-                    v-if="isProviderConfigured(def.id) && !editBuffer.keyDirty"
-                    class="btn btn-sm btn-ghost text-error"
-                    @click="removeProvider(def.id)"
-                  >Remove</button>
-                  <span v-if="editBuffer.keyStatus === 'valid'" class="text-success text-sm font-semibold">✓ Connected</span>
-                  <span v-if="editBuffer.keyError" class="text-error text-sm">{{ editBuffer.keyError }}</span>
+                <div class="flex gap-2">
+                  <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
                 </div>
-              </template>
+              </div>
             </div>
           </div>
 
-          <!-- Custom endpoint rows (added via "Add your own endpoint") -->
-          <div v-for="cp in customProvidersConfig" :key="cp.id">
-            <div
-              class="flex items-center gap-3 px-4 py-3 cursor-pointer select-none hover:bg-base-200/50 transition-colors"
-              @click="toggleExpand(cp.id)"
-            >
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-medium text-sm">{{ cp.name }}</span>
-                  <span class="badge badge-neutral badge-xs badge-outline">custom</span>
-                </div>
-                <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
-              </div>
-              <div class="flex items-center gap-2 flex-shrink-0">
-                <span class="badge badge-success badge-xs">Connected</span>
-                <span class="text-base-content/35 text-xs">{{ expandedProvider === cp.id ? '▲' : '▼' }}</span>
-              </div>
+          <!-- Add your own endpoint -->
+          <div v-if="showAddEndpoint" class="rounded-xl border border-base-300 bg-base-100 px-4 py-4 space-y-3 mt-3">
+            <p class="text-sm font-medium">Add your own endpoint</p>
+            <div class="form-control">
+              <label class="label p-0 pb-1" for="endpoint-preset">
+                <span class="label-text font-medium">Preset</span>
+                <a v-if="selectedPreset?.keyLink" :href="selectedPreset.keyLink" target="_blank" rel="noopener" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
+              </label>
+              <select id="endpoint-preset" v-model="newEndpoint.presetId" class="select select-bordered select-sm w-full max-w-xs" @change="onPresetChange">
+                <option v-for="p in availableEndpointPresets" :key="p.id" :value="p.id">{{ p.name }}</option>
+              </select>
             </div>
-
-            <div v-if="expandedProvider === cp.id" class="border-t border-base-300 bg-base-200/30 px-4 py-4 space-y-3">
-              <p class="text-xs text-base-content/50">
-                Endpoint <code class="font-mono">{{ cp.baseUrl }}</code>
-              </p>
+            <div class="grid gap-3 sm:grid-cols-2">
               <div class="form-control">
-                <label class="label p-0 pb-1" :for="`custom-model-${cp.id}`">
-                  <span class="label-text font-medium">Model</span>
-                  <button
-                    class="label-text-alt btn btn-xs btn-ghost"
-                    @click="loadModels(cp.id, { force: true })"
-                    :disabled="modelState[cp.id]?.loading"
-                    aria-label="Refresh model list"
-                  >{{ modelState[cp.id]?.loading ? '…' : 'Refresh' }}</button>
+                <label class="label p-0 pb-1" for="endpoint-name"><span class="label-text font-medium">Display name</span></label>
+                <input id="endpoint-name" v-model="newEndpoint.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+              </div>
+              <div class="form-control">
+                <label class="label p-0 pb-1" for="endpoint-apikey">
+                  <span class="label-text font-medium">API Key <span v-if="!selectedPreset?.needsKey" class="font-normal opacity-50">(optional)</span></span>
                 </label>
-                <select
-                  :id="`custom-model-${cp.id}`"
-                  class="select select-bordered select-sm w-full"
-                  :value="modelSelectValue()"
-                  @change="onModelSelect(cp.id, $event.target.value)"
-                >
-                  <option value="">Use endpoint default</option>
-                  <optgroup v-if="recommendedModels(cp.id).length" label="Recommended">
-                    <option v-for="m in recommendedModels(cp.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
-                  </optgroup>
-                  <optgroup v-if="otherModels(cp.id).length" label="All models">
-                    <option v-for="m in otherModels(cp.id)" :key="m.id" :value="m.id">{{ m.label }}</option>
-                  </optgroup>
-                  <option value="__custom__">Custom model id…</option>
-                </select>
-                <input
-                  v-if="editBuffer.customModelMode"
-                  v-model="editBuffer.model"
-                  type="text"
-                  placeholder="exact model id"
-                  class="input input-bordered input-sm w-full mt-2"
-                  @change="saveModelIfConfigured(cp.id)"
-                />
-                <p v-if="modelState[cp.id]?.error" class="text-error text-sm mt-1">{{ modelState[cp.id].error }}</p>
-              </div>
-              <div class="flex gap-2">
-                <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
+                <input id="endpoint-apikey" v-model="newEndpoint.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
               </div>
             </div>
-          </div>
-        </div>
-
-        <!-- Add your own endpoint -->
-        <div v-if="showAddEndpoint" class="rounded-xl border border-base-300 bg-base-100 px-4 py-4 space-y-3">
-          <p class="text-sm font-medium">Add your own endpoint</p>
-          <div class="form-control">
-            <label class="label p-0 pb-1" for="endpoint-preset">
-              <span class="label-text font-medium">Preset</span>
-              <a v-if="selectedPreset?.keyLink" :href="selectedPreset.keyLink" target="_blank" rel="noopener" class="label-text-alt link link-primary text-xs">Get a key ↗</a>
-            </label>
-            <select id="endpoint-preset" v-model="newEndpoint.presetId" class="select select-bordered select-sm w-full max-w-xs" @change="onPresetChange">
-              <option v-for="p in CUSTOM_ENDPOINT_PRESETS" :key="p.id" :value="p.id">{{ p.name }}</option>
-            </select>
-          </div>
-          <div class="grid gap-3 sm:grid-cols-2">
             <div class="form-control">
-              <label class="label p-0 pb-1" for="endpoint-name"><span class="label-text font-medium">Display name</span></label>
-              <input id="endpoint-name" v-model="newEndpoint.name" type="text" placeholder="My vLLM Server" class="input input-bordered input-sm w-full" />
+              <label class="label p-0 pb-1" for="endpoint-baseurl"><span class="label-text font-medium">Base URL</span></label>
+              <input id="endpoint-baseurl" v-model="newEndpoint.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
+              <p class="text-xs text-base-content/50 mt-1">Any OpenAI-compatible endpoint works (vLLM, LM Studio, LiteLLM, Groq, OpenRouter…).</p>
             </div>
-            <div class="form-control">
-              <label class="label p-0 pb-1" for="endpoint-apikey">
-                <span class="label-text font-medium">API Key <span v-if="!selectedPreset?.needsKey" class="font-normal opacity-50">(optional)</span></span>
-              </label>
-              <input id="endpoint-apikey" v-model="newEndpoint.apiKey" type="password" placeholder="none or your key" class="input input-bordered input-sm w-full" />
+            <p v-if="addEndpointError" class="text-error text-sm">{{ addEndpointError }}</p>
+            <div class="flex gap-2">
+              <button
+                class="btn btn-sm btn-primary"
+                @click="testAndAddEndpoint"
+                :disabled="addingEndpoint || !newEndpoint.baseUrl?.trim() || !newEndpoint.name?.trim()"
+              >
+                <span v-if="addingEndpoint" class="loading loading-spinner loading-xs"></span>
+                {{ addingEndpoint ? 'Testing…' : 'Test & Add' }}
+              </button>
+              <button class="btn btn-sm btn-ghost" @click="showAddEndpoint = false">Cancel</button>
             </div>
           </div>
-          <div class="form-control">
-            <label class="label p-0 pb-1" for="endpoint-baseurl"><span class="label-text font-medium">Base URL</span></label>
-            <input id="endpoint-baseurl" v-model="newEndpoint.baseUrl" type="url" placeholder="http://localhost:8000/v1" class="input input-bordered input-sm w-full" />
-            <p class="text-xs text-base-content/50 mt-1">Any OpenAI-compatible endpoint works (vLLM, LM Studio, LiteLLM, Groq, OpenRouter…).</p>
-          </div>
-          <p v-if="addEndpointError" class="text-error text-sm">{{ addEndpointError }}</p>
-          <div class="flex gap-2">
-            <button
-              class="btn btn-sm btn-primary"
-              @click="testAndAddEndpoint"
-              :disabled="addingEndpoint || !newEndpoint.baseUrl?.trim() || !newEndpoint.name?.trim()"
-            >
-              <span v-if="addingEndpoint" class="loading loading-spinner loading-xs"></span>
-              {{ addingEndpoint ? 'Testing…' : 'Test & Add' }}
-            </button>
-            <button class="btn btn-sm btn-ghost" @click="showAddEndpoint = false">Cancel</button>
-          </div>
-        </div>
-        <button v-else class="btn btn-ghost btn-sm gap-1 self-start" @click="showAddEndpoint = true">
-          + Add your own endpoint
-        </button>
-
-      </div>
-    </div>
-
-    <!-- Documents -->
-    <div class="card bg-base-200">
-      <div class="card-body space-y-4">
-        <div>
-          <h3 class="card-title text-base">Documents</h3>
-          <p class="text-sm text-base-content/70 mt-0.5">
-            How documents in the current collection are processed and indexed.
-          </p>
-        </div>
-
-        <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-          <label class="flex cursor-pointer items-start gap-4">
-            <input
-              type="checkbox"
-              class="toggle toggle-primary toggle-sm flex-shrink-0"
-              v-model="ocrEnabled"
-              @change="saveOCRSettings"
-            />
-            <div class="min-w-0">
-              <span class="label-text font-medium">OCR scanned PDFs</span>
-              <p class="text-xs text-base-content/60">
-                Pages with little or no native text are read automatically. Applies to new uploads and re-indexing.
-                Engine selection lives under Advanced.
-              </p>
-            </div>
-          </label>
-        </div>
-
-        <div v-if="ocrSettingsSaved" class="alert alert-success py-2">
-          <span>Settings saved. Applies to new uploads.</span>
-        </div>
-
-        <div v-if="reindexSuccess" class="alert alert-success">
-          <span>Re-indexing started. Progress is shown in the status bar.</span>
-        </div>
-        <div v-if="reindexCompleted" class="alert alert-success">
-          <span>Re-index complete. Sources have been refreshed.</span>
-        </div>
-        <div v-if="reindexError" class="alert alert-error">
-          <span>{{ reindexError }}</span>
-        </div>
-
-        <div class="card-actions justify-end">
-          <button class="btn btn-warning" @click="startReindex" :disabled="reindexing || reindexInProgress">
-            <span v-if="reindexing || reindexInProgress" class="loading loading-spinner"></span>
-            {{ reindexing ? 'Starting...' : (reindexInProgress ? 'Re-indexing...' : 'Re-index This Collection') }}
+          <button v-else class="btn btn-ghost btn-sm gap-1 mt-3" @click="showAddEndpoint = true">
+            + Add your own endpoint
           </button>
-        </div>
-      </div>
-    </div>
 
-    <!-- Advanced -->
-    <details class="collapse collapse-arrow bg-base-200 rounded-2xl">
-      <summary class="collapse-title">
-        <h3 class="card-title text-base">Advanced</h3>
-        <p class="text-sm text-base-content/70 mt-0.5">Embedding, chunking, OCR engine, and other expert settings.</p>
-      </summary>
-      <div class="collapse-content space-y-6">
-
-        <!-- Embedding -->
-        <section class="space-y-3">
-          <div>
-            <h4 class="font-medium text-sm">Embedding</h4>
-            <p class="text-xs text-base-content/60 mt-0.5">
-              How document chunks and search queries are converted into vectors.
-              Changing the provider or model requires re-indexing all collections.
-            </p>
-          </div>
-
-          <div class="form-control">
-            <label class="label p-0 pb-1"><span class="label-text font-medium">Provider</span></label>
-            <div class="flex gap-3 flex-wrap">
-              <label class="flex items-center gap-2 cursor-pointer">
-                <input type="radio" class="radio radio-primary radio-sm" value="local" v-model="embeddingProvider" />
-                <span class="text-sm">Local <span class="text-xs text-base-content/50">(sentence-transformers)</span></span>
-              </label>
-              <label class="flex items-center gap-2 cursor-pointer">
-                <input type="radio" class="radio radio-primary radio-sm" value="ollama" v-model="embeddingProvider" @change="detectEmbeddingOllama" />
-                <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(fully local, no HF download)</span></span>
-              </label>
-            </div>
-          </div>
-
-          <!-- Local: model name -->
-          <div v-if="embeddingProvider === 'local'" class="form-control">
-            <label class="label p-0 pb-1" for="embedding-model-local"><span class="label-text font-medium">Model</span></label>
-            <input
-              id="embedding-model-local"
-              v-model="embeddingModel"
-              type="text"
-              placeholder="all-MiniLM-L6-v2"
-              class="input input-bordered input-sm w-full max-w-sm"
-            />
-            <p class="text-xs text-base-content/50 mt-1">
-              Any <a href="https://www.sbert.net/docs/pretrained_models.html" target="_blank" class="link link-primary">sentence-transformers</a> model.
-              Downloaded from HuggingFace on first use.
-            </p>
-          </div>
-
-          <!-- Ollama: base URL + model -->
-          <div v-if="embeddingProvider === 'ollama'" class="space-y-3">
-            <div class="form-control">
-              <label class="label p-0 pb-1" for="embedding-ollama-url"><span class="label-text font-medium">Ollama URL</span></label>
-              <input
-                id="embedding-ollama-url"
-                v-model="ollamaBaseUrl"
-                type="url"
-                placeholder="http://localhost:11434"
-                class="input input-bordered input-sm w-full max-w-sm"
-              />
-            </div>
-
-            <div class="form-control">
-              <label class="label p-0 pb-1" for="embedding-ollama-model"><span class="label-text font-medium">Embedding Model</span></label>
-              <div class="flex gap-2 items-start flex-wrap">
-                <div class="flex-1 min-w-[180px] max-w-xs">
-                  <select
-                    v-if="embeddingOllamaModels.length"
-                    id="embedding-ollama-model"
-                    v-model="ollamaEmbeddingModel"
-                    class="select select-bordered select-sm w-full"
-                  >
-                    <option v-for="m in embeddingOllamaModels" :key="m.name" :value="m.name">{{ m.name }}</option>
-                  </select>
-                  <input
-                    v-else
-                    id="embedding-ollama-model"
-                    v-model="ollamaEmbeddingModel"
-                    type="text"
-                    placeholder="nomic-embed-text"
-                    class="input input-bordered input-sm w-full"
-                  />
-                </div>
-                <button class="btn btn-sm btn-ghost flex-shrink-0" @click="detectEmbeddingOllama" :disabled="embeddingOllamaStatus === 'checking'">
-                  <span v-if="embeddingOllamaStatus === 'checking'" class="loading loading-spinner loading-xs"></span>
-                  <span v-else>Detect</span>
-                </button>
-              </div>
-              <p v-if="embeddingOllamaStatus === 'error'" class="text-xs text-warning mt-1">
-                Ollama not reachable at <code>{{ ollamaBaseUrl }}</code>. Check that Ollama is running.
-                <span v-if="ollamaBaseUrl.includes('localhost') || ollamaBaseUrl.includes('127.0.0.1')">
-                  Running in Docker? Use <code>http://host.docker.internal:11434</code> instead.
-                </span>
-              </p>
-              <p v-else class="text-xs text-base-content/50 mt-1">
-                Recommended: <code>nomic-embed-text</code> or <code>mxbai-embed-large</code>.
-                Pull first: <code>ollama pull nomic-embed-text</code>
-              </p>
-            </div>
-          </div>
-
-          <div class="flex items-center gap-3 flex-wrap">
-            <button class="btn btn-sm btn-primary" @click="saveEmbeddingSettings">Save</button>
-            <span v-if="embeddingSettingsSaved && !embeddingNeedsReindex" class="text-success text-sm">Saved</span>
-            <span v-if="embeddingSettingsSaved && embeddingNeedsReindex" class="text-warning text-sm font-medium">
-              Saved — restart the server and re-index all collections to apply changes.
-            </span>
-          </div>
-        </section>
-
-        <!-- Chunking -->
-        <section class="space-y-3 border-t border-base-300 pt-4">
-          <div>
-            <h4 class="font-medium text-sm">Chunking</h4>
-            <p class="text-xs text-base-content/60 mt-0.5">
-              Per-collection chunking for search. Re-index to apply changes.
-            </p>
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div class="form-control">
-              <label class="label py-1">
-                <span class="label-text text-sm font-medium">Chunk size</span>
-                <span class="label-text-alt text-xs text-base-content/50">characters</span>
-              </label>
-              <input
-                type="number"
-                min="100"
-                max="4000"
-                step="50"
-                class="input input-sm input-bordered"
-                v-model.number="chunkSize"
-                @change="saveChunkSettings"
-              />
-              <p class="text-xs text-base-content/50 mt-1">
-                Smaller = more precise matches. Larger = more context per chunk.
-              </p>
-            </div>
-            <div class="form-control">
-              <label class="label py-1">
-                <span class="label-text text-sm font-medium">Chunk overlap</span>
-                <span class="label-text-alt text-xs text-base-content/50">characters</span>
-              </label>
-              <input
-                type="number"
-                min="0"
-                max="1000"
-                step="25"
-                class="input input-sm input-bordered"
-                v-model.number="chunkOverlap"
-                @change="saveChunkSettings"
-              />
-              <p class="text-xs text-base-content/50 mt-1">
-                Overlap between adjacent chunks to preserve context across boundaries.
-              </p>
-            </div>
-          </div>
-
-          <div v-if="chunkSettingsSaved" class="alert alert-success py-2 text-sm">
-            <span>Chunk settings saved. Re-index to apply.</span>
-          </div>
-          <div v-if="chunkSettingsError" class="alert alert-error py-2 text-sm">
-            <span>{{ chunkSettingsError }}</span>
-          </div>
-        </section>
-
-        <!-- OCR engine -->
-        <section class="space-y-3 border-t border-base-300 pt-4">
-          <div>
-            <h4 class="font-medium text-sm">OCR engine</h4>
-            <p class="text-xs text-base-content/60 mt-0.5">
-              Used when "OCR scanned PDFs" is enabled in Documents.
-              Vision AI reads each page with a multimodal model — most accurate for complex layouts
-              and degraded scans. Providers come from <strong>AI Providers</strong>; keys and a
-              vision-capable model are reused automatically.
-            </p>
-          </div>
-
-          <div class="grid gap-4 grid-cols-1 sm:grid-cols-2">
-            <div class="form-control">
-              <label class="label pb-1" for="vision-provider">
-                <span class="label-text font-medium">Engine</span>
-              </label>
-              <select id="vision-provider" v-model="visionProvider" class="select select-bordered w-full" @change="onOcrProviderChange">
-                <option value="none">Local — Docling / Tesseract (free, offline)</option>
-                <option v-for="opt in ocrConfiguredProviders" :key="opt.value" :value="opt.value">
-                  Vision AI — {{ opt.label }}
-                </option>
-              </select>
-            </div>
-
-            <!-- Ollama (local): detect vision-capable models -->
-            <div class="form-control" v-if="visionProvider === 'ollama'">
-              <label class="label pb-1" for="vision-model-ollama">
-                <span class="label-text font-medium">Vision model</span>
-                <button
-                  class="label-text-alt btn btn-xs btn-ghost"
-                  @click="refreshOcrOllamaVisionModels"
-                  :disabled="ocrOllamaVisionLoading"
-                  aria-label="Refresh Ollama vision models"
-                >
-                  {{ ocrOllamaVisionLoading ? '...' : 'Refresh' }}
-                </button>
-              </label>
-              <select id="vision-model-ollama" v-if="ocrOllamaVisionModels.length" v-model="visionModel" class="select select-bordered w-full" @change="saveOCRSettings">
-                <option v-for="m in ocrOllamaVisionModels" :key="m.name" :value="m.name">{{ m.name }}</option>
-              </select>
-              <div v-else-if="ocrOllamaVisionLoading" class="text-xs text-base-content/60 py-2">Checking models...</div>
-              <div v-else class="alert alert-warning py-2 text-xs">
-                <span v-if="ocrOllamaVisionTotal > 0">
-                  {{ ocrOllamaVisionTotal }} model(s) installed but none support vision. Try: <code>ollama pull qwen2.5-vl</code>
-                </span>
-                <span v-else>Ollama not running or no models installed. <code>ollama pull qwen2.5-vl</code></span>
-              </div>
-            </div>
-          </div>
-
-          <span v-if="ocrSettingsSaved" class="text-success text-sm">Saved</span>
-        </section>
-
-        <!-- Ollama context window -->
-        <section class="space-y-3 border-t border-base-300 pt-4">
-          <div>
-            <h4 class="font-medium text-sm">Ollama context window</h4>
-          </div>
-          <div class="form-control">
-            <label class="label p-0 pb-1" for="ollama-num-ctx">
-              <span class="label-text font-medium">num_ctx</span>
-            </label>
-            <input
-              id="ollama-num-ctx"
-              v-model.number="ollamaNumCtx"
-              type="number"
-              min="512"
-              step="512"
-              placeholder="8192"
-              class="input input-bordered input-sm w-full max-w-xs"
-              @change="saveOllamaNumCtx"
-            />
-            <p class="text-xs text-base-content/50 mt-1">
-              Tokens of context sent to local Ollama models. Ollama's default is small (~2048) and
-              silently truncates longer prompts — raise this so the model sees your full documents
-              (higher uses more memory). Applies to chat, search, and OCR cleanup.
-            </p>
-          </div>
-        </section>
-
-        <!-- Table column inference -->
-        <section class="space-y-3 border-t border-base-300 pt-4">
-          <div>
-            <h4 class="font-medium text-sm">Table Column Inference</h4>
-            <p class="text-xs text-base-content/60 mt-0.5">
-              When importing CSV or Excel files, use AI to identify column roles that heuristics can't determine automatically. Requires an AI provider configured above.
-            </p>
-          </div>
-
-          <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-            <label class="flex cursor-pointer items-start gap-4">
-              <input
-                type="checkbox"
-                class="toggle toggle-primary toggle-sm flex-shrink-0"
-                v-model="llmSchemaInferenceEnabled"
-                @change="saveInferenceSettings"
-              />
+          <!-- Ollama context window (advanced) -->
+          <div v-if="advanced" class="mt-8 pt-6 border-t border-base-300/60">
+            <p class="text-[10px] uppercase tracking-[0.18em] font-semibold text-base-content/35 mb-4">Advanced</p>
+            <div class="flex items-start justify-between gap-8">
               <div class="min-w-0">
-                <span class="label-text font-medium">Enable AI Column Detection</span>
-                <p class="text-xs text-base-content/60">
-                  Column names and sample values are sent to your AI provider for role assignment.
+                <div class="text-sm font-medium">Ollama context window</div>
+                <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
+                  Tokens of context sent to local Ollama models. Ollama's default is small (~2048)
+                  and silently truncates longer prompts — raise this so the model sees your full
+                  documents. Higher uses more memory. Applies to chat, search, and OCR cleanup.
                 </p>
               </div>
-            </label>
-          </div>
-
-          <div v-if="inferenceSettingsSaved" class="alert alert-success py-2">
-            <span>Saved.</span>
+              <input
+                id="ollama-num-ctx"
+                v-model.number="ollamaNumCtx"
+                type="number"
+                min="512"
+                step="512"
+                placeholder="8192"
+                class="input input-bordered input-sm w-28 flex-shrink-0 tabular-nums"
+                @change="saveOllamaNumCtx"
+                aria-label="Ollama context window (tokens)"
+              />
+            </div>
           </div>
         </section>
 
-        <!-- Interface -->
-        <section class="space-y-3 border-t border-base-300 pt-4">
-          <div>
-            <h4 class="font-medium text-sm">Interface</h4>
+        <!-- ═══ Indexing ═══ -->
+        <section v-show="activeSection === 'indexing'" aria-labelledby="settings-indexing">
+          <h2 id="settings-indexing" class="sr-only">Indexing</h2>
+
+          <p class="text-[13px] text-base-content/55 leading-relaxed max-w-[60ch] mb-5">
+            How documents in <span class="font-medium text-base-content/75">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
+            are processed and indexed.
+          </p>
+
+          <!-- OCR toggle -->
+          <div class="flex items-start justify-between gap-8 pb-6">
+            <div class="min-w-0">
+              <div class="text-sm font-medium">OCR scanned PDFs</div>
+              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
+                Pages with little or no native text are read automatically. Applies to new uploads
+                and re-indexing.<span v-if="!advanced"> Engine selection is under Advanced.</span>
+              </p>
+              <p v-if="ocrSettingsSaved" class="text-success text-xs mt-1.5" role="status">Saved — applies to new uploads</p>
+            </div>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary toggle-sm flex-shrink-0 mt-0.5"
+              v-model="ocrEnabled"
+              @change="saveOCRSettings"
+              aria-label="OCR scanned PDFs"
+            />
           </div>
-          <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-            <label class="flex cursor-pointer items-start gap-4">
-              <input type="checkbox" class="toggle toggle-primary toggle-sm" v-model="chatTabEnabled" @change="saveChatTabSetting" />
-              <div>
-                <span class="label-text font-medium">Chat Tab</span>
-                <p class="text-xs text-base-content/60">Built-in chat interface. Disable if you use Claude Desktop or another MCP client instead.</p>
+
+          <!-- Re-index -->
+          <div class="flex items-start justify-between gap-8 py-6 border-t border-base-300/50">
+            <div class="min-w-0">
+              <div class="text-sm font-medium">Re-index this collection</div>
+              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
+                Rebuilds the search index from the original files, applying any changed settings.
+                Runs in the background; progress is shown in the status bar.
+              </p>
+              <p v-if="reindexSuccess" class="text-success text-xs mt-1.5" role="status">Re-indexing started</p>
+              <p v-if="reindexCompleted" class="text-success text-xs mt-1.5" role="status">Re-index complete — sources refreshed</p>
+              <p v-if="reindexError" class="text-error text-xs mt-1.5" role="alert">{{ reindexError }}</p>
+            </div>
+            <button
+              class="btn btn-sm btn-outline flex-shrink-0"
+              @click="startReindex"
+              :disabled="reindexing || reindexInProgress"
+            >
+              <span v-if="reindexing || reindexInProgress" class="loading loading-spinner loading-xs"></span>
+              {{ reindexing ? 'Starting…' : (reindexInProgress ? 'Re-indexing…' : 'Re-index') }}
+            </button>
+          </div>
+
+          <!-- Advanced indexing -->
+          <div v-if="advanced" class="pt-6 border-t border-base-300/60 space-y-8">
+            <p class="text-[10px] uppercase tracking-[0.18em] font-semibold text-base-content/35">Advanced</p>
+
+            <!-- OCR engine -->
+            <div>
+              <div class="text-sm font-medium">OCR engine</div>
+              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[56ch]">
+                Used when OCR is on. Vision AI reads each page with a multimodal model — most
+                accurate for complex layouts and degraded scans. Providers come from
+                <button class="link link-primary" @click="activeSection = 'providers'">AI Providers</button>;
+                keys and a vision-capable model are reused automatically.
+              </p>
+
+              <div class="grid gap-4 grid-cols-1 sm:grid-cols-2 mt-3">
+                <div class="form-control">
+                  <label class="label p-0 pb-1" for="vision-provider">
+                    <span class="label-text text-xs font-medium">Engine</span>
+                  </label>
+                  <select id="vision-provider" v-model="visionProvider" class="select select-bordered select-sm w-full" @change="onOcrProviderChange">
+                    <option value="none">Local — Docling / Tesseract (free, offline)</option>
+                    <option v-for="opt in ocrConfiguredProviders" :key="opt.value" :value="opt.value">
+                      Vision AI — {{ opt.label }}
+                    </option>
+                  </select>
+                </div>
+
+                <!-- Ollama (local): detect vision-capable models -->
+                <div class="form-control" v-if="visionProvider === 'ollama'">
+                  <label class="label p-0 pb-1" for="vision-model-ollama">
+                    <span class="label-text text-xs font-medium">Vision model</span>
+                    <button
+                      class="label-text-alt btn btn-xs btn-ghost"
+                      @click="refreshOcrOllamaVisionModels"
+                      :disabled="ocrOllamaVisionLoading"
+                      aria-label="Refresh Ollama vision models"
+                    >
+                      {{ ocrOllamaVisionLoading ? '…' : 'Refresh' }}
+                    </button>
+                  </label>
+                  <select id="vision-model-ollama" v-if="ocrOllamaVisionModels.length" v-model="visionModel" class="select select-bordered select-sm w-full" @change="saveOCRSettings">
+                    <option v-for="m in ocrOllamaVisionModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+                  </select>
+                  <div v-else-if="ocrOllamaVisionLoading" class="text-xs text-base-content/60 py-2">Checking models…</div>
+                  <div v-else class="alert alert-warning py-2 text-xs">
+                    <span v-if="ocrOllamaVisionTotal > 0">
+                      {{ ocrOllamaVisionTotal }} model(s) installed but none support vision. Try: <code>ollama pull qwen2.5-vl</code>
+                    </span>
+                    <span v-else>Ollama not running or no models installed. <code>ollama pull qwen2.5-vl</code></span>
+                  </div>
+                </div>
               </div>
-            </label>
+            </div>
+
+            <!-- Embedding -->
+            <div class="pt-6 border-t border-base-300/50">
+              <div class="text-sm font-medium">Embedding</div>
+              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[56ch]">
+                How document chunks and search queries are converted into vectors.
+                Changing the provider or model requires re-indexing all collections.
+              </p>
+
+              <div class="form-control mt-3">
+                <div class="flex gap-4 flex-wrap">
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" class="radio radio-primary radio-sm" value="local" v-model="embeddingProvider" />
+                    <span class="text-sm">Local <span class="text-xs text-base-content/50">(sentence-transformers)</span></span>
+                  </label>
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" class="radio radio-primary radio-sm" value="ollama" v-model="embeddingProvider" @change="detectEmbeddingOllama" />
+                    <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(fully local, no HF download)</span></span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Local: model name -->
+              <div v-if="embeddingProvider === 'local'" class="form-control mt-3">
+                <label class="label p-0 pb-1" for="embedding-model-local"><span class="label-text text-xs font-medium">Model</span></label>
+                <input
+                  id="embedding-model-local"
+                  v-model="embeddingModel"
+                  type="text"
+                  placeholder="all-MiniLM-L6-v2"
+                  class="input input-bordered input-sm w-full max-w-sm"
+                />
+                <p class="text-xs text-base-content/50 mt-1">
+                  Any <a href="https://www.sbert.net/docs/pretrained_models.html" target="_blank" class="link link-primary">sentence-transformers</a> model.
+                  Downloaded from HuggingFace on first use.
+                </p>
+              </div>
+
+              <!-- Ollama: base URL + model -->
+              <div v-if="embeddingProvider === 'ollama'" class="space-y-3 mt-3">
+                <div class="form-control">
+                  <label class="label p-0 pb-1" for="embedding-ollama-url"><span class="label-text text-xs font-medium">Ollama URL</span></label>
+                  <input
+                    id="embedding-ollama-url"
+                    v-model="ollamaBaseUrl"
+                    type="url"
+                    placeholder="http://localhost:11434"
+                    class="input input-bordered input-sm w-full max-w-sm"
+                  />
+                </div>
+
+                <div class="form-control">
+                  <label class="label p-0 pb-1" for="embedding-ollama-model"><span class="label-text text-xs font-medium">Embedding model</span></label>
+                  <div class="flex gap-2 items-start flex-wrap">
+                    <div class="flex-1 min-w-[180px] max-w-xs">
+                      <select
+                        v-if="embeddingOllamaModels.length"
+                        id="embedding-ollama-model"
+                        v-model="ollamaEmbeddingModel"
+                        class="select select-bordered select-sm w-full"
+                      >
+                        <option v-for="m in embeddingOllamaModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+                      </select>
+                      <input
+                        v-else
+                        id="embedding-ollama-model"
+                        v-model="ollamaEmbeddingModel"
+                        type="text"
+                        placeholder="nomic-embed-text"
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
+                    <button class="btn btn-sm btn-ghost flex-shrink-0" @click="detectEmbeddingOllama" :disabled="embeddingOllamaStatus === 'checking'">
+                      <span v-if="embeddingOllamaStatus === 'checking'" class="loading loading-spinner loading-xs"></span>
+                      <span v-else>Detect</span>
+                    </button>
+                  </div>
+                  <p v-if="embeddingOllamaStatus === 'error'" class="text-xs text-warning mt-1">
+                    Ollama not reachable at <code>{{ ollamaBaseUrl }}</code>. Check that Ollama is running.
+                    <span v-if="ollamaBaseUrl.includes('localhost') || ollamaBaseUrl.includes('127.0.0.1')">
+                      Running in Docker? Use <code>http://host.docker.internal:11434</code> instead.
+                    </span>
+                  </p>
+                  <p v-else class="text-xs text-base-content/50 mt-1">
+                    Recommended: <code>nomic-embed-text</code> or <code>mxbai-embed-large</code>.
+                    Pull first: <code>ollama pull nomic-embed-text</code>
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-3 flex-wrap mt-3">
+                <button class="btn btn-sm btn-primary" @click="saveEmbeddingSettings">Save</button>
+                <span v-if="embeddingSettingsSaved && !embeddingNeedsReindex" class="text-success text-sm" role="status">Saved</span>
+                <span v-if="embeddingSettingsSaved && embeddingNeedsReindex" class="text-warning text-sm font-medium" role="status">
+                  Saved — restart the server and re-index all collections to apply changes.
+                </span>
+              </div>
+            </div>
+
+            <!-- Chunking -->
+            <div class="pt-6 border-t border-base-300/50">
+              <div class="text-sm font-medium">Chunking</div>
+              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[56ch]">
+                Per-collection chunking for search. Re-index to apply changes.
+              </p>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                <div class="form-control">
+                  <label class="label py-1">
+                    <span class="label-text text-xs font-medium">Chunk size</span>
+                    <span class="label-text-alt text-xs text-base-content/50">characters</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="100"
+                    max="4000"
+                    step="50"
+                    class="input input-sm input-bordered tabular-nums"
+                    v-model.number="chunkSize"
+                    @change="saveChunkSettings"
+                    aria-label="Chunk size (characters)"
+                  />
+                  <p class="text-xs text-base-content/50 mt-1">
+                    Smaller = more precise matches. Larger = more context per chunk.
+                  </p>
+                </div>
+                <div class="form-control">
+                  <label class="label py-1">
+                    <span class="label-text text-xs font-medium">Chunk overlap</span>
+                    <span class="label-text-alt text-xs text-base-content/50">characters</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1000"
+                    step="25"
+                    class="input input-sm input-bordered tabular-nums"
+                    v-model.number="chunkOverlap"
+                    @change="saveChunkSettings"
+                    aria-label="Chunk overlap (characters)"
+                  />
+                  <p class="text-xs text-base-content/50 mt-1">
+                    Overlap between adjacent chunks to preserve context across boundaries.
+                  </p>
+                </div>
+              </div>
+
+              <p v-if="chunkSettingsSaved" class="text-success text-xs mt-2" role="status">Saved — re-index to apply</p>
+              <p v-if="chunkSettingsError" class="text-error text-xs mt-2" role="alert">{{ chunkSettingsError }}</p>
+            </div>
+
+            <!-- Table column inference -->
+            <div class="pt-6 border-t border-base-300/50">
+              <div class="flex items-start justify-between gap-8">
+                <div class="min-w-0">
+                  <div class="text-sm font-medium">AI column detection</div>
+                  <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
+                    When importing CSV or Excel files, column names and sample values are sent to
+                    your AI provider to identify roles that heuristics can't determine.
+                  </p>
+                  <p v-if="inferenceSettingsSaved" class="text-success text-xs mt-1.5" role="status">Saved</p>
+                </div>
+                <input
+                  type="checkbox"
+                  class="toggle toggle-primary toggle-sm flex-shrink-0 mt-0.5"
+                  v-model="llmSchemaInferenceEnabled"
+                  @change="saveInferenceSettings"
+                  aria-label="Enable AI column detection"
+                />
+              </div>
+            </div>
           </div>
         </section>
 
-      </div>
-    </details>
+        <!-- ═══ Data ═══ -->
+        <section v-show="activeSection === 'data'" aria-labelledby="settings-data">
+          <h2 id="settings-data" class="sr-only">Data</h2>
 
-    <!-- System Info -->
-    <div class="rounded-xl border border-base-300 bg-base-100 px-4 py-3 flex flex-wrap gap-x-6 gap-y-1 items-center text-sm">
-      <span class="text-xs font-semibold uppercase tracking-widest text-base-content/40">System</span>
-      <span class="text-base-content/70">
-        <span class="text-base-content/40 text-xs mr-1">DB</span>
-        <span class="font-medium">{{ systemInfo.db_backend === 'postgresql' ? 'PostgreSQL' : 'SQLite' }}</span>
-      </span>
-      <span class="text-base-content/70">
-        <span class="text-base-content/40 text-xs mr-1">Multi-user</span>
-        <span class="font-medium">{{ systemInfo.multi_user ? 'On' : 'Off' }}</span>
-      </span>
-      <span class="text-base-content/70">
-        <span class="text-base-content/40 text-xs mr-1">User</span>
-        <span class="font-medium">{{ systemInfo.user_id || 'default' }}</span>
-      </span>
-      <span class="text-base-content/30 text-xs ml-auto hidden sm:block">Configure via .env</span>
-    </div>
+          <div class="flex items-start justify-between gap-8">
+            <div class="min-w-0">
+              <div class="text-sm font-medium text-error">Clear collection data</div>
+              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
+                Permanently deletes every source and index in
+                <span class="font-medium text-base-content/75">{{ collectionStore.currentCollection?.name || 'Default' }}</span>.
+                The collection itself remains. This cannot be undone.
+              </p>
+              <p v-if="clearSuccess" class="text-success text-xs mt-1.5" role="status">All data cleared</p>
+              <p v-if="clearError" class="text-error text-xs mt-1.5" role="alert">{{ clearError }}</p>
+            </div>
+            <button class="btn btn-sm btn-outline btn-error flex-shrink-0" @click="confirmClearAll" :disabled="clearing">
+              <span v-if="clearing" class="loading loading-spinner loading-xs"></span>
+              {{ clearing ? 'Clearing…' : 'Clear data' }}
+            </button>
+          </div>
+        </section>
 
-    <!-- Danger Zone -->
-    <div class="card bg-error/10 border border-error">
-      <div class="card-body space-y-3">
-        <div>
-          <h3 class="card-title text-base text-error">Danger Zone</h3>
-          <p class="text-sm text-base-content/70 mt-0.5">Permanently delete all sources and indexes in the current collection.</p>
-        </div>
+        <!-- ═══ System ═══ -->
+        <section v-show="activeSection === 'system'" aria-labelledby="settings-system">
+          <h2 id="settings-system" class="sr-only">System</h2>
 
-        <div v-if="clearSuccess" class="alert alert-success">
-          <span>All data has been cleared successfully!</span>
-        </div>
-        <div v-if="clearError" class="alert alert-error">
-          <span>{{ clearError }}</span>
-        </div>
+          <p class="text-[13px] text-base-content/55 leading-relaxed mb-5">
+            Server configuration — set via <code class="text-xs">.env</code> or the environment, read-only here.
+          </p>
 
-        <div class="card-actions justify-end">
-          <button class="btn btn-error" @click="confirmClearAll" :disabled="clearing">
-            <span v-if="clearing" class="loading loading-spinner"></span>
-            {{ clearing ? 'Clearing...' : 'Clear All Data' }}
-          </button>
-        </div>
+          <dl class="divide-y divide-base-300/50 text-sm">
+            <div class="flex items-center justify-between gap-8 py-3">
+              <dt class="text-base-content/55">Deployment</dt>
+              <dd class="font-medium flex items-center gap-1.5">
+                <ShieldCheck v-if="systemInfo.offline_mode" :size="14" class="text-success" aria-hidden="true" />
+                {{ systemInfo.offline_mode ? 'Air-gapped (offline mode)' : 'Standard' }}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-8 py-3">
+              <dt class="text-base-content/55">Database</dt>
+              <dd class="font-medium">{{ systemInfo.db_backend === 'postgresql' ? 'PostgreSQL' : 'SQLite' }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-8 py-3">
+              <dt class="text-base-content/55">Multi-user</dt>
+              <dd class="font-medium">{{ systemInfo.multi_user ? 'On' : 'Off' }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-8 py-3">
+              <dt class="text-base-content/55">User</dt>
+              <dd class="font-medium">{{ systemInfo.user_id || 'default' }}</dd>
+            </div>
+          </dl>
+
+          <p v-if="systemInfo.offline_mode" class="text-xs text-base-content/50 mt-4 leading-relaxed max-w-[56ch]">
+            Cloud AI providers are disabled and models load from the local cache only.
+            This deployment makes no outbound connections beyond the endpoints configured on your network.
+          </p>
+        </section>
+
       </div>
     </div>
 
@@ -758,6 +847,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
+import { ChevronDown, Check, ShieldCheck } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import {
@@ -780,6 +870,31 @@ const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-t
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
+
+// ── Settings shell: section rail + basic/advanced depth ──
+const SECTIONS = [
+  { id: 'general', label: 'General' },
+  { id: 'providers', label: 'AI Providers' },
+  { id: 'indexing', label: 'Indexing' },
+  { id: 'data', label: 'Data' },
+  { id: 'system', label: 'System' },
+]
+
+const THEMES = [
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+  { id: 'cupcake', label: 'Cupcake' },
+  { id: 'nord', label: 'Nord' },
+  { id: 'dracula', label: 'Dracula' },
+]
+
+const settingsMode = ref(localStorage.getItem('settings_mode') || 'basic')
+watch(settingsMode, v => localStorage.setItem('settings_mode', v))
+const advanced = computed(() => settingsMode.value === 'advanced')
+
+const savedSection = localStorage.getItem('settings_section')
+const activeSection = ref(SECTIONS.some(s => s.id === savedSection) ? savedSection : 'general')
+watch(activeSection, v => localStorage.setItem('settings_section', v))
 
 // UI feature flags
 const chatTabEnabled = ref(true)
@@ -1110,15 +1225,32 @@ const startReindex = async () => {
   }
 }
 
-// System info
-const systemInfo = ref({ db_backend: 'sqlite', multi_user: false, user_id: 'default' })
+// System info (read-only; offline flag comes from /health)
+const systemInfo = ref({ db_backend: 'sqlite', multi_user: false, user_id: 'default', offline_mode: false })
+
+// Air-gapped deployments: the backend rejects cloud providers, so don't
+// offer them. Only local Ollama and self-hosted endpoints remain.
+const visibleProviderDefs = computed(() =>
+  systemInfo.value.offline_mode ? PROVIDER_DEFS.filter(d => d.type === 'local') : PROVIDER_DEFS
+)
+const availableEndpointPresets = computed(() =>
+  systemInfo.value.offline_mode
+    ? CUSTOM_ENDPOINT_PRESETS.filter(p => !p.baseUrl || !p.baseUrl.startsWith('https://'))
+    : CUSTOM_ENDPOINT_PRESETS
+)
 
 async function loadSystemInfo() {
   try {
     const response = await axios.get('/api/user/me')
-    systemInfo.value = response.data
+    systemInfo.value = { ...systemInfo.value, ...response.data }
   } catch (err) {
     console.error('Failed to load system info:', err)
+  }
+  try {
+    const health = await axios.get('/health')
+    systemInfo.value.offline_mode = !!health.data.offline_mode
+  } catch {
+    // leave default
   }
 }
 
@@ -1456,3 +1588,4 @@ onMounted(() => {
   loadServerConfig()
 })
 </script>
+

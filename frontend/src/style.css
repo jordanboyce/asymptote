@@ -6,6 +6,22 @@
    themes: light --default, dark --prefersdark, cupcake, dracula, nord;
 }
 
+/* ─── DaisyUI 5 compat: stacked form groups ─────────────────────────────── */
+/* DaisyUI 5 removed .form-control's column layout, which leaves labels
+   flowing inline beside their inputs. Every form in this app was authored
+   against the v4 semantics (label above control), so restore them globally. */
+.form-control {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.form-control > .label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 /* ─── Assistant chat markdown ───────────────────────────────────────────── */
 /* We don't pull in @tailwindcss/typography (extra weight, opinionated),
    so these rules style the markdown output in the chat message bubble. */

@@ -8,6 +8,7 @@ passes a progress_callback instead of re-batching on its own.
 
 import json
 import logging
+import os
 import threading
 import urllib.request
 from typing import Callable, List, Optional, Union
@@ -112,6 +113,18 @@ class EmbeddingService:
             )
             logger.info(f"Loaded '{model_name}' from local cache (offline).")
         except Exception:
+            # In offline/air-gapped mode there is no network to fall back to:
+            # fail immediately with instructions instead of letting the hub
+            # client churn through retries against an unreachable host.
+            if os.environ.get("HF_HUB_OFFLINE") == "1":
+                raise RuntimeError(
+                    f"Embedding model '{model_name}' is not in the local "
+                    f"HuggingFace cache and this deployment runs in offline "
+                    f"(air-gapped) mode, so it cannot be downloaded. Either "
+                    f"pre-seed the cache from a connected machine (see "
+                    f"docs/AIRGAP.md), switch EMBEDDING_PROVIDER to 'ollama', "
+                    f"or use the model baked into the Docker image."
+                )
             logger.info(f"Model '{model_name}' not in cache; downloading from HuggingFace…")
             try:
                 self.model = SentenceTransformer(model_name, trust_remote_code=True)

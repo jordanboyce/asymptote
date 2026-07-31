@@ -17,6 +17,32 @@ from services.app_database import app_db
 
 logger = logging.getLogger(__name__)
 
+# Every field the Settings tab may persist to the config DB. Also consumed by
+# IndexerManager._apply_db_config, which re-applies these on startup: the .env
+# write-back below is best-effort persistence only (in containers it lands on
+# an ephemeral filesystem), so the DB must be able to restore every field.
+VALID_CONFIG_FIELDS = {
+    "embedding_model", "embedding_provider", "ollama_base_url", "ollama_embedding_model",
+    "chunk_size", "chunk_overlap",
+    "default_top_k", "max_top_k",
+    "enable_ocr",
+    "vision_ocr_provider", "vision_ocr_model", "vision_ocr_api_key",
+    "enable_mcp", "mcp_server_id", "mcp_default_collection",
+    "mcp_top_k", "mcp_mode", "mcp_semantic_weight",
+    "mcp_include_sources", "mcp_max_source_length",
+    "mcp_ai_provider", "mcp_ollama_model",
+    "enable_llm_schema_inference", "llm_schema_inference_threshold",
+    "enable_chat_tab",
+    "ollama_num_ctx",
+}
+
+# Config fields holding a credential. GET /api/config returns MASKED_SECRET in
+# place of the stored value, and an update carrying MASKED_SECRET back is
+# treated as "leave unchanged" — so a client can round-trip the config without
+# either seeing the secret or wiping it.
+SECRET_CONFIG_FIELDS = {"vision_ocr_api_key"}
+MASKED_SECRET = "********"
+
 
 class ConfigManager:
     """Manages dynamic configuration updates with database persistence."""
@@ -73,6 +99,13 @@ class ConfigManager:
             if key in db_config:
                 config[key] = db_config[key]
 
+        # Never hand a stored credential back out. Callers get a mask plus a
+        # boolean so the UI can show "a key is configured" without holding it.
+        for key in SECRET_CONFIG_FIELDS:
+            if key in config:
+                config[f"{key}_set"] = bool(config[key])
+                config[key] = MASKED_SECRET if config[key] else ""
+
         return config
 
     def update_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -112,24 +145,16 @@ class ConfigManager:
         inference_fields = {"enable_llm_schema_inference", "llm_schema_inference_threshold"}
         ui_fields = {"enable_chat_tab"}
 
-        # Validate updates
-        valid_fields = {
-            "embedding_model", "embedding_provider", "ollama_base_url", "ollama_embedding_model",
-            "chunk_size", "chunk_overlap",
-            "default_top_k", "max_top_k",
-            "enable_ocr",
-            "vision_ocr_provider", "vision_ocr_model", "vision_ocr_api_key",
-            "enable_mcp", "mcp_server_id", "mcp_default_collection",
-            "mcp_top_k", "mcp_mode", "mcp_semantic_weight",
-            "mcp_include_sources", "mcp_max_source_length",
-            "mcp_ai_provider", "mcp_ollama_model",
-            "enable_llm_schema_inference", "llm_schema_inference_threshold",
-            "enable_chat_tab",
-            "ollama_num_ctx",
+        # A masked secret coming back means the client never saw the real one —
+        # drop it so a plain save doesn't overwrite the stored key with "****".
+        updates = {
+            k: v for k, v in updates.items()
+            if not (k in SECRET_CONFIG_FIELDS and v == MASKED_SECRET)
         }
 
+        # Validate updates
         for key in updates.keys():
-            if key not in valid_fields:
+            if key not in VALID_CONFIG_FIELDS:
                 result["errors"].append(f"Invalid config field: {key}")
                 result["success"] = False
 

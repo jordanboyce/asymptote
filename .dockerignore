@@ -43,10 +43,6 @@ Dockerfile.*
 docker-compose*.yml
 .dockerignore
 
-# Electron wrapper (not needed in server image)
-electron/
-electron-dist/
-
 # Frontend dependencies & local builds (installed/built inside the image)
 frontend/node_modules/
 frontend/dist/

@@ -47,22 +47,19 @@ class IndexerManager:
             logger.info(f"OCR enabled: {ocr_available} (engine: {engine_name or 'none'})")
 
     def _apply_db_config(self):
-        """Apply DB config overrides to in-memory settings on startup."""
+        """Apply DB config overrides to in-memory settings on startup.
+
+        The Settings tab persists changes to the config DB and mirrors them
+        into .env, but the .env write is best-effort only — in a container it
+        lands on the ephemeral filesystem and is lost on recreate. The DB is
+        the persistence that survives, so every persistable field must be
+        re-applied from it here, not just a subset.
+        """
         try:
             from services.app_database import app_db
+            from services.config_manager import VALID_CONFIG_FIELDS
             db_config = app_db.get_all_config()
-            ocr_fields = {
-                "enable_ocr",
-                "vision_ocr_provider", "vision_ocr_model", "vision_ocr_api_key",
-            }
-            mcp_fields = {
-                "enable_mcp", "mcp_server_id", "mcp_default_collection",
-                "mcp_top_k", "mcp_mode", "mcp_semantic_weight",
-                "mcp_include_sources", "mcp_max_source_length",
-                "mcp_ai_provider", "mcp_ollama_model",
-            }
-            misc_fields = {"ollama_num_ctx", "embedding_provider", "ollama_base_url", "ollama_embedding_model"}
-            for key in ocr_fields | mcp_fields | misc_fields:
+            for key in VALID_CONFIG_FIELDS:
                 if key in db_config:
                     try:
                         setattr(settings, key, db_config[key])

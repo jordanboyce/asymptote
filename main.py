@@ -42,6 +42,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ── Security posture ────────────────────────────────────────────────────────
+# The app has no authentication unless AUTH_PASSWORD is set, and every route —
+# search, upload, delete, chat on your provider keys, the whole /mcp tool
+# surface — is reachable by anyone who can open a socket to it. So the two
+# settings that decide who can open that socket are checked before we serve.
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _check_security_posture() -> None:
+    """Refuse or warn on configurations that promise more safety than we deliver.
+
+    Raises:
+        RuntimeError: multi-user mode is requested. Ownership is enforced on
+            collection metadata only — search, documents, chat and MCP all take
+            a collection_id and never check it — so the flag would advertise an
+            isolation boundary that does not exist. See docs/DEPLOYMENT.md.
+    """
+    # These strings stay ASCII-only: they surface on consoles (Windows cp1252,
+    # Docker logs) where an em-dash renders as mojibake.
+    if settings.enable_multi_user:
+        raise RuntimeError(
+            "ENABLE_MULTI_USER is not supported. Asymptote is a shared team "
+            "appliance: everyone who can reach it sees the whole corpus. The "
+            "flag only filtered the collection LIST - search, document "
+            "retrieval, chat and the /mcp tools accept any collection_id "
+            "without an ownership check, so it never isolated anything. "
+            "Remove ENABLE_MULTI_USER and put an SSO proxy in front to control "
+            "who gets in - see docs/DEPLOYMENT.md."
+        )
+
+    if settings.host not in _LOOPBACK_HOSTS and not settings.auth_password:
+        logger.warning(
+            "SECURITY: bound to %s (reachable from the network) with no "
+            "AUTH_PASSWORD set. Anyone who can reach this port can read, "
+            "modify and delete every document, and spend your AI provider "
+            "credits. Set AUTH_PASSWORD, or set HOST=127.0.0.1 to bind "
+            "loopback only. See docs/DEPLOYMENT.md.",
+            settings.host,
+        )
+
+    if settings.cors_allow_origins.strip() == "*" and not settings.auth_password:
+        logger.warning(
+            "SECURITY: CORS_ALLOW_ORIGINS=* with no AUTH_PASSWORD set. Any web "
+            "page the user visits can read this API from their browser and "
+            "exfiltrate indexed documents. List the origins that need access "
+            "instead."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager - initialize and cleanup services."""
@@ -90,6 +140,8 @@ async def lifespan(app: FastAPI):
         logger.info("Shutdown complete")
 
 
+_check_security_posture()
+
 app = FastAPI(
     title="Asymptote API",
     description="Privacy-focused document indexing, grounded chat, and MCP access",
@@ -97,17 +149,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS: origins come from CORS_ALLOW_ORIGINS (comma-separated). Empty — the
+# default — installs no CORS middleware at all, so the same-origin policy keeps
+# other sites from reading responses. The bundled frontend is same-origin and
+# the Vite dev server proxies to the backend, so neither needs an exception;
+# non-browser clients (MCP, curl, SDKs) are unaffected by CORS entirely.
+# Credentialed cross-origin requests are allowed only for explicitly listed
+# origins — wildcard + credentials would make Starlette echo any Origin back,
+# letting arbitrary web pages drive the API with the browser's stored
+# credentials.
+_cors_origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=_cors_origins != ["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
-# ── Optional shared-secret auth (AUTH_PASSWORD) ─────────────────────────────
-# Aimed at public deployments (PaaS, exposed ports). HTTP Basic keeps the
+# ── Shared-secret auth (AUTH_PASSWORD) ──────────────────────────────────────
+# Required for any deployment reachable beyond loopback. HTTP Basic keeps the
 # browser flow zero-UI; Bearer covers API and MCP clients. /health stays open
 # so platform probes work unauthenticated.
 
@@ -131,6 +194,11 @@ if settings.auth_password:
     @app.middleware("http")
     async def require_auth(request, call_next):
         if request.url.path == "/health":
+            return await call_next(request)
+        # CORS preflights are sent without credentials by spec, and this
+        # middleware runs outside CORSMiddleware — pass them through so the
+        # preflight can be answered; the actual request still authenticates.
+        if request.method == "OPTIONS":
             return await call_next(request)
         presented = _password_from_auth_header(request.headers.get("authorization", ""))
         if presented and secrets.compare_digest(presented, settings.auth_password):
@@ -188,20 +256,24 @@ async def web_interface():
 # Mounts must come after all routes so they don't override API routes.
 app.mount("/mcp", embedded_mcp_app, name="mcp")
 
-# SERVE_STATIC=false disables frontend serving — used in Electron mode where
-# the renderer is bundled with Electron and loaded via file://, not from this server.
-_serve_static = os.environ.get("SERVE_STATIC", "true").lower() not in ("false", "0", "no")
-if _serve_static and (FRONTEND_DIST / "index.html").exists():
+if (FRONTEND_DIST / "index.html").exists():
     app.mount("/", SPAStaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
 
 
 if __name__ == "__main__":
     import uvicorn
 
+    # Auto-reload is opt-in (RELOAD=1) because uvicorn's reloader runs the
+    # actual server in a multiprocessing child. Anything that stops the parent
+    # without a clean Ctrl+C — a task kill, a crashed terminal — orphans that
+    # child, which keeps running and holds the port.
+    # With reload off, this process IS the server: kill it and the port frees.
+    dev_reload = os.environ.get("RELOAD", "").lower() in ("1", "true", "yes")
+
     uvicorn_kwargs: dict = {
         "host": settings.host,
         "port": settings.port,
-        "reload": True,
+        "reload": dev_reload,
     }
 
     cert_path = Path(settings.ssl_certfile).expanduser() if settings.ssl_certfile else None

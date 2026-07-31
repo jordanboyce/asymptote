@@ -52,6 +52,18 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 ENV HF_HOME=/opt/hf-cache
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
+# Optional full offline bundle for air-gapped deployments: additionally bake
+# the reranker, Whisper (audio transcription), and Docling (local OCR) models
+# so nothing is ever fetched at runtime. Adds roughly 1 GB to the image.
+#   docker compose build --build-arg OFFLINE_BUNDLE=1
+# Pair with OFFLINE_MODE=1 at runtime; full walkthrough in docs/AIRGAP.md.
+ARG OFFLINE_BUNDLE=0
+ARG WHISPER_MODEL=base
+COPY scripts/prefetch_offline_models.py /tmp/prefetch_offline_models.py
+RUN if [ "$OFFLINE_BUNDLE" = "1" ]; then \
+      python /tmp/prefetch_offline_models.py --whisper-model "$WHISPER_MODEL"; \
+    fi && rm /tmp/prefetch_offline_models.py
+
 # Application code and the built frontend
 COPY . .
 COPY --from=frontend /build/dist ./frontend/dist
@@ -60,13 +72,19 @@ RUN mkdir -p /app/data/documents /app/data/indexes
 
 EXPOSE 8473
 
+# HOST is 0.0.0.0 here (the app defaults to loopback) because the container
+# boundary, not the bind address, is what limits exposure. It is set as an ENV
+# rather than only on the CMD line so the app's own startup security check sees
+# the address it will actually be reachable on and can warn when the port is
+# open with no AUTH_PASSWORD.
 ENV PYTHONUNBUFFERED=1 \
-    DATA_DIR=/app/data
+    DATA_DIR=/app/data \
+    HOST=0.0.0.0
 
 # PaaS platforms (Railway, Render, Heroku-style) inject PORT and expect the
 # app to listen on it; fall back to the documented default otherwise.
 # Shell form is deliberate — exec form would not expand ${PORT}.
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8473}
+CMD uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8473}
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -fsS http://localhost:${PORT:-8473}/health || exit 1

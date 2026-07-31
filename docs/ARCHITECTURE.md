@@ -8,7 +8,7 @@ Asymptote is a privacy-focused tool for indexing your own documents and data, ch
 
 - [main.py](../main.py) — thin app assembly: middleware, lifespan (initializes the embedding model, vector store, indexer manager, MCP server, and collection service), router includes, and frontend serving.
 - [api/](../api/) — HTTP endpoints, one router module per domain: `documents`, `search`, `chat`, `artifacts`, `collections`, `mcp`, `sharing`, `expertise`, `system`. Shared helpers/state (e.g. `get_indexer`, the expertise store singleton) live in [api/deps.py](../api/deps.py). Routers carry their full URL paths — no prefixes — so the public API matches the module layout one-to-one. Business logic belongs in `services/`, not in routers.
-- [config.py](../config.py) — pydantic-settings `Settings` loaded from `.env`. Defaults work for solo use; multi-user mode and a Postgres backend are opt-in.
+- [config.py](../config.py) — pydantic-settings `Settings` loaded from `.env`. Defaults are the safe solo posture (loopback bind, no CORS); a Postgres backend is opt-in. `main.py` runs a startup check that refuses or warns on configurations promising more safety than the app delivers — see [DEPLOYMENT.md](DEPLOYMENT.md).
 - [models/schemas.py](../models/schemas.py) — every Pydantic request/response model.
 - [services/](../services/) — feature modules:
   - `services/indexing/` — `DocumentIndexer` (chunk → embed → write to vector store).
@@ -19,7 +19,7 @@ Asymptote is a privacy-focused tool for indexing your own documents and data, ch
   - `services/agent_tools.py` — the same tool registry rendered as native Anthropic / OpenAI tool schemas.
   - `services/mcp_server.py` — embedded HTTP MCP endpoint mounted at `/mcp`.
   - `services/expertise_store.py` — named, markdown-body "Expertise" packs: reusable research frameworks/instructions a user can attach to a collection.
-- [middleware/](../middleware/) — `user_context` resolves `X-User-ID` for multi-user mode.
+- [middleware/](../middleware/) — `user_context` resolves the owner recorded on collections. Multi-user mode is not supported (the app refuses to start with it enabled), so this always resolves to `default_user_id`; see [DEPLOYMENT.md](DEPLOYMENT.md) for why.
 
 ## Chat
 

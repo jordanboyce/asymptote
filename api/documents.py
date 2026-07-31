@@ -568,7 +568,7 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
     This is useful for:
     - Large files that would be slow to upload
     - Files that shouldn't be duplicated
-    - Desktop app usage where files are already local
+    - Local installs and mounted volumes where files are already on the server
 
     Args:
         request: Contains file_path and collection_id

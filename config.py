@@ -1,5 +1,6 @@
 """Configuration management for Asymptote API."""
 
+import os
 from pathlib import Path
 from typing import Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +15,16 @@ ALL_AI_PROVIDERS = CLOUD_AI_PROVIDERS + ("ollama",)
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables or .env file."""
+
+    # Air-gapped / offline mode. When True:
+    #   - Cloud AI providers (Anthropic, OpenAI, Grok, Google, GitHub,
+    #     OpenRouter, Ollama Cloud, Bedrock) are disabled — only local Ollama
+    #     and self-hosted OpenAI-compatible endpoints can be used.
+    #   - HuggingFace hub access is disabled (HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE),
+    #     so models load from the local cache only and never attempt a download.
+    # The app makes NO outbound network connections beyond the endpoints you
+    # explicitly configure on your own network. See docs/AIRGAP.md.
+    offline_mode: bool = False
 
     # Data storage
     data_dir: Path = Path("./data")
@@ -45,9 +56,21 @@ class Settings(BaseSettings):
     reranker_candidate_multiplier: int = 5
 
 
-    # Server configuration
-    host: str = "0.0.0.0"
+    # Server configuration. The default binds loopback only: the app has no
+    # auth unless AUTH_PASSWORD is set, so reaching the network has to be a
+    # deliberate act. Docker and PaaS images set HOST=0.0.0.0 explicitly
+    # because there the container boundary is what limits exposure.
+    host: str = "127.0.0.1"
     port: int = 8473
+
+    # CORS: comma-separated list of allowed browser origins, or "*" for any.
+    # Empty (the default) sends no CORS headers, so only the same origin can
+    # read a response — the bundled frontend is served same-origin and the Vite
+    # dev server proxies to the backend, so neither needs this. Set it only for
+    # a separate web app on another origin, and prefer listing that origin over
+    # "*": with "*" any page the user visits can read this API. Credentialed
+    # requests are allowed only for explicitly listed origins, never for "*".
+    cors_allow_origins: str = ""
 
     # HTTPS / TLS. If both files exist, uvicorn serves HTTPS on `port`.
     # Leave empty to run plain HTTP (default). Paths are relative to the
@@ -72,14 +95,23 @@ class Settings(BaseSettings):
     db_backend: Literal["sqlite", "postgresql"] = "sqlite"
     postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/asymptote
 
-    # Multi-user mode (user isolation via X-User-ID header from auth proxy)
-    enable_multi_user: bool = False  # Set to True for per-user data isolation
-    default_user_id: str = "default"  # User ID used in single-user mode
+    # Multi-user mode is NOT supported and the app refuses to start with it on.
+    # Asymptote is a shared team appliance: everyone who can reach it sees the
+    # whole corpus, and access is controlled at the edge (see
+    # docs/DEPLOYMENT.md). The flag only ever filtered the collection list —
+    # search, document retrieval, chat and the /mcp tools take a collection_id
+    # and never check ownership — so it looked like an isolation boundary
+    # without being one. Turning it into a real one means threading user_id
+    # through every one of those entry points; the setting stays here (rather
+    # than being deleted) so existing .env files fail loudly instead of
+    # silently changing behaviour.
+    enable_multi_user: bool = False
+    default_user_id: str = "default"  # Owner recorded on every collection
 
-    # Optional shared-secret auth for public deployments. When set, every
-    # request (except /health) must present this password via HTTP Basic auth
-    # (any username) or `Authorization: Bearer <password>`. Browsers prompt
-    # natively, so no login UI is needed. Leave empty on trusted networks.
+    # Shared-secret auth. When set, every request (except /health) must present
+    # this password via HTTP Basic auth (any username) or
+    # `Authorization: Bearer <password>`. Browsers prompt natively, so no login
+    # UI is needed. Required whenever the server is reachable beyond loopback.
     auth_password: str = ""
 
     # OCR configuration — deliberately minimal: an on/off switch and an engine.
@@ -144,6 +176,13 @@ class Settings(BaseSettings):
         (self.data_dir / "documents").mkdir(exist_ok=True)
         (self.data_dir / "indexes").mkdir(exist_ok=True)
         (self.data_dir / "backups").mkdir(exist_ok=True)  # v3.0: Backup directory
+
+        # Air-gap enforcement must happen before huggingface_hub/transformers
+        # are imported anywhere (they read these at import time). config is the
+        # first app module imported by main.py, so this is early enough.
+        if self.offline_mode:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
 # Global settings instance

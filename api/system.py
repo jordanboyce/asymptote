@@ -27,6 +27,7 @@ async def health(collection_id: str = "default"):
         stats = indexer_manager.get_collection_stats(collection_id)
         return {
             "status": "healthy",
+            "offline_mode": settings.offline_mode,
             "collection_id": collection_id,
             "indexed_chunks": stats["total_chunks"],
             "total_documents": stats["total_documents"],
@@ -35,6 +36,7 @@ async def health(collection_id: str = "default"):
     except Exception as e:
         return {
             "status": "healthy",
+            "offline_mode": settings.offline_mode,
             "indexed_chunks": 0,
             "error": str(e),
         }
@@ -42,7 +44,7 @@ async def health(collection_id: str = "default"):
 @router.post(
     "/api/file-picker",
     summary="Open native file picker dialog",
-    tags=["desktop"],
+    tags=["local"],
 )
 def open_file_picker(multiple: bool = True, include_sizes: bool = False):
     # sync: the tkinter dialog blocks until dismissed — in the threadpool that
@@ -50,8 +52,10 @@ def open_file_picker(multiple: bool = True, include_sizes: bool = False):
     """
     Open a native OS file picker dialog.
 
-    This endpoint is designed for desktop app usage where the server
-    runs locally on the user's machine.
+    Only meaningful for a local install where the server runs on the user's
+    own machine — the dialog opens on the *server's* display. Headless and
+    Docker deployments report native_file_picker=false via /api/capabilities
+    and the frontend falls back to browser upload.
 
     Args:
         multiple: If True, allow selecting multiple files (default: True)
@@ -88,14 +92,13 @@ def open_file_picker(multiple: bool = True, include_sizes: bool = False):
 @router.post(
     "/api/folder-picker",
     summary="Open native folder picker dialog",
-    tags=["desktop"],
+    tags=["local"],
 )
 def open_folder_picker_endpoint():  # sync: see open_file_picker
     """
     Open a native OS folder picker dialog.
 
-    This endpoint is designed for desktop app usage where the server
-    runs locally on the user's machine.
+    Local-install only — see open_file_picker.
 
     Returns:
         {"path": "C:/path/to/folder"} or {"path": null} if cancelled
@@ -151,7 +154,7 @@ class ScanFolderRequest(BaseModel):
 @router.post(
     "/api/scan-folder",
     summary="Scan folder and return list of supported files",
-    tags=["desktop"],
+    tags=["local"],
 )
 def scan_folder(request: ScanFolderRequest):  # sync: filesystem walk runs in the threadpool
     """

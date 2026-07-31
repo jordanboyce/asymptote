@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:electron": "vite build --outDir ../electron/renderer --emptyOutDir --base ./",
     "preview": "vite preview"
   },
   "dependencies": {

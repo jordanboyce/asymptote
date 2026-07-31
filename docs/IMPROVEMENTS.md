@@ -88,8 +88,8 @@ engineering-quality work. Check items off as they land.
   compact mode, while desktop behavior is untouched. Verified with Playwright
   at 400 px (main keeps full width, no horizontal scroll, overlay opens and
   closes) and 1200 px (unchanged: both panels in-flow at 320 px).
-  Still open for later: Electron `alwaysOnTop` mini-window toggle from the
-  tray, and a PWA manifest so the web build installs as a standalone window.
+  Still open for later: a PWA manifest so the web build installs as a
+  standalone window.
 - [x] **No more full-corpus scans in `find_in_documents`.** Literal ASCII
   patterns are prefiltered in SQL (`INSTR`), so only candidate chunks leave
   the database (a live query scanned 20 rows instead of 5,853); regex and

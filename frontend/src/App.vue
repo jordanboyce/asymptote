@@ -499,6 +499,17 @@
 
       <div class="flex-1"></div>
 
+      <!-- Air-gapped deployment indicator (OFFLINE_MODE=1 on the server) -->
+      <span
+        v-if="stats.offline"
+        class="hidden sm:flex items-center gap-1 text-base-content/60"
+        title="Offline mode: cloud AI disabled — no external connections beyond your configured endpoints"
+      >
+        <ShieldCheck :size="11" aria-hidden="true" />
+        Air-gapped
+      </span>
+      <span v-if="stats.offline" class="hidden sm:inline w-px h-3 bg-base-300" aria-hidden="true"></span>
+
       <!-- Stats moved here from the header for breathing room -->
       <span class="hidden md:inline tabular-nums">
         {{ stats.documents }} {{ stats.documents === 1 ? 'source' : 'sources' }}
@@ -899,7 +910,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
 import axios from 'axios'
-import { Search, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles } from 'lucide-vue-next'
+import { Search, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck } from 'lucide-vue-next'
 
 const chatTabEnabled = ref(true)
 
@@ -973,7 +984,8 @@ const startResize = (e) => {
 const stats = ref({
   documents: 0,
   pages: 0,
-  chunks: 0
+  chunks: 0,
+  offline: false
 })
 
 // Compact (sidebar/companion) mode: when the window is pinned narrow next to
@@ -1196,6 +1208,7 @@ const loadStats = async () => {
     stats.value.documents = docsResponse.data.documents?.length || 0
     stats.value.pages = docsResponse.data.documents?.reduce((sum, doc) => sum + (doc.total_pages || 0), 0) || 0
     stats.value.chunks = healthResponse.data.indexed_chunks || 0
+    stats.value.offline = !!healthResponse.data.offline_mode
   } catch (error) {
     console.error('Error loading stats:', error)
   }

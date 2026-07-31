@@ -3,12 +3,22 @@
 #   docker compose up -d
 #   open http://localhost:8473
 #
+# NOTE: `up -d` only builds the image the FIRST time. After pulling or
+# changing code, rebuild explicitly:  docker compose up -d --build
+#
 # No .env required to start; drop one next to this file to override defaults
 # (see .env.example). Documents and indexes persist in ./data.
 
 services:
   asymptote:
-    build: .
+    build:
+      context: .
+      # Air-gapped deployments: bake ALL runtime models (reranker, Whisper,
+      # Docling OCR) into the image so nothing is downloaded after build.
+      # Uncomment, build on a connected machine, then `docker save` the image
+      # and `docker load` it inside the air gap — see docs/AIRGAP.md.
+      # args:
+      #   OFFLINE_BUNDLE: "1"
     container_name: asymptote
     ports:
       - "8473:8473"
@@ -27,6 +37,13 @@ services:
       - EMBEDDING_MODEL=all-MiniLM-L6-v2
       # Reach an Ollama instance on the docker host, if you run one
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # Air-gapped mode: disables cloud AI providers and every HuggingFace
+      # download — the container makes no outbound connections beyond the
+      # Ollama/self-hosted endpoints you configure. See docs/AIRGAP.md.
+      # - OFFLINE_MODE=1
+      # Shared-secret auth: require this password (Basic or Bearer) on every
+      # request. Recommended whenever others can reach the port.
+      # - AUTH_PASSWORD=change-me
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
