@@ -13,8 +13,11 @@ venv/
 env/
 .venv/
 
-# Data directory (use volume instead)
+# Data directories (bind-mounted at runtime — never baked into the image).
+# The backup variants are gitignored but were still landing in the build
+# context via `COPY . .`, adding hundreds of MB of dead weight to the image.
 data/
+data.docker-backup-*/
 
 # Git
 .git/
@@ -42,6 +45,21 @@ Dockerfile
 Dockerfile.*
 docker-compose*.yml
 .dockerignore
+
+# Local TLS material. `certs/` holds the dev self-signed pair produced by
+# certs/generate-cert.sh — a private key that must never be baked into an
+# image, and a cert that must never be trusted as a CA. Corporate CA bundles
+# go in certs/ca/ instead, which is re-included below and is the ONLY thing
+# the Dockerfile installs into the system trust store.
+certs/*
+!certs/ca
+!certs/ca/**
+
+# Logs and backups
+*.log
+logs/
+*.backup
+*.bak
 
 # Frontend dependencies & local builds (installed/built inside the image)
 frontend/node_modules/

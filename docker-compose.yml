@@ -47,4 +47,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # Shutdown flushes every loaded index to disk (indexer_manager.save_all()).
+    # Docker's 10s default can SIGKILL that mid-write on a large corpus, so give
+    # it room; a healthy shutdown still exits as soon as the flush completes.
+    stop_grace_period: 60s
     # Healthcheck comes from the Dockerfile (curl /health).

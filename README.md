@@ -53,7 +53,7 @@ docker compose up -d
 open http://localhost:8473
 ```
 
-That's the whole setup — the image builds the frontend, bundles OCR (Tesseract + Poppler), bakes the embedding model into the image, and persists documents/indexes in `./data`. No `.env` is required to start; add one to override defaults. For corporate CA certificates, drop `.crt` files into `certs/` before building (see [Corporate SSL Configuration](#corporate-ssl-configuration)).
+That's the whole setup — the image builds the frontend, bundles OCR (Tesseract + Poppler), bakes the embedding model into the image, and persists documents/indexes in `./data`. No `.env` is required to start; add one to override defaults. For corporate CA certificates, drop `.crt` files into `certs/ca/` before building (see [Corporate SSL Configuration](#corporate-ssl-configuration)).
 
 Note that `docker compose up -d` publishes port 8473 to your network, and the app is unauthenticated by default. Before sharing the URL with anyone, read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — everyone who can reach Asymptote sees the whole corpus.
 
@@ -391,17 +391,17 @@ For organizations using custom SSL certificates or corporate proxies:
 
 **Option 1: Docker (built in)**
 
-Place your corporate CA certificate(s) — `.crt` files — into the `certs/` directory and rebuild; the standard Dockerfile installs anything it finds there automatically (a no-op when the directory is empty):
+Place your corporate CA certificate(s) — `.crt` files — into the `certs/ca/` directory and rebuild; the standard Dockerfile installs anything it finds there into the image's system trust store, at both dependency-install and runtime stages (a no-op when the directory is empty):
 
 ```bash
-cp /path/to/your/cert.crt certs/
+cp /path/to/your/cert.crt certs/ca/
 docker compose up -d --build
 ```
 
 **Important Notes:**
 - Certificate files must have `.crt` extension
-- Multiple certificates can be placed in `certs/` directory
-- The `certs/` directory is in `.gitignore` but NOT in `.dockerignore` (needed for build)
+- Multiple certificates can be placed in `certs/ca/`
+- Use `certs/ca/` specifically, **not** `certs/`. The parent `certs/` directory holds the dev self-signed pair from `generate-cert.sh`; it is excluded from the build context so its private key never lands in an image and its certificate is never trusted as a CA. Only `certs/ca/` is copied in.
 
 **Option 2: Python Direct Configuration**
 
@@ -421,7 +421,7 @@ export REQUESTS_CA_BUNDLE=/path/to/your/cert.crt
 - Internal certificate authorities
 - SSL verification errors when downloading models or making AI API calls
 
-**Security Note:** The `certs/` directory is in `.gitignore` and `.dockerignore` to prevent accidental commit of certificates.
+**Security Note:** Certificate contents are gitignored in both `certs/` and `certs/ca/` (only the `.gitkeep` markers are tracked), so certificates and private keys are never committed. `certs/` is additionally excluded from the Docker build context; `certs/ca/` is the sole exception, since installing those CAs is the point.
 
 ---
 
@@ -938,10 +938,11 @@ asymptote/
 │       ├── json/             # JSON metadata storage
 │       └── sqlite/           # SQLite metadata storage
 │
-├── certs/                     # Corporate CA certs (.crt, gitignored) — auto-installed by Docker build
+├── certs/                     # Dev self-signed TLS pair (gitignored, excluded from Docker builds)
+│   └── ca/                    # Corporate CA certs (.crt) — auto-installed by Docker build
 │
 ├── .env.example              # Configuration template
-├── Dockerfile                # Multi-stage image: frontend build + Python runtime (OCR included)
+├── Dockerfile                # Multi-stage image: frontend build + deps build + slim runtime (OCR included)
 ├── docker-compose.yml        # One-command deployment (docker compose up -d)
 ├── example_usage.py          # Python client example
 └── verify_setup.py           # Installation checker
