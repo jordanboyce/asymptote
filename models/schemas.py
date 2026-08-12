@@ -754,3 +754,133 @@ class MorningBriefPreviewResponse(BaseModel):
         None,
         description="Human-readable summary of what the brief contained, for UI confirmation.",
     )
+
+
+# ─── Client profile / IPS (v4.6) ─────────────────────────────────────────
+#
+# The typed cousin of the v4.3 free-text collection guide. The guide tells
+# the model how to *read* a collection; the profile tells it what the
+# portfolio is supposed to *look like*, so drift is arithmetic instead of
+# opinion. Every field is optional — a half-filled profile is normal, and
+# consumers must degrade section-by-section rather than refuse.
+
+
+class RiskTolerance(str, Enum):
+    conservative = "conservative"
+    moderately_conservative = "moderately_conservative"
+    moderate = "moderate"
+    moderately_aggressive = "moderately_aggressive"
+    aggressive = "aggressive"
+
+
+class HouseholdMember(BaseModel):
+    """One person in the household. Names here are PII and are redacted at the boundary."""
+
+    name: str = Field(..., min_length=1)
+    relationship: Optional[str] = Field(
+        None, description="'primary', 'spouse', 'child', 'dependent', or free text."
+    )
+    birth_year: Optional[int] = Field(None, ge=1900, le=2100)
+    retirement_year: Optional[int] = Field(None, ge=1900, le=2200)
+    notes: Optional[str] = None
+
+
+class ClientGoal(BaseModel):
+    """A funded objective. `target_amount` is what makes a goal checkable rather than aspirational."""
+
+    label: str = Field(..., min_length=1, description="e.g. 'Retirement', 'Second home', 'College — Maya'")
+    target_amount: Optional[float] = Field(None, ge=0)
+    target_date: Optional[str] = Field(None, description="ISO date or free text ('2032', 'age 65').")
+    priority: Optional[str] = Field(None, description="'high', 'medium', 'low'.")
+    notes: Optional[str] = None
+
+
+class AllocationTarget(BaseModel):
+    """One line of the IPS target allocation.
+
+    `min_pct` / `max_pct` are the rebalance band. When omitted, the band
+    falls back to `IPSTargets.rebalance_band_pct` around `target_pct`.
+    """
+
+    asset_class: str = Field(..., min_length=1, description="Label matched case-insensitively against holdings' asset_class.")
+    target_pct: float = Field(..., ge=0, le=100)
+    min_pct: Optional[float] = Field(None, ge=0, le=100)
+    max_pct: Optional[float] = Field(None, ge=0, le=100)
+
+
+class IPSTargets(BaseModel):
+    """Investment Policy Statement constraints — the thing drift is measured against."""
+
+    allocation_targets: List[AllocationTarget] = Field(default_factory=list)
+    rebalance_band_pct: float = Field(
+        5.0, ge=0, le=100,
+        description="Default +/- band applied to any target without explicit min/max.",
+    )
+    max_single_position_pct: Optional[float] = Field(
+        None, ge=0, le=100,
+        description="Concentration ceiling for one security, as % of household market value.",
+    )
+    max_sector_pct: Optional[float] = Field(None, ge=0, le=100)
+    min_cash_pct: Optional[float] = Field(None, ge=0, le=100)
+    max_cash_pct: Optional[float] = Field(None, ge=0, le=100)
+    prohibited_holdings: List[str] = Field(
+        default_factory=list,
+        description="Tickers or name fragments the client will not hold (screens, ESG exclusions, employer stock).",
+    )
+    notes: Optional[str] = None
+
+
+class TaxProfile(BaseModel):
+    """Tax posture. Feeds TLH sizing and the 'is a gain realizable' conversation."""
+
+    filing_status: Optional[str] = Field(None, description="'single', 'married_joint', 'married_separate', 'hoh'.")
+    federal_bracket_pct: Optional[float] = Field(None, ge=0, le=100)
+    state: Optional[str] = Field(None, description="Two-letter state code or name.")
+    state_bracket_pct: Optional[float] = Field(None, ge=0, le=100)
+    capital_loss_carryforward: Optional[float] = Field(None, ge=0)
+    ytd_realized_gains: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class LiquidityNeeds(BaseModel):
+    """Near-term cash requirements — the reason a 'too much cash' alert can be wrong."""
+
+    cash_reserve_target: Optional[float] = Field(None, ge=0, description="Dollars the household wants held in cash.")
+    annual_withdrawal: Optional[float] = Field(None, description="Planned annual distribution.")
+    next_liquidity_event: Optional[str] = Field(None, description="ISO date or free text ('Q2 2027 tuition').")
+    next_liquidity_amount: Optional[float] = Field(None, ge=0)
+    notes: Optional[str] = None
+
+
+class ClientProfile(BaseModel):
+    """The full typed profile for one client collection.
+
+    Stored as one row per collection in the collection's own metadata.db.
+    Everything is optional so the form can be filled incrementally.
+    """
+
+    display_name: Optional[str] = Field(None, description="Household name as the advisor refers to it.")
+    household_members: List[HouseholdMember] = Field(default_factory=list)
+    risk_tolerance: Optional[RiskTolerance] = None
+    risk_notes: Optional[str] = Field(None, description="Capacity vs. willingness, drawdown conversations, etc.")
+    time_horizon_years: Optional[int] = Field(None, ge=0, le=100)
+    goals: List[ClientGoal] = Field(default_factory=list)
+    ips: IPSTargets = Field(default_factory=IPSTargets)
+    tax: TaxProfile = Field(default_factory=TaxProfile)
+    liquidity: LiquidityNeeds = Field(default_factory=LiquidityNeeds)
+    review_frequency: Optional[str] = Field(None, description="'quarterly', 'semiannual', 'annual', or free text.")
+    next_review_date: Optional[str] = Field(None, description="ISO date.")
+    notes: Optional[str] = Field(None, description="Anything that doesn't fit a field. Surfaced verbatim in prep.")
+
+
+class ClientProfileResponse(BaseModel):
+    """Response from GET/PUT /api/collections/{id}/profile."""
+
+    collection_id: str
+    profile: ClientProfile
+    exists: bool = Field(..., description="False when no profile has been saved yet; `profile` is then all-empty defaults.")
+    completeness: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Which sections are populated, and what prep still can't say without them.",
+    )
+    updated_at: Optional[str] = None

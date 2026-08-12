@@ -9,8 +9,8 @@
         class="btn btn-ghost btn-xs gap-1.5 normal-case h-7 min-h-0 px-1.5"
         :class="{ 'bg-base-200': activeTab === 'collections' }"
         @click="activeTab = 'collections'"
-        title="View all collections"
-        aria-label="Finn — view all collections"
+        title="View all clients"
+        aria-label="Finn — view all clients"
       >
         <img :src="headerLogoSrc" alt="" class="h-5 w-5 flex-shrink-0">
         <span class="font-bold text-sm tracking-tight hidden sm:inline">Finn</span>
@@ -20,8 +20,8 @@
       <button
         class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-7 min-h-0"
         @click="activeTab = 'collections'"
-        title="View all collections"
-        :aria-label="`Current collection: ${collectionStore.currentCollection?.name || 'Default'}. Click to view all collections.`"
+        title="View all clients"
+        :aria-label="`Current client: ${collectionStore.currentCollection?.name || 'Default'}. Click to view all clients.`"
       >
         <div
           class="w-2 h-2 rounded-full flex-shrink-0"
@@ -269,10 +269,10 @@
             <div v-if="activeTab === 'collections'" class="pt-4">
               <header class="flex items-end justify-between gap-6 flex-wrap pb-5 mb-4 border-b border-base-300/60">
                 <div class="min-w-0">
-                  <h1 class="text-[22px] leading-none font-semibold tracking-tight">Collections</h1>
+                  <h1 class="text-[22px] leading-none font-semibold tracking-tight">Clients</h1>
                   <p class="mt-2 text-xs text-base-content/50">
                     <span class="tabular-nums font-medium text-base-content/70">{{ collectionStore.sortedCollections.length }}</span>
-                    {{ collectionStore.sortedCollections.length === 1 ? 'collection' : 'collections' }}
+                    {{ collectionStore.sortedCollections.length === 1 ? 'client' : 'clients' }}
                     <span class="mx-1.5 text-base-content/25">·</span>
                     <span class="text-base-content/45">workspace for your sources</span>
                   </p>
@@ -285,9 +285,9 @@
                     <input
                       v-model="collectionsSearch"
                       type="text"
-                      placeholder="Search collections"
+                      placeholder="Search clients"
                       class="input input-sm input-bordered pl-7 pr-7 w-56 focus:w-64 transition-[width]"
-                      aria-label="Search collections"
+                      aria-label="Search clients"
                     />
                     <button
                       v-if="collectionsSearch"
@@ -328,7 +328,7 @@
                     <label
                       tabindex="0"
                       class="btn btn-sm btn-ghost gap-1.5 normal-case font-normal"
-                      aria-label="Sort collections"
+                      aria-label="Sort clients"
                     >
                       {{ collectionsSortLabel }}
                       <ChevronDown :size="12" />
@@ -352,7 +352,7 @@
                     @click="openCreateCollectionModal"
                   >
                     <Plus :size="14" />
-                    New collection
+                    New client
                   </button>
                 </div>
               </header>
@@ -362,7 +362,7 @@
                 v-if="filteredCollections.length === 0 && collectionsSearch"
                 class="text-center py-16 text-sm text-base-content/45"
               >
-                No collections match
+                No clients match
                 <span class="text-base-content/70">"{{ collectionsSearch }}"</span>
               </div>
 
@@ -414,16 +414,16 @@
                         v-if="collectionStore.multiUser && collection.permission === 'owner'"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
-                        title="Share collection"
-                        :aria-label="`Share collection ${collection.name}`"
+                        title="Share client"
+                        :aria-label="`Share client ${collection.name}`"
                       >
                         <Share2 :size="13" />
                       </button>
                       <button
                         @click.stop="openEditCollectionModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
-                        title="Edit collection"
-                        :aria-label="`Edit collection ${collection.name}`"
+                        title="Edit client"
+                        :aria-label="`Edit client ${collection.name}`"
                         :disabled="collection.shared && collection.permission === 'read'"
                       >
                         <Pencil :size="13" />
@@ -492,16 +492,16 @@
                         v-if="collectionStore.multiUser && collection.permission === 'owner'"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
-                        title="Share collection"
-                        :aria-label="`Share collection ${collection.name}`"
+                        title="Share client"
+                        :aria-label="`Share client ${collection.name}`"
                       >
                         <Share2 :size="13" />
                       </button>
                       <button
                         @click.stop="openEditCollectionModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
-                        title="Edit collection"
-                        :aria-label="`Edit collection ${collection.name}`"
+                        title="Edit client"
+                        :aria-label="`Edit client ${collection.name}`"
                         :disabled="collection.shared && collection.permission === 'read'"
                       >
                         <Pencil :size="13" />
@@ -635,11 +635,11 @@
     <!-- Create Collection Modal -->
     <dialog class="modal" :class="{ 'modal-open': showCollectionModal }" aria-labelledby="create-collection-title">
       <div class="modal-box">
-        <h3 id="create-collection-title" class="font-bold text-lg mb-4">Create New Collection</h3>
+        <h3 id="create-collection-title" class="font-bold text-lg mb-4">Create New Client</h3>
 
         <div class="form-control w-full mb-4">
           <label class="label" for="new-collection-name">
-            <span class="label-text">Collection Name</span>
+            <span class="label-text">Client name</span>
           </label>
           <input
             id="new-collection-name"
@@ -659,7 +659,7 @@
             id="new-collection-description"
             v-model="newCollectionDescription"
             class="textarea textarea-bordered"
-            placeholder="What kind of sources will this collection contain?"
+            placeholder="What kind of sources will this client have?"
           ></textarea>
         </div>
 
@@ -673,9 +673,9 @@
               v-model="newCollectionColor"
               type="color"
               class="w-12 h-12 rounded cursor-pointer border-2 border-base-300"
-              aria-label="Custom collection color"
+              aria-label="Custom client color"
             />
-            <div class="flex gap-2" role="radiogroup" aria-label="Preset collection colors">
+            <div class="flex gap-2" role="radiogroup" aria-label="Preset client colors">
               <button
                 v-for="color in ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']"
                 :key="color"
@@ -702,7 +702,7 @@
             :disabled="!newCollectionName.trim() || creatingCollection"
           >
             <span v-if="creatingCollection" class="loading loading-spinner loading-sm"></span>
-            Create Collection
+            Create Client
           </button>
         </div>
       </div>
@@ -714,11 +714,11 @@
     <!-- Edit Collection Modal -->
     <dialog class="modal" :class="{ 'modal-open': showEditModal }" aria-labelledby="edit-collection-title">
       <div class="modal-box">
-        <h3 id="edit-collection-title" class="font-bold text-lg mb-4">Edit Collection</h3>
+        <h3 id="edit-collection-title" class="font-bold text-lg mb-4">Edit Client</h3>
 
         <div class="form-control w-full mb-4">
           <label class="label" for="edit-collection-name">
-            <span class="label-text">Collection Name</span>
+            <span class="label-text">Client name</span>
           </label>
           <input
             id="edit-collection-name"
@@ -730,7 +730,7 @@
             :aria-describedby="editingCollectionId === 'default' ? 'edit-collection-name-help' : undefined"
           />
           <p v-if="editingCollectionId === 'default'" id="edit-collection-name-help" class="label-text-alt text-warning mt-1">
-            Default collection name cannot be changed
+            Default client name cannot be changed
           </p>
         </div>
 
@@ -743,7 +743,7 @@
             v-model="editCollectionDescription"
             class="textarea textarea-bordered w-full"
             rows="2"
-            placeholder="What kind of sources does this collection contain?"
+            placeholder="What kind of sources does this client have?"
           ></textarea>
         </div>
 
@@ -773,9 +773,9 @@
               v-model="editCollectionColor"
               type="color"
               class="w-12 h-12 rounded cursor-pointer border-2 border-base-300"
-              aria-label="Custom collection color"
+              aria-label="Custom client color"
             />
-            <div class="flex gap-2" role="radiogroup" aria-label="Preset collection colors">
+            <div class="flex gap-2" role="radiogroup" aria-label="Preset client colors">
               <button
                 v-for="color in ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']"
                 :key="color"
@@ -831,7 +831,7 @@
       aria-describedby="delete-collection-desc"
     >
       <div class="modal-box">
-        <h3 id="delete-collection-title" class="font-bold text-lg text-error mb-4">Delete Collection</h3>
+        <h3 id="delete-collection-title" class="font-bold text-lg text-error mb-4">Delete Client</h3>
         <p id="delete-collection-desc" class="mb-2">Are you sure you want to delete <strong>{{ editCollectionName }}</strong>?</p>
 
         <div class="alert alert-warning my-4">
@@ -843,7 +843,7 @@
             <ul class="list-disc list-inside text-sm mt-1">
               <li>All uploaded sources and files</li>
               <li>All vector indexes and embeddings</li>
-              <li>All search history for this collection</li>
+              <li>All search history for this client</li>
             </ul>
             <div class="text-sm font-semibold mt-2">This action cannot be undone.</div>
           </div>

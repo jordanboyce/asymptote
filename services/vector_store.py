@@ -10,6 +10,7 @@ from models.schemas import ChunkMetadata, SearchResult
 from services.metadata_store import MetadataStore
 from services.bm25_service import BM25Index
 from services.financial.holdings_store import HoldingsStore
+from services.financial.client_profile import ClientProfileStore
 from services.meeting_notes import MeetingNotesStore
 from services.chat.session_store import ChatSessionStore
 
@@ -60,6 +61,11 @@ class VectorStore:
         # Per-Collection structured meeting notes (v4.5). Same metadata.db;
         # extraction runs after a Whisper-transcribed document indexes.
         self.meeting_notes_store = MeetingNotesStore(self.metadata_db_path)
+
+        # Per-Collection client profile / IPS (v4.6). Same metadata.db; one
+        # row per collection, advisor-authored rather than extracted. This is
+        # what portfolio drift is measured against.
+        self.client_profile_store = ClientProfileStore(self.metadata_db_path)
 
         # Per-Collection chat session + message persistence (Slice B).
         # Migrates chat history off browser localStorage so it survives

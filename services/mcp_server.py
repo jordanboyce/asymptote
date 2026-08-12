@@ -567,6 +567,205 @@ def _get_meeting_notes_store(collection_id: str):
     return indexer.vector_store.meeting_notes_store
 
 
+def _get_client_profile_store(collection_id: str):
+    indexer = indexer_manager.get_indexer(collection_id)
+    return indexer.vector_store.client_profile_store
+
+
+def _client_profile_summary(collection_id: str) -> dict[str, Any]:
+    """Compact profile signal for `get_collection_info` / `search_collection`.
+
+    Deliberately small: enough for the model to know a policy exists and
+    which judgments it can make, without spending context on the full
+    object. `get_client_profile` returns everything.
+    """
+    try:
+        store = _get_client_profile_store(collection_id)
+        profile = store.get_model(collection_id)
+    except Exception as exc:
+        logger.debug("client profile summary unavailable for %s: %s", collection_id, exc)
+        return {"exists": False, "note": "Client profile store unavailable for this collection."}
+
+    if profile is None:
+        return {
+            "exists": False,
+            "note": (
+                "No client profile / IPS is set. Do not judge concentration, allocation, "
+                "or cash levels against generic rules of thumb as though they were this "
+                "client's policy — call get_client_profile for the full picture, or say "
+                "the policy is unset."
+            ),
+        }
+
+    from services.financial.client_profile import profile_completeness
+
+    return {
+        "exists": True,
+        "display_name": profile.display_name,
+        "risk_tolerance": profile.risk_tolerance.value if profile.risk_tolerance else None,
+        "time_horizon_years": profile.time_horizon_years,
+        "has_allocation_targets": bool(profile.ips.allocation_targets),
+        "max_single_position_pct": profile.ips.max_single_position_pct,
+        "prohibited_holdings_count": len(profile.ips.prohibited_holdings),
+        "goals_count": len(profile.goals),
+        "completeness": profile_completeness(profile),
+        "note": "Call get_client_profile for the full policy, or prep_for_meeting to see the portfolio measured against it.",
+    }
+
+
+@_finn_mcp.tool()
+def prep_for_meeting(
+    collection_id: str | None = None,
+    when: str | None = None,
+    household_collection_ids: list[str] | None = None,
+    include_tlh: bool = True,
+    include_market_context: bool = True,
+    top_n: int = 10,
+) -> dict[str, Any]:
+    """Assemble the complete pre-meeting page for a client. START HERE for
+    "I have a meeting with X" / "prep me for the Henderson review" / "what do
+    I need to know before this call?"
+
+    This is the composite the whole client-meeting loop is built around. It
+    merges six sources into one ordered page, with NO LLM call — every line
+    is computed, so the same data produces the same page every time:
+
+      since_last_meeting  — what was discussed, decided, and left open, plus
+                            how many days ago (from the v4.5 meeting notes)
+      open_items          — every open action item, aged, with overdue and
+                            stale flags
+      portfolio           — household totals, accounts, top positions
+      policy              — the section that only exists when a client
+                            profile is set: allocation drift vs the IPS
+                            targets, positions above the client's own
+                            concentration ceiling, prohibited-holding
+                            matches, and whether cash is intentional
+      opportunities       — harvestable losses with household wash-sale
+                            checks, and gross savings at the client's bracket
+      market_context      — corporate events under the largest holdings
+                            since the last meeting
+      talking_points      — the above, ordered into an agenda. Each point
+                            carries priority, why it matters, and its source.
+      gaps                — READ THIS. Everything prep could NOT determine,
+                            and what to do about it.
+
+    On `gaps`: it is not a footnote. Any section that lacked data is named
+    there rather than silently omitted — "no IPS targets set, so drift was
+    not computed", "only the top 10 positions were screened for prohibited
+    holdings", "corporate-event lookup failed for AAPL". When summarizing
+    this page for an advisor, surface the gaps that touch anything you are
+    about to assert. Never present a section as complete when `gaps` says
+    otherwise.
+
+    Parameters:
+      - collection_id: The client's collection. Defaults to the server's
+        default collection.
+      - when: ISO timestamp of the meeting. Drives "days since last meeting"
+        and overdue arithmetic. Defaults to now — pass it when prepping for
+        a future date.
+      - household_collection_ids: Additional collections for wash-sale scope
+        only, same semantics as find_tax_loss_candidates.
+      - include_tlh / include_market_context: Turn off the two slowest
+        sections. Both default on; both degrade to a gap rather than an
+        error.
+      - top_n: Positions to include in the portfolio section. Default 10.
+
+    When NOT to use this tool:
+      - For portfolio numbers alone → generate_meeting_brief is lighter.
+      - For a full harvest plan with replacements → find_tax_loss_candidates.
+      - To read or edit the client's stated policy → get_client_profile.
+    """
+    _ensure_enabled()
+
+    from services.meeting_prep import build_meeting_prep
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    indexer = indexer_manager.get_indexer(resolved_collection)
+    vector_store = indexer.vector_store
+
+    household_stores = [vector_store.holdings_store]
+    seen = {resolved_collection}
+    for cid in (household_collection_ids or []):
+        if cid in seen:
+            continue
+        seen.add(cid)
+        try:
+            household_stores.append(
+                indexer_manager.get_indexer(cid).vector_store.holdings_store
+            )
+        except Exception as exc:
+            logger.warning("prep_for_meeting: skipping household collection %s: %s", cid, exc)
+
+    try:
+        page = build_meeting_prep(
+            holdings_store=vector_store.holdings_store,
+            meeting_notes_store=vector_store.meeting_notes_store,
+            metadata_store=vector_store.metadata_store,
+            client_profile_store=vector_store.client_profile_store,
+            collection_id=resolved_collection,
+            when=when,
+            household_stores=household_stores,
+            include_tlh=include_tlh,
+            include_market_context=include_market_context,
+            top_n=top_n,
+        )
+    except Exception as exc:
+        raise ValueError(f"Meeting prep failed: {exc}") from exc
+
+    return _redact(page, "prep_for_meeting")
+
+
+@_finn_mcp.tool()
+def get_client_profile(collection_id: str | None = None) -> dict[str, Any]:
+    """Return the client's profile / Investment Policy Statement.
+
+    The typed cousin of the collection guide: the guide says how to read this
+    client's files, the profile says what their portfolio is supposed to look
+    like. Risk tolerance, time horizon, goals, household members, IPS target
+    allocation and rebalance bands, concentration ceiling, prohibited
+    holdings, tax posture, and liquidity needs.
+
+    Call this before making any judgment about whether a portfolio is
+    "too concentrated", "overweight equities", "holding too much cash", or
+    "due for a rebalance". Those words are meaningless without the client's
+    own targets — and with the profile they become arithmetic. `prep_for_meeting`
+    already includes this; call it directly when the advisor asks about the
+    policy itself rather than the meeting.
+
+    Returns: collection_id, exists (false when nothing has been saved),
+    profile (the full object), and completeness — which names, in `blocked`,
+    every judgment that cannot be made from what is currently filled in.
+
+    When `exists` is false, say so plainly rather than assessing the
+    portfolio against generic rules of thumb and implying they are the
+    client's.
+    """
+    _ensure_enabled()
+
+    from services.financial.client_profile import profile_completeness
+
+    resolved_collection = _resolve_collection_id(collection_id)
+    try:
+        store = _get_client_profile_store(resolved_collection)
+    except Exception as exc:
+        raise ValueError(f"Client profile store unavailable: {exc}") from exc
+
+    profile = store.get_model(resolved_collection)
+    response: dict[str, Any] = {
+        "collection_id": resolved_collection,
+        "exists": profile is not None,
+        "profile": profile.model_dump(mode="json") if profile else None,
+        "completeness": profile_completeness(profile),
+    }
+    if profile is None:
+        response["note"] = (
+            "No client profile has been saved for this collection. Portfolio drift, "
+            "concentration limits, and prohibited-holding checks cannot be evaluated "
+            "against this client's own policy until one is set in the Client Profile tab."
+        )
+    return _redact(response, "get_client_profile")
+
+
 @_finn_mcp.tool()
 def get_meeting_notes(
     collection_id: str | None = None,
@@ -755,6 +954,7 @@ def get_collection_info(
         "collection_name": _mcp_safe_name(collection, resolved_collection),
         "description": _mcp_safe_description(collection, ""),
         "guide": guide_text,
+        "client_profile": _client_profile_summary(resolved_collection),
         "total_documents": stats.get("total_documents", 0),
         "total_chunks": stats.get("total_chunks", 0),
         "total_pages": stats.get("total_pages", 0),

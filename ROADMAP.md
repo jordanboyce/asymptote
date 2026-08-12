@@ -1,6 +1,6 @@
 # Finn — Roadmap
 
-**Branch `fintech`** · **805 tests passing, 2 skipped** · **Updated 2026-08-11**
+**Branch `fintech`** · **891 tests passing, 2 skipped** · **Updated 2026-08-12**
 
 Finn is the advisor-facing product. `master` is Asymptote, the domain-neutral tool —
 financial modules never go there, and never come out of here.
@@ -23,10 +23,16 @@ the ledger lives in the linked source and in `git log`.
 ```bash
 python main.py                 # http://localhost:8473  <- PORT in .env, NOT 8000
 cd frontend && npm run build   # REQUIRED before any UI change is visible
-pytest                         # 805 passing, 2 skipped
+pytest                         # 891 passing, 2 skipped
 ```
 
-**Three gotchas that will waste your time:**
+**Four gotchas that will waste your time:**
+
+- **`python main.py` runs with `--reload`, and it does not always die.** A session that
+  restarts the server a few times leaves several generations alive, all bound to 8473;
+  the oldest keeps answering and you debug against stale code for twenty minutes. Check
+  with `Get-Process python` before trusting a live response, and note that writing
+  scratch files into the repo root retriggers the reloader — write them to a temp dir.
 
 - **The served frontend is committed `static/`**, not `frontend/dist`
   (`vite.config.js` → `outDir: '../static'`). **A `.vue` edit does nothing until
@@ -65,9 +71,24 @@ Two restricted/annuity rows hold `See contract` / `Priced monthly`, dropping the
 truncates every `"27,431.50"` to `27`. The P0.6 guard catches it and tells the model not
 to report the number.
 
-> **Still needs a human eye:** does the assistant actually *refuse* the number, or report
-> $203 with a footnote? Unit tests prove the warning fires; only a live run proves the
-> model obeys it. If it reports anyway, the warning wording needs to be louder.
+> **Fixed 2026-08-12 — the brief was reporting $203.** The guard covered
+> `compute_portfolio_metric` and `query_table` but *not* `brief_generator`, which ran its
+> own raw `SUM()`. So the one number an advisor reads out loud was the one place the guard
+> didn't reach. `generate_meeting_brief` now guards every total and **withholds** a failed
+> one (`total_market_value: null`, `total_market_value_reliable: false`) rather than
+> showing it with a caveat — $203 next to an asterisk still gets repeated as $203.
+> Pinned by [test_brief_coercion_guard.py](tests/test_brief_coercion_guard.py).
+>
+> **The subtlety worth remembering:** the `__by_symbol` rollup view *launders* the bug. Its
+> column is defined as `SUM("Market_Value")`, so the coerced value arrives downstream typed
+> REAL and looks clean — sampling the view finds nothing wrong. The guard must sample the
+> **base table**. Two tests pin this, including a negative control proving the view-based
+> check would have missed it.
+
+> **Still needs a human eye:** does the assistant actually *refuse* the number in chat, or
+> report $203 with a footnote? The brief no longer hands it over, and the tool description
+> tells the model to read `gaps` — but only a live run proves the model obeys. If it
+> reports anyway, the warning wording needs to be louder.
 
 The other half is `euro_semicolon_holdings.csv` (a European export where every US-CSV
 assumption is wrong) and `opaque_columns.csv` (headers `Col_1`…`Col_7`, meaning nothing).
@@ -392,8 +413,8 @@ covers three advisors instead of two."*
 | TLH skill (v4.6.1) | ✅ Shipped — household wash-sale check is the moat |
 | Dashboard (v4.9) | 🟡 Overview tab + brief charts ✅; chat chart adapters open |
 | Outbound digests (v4.10) | 🟡 Friday digest + morning brief ✅; calendar OAuth open |
-| **`prep_for_meeting`** | ❌ **Open — the §7 keystone.** All inputs exist |
-| **Client profile / IPS (v4.6)** | ❌ **Open — the other §7 build.** Gates Rebalance |
+| **`prep_for_meeting`** | ✅ **Shipped 2026-08-12** — composite, no LLM, `gaps` first-class |
+| **Client profile / IPS (v4.6)** | ✅ **Shipped 2026-08-12** — typed store, drift engine, form. Unblocks Rebalance |
 | Monte Carlo, screening, planning, lead gen, account opening | ❌ Not v1 — see §3 and §8 |
 | Eval suite (v4.6.2) | ❌ Open |
 
@@ -407,30 +428,44 @@ Full detail per item: [Appendix A](#appendix-a--shipped-ledger).
 up.** Fifteen minutes, on the prospect's own file. Work that does not serve that loop is
 not demo-blocking, however nice it would be.
 
-### The loop, and where it breaks
+### The loop — closed 2026-08-12
 
 | Step | Status |
 |---|---|
 | Their export lands clean | ✅ dialect detection, three-signal resolution, Trust Report, 5 vendor profiles, PDF tables |
-| **Prep the meeting** | ❌ **`prep_for_meeting` — the keystone.** Every input already exists |
-| Something worth *saying* in prep | 🟡 TLH ✅ · **client profile ❌** — with no target allocation, prep cannot say "8% over target in tech" |
+| **Prep the meeting** | ✅ **`prep_for_meeting`** — one call, nine sections, no LLM |
+| Something worth *saying* in prep | ✅ TLH + client profile — drift, concentration, exclusions, cash policy |
 | Record it | ✅ v4.5 |
 | Notes + action items out | ✅ v4.5 |
 | Nothing leaks | ✅ three boundaries + Boundary Report |
 
-### Build — two things, then stop
+**Both §7 builds shipped.** [services/meeting_prep.py](services/meeting_prep.py) composes
+meeting history, portfolio, IPS policy, TLH, and corporate events into a priority-ordered
+agenda plus a `gaps` list. [services/financial/client_profile.py](services/financial/client_profile.py)
+stores the policy; [services/financial/ips_drift.py](services/financial/ips_drift.py) turns
+it into arithmetic. Surfaced as MCP tools, chat tools, HTTP routes, and two Vue components.
 
-1. **`prep_for_meeting(client, when)`** — the keystone, and the highest-leverage tool on
-   the roadmap. Every input exists: `get_meeting_notes` + `list_action_items` (v4.5),
-   `compute_portfolio_metric` + `get_price_history` (v4.1/v4.2), `get_corporate_events`
-   (v4.2), `find_tax_loss_candidates` (v4.6.1). One page the advisor reads on the way into
-   the meeting. **Days.**
-2. **Client profile as a structured object (v4.6)** — risk tolerance, time horizon, goals,
-   household composition, IPS targets (allocation bands, max concentration, prohibited
-   holdings), tax situation, liquidity needs. A form, not freeform markdown — the typed
-   cousin of the v4.3 collection guide. Surfaced in `get_collection_info` and summarized
-   into `search_collection`. Without it, prep has nothing to compare against. **~1 week.**
-   Also unblocks Rebalance.
+Three properties are load-bearing and should survive future edits:
+
+- **No LLM anywhere in prep.** Every line is computed, so the page costs nothing, cannot
+  fabricate, and renders identically twice — which is what makes it safe to run live in
+  front of a prospect.
+- **`gaps` is a section, not a footnote.** Anything prep could not determine is named in
+  the advisor's language with a remedy. Sections degrade one at a time: a dead market-data
+  provider removes one block and records a gap; it never fails the page.
+- **Label matching is auditable.** An IPS target of "Fixed Income" matching an export's
+  "Bonds" is a guess, so every match carries `matched_by: exact|alias`, unmatched targets
+  are reported at 0% rather than dropped, and drift goes `authoritative: false` when
+  asset-class coverage is under 90%.
+
+### Verified live, end to end (2026-08-12)
+
+Fresh collection → upload `messy_unrealized_gl.csv` → save a profile → `POST /prep`. The
+page correctly **withheld** the market-value total, named the coercion as a portfolio gap,
+and then cascaded honestly: allocation drift and the concentration check both reported
+*why* they could not run rather than returning "no issues." The prohibited-holding match
+(`XOM`) sorted to the top as the one item that cannot wait, ahead of wash-sale risk and
+harvestable losses. That cascade is the demo.
 
 Then stop building features and go sell it.
 
@@ -450,11 +485,11 @@ Then stop building features and go sell it.
   providers" without naming them, so the no-retention commitment rests on an unpublished
   flow-down — the one question a diligence reviewer will find in COMPLIANCE.md §2 Tier 1.
   An email, not code.
-- **Rename Collections → Clients.** The rest of the shell simplification has landed: the
-  Basic/Expert toggle ships, Basic collapses to Overview / Chat / Meetings, and MCP /
-  Diagnostics sit behind Expert
-  ([App.vue:1086-1099](frontend/src/App.vue#L1086-L1099)). The heading at
-  [App.vue:272](frontend/src/App.vue#L272) still says "Collections."
+- ~~**Rename Collections → Clients.**~~ **Done 2026-08-12** — 33 user-visible strings in
+  [App.vue](frontend/src/App.vue): heading, card grid, search/sort labels, and the create /
+  edit / delete / share modals. Identifiers (`collection_id`, `activeTab === 'collections'`,
+  the Pinia store, every API path) are untouched by design — this was a labelling change,
+  not a rename.
 - **AI-by-default onboarding** already suppresses the key prompt when the managed provider
   is live ([WelcomeOnboarding.vue:66](frontend/src/components/WelcomeOnboarding.vue#L66)) —
   verify end to end once the fallback key is set.
@@ -593,22 +628,42 @@ Not funded; same direction of travel.
 1. **`main.py` is ~6,200 lines and 112 routes** — the single largest complexity
    liability. `master` already split this into an `api/` package. Big, mechanical, risky;
    not before a demo, but it is the thing that will slow everything down after one.
-2. **Structured error codes for MCP.** Errors raise `ValueError` with prose. A taxonomy
+   **The split has now started rather than being deferred whole.** v4.6's four routes
+   landed in [api/](api/) instead of `main.py`, with the shared request dependencies
+   (`get_indexer`, `require_collection_access`) moved to [api/deps.py](api/deps.py) so
+   router modules can use them without importing `main` — which would be circular.
+   `main.py` re-imports both from there, so existing tests that `monkeypatch.setattr(main,
+   "get_indexer", ...)` still work unchanged. Migrate the remaining routes in batches by
+   domain; the landing zone exists now, which was the hard part.
+2. **The `__by_symbol` rollup view can hide a coercion bug.** It defines its columns as
+   `SUM("<col>")`, so a TEXT column arrives downstream typed REAL and already truncated.
+   Anything that validates a column's storage type must sample the **base table**, not the
+   view — this cost real debugging time on 2026-08-12 and will again. See
+   `_guard` in [brief_generator.py](services/brief_generator.py) and the negative-control
+   test in [test_brief_coercion_guard.py](tests/test_brief_coercion_guard.py). Worth
+   auditing whether any other consumer reads the view and trusts its types.
+3. **The meeting-loop tools are not all in the chat surface.** `agent_tools.py` carries
+   `prep_for_meeting` and `get_client_profile` (added v4.6), but `generate_meeting_brief`,
+   `find_tax_loss_candidates`, `get_meeting_notes`, and `list_action_items` are still
+   MCP-only — contrary to the "in-app chat is the primary surface" convention. Prep
+   composes all four internally so the demo path is covered, but a direct "what's open for
+   this client?" in chat cannot reach them.
+4. **Structured error codes for MCP.** Errors raise `ValueError` with prose. A taxonomy
    (`collection_not_found`, `sql_invalid`, `ingestion_failed_no_header`) lets hosts retry
    intelligently instead of parsing strings.
-3. **Type completeness.** [mcp_server.py](services/mcp_server.py) is well-typed; extend
+5. **Type completeness.** [mcp_server.py](services/mcp_server.py) is well-typed; extend
    to [upload_service.py](services/upload_service.py) and
    [indexing/indexer.py](services/indexing/indexer.py).
-4. **Centralized settings validation.** [config.py](config.py) has grown organically —
+6. **Centralized settings validation.** [config.py](config.py) has grown organically —
    one consolidation-and-document pass.
-5. **Structured JSON logging** behind a setting; current logs are grep-friendly, not
+7. **Structured JSON logging** behind a setting; current logs are grep-friendly, not
    machine-friendly.
-6. **`_FORBIDDEN_KEYWORDS` audit.** Re-check against SQLite docs — block DDL/DML/admin
+8. **`_FORBIDDEN_KEYWORDS` audit.** Re-check against SQLite docs — block DDL/DML/admin
    only, not legitimate string / math / window / CTE / aggregate functions.
-7. **Docling secondary pass** for low-confidence PDF tables (P0.8 follow-up). Lands when
+9. **Docling secondary pass** for low-confidence PDF tables (P0.8 follow-up). Lands when
    a customer hits a real scanned-statement case.
-8. **Long-tail vendor profiles** (P0.4) — Raymond James, LPL, Edward Jones, Morgan
-   Stanley. Profiles are plain YAML; add on customer pull, never speculatively.
+10. **Long-tail vendor profiles** (P0.4) — Raymond James, LPL, Edward Jones, Morgan
+    Stanley. Profiles are plain YAML; add on customer pull, never speculatively.
 
 ---
 
@@ -649,6 +704,7 @@ One line per item. Identifiers are load-bearing — code comments and
 | P0.4 | Vendor profiles — YAML framework + Pershing / Schwab / Fidelity / Vanguard / NetX360 (with a hierarchical preprocessor that flattens multi-account exports) | [services/ingest_profiles/](services/ingest_profiles/) |
 | P0.5 | LLM role inference — narrow, confidence-gated, fail-closed; sample values redacted before transmission; `role_source` provenance surfaced per column | [llm_role_inference.py](services/llm_role_inference.py), [test_role_provenance.py](tests/test_role_provenance.py) |
 | P0.6 | Numeric sanity guards — metric path (`_sanity_check_sum`/`_breakdown`) + SQL path (`typeof()` sampling, flags only where coercion disagrees with the human reading). Guards append, never suppress or rewrite | [aggregate_guard.py](services/tabular/aggregate_guard.py), [test_aggregate_guard.py](tests/test_aggregate_guard.py) |
+| P0.6b | **Guard extended to the meeting brief (2026-08-12)** — `generate_meeting_brief` ran its own raw `SUM()` and was reporting the fixture's coerced $203 total. It now guards every total against the **base table** (the `__by_symbol` view launders the bug) and **withholds** a failed one rather than caveating it | [brief_generator.py](services/brief_generator.py), [test_brief_coercion_guard.py](tests/test_brief_coercion_guard.py) |
 | P0.7 | Regression suite — 5 vendor fixtures + frozen snapshots (columns, types, roles, provenance, profile, canonical aggregate); drift fails loudly, `UPDATE_SNAPSHOTS=1` reseeds | [tests/fixtures/](tests/fixtures/), [_snapshot_helper.py](tests/_snapshot_helper.py) |
 | P0.8 | PDF table extraction — pdfplumber per page through the same header/coercion/profile pipeline; tables *and* prose land under one document | [test_pdf_table_extraction.py](tests/test_pdf_table_extraction.py) |
 | — | **Universal ingest** — dialect detection (encoding / delimiter / decimal, each with provenance and confidence) + three-signal column resolution. Fixtures assert the **total**, not merely that the file parsed | [dialect.py](services/tabular/dialect.py), [column_resolver.py](services/tabular/column_resolver.py) |
@@ -667,6 +723,8 @@ One line per item. Identifiers are load-bearing — code comments and
 | v4.4.4 | Anthropic alignment — prompt caching (~48% input-token savings observed), native Citations, extended thinking on Claude 4, model-default refresh. *Compaction open* |
 | v4.4.5 | Provider tiers — Default (Ollama Cloud, `gemma4:31b`) / Quality (Anthropic) / Sovereignty (self-hosted) shipped; [COMPLIANCE.md](COMPLIANCE.md) one-pager revised 2026-08-11 with the three-boundary table and verbatim dated vendor quotes. *Bedrock + tier-aware onboarding open* |
 | v4.5 | Meeting capture — audio ingest via faster-whisper; `MeetingNotes` / `ActionItem` extraction with a conservative, injection-guarded prompt; `MeetingNotesStore`; `get_meeting_notes` / `list_action_items`. *`prep_for_meeting` + first-class `meetings` doctype open* |
+| v4.6 | **Client profile / IPS** — typed per-collection store (risk tolerance, horizon, goals, household, target allocation + bands, concentration ceiling, prohibited holdings, tax posture, liquidity), drift engine, form UI, `get_client_profile` tool, `completeness.blocked` naming every judgment prep cannot make without it. `api/` routes, 22 tests. See [client_profile.py](services/financial/client_profile.py), [ips_drift.py](services/financial/ips_drift.py) |
+| v4.6 | **`prep_for_meeting`** — the §7 keystone. Deterministic composite of meeting history, aged action items, portfolio, IPS policy, TLH, and corporate events into a priority-ordered agenda plus a first-class `gaps` list. No LLM. 27 tests. See [meeting_prep.py](services/meeting_prep.py) |
 | v4.6.1 | Tax-Loss Harvesting — `scan_unrealized_losses`, `gain_loss_budget`, `suggest_replacements` (never substantially-identical), `check_wash_sale` across the **household including spousal IRA/Roth** — the moat over single-account tools. 57 tests |
 | v4.9 | Dashboard — apexcharts, six chart-first brief sections with `<details>` table fallbacks and print handling, Overview tab as default landing, action-items endpoint |
 | v4.10 | Outbound — Friday what-changed digest + daily morning brief (APScheduler tick, Resend transport, per-user opt-in, 23h idempotency) |

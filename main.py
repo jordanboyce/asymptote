@@ -130,46 +130,17 @@ ALL_AI_PROVIDERS = CLOUD_AI_PROVIDERS + ("ollama",)
 _initialized = False
 
 
-def get_indexer(collection_id: str = "default") -> DocumentIndexer:
-    """Get indexer for a collection."""
-    if not _initialized:
-        raise HTTPException(
-            status_code=503,
-            detail="Service is still initializing. Please wait a moment and try again."
-        )
-    return indexer_manager.get_indexer(collection_id)
-
-
-# Permission levels returned by sharing_service.check_collection_access.
-# "owner" > "readwrite" > "read".
-_WRITE_LEVELS = ("owner", "readwrite")
-
-
-def require_collection_access(collection_id: str, user_id: str, required: str = "read") -> str:
-    """Raise 403/404 unless ``user_id`` has at least ``required`` access on ``collection_id``.
-
-    In single-user mode (``enable_multi_user=False``) the sharing service always
-    returns "owner", so this is effectively a no-op. In multi-user mode it
-    enforces that the user owns the collection or has been granted a share at
-    the required permission level.
-
-    Returns the granted permission level so callers can branch on it if
-    needed (e.g. read-only views vs. owner-only settings).
-    """
-    access = sharing_service.check_collection_access(collection_id, user_id)
-    if not access:
-        # 404 rather than 403 so we don't leak the existence of collection
-        # IDs owned by other users.
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Collection '{collection_id}' not found",
-        )
-    if required in _WRITE_LEVELS and access not in _WRITE_LEVELS:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Write access required",
-        )
-    return access
+# `get_indexer` and `require_collection_access` moved to api/deps.py so the
+# api/ routers can use them without importing main (which imports them —
+# a cycle). They stay bound here so routes in this module, and the tests
+# that monkeypatch `main.get_indexer`, keep resolving through main's
+# namespace exactly as before.
+from api.deps import (  # noqa: E402
+    _WRITE_LEVELS,
+    get_indexer,
+    mark_initialized,
+    require_collection_access,
+)
 
 
 @asynccontextmanager
@@ -237,6 +208,7 @@ async def lifespan(app: FastAPI):
             logger.error(f"Failed to start scheduler: {e}", exc_info=True)
 
         _initialized = True
+        mark_initialized(True)
 
         logger.info("Finn API ready")
         logger.info(f"Data directory: {settings.data_dir}")
@@ -271,6 +243,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Routers from the api/ package. New routes live there rather than in this
+# file; the ~111 endpoints below migrate on their own schedule. Imported
+# here (not at module top) so the router modules can import api.deps while
+# main is still initializing.
+from api import client_profile as _client_profile_routes  # noqa: E402
+from api import meeting_prep as _meeting_prep_routes  # noqa: E402
+
+app.include_router(_client_profile_routes.router)
+app.include_router(_meeting_prep_routes.router)
 
 # Prepare static directory
 static_dir = Path(__file__).parent / "static"

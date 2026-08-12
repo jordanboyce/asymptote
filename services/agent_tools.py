@@ -154,6 +154,59 @@ _TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "prep_for_meeting",
+        "description": (
+            "Assemble the complete pre-meeting page for a client. START HERE "
+            "for \"prep me for the meeting with X\", \"what do I need to know "
+            "before this review?\", \"what should I raise?\". One call returns: "
+            "what was discussed and left open last time, aged action items "
+            "with overdue flags, portfolio totals and top positions, drift "
+            "against the client's IPS target allocation, positions above their "
+            "concentration ceiling, prohibited-holding matches, harvestable "
+            "losses with household wash-sale checks, corporate events under "
+            "the top holdings, and a priority-ordered agenda. Fully computed "
+            "— no LLM call, so the same data always yields the same page. "
+            "The response carries a `gaps` array naming everything prep could "
+            "NOT determine; read it and never present a section as complete "
+            "when a gap contradicts it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string", "description": "Omit to use the active chat collection."},
+                "when": {"type": "string", "description": "ISO timestamp of the meeting. Drives 'days since' and overdue arithmetic. Defaults to now."},
+                "household_collection_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra collections for wash-sale scope only (e.g. a spouse's separately-titled account).",
+                },
+                "include_tlh": {"type": "boolean", "description": "Include the tax-loss scan. Default true."},
+                "include_market_context": {"type": "boolean", "description": "Include corporate events on top holdings. Default true."},
+                "top_n": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        },
+    },
+    {
+        "name": "get_client_profile",
+        "description": (
+            "Return the client's profile / Investment Policy Statement: risk "
+            "tolerance, time horizon, goals, household members, IPS target "
+            "allocation and rebalance bands, max single position, prohibited "
+            "holdings, tax bracket, and liquidity needs. Call this before "
+            "judging a portfolio 'concentrated', 'overweight equities', "
+            "'holding too much cash', or 'due for a rebalance' — those "
+            "judgments are meaningless without the client's own targets. "
+            "When `exists` is false, say the policy is unset rather than "
+            "applying a generic rule of thumb as if it were the client's."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string", "description": "Omit to use the active chat collection."},
+            },
+        },
+    },
+    {
         "name": "list_collections",
         "description": "List every available collection (id, name, document count).",
         "parameters": {"type": "object", "properties": {}},

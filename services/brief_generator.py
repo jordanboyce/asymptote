@@ -139,6 +139,38 @@ def _scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> Any:
     return row[0] if row else None
 
 
+def _guard(
+    conn: sqlite3.Connection,
+    base_table: str,
+    column: str,
+    filename: str,
+    result: Dict[str, Any],
+) -> List[str]:
+    """Run the P0.6 coercion guard over a column; record any warnings.
+
+    The guard runs against ``base_table`` — the raw ingested table — and never
+    against the ``__by_symbol`` rollup view, even though the value query
+    usually reads the view. The view launders the bug: it defines its column
+    as ``SUM("Market_Value")``, so a TEXT column full of "27,431.50" arrives
+    downstream already coerced to 27 and typed REAL. Sampling the view finds a
+    clean numeric column and reports nothing, while the number it produced is
+    off by three orders of magnitude. Sampling the base table sees the TEXT.
+
+    Returns the warnings so the caller can decide whether to trust the value
+    it just computed. Warnings also accumulate on ``result['warnings']`` so
+    every consumer of the brief sees them without having to ask.
+    """
+    from services.tabular.aggregate_guard import check_aggregate_coercion
+
+    guard_sql = f'SELECT SUM("{column}") FROM "{base_table}"'
+    warnings = check_aggregate_coercion(conn, guard_sql)
+    for warning in warnings:
+        entry = {'filename': filename, 'column': column, 'warning': warning}
+        if entry not in result['warnings']:
+            result['warnings'].append(entry)
+    return warnings
+
+
 def _rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> List[Any]:
     cur = conn.execute(sql, params)
     cols = [d[0] for d in cur.description]
@@ -198,30 +230,59 @@ def _process_table(
     with sqlite3.connect(uri, uri=True) as conn:
 
         # ── household summary ──────────────────────────────────────────────
+        #
+        # Every total here goes through the P0.6 coercion guard before it is
+        # believed. Without it this function is the exact bug Finn exists to
+        # prevent: a `Market Value` column left TEXT (because two restricted
+        # rows read "See contract") makes SUM() truncate "27,431.50" to 27,
+        # and the brief reports $203 for a $207,727 book with no warning.
+        # A wrong total on a meeting brief is worse than no total.
         if mv_col:
             total_mv = _scalar(conn, f'SELECT SUM("{mv_col}") FROM "{table}"')
             hs = result['household_summary']
-            hs['total_market_value'] = (hs.get('total_market_value') or 0) + (total_mv or 0)
-            hs['sources'].append({'filename': filename, 'market_value': total_mv})
+            mv_warnings = _guard(conn, base_table, mv_col, filename, result)
+            if mv_warnings:
+                hs['total_market_value_reliable'] = False
+                hs['sources'].append({
+                    'filename': filename,
+                    'market_value': total_mv,
+                    'reliable': False,
+                })
+            else:
+                hs['total_market_value'] = (hs.get('total_market_value') or 0) + (total_mv or 0)
+                hs['sources'].append({'filename': filename, 'market_value': total_mv})
 
         if cb_col:
             total_cb = _scalar(conn, f'SELECT SUM("{cb_col}") FROM "{table}"')
             hs = result['household_summary']
-            hs['total_cost_basis'] = (hs.get('total_cost_basis') or 0) + (total_cb or 0)
+            if _guard(conn, base_table, cb_col, filename, result):
+                hs['total_cost_basis_reliable'] = False
+            else:
+                hs['total_cost_basis'] = (hs.get('total_cost_basis') or 0) + (total_cb or 0)
 
         if pnl_col:
             total_pnl = _scalar(conn, f'SELECT SUM("{pnl_col}") FROM "{table}"')
             hs = result['household_summary']
-            hs['total_unrealized_pnl'] = (hs.get('total_unrealized_pnl') or 0) + (total_pnl or 0)
+            if _guard(conn, base_table, pnl_col, filename, result):
+                hs['total_unrealized_pnl_reliable'] = False
+            else:
+                hs['total_unrealized_pnl'] = (hs.get('total_unrealized_pnl') or 0) + (total_pnl or 0)
         elif mv_col and cb_col:
-            # Derive P&L from market_value - cost_basis when no explicit pnl col
-            derived_pnl = _scalar(
-                conn,
-                f'SELECT SUM("{mv_col}") - SUM("{cb_col}") FROM "{table}" '
-                f'WHERE "{mv_col}" IS NOT NULL AND "{cb_col}" IS NOT NULL',
-            )
+            # Derive P&L from market_value - cost_basis when no explicit pnl
+            # column. Both operands were just guarded above; a derived figure
+            # inherits the unreliability of whichever side failed, and a
+            # derived P&L off by the size of the market value is the most
+            # misleading number on the page.
             hs = result['household_summary']
-            hs['total_unrealized_pnl'] = (hs.get('total_unrealized_pnl') or 0) + (derived_pnl or 0)
+            if hs.get('total_market_value_reliable') is False or hs.get('total_cost_basis_reliable') is False:
+                hs['total_unrealized_pnl_reliable'] = False
+            else:
+                derived_pnl = _scalar(
+                    conn,
+                    f'SELECT SUM("{mv_col}") - SUM("{cb_col}") FROM "{table}" '
+                    f'WHERE "{mv_col}" IS NOT NULL AND "{cb_col}" IS NOT NULL',
+                )
+                hs['total_unrealized_pnl'] = (hs.get('total_unrealized_pnl') or 0) + (derived_pnl or 0)
 
         # ── account breakdown ──────────────────────────────────────────────
         if account_col and mv_col:
@@ -409,6 +470,7 @@ def generate_meeting_brief(
         'cash_drag_alerts': [],
         'sector_allocation': [],
         'tables_scanned': 0,
+        'warnings': [],
         'generated_at': datetime.now(tz=timezone.utc).isoformat(),
     }
 
@@ -460,5 +522,16 @@ def generate_meeting_brief(
         hs['total_cost_basis'] = None
     if hs['total_unrealized_pnl'] == 0:
         hs['total_unrealized_pnl'] = None
+
+    # A total that failed the coercion guard is withheld, not shown with an
+    # asterisk. $203 rendered next to a caveat still gets read as $203 — and
+    # a number on a meeting brief is the one thing an advisor will repeat out
+    # loud. Consumers get `*_reliable: False` plus the warning to explain the
+    # blank.
+    for field in ('total_market_value', 'total_cost_basis', 'total_unrealized_pnl'):
+        if hs.get(f'{field}_reliable') is False:
+            hs[field] = None
+    if hs.get('total_market_value') == 0 and hs.get('total_market_value_reliable') is False:
+        hs['total_market_value'] = None
 
     return result

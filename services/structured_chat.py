@@ -50,6 +50,8 @@ SUPPORTED_TOOLS = {
     "get_company_news",
     "get_corporate_events",
     "enrich_holdings",
+    "prep_for_meeting",
+    "get_client_profile",
 }
 
 
@@ -155,6 +157,30 @@ def build_tool_use_instructions() -> str:
         'largest_losses, concentration, breakdown_by_sector, '
         'breakdown_by_asset_class, breakdown_by_region, breakdown_by_currency, '
         'weighted_return, summary_statistics.\n\n'
+        "CLIENT MEETINGS:\n"
+        '  - prep_for_meeting — START HERE for "prep me for the meeting with X", '
+        '"what do I need to know before this review?", "what should I raise?". '
+        'One call returns the whole page: what was said and left open last '
+        'time, aged action items, portfolio totals, drift against the client\'s '
+        'IPS targets, concentration and prohibited-holding breaches, '
+        'harvestable losses, corporate events under the top holdings, and a '
+        'priority-ordered agenda. Computed, not generated — no model involved.\n'
+        '    <tool_call>{"tool": "prep_for_meeting"}</tool_call>\n'
+        '    <tool_call>{"tool": "prep_for_meeting", "when": "2026-08-20T15:00:00Z"}</tool_call>\n'
+        '    The result carries a `gaps` array listing everything prep could '
+        'NOT determine. Read it. If you are about to assert something a gap '
+        'covers ("allocation looks fine", "no concentration issues"), say '
+        'instead that it could not be checked and why. Presenting a section '
+        'as complete when `gaps` contradicts it is the worst failure mode '
+        'this tool has.\n'
+        '  - get_client_profile — the client\'s stated policy: risk tolerance, '
+        'time horizon, goals, IPS target allocation and bands, concentration '
+        'ceiling, prohibited holdings, tax bracket, liquidity needs.\n'
+        '    <tool_call>{"tool": "get_client_profile"}</tool_call>\n'
+        '    Call this before judging a portfolio "concentrated", "overweight", '
+        '"too much cash", or "due to rebalance" — those words mean nothing '
+        'without the client\'s own targets. When `exists` is false, say the '
+        'policy is unset rather than substituting a generic rule of thumb.\n\n'
         "COLLECTION META:\n"
         '  - list_collections — list every available collection (id, name, '
         'doc count). Use when the user references a different client/project.\n'
@@ -500,6 +526,31 @@ def execute_tool_calls(
                     include=include,
                     max_symbols=max_symbols,
                 )
+
+            elif tool == "prep_for_meeting":
+                when = call.get("when") or call.get("date")
+                include_tlh = bool(call.get("include_tlh", True))
+                include_market_context = bool(call.get("include_market_context", True))
+                top_n = int(call.get("top_n", 10))
+                args_for_log = {
+                    "collection_id": collection_id,
+                    "when": when,
+                    "include_tlh": include_tlh,
+                    "include_market_context": include_market_context,
+                    "top_n": top_n,
+                }
+                data = mcp.prep_for_meeting(
+                    collection_id=collection_id,
+                    when=when,
+                    household_collection_ids=call.get("household_collection_ids"),
+                    include_tlh=include_tlh,
+                    include_market_context=include_market_context,
+                    top_n=top_n,
+                )
+
+            elif tool == "get_client_profile":
+                args_for_log = {"collection_id": collection_id}
+                data = mcp.get_client_profile(collection_id=collection_id)
 
             else:
                 raise ValueError(f"No dispatcher for tool '{tool}'")

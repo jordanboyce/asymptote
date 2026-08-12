@@ -29,13 +29,31 @@
           <span class="hidden sm:inline">Refresh</span>
         </button>
         <button
-          class="btn btn-sm btn-primary gap-1.5"
+          class="btn btn-sm btn-ghost gap-1.5"
+          @click="profileModal?.open()"
+          :disabled="!collectionId"
+          title="Risk tolerance, target allocation, limits — what prep measures against"
+        >
+          <UserCog :size="13" />
+          <span class="hidden sm:inline">Client profile</span>
+        </button>
+        <button
+          class="btn btn-sm btn-ghost gap-1.5"
           @click="openCreateModal"
           :disabled="!collectionId"
           title="Create a new action item"
         >
           <Plus :size="13" />
-          New action item
+          <span class="hidden sm:inline">New action item</span>
+        </button>
+        <button
+          class="btn btn-sm btn-primary gap-1.5"
+          @click="prepModal?.open()"
+          :disabled="!collectionId"
+          title="Assemble everything worth raising in the next meeting"
+        >
+          <ClipboardList :size="13" />
+          Prep for meeting
         </button>
       </div>
     </header>
@@ -237,6 +255,9 @@
       </form>
     </dialog>
 
+    <MeetingPrepModal ref="prepModal" :collection-id="collectionId" />
+    <ClientProfileModal ref="profileModal" :collection-id="collectionId" @saved="prepModal?.load?.()" />
+
   </div>
 </template>
 
@@ -245,11 +266,13 @@ import { ref, computed, onMounted, watch } from 'vue'
 import {
   AlertTriangle,
   ChevronDown,
+  ClipboardList,
   Mic,
   Pencil,
   Plus,
   RefreshCw,
   Trash2,
+  UserCog,
 } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import {
@@ -260,8 +283,13 @@ import {
   deleteActionItem,
 } from '../utils/meetingsApi'
 import MeetingDetail from './MeetingDetail.vue'
+import MeetingPrepModal from './MeetingPrepModal.vue'
+import ClientProfileModal from './ClientProfileModal.vue'
 
 const collectionStore = useCollectionStore()
+
+const prepModal = ref(null)
+const profileModal = ref(null)
 
 const collectionId = computed(() => collectionStore.currentCollectionId)
 const collectionName = computed(() => collectionStore.currentCollection?.name || '')
