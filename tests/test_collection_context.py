@@ -498,8 +498,9 @@ def test_unknown_kind_defaults_to_neutral_framing():
 # Search-economy + answer-economy directives
 # ──────────────────────────────────────────────────────────────────────────
 #
-# Regression: a default-collection turn on a SAPHIRE PDF set ran 5 searches
-# and emitted ~6500 output tokens to answer "what's a DET". The agentic loop
+# Regression: a default-collection turn on a technical PDF set ran 5 searches
+# and emitted ~6500 output tokens to answer a one-line definition question.
+# The agentic loop
 # defaults to fanning out searches and writing long-form essays unless the
 # system prompt says otherwise. Pin the two directives that throttle this
 # so future prompt edits can't silently bring the verbosity back.
@@ -526,11 +527,18 @@ def test_base_framing_tells_model_to_be_concise(is_financial):
         is_financial=is_financial, native_citations=False,
     )
     text = " ".join(parts).lower()
-    assert "concise" in text, (
-        "Concise-answer directive missing — output will balloon"
+    # Pin the intent, not the wording: the directive has been phrased as
+    # "answer concisely" and (since the front-loaded rewrite) as "front-load
+    # the takeaway ... no preamble". Either satisfies the guard; what matters
+    # is that *some* brevity directive survives future prompt edits.
+    assert "front-load" in text or "concise" in text, (
+        "Answer-economy directive missing — output will balloon"
     )
-    # Length-fits-the-question is the key qualifier that makes "concise" not
-    # mean "always one sentence". Pin it so future edits don't drop it and
+    assert "no preamble" in text, (
+        "No-preamble directive missing — model will restate the question"
+    )
+    # Length-fits-the-question is the key qualifier that keeps brevity from
+    # meaning "always one sentence". Pin it so future edits don't drop it and
     # accidentally muzzle long-form answers when they're warranted.
     assert "fit the question" in text
 

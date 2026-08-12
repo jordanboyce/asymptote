@@ -11,7 +11,7 @@ It covers:
 
 **This document is not legal advice.** Every commitment cited below is verifiable at the linked source on the date listed. Compliance posture changes — the firm's CCO is responsible for re-verifying the underlying vendor language before adopting any tier.
 
-**Last updated:** 2026-05-10.
+**Last updated:** 2026-08-11.
 
 ---
 
@@ -21,8 +21,24 @@ Finn is **self-hosted by default**. The advisor installs the desktop app (or run
 
 1. **Ingest** — custodian CSVs, PDFs, transcripts, and other documents land in a local SQLite + FAISS index on the advisor's machine. No copy is uploaded to a Finn-operated server. There is no Finn-operated server.
 2. **Retrieve** — chat questions and `/mcp` tool calls run against the local index. Retrieval itself never leaves the box.
-3. **Redact** — every tool result and every chat-context payload passes through a Microsoft Presidio–based redaction pipeline (`services/privacy/`) plus custom recognizers for financial-account numbers, routing numbers, and CUSIP-in-context. Redaction happens at the **output boundary** — the unredacted record stays in local storage; only redacted strings cross to an external LLM. A local SQLite audit log records every redaction with a tamper-evident before/after pair.
+3. **Redact** — every payload that crosses to an external LLM is scrubbed by a Microsoft Presidio–based pipeline (`services/privacy/`) plus custom recognizers for financial-account numbers, routing numbers, and CUSIP-in-context. A local SQLite audit log records every redaction with a before/after pair, and the original text is stored *locally only*.
 4. **Reason (optional)** — the redacted context is sent to whichever LLM the advisor configured. The advisor brings their own API key (BYO-key); Finn does not proxy traffic. Token costs flow on the advisor's account, not Finn's.
+
+### The three paths to an external LLM
+
+"Redaction happens at the output boundary" is precise only if the boundary has no gaps. Finn has exactly three paths by which data derived from a client document can reach an external model, and each is covered by a named control:
+
+| Path | What travels | Control | Where |
+|---|---|---|---|
+| **Tool results** — the model calls `query_table`, `search_collection`, `get_meeting_notes`, etc. | Query results, schema previews, meeting notes | Presidio redaction on every tool response before it is serialized | `mcp_server._redact` → `redaction_middleware.redact_mcp_response` |
+| **Retrieved chunks** — passages the model is given up front to answer from (RAG) | Passages from PDFs, meeting transcripts, notes of record | Presidio redaction at prompt-construction time | `services/chat/context.py` → `redaction_middleware.redact_text_for_ai` |
+| **Holdings tables** — position data inlined into the prompt | Symbols, quantities, market values, cost basis | Column-level sanitization at **ingest**, before anything is written to disk: account numbers and holder names are replaced with a stable hash (`[ACCT-3F2A]`), and address / phone / email / SSN / client-name columns are dropped outright | `services/privacy/column_sanitizer.py`, called from `services/indexing/indexer.py` |
+
+The third path is worth the CCO's attention because it is stronger than redaction, not weaker: PII in tabular custodian exports is removed *before it is persisted*, so it is absent from the search index and the SQL store, not merely filtered on the way out. The advisor already has every account number in their custodian portal; Finn's index does not need them.
+
+**Person names are pseudonymized, not blanked.** The default redaction style is `consistent_pseudonym`: "Robert Henderson" leaves the boundary as a stable stand-in name rather than `[PERSON]`. This is a deliberate correctness choice. A meeting transcript naming three people collapses under `[PERSON]` tokens into text where the model can no longer tell who agreed to what — the boundary would be buying privacy with wrong answers. The mapping is a SHA-256 derivation, so the same real name maps to the same stand-in for the life of the deployment, and no real name crosses the boundary either way. A firm that prefers hard tokens sets `redaction_style: entity_type` per collection (§4, technical safeguards).
+
+Account numbers, SSNs, routing numbers, IBANs, emails, and phone numbers are *not* pseudonymized — those render as `[ACCOUNT_NUMBER]`, `[SSN]`, and so on.
 
 The data layer is **local-first**. The intelligence layer is **whatever LLM the firm has approved**. Finn is the boundary that makes the second one safe to use against the first.
 
@@ -30,10 +46,13 @@ The data layer is **local-first**. The intelligence layer is **whatever LLM the 
 
 | Control | Where it lives | What it does |
 |---|---|---|
-| PII / CUI redaction at output boundary | `services/privacy/redaction_engine.py` + `redaction_middleware.py` | Wraps every MCP tool response and every chat-context payload; replaces detected entities with deterministic pseudonyms or `[ENTITY_TYPE]` tokens before any external transmission |
+| PII / CUI redaction on tool output | `services/privacy/redaction_engine.py` + `redaction_middleware.py` | Wraps every MCP tool response; replaces detected entities with stable pseudonyms or `[ENTITY_TYPE]` tokens before any external transmission |
+| PII / CUI redaction on retrieved chunks | `services/chat/context.py` | Same engine, applied to RAG passages as the prompt is assembled. Redaction is applied to the *outbound payload only* — the advisor's own sources panel still shows the real text, because the advisor is authorized to see it |
+| Ingest-time column sanitization | `services/privacy/column_sanitizer.py` | Tabular PII never reaches disk: account numbers and holder names are hashed to `[ACCT-XXXX]` (preserving per-account grouping), and address / phone / email / SSN / DOB / client-name columns are dropped before indexing |
 | Custom financial recognizers | `services/privacy/custom_recognizers/` | `FinancialAccountRecognizer`, `RoutingNumberRecognizer`, `CUSIPInContextRecognizer` — augments standard Presidio entities (PERSON, EMAIL, PHONE, SSN, IBAN) with finance-specific identifiers |
 | Per-collection redaction policy | `services/privacy/redaction_config.py` | The CCO can tighten or loosen redaction style per client collection — `[ENTITY_TYPE]`, `consistent_pseudonym`, `partial_mask`, allow-list, score threshold, strict-mode |
 | Local audit log | `services/privacy/redaction_log.py` (SQLite) | Records redaction events with original text stored *locally only*. `GET /api/redactions/{summary,log}` exposes the running tally to the chat-tab "PII pill" |
+| Boundary Report | `services/privacy/boundary_report.py` → `RedactionBoundaryPanel.vue` | Renders the audit log as what it means rather than what it logged: substitutions grouped by the boundary they crossed, repeated mentions of one value collapsed with an occurrence count, and — on explicit request — the local original beside the stand-in that was transmitted. Reachable from the chat PII pill and the Overview tab; no AI provider is called to produce it |
 | Pre-flight review on tabular uploads | `services/privacy/pii_preflight.py` | Before a CSV/XLSX is committed to the index, the advisor sees what would be redacted; can blacklist a column entirely |
 | Document-level prompt-injection scan | `services/prompt_injection_detector.py` | Flags retrieved documents that contain text resembling indirect prompt-injection (persona injection, "ignore previous instructions," etc.) before they reach an LLM |
 | All-local default | App boots without any external provider configured. Search, retrieval, MCP tools all work on local data without an LLM call | The advisor must explicitly paste an API key in Settings to enable any external transmission |
@@ -48,7 +67,7 @@ Finn's BYO-key model means the firm picks the LLM provider. Because compliance r
 
 | Tier | Provider | Primary fit | Quick read |
 |---|---|---|---|
-| **Default** | Ollama Cloud (gpt-oss / qwen3 / kimi-k2) | Solo RIAs, small advisor shops, evaluation | Cheapest tool-use-capable models. No SOC 2 today. Acceptable when paired with Finn's redaction *and* documented residual risk in the firm's WISP |
+| **Default** | Ollama Cloud (default model `gemma4:31b`; gpt-oss, qwen3, kimi-k2 and others selectable) | Solo RIAs, small advisor shops, evaluation | Cheapest tool-use-capable models. Published no-retention and no-training commitments (quoted below), but unattested — no SOC 2 today. Acceptable when paired with Finn's redaction *and* documented residual risk in the firm's WISP |
 | **Quality** | Anthropic API direct (Claude Sonnet 4.6 / Opus 4.7) | Mid-market RIAs ($100M – $1B AUM) | SOC 2 Type II, signed DPA available. No FedRAMP, not HIPAA-eligible on the direct API path |
 | **Enterprise** | AWS Bedrock (Anthropic / Llama / Mistral) | $1B+ AUM, broker-dealer affiliates, federal-contractor exposure | FedRAMP High, HIPAA-eligible (BAA), ISO 27001/17/18, IRAP, IL5. Higher per-token cost; not yet implemented in Finn — tracked in roadmap v4.4.5 |
 | **Sovereignty** | Self-hosted Ollama on firm-controlled hardware | Firms with hard data-residency rules; international jurisdictions with US-transfer restrictions | Zero data leaves the firm's hardware. Quality lag vs frontier models on tool-use accuracy is the real cost |
@@ -59,27 +78,33 @@ The tier the firm picks is a **business + compliance decision**, not a technical
 
 ### Tier 1 — Default: Ollama Cloud
 
-**What it is.** Ollama Cloud is a hosted inference service for the open-weights models Ollama distributes (gpt-oss-120b, qwen3, kimi-k2, others). Finn uses it via the `OllamaCloudProvider` in [services/ai_service.py](services/ai_service.py).
+**What it is.** Ollama Cloud is a hosted inference service for the open-weights models Ollama distributes. Finn uses it via the `OllamaCloudProvider` in [services/ai_service.py](services/ai_service.py) and defaults to `gemma4:31b`. The models are open-weights — no model vendor holds the firm's traffic under separate terms the way a proprietary frontier model would; the only party in scope is Ollama itself and whatever inference infrastructure it uses.
 
 **Vendor commitments (verify at source).**
 
-- Privacy Policy: <https://ollama.com/privacy>
+- Privacy Policy: <https://ollama.com/privacy> — the version reviewed here is marked **"Last updated: March 2026"**
 - Terms of Service: <https://ollama.com/terms>
 
-The substance of Ollama's published position, as of this document's last-updated date, is:
+Ollama's published position on retention and training is explicit rather than inferred. Quoted verbatim from the Privacy Policy:
 
-- **No training on customer prompts or completions.** Inputs are not retained to retrain the public models.
-- **Transient processing** during the inference request — the request is processed and the result is returned without long-term retention beyond standard operational logging.
-- A **partial subprocessor list** is published. The CCO should retrieve the current list before approval.
+> "When using cloud-hosted models, we process this content transiently to provide the Service and this content is not stored beyond the time required to fulfill the request."
+
+> "We do not use your inputs or outputs to train any AI models or request prompt or response content in support requests."
+
+> "We may collect limited device and usage metadata (such as app version and request counts) that does not include your prompt or response content."
+
+Read together, these are the three commitments a CCO asks for on an inference vendor: **no retention beyond the request**, **no training on inputs or outputs**, and **operational telemetry that excludes content**. The third matters more than it looks — many vendors promise no training while retaining prompt logs for abuse monitoring; Ollama's language puts prompt and response content outside the metadata they collect at all.
+
+**What this is and is not.** It is a public policy commitment, unilaterally amendable by the vendor, not a negotiated contract with the firm. It is not third-party attested — there is no SOC 2 report testing whether the transient-processing claim holds in practice. The CCO should re-verify the language at the URL above on the date of approval and retain a dated copy, because the "Last updated" stamp is the only version control the firm gets.
 
 **Known gaps for regulated advisor use.**
 
 | Gap | Implication | How to address |
 |---|---|---|
-| No published SOC 2 Type II | Cannot evidence controls testing to a regulator on the vendor's behalf | Document as a residual risk in the WISP; rely on Finn's redaction boundary |
-| No standard DPA / signed contract | The firm's data-handling commitments to its clients aren't backstopped by a vendor contract | Use the firm's standard vendor questionnaire; treat the public Privacy Policy as the binding document; document the gap |
+| No published SOC 2 Type II | The no-retention commitment is unattested. Cannot evidence controls testing to a regulator on the vendor's behalf | Document as a residual risk in the WISP; rely on Finn's redaction boundary as the compensating control |
+| No standard DPA / signed contract | The firm's data-handling commitments to its clients aren't backstopped by a vendor contract | Use the firm's standard vendor questionnaire; treat the dated Privacy Policy as the binding representation; document the gap |
 | No published SLA | No vendor-side commitment on uptime or breach notification | Acceptable for non-critical advisor workflows; document in the WISP |
-| Subprocessor list is partial | Onward transfer disclosure is weaker than enterprise tiers | The firm's privacy notice to clients should disclose the LLM-provider category, not require sub-subprocessor enumeration |
+| Subprocessor list is general, not enumerated | The policy names categories — "Stripe for payments, cloud infrastructure providers, model inference providers" — rather than named entities. **"Model inference providers" is the material one**: it indicates some cloud models may be served by downstream infrastructure, so the no-retention commitment depends on Ollama's flow-down to those parties, which is not published | Ask Ollama directly for the current named list before approval. The firm's client privacy notice should disclose the LLM-provider category rather than attempt sub-subprocessor enumeration |
 
 **Why this tier still works for solo / small RIAs.** Finn's redaction boundary ensures **what crosses the boundary is not client identifiers** — it is redacted strings tagged `[PERSON]`, `[ACCOUNT_NUMBER]`, `[CUSIP]`, etc. The unredacted record stays local. The CCO documents this fact pattern as the residual-risk treatment in the firm's WISP under both:
 
@@ -254,7 +279,9 @@ tokens or deterministic pseudonyms), not raw identifiers.
 
 - Full-disk encryption is enabled on every device in §1: [ATTESTATION OR REFERENCE].
 - Operating-system access requires authentication: [METHOD — password, biometric, SSO].
-- Finn's redaction policy for each client collection is set to [REDACTION STYLE]
+- Finn's redaction policy for each client collection is set to [REDACTION STYLE —
+  default is `consistent_pseudonym`, which replaces person names with stable
+  stand-in names; `entity_type` substitutes hard [PERSON] tokens instead]
   with a score threshold of [THRESHOLD]. The firm reviews the redaction policy
   per collection at onboarding and again annually.
 - The firm enables strict-mode redaction for any collection containing
@@ -301,7 +328,10 @@ This supplement was reviewed and approved by:
 ## 5. Frequently asked questions
 
 **Q: Does Finn store any customer data on Anthropic / OpenAI / Ollama servers?**
-No. The data layer is local. Only redacted strings cross the boundary when the advisor invokes a chat that needs an LLM, and only to the LLM provider the firm has approved.
+No. The data layer is local. Only redacted strings cross the boundary when the advisor invokes a chat that needs an LLM, and only to the LLM provider the firm has approved. On the default tier, Ollama's Privacy Policy separately commits that cloud-hosted model content "is not stored beyond the time required to fulfill the request" — so the firm gets both a Finn-side control (nothing identifying is sent) and a vendor-side commitment (what is sent is not retained). The Finn-side control is the one the firm can verify itself; see the verification question below.
+
+**Q: What exactly does Ollama retain, and can we show an investor or regulator?**
+Per the Privacy Policy dated March 2026, quoted in §2 Tier 1: content sent to cloud-hosted models is processed transiently and not stored beyond the request; inputs and outputs are not used to train any AI models; and the usage metadata Ollama does collect (app version, request counts) explicitly excludes prompt and response content. Retain a dated copy of <https://ollama.com/privacy> at the time of approval — a public policy is unilaterally amendable and the "Last updated" stamp is the only version control available. Note the residual dependency: the policy lists "model inference providers" among the third parties Ollama uses, and the flow-down of the no-retention commitment to those downstream parties is not published.
 
 **Q: Can the firm prevent any external transmission?**
 Yes. Tier 4 (self-hosted Ollama) routes 100% of inference to firm-controlled hardware. There is no "phone home" path in Finn itself — search, retrieval, and MCP tools all work without any external provider configured.
@@ -310,10 +340,11 @@ Yes. Tier 4 (self-hosted Ollama) routes 100% of inference to firm-controlled har
 Because Finn redacts before crossing the boundary, the data potentially exposed at the LLM provider is redacted strings, not raw client identifiers. The firm's incident-response plan still applies, but the blast radius is constrained by the redaction guarantee.
 
 **Q: How does the firm verify the redaction is actually happening?**
-- The local audit log (`data/redactions.db`) records every redaction event with the original text stored locally.
-- `GET /api/redactions/summary` and `GET /api/redactions/log` expose the running tally.
+- **Without leaving the app:** open the Boundary Report — the shield pill beneath the chat input, or the foot of the Overview tab. It lists each identifier that was replaced, grouped by the boundary it crossed, with an occurrence count. "Show the real values" adds a column holding the original from the local record beside the stand-in that was actually transmitted, so the substitution can be read directly rather than inferred. That column is fetched only when requested and is never included otherwise.
+- The local audit log (`data/redactions.db`) is the underlying record: every redaction event, with the original text stored locally. Each event carries the boundary it fired at, so the CCO can distinguish a redaction on a tool result from one on a retrieved chunk (`tool_name = "chat_context"`) or on advisor-drafted output (`notes_output`, `followup_output`).
+- `GET /api/redactions/summary` and `GET /api/redactions/log` expose the running tally; `GET /api/redactions/boundary-report` returns the grouped view the panel renders.
 - `POST /api/redactions/dry-run` lets the CCO see what would be redacted from any text payload without executing it.
-- Regression tests in `tests/test_pii_redaction.py` and `tests/test_redaction_http.py` pin redaction behavior; the firm can re-run `pytest tests/test_pii_redaction.py` to verify on the installed version.
+- Regression tests pin the behavior and can be re-run against the installed version: `pytest tests/test_pii_redaction.py tests/test_redaction_http.py tests/test_chat_context_redaction.py`. The last of these asserts the two-sided invariant directly — that client names and account numbers are absent from what is sent to the model, *and* that the advisor's own sources panel still shows the real text.
 
 **Q: Does Finn collect telemetry?**
 No. There is no Finn-operated analytics, error-reporting, or usage-tracking service. The application boots, runs locally, and emits no outbound traffic except to the LLM provider the firm configured.
@@ -334,14 +365,17 @@ Yes. `services/privacy/redaction_config.py` exposes per-collection profiles: red
 For the CCO who wants to verify a control rather than take this document's word for it:
 
 - Redaction engine: [services/privacy/redaction_engine.py](services/privacy/redaction_engine.py)
-- Redaction middleware (output boundary): [services/privacy/redaction_middleware.py](services/privacy/redaction_middleware.py)
+- Redaction middleware (tool-output boundary): [services/privacy/redaction_middleware.py](services/privacy/redaction_middleware.py)
+- Retrieved-chunk boundary (RAG): [services/chat/context.py](services/chat/context.py) — `_redact_for_llm`, `_format_retrieved_context`, `_build_citation_documents`
+- Ingest-time tabular sanitization: [services/privacy/column_sanitizer.py](services/privacy/column_sanitizer.py), wired from [services/indexing/indexer.py](services/indexing/indexer.py)
 - Custom financial recognizers: [services/privacy/custom_recognizers/](services/privacy/custom_recognizers/)
-- Per-collection policy: [services/privacy/redaction_config.py](services/privacy/redaction_config.py)
+- Per-collection policy (incl. redaction style): [services/privacy/redaction_config.py](services/privacy/redaction_config.py)
 - Local audit log: [services/privacy/redaction_log.py](services/privacy/redaction_log.py)
+- Boundary Report: [services/privacy/boundary_report.py](services/privacy/boundary_report.py), [frontend/src/components/RedactionBoundaryPanel.vue](frontend/src/components/RedactionBoundaryPanel.vue)
 - Pre-flight review on tabular uploads: [services/privacy/pii_preflight.py](services/privacy/pii_preflight.py)
 - LLM provider implementations: [services/ai_service.py](services/ai_service.py)
 - HTTP redaction endpoints: search [main.py](main.py) for `/api/redactions`
-- Regression tests: [tests/test_pii_redaction.py](tests/test_pii_redaction.py), [tests/test_redaction_http.py](tests/test_redaction_http.py)
+- Regression tests: [tests/test_pii_redaction.py](tests/test_pii_redaction.py), [tests/test_redaction_http.py](tests/test_redaction_http.py), [tests/test_chat_context_redaction.py](tests/test_chat_context_redaction.py), [tests/test_boundary_report.py](tests/test_boundary_report.py)
 
 ---
 

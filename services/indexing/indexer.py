@@ -1,7 +1,7 @@
 """Document indexing orchestration service."""
 
 from pathlib import Path
-from typing import List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable
 import hashlib
 import logging
 from datetime import datetime
@@ -24,6 +24,30 @@ logger = logging.getLogger(__name__)
 # Type alias for progress callback
 # Signature: (phase: str, progress: int, detail: str, chunks_done: int, chunks_total: int)
 ProgressCallback = Callable[[str, int, Optional[str], int, int], None]
+
+
+def _ingest_evidence(sheet: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull the facts only the extractor knew out of a sheet dict.
+
+    These describe work Finn did *to* the file — skipping a preamble, matching
+    a vendor profile, dropping repeated headings — and cannot be recovered
+    from the stored table afterwards, so they ride along to
+    ``HoldingsStore.create_table`` for the Trust Report to replay later.
+    Preamble keys starting with ``_`` are extractor internals and are dropped.
+    """
+    preamble = sheet.get('document_metadata') or {}
+    return {
+        'vendor_profile': sheet.get('vendor_profile'),
+        'header_row': sheet.get('header_row') or 0,
+        'dropped_repeated_headers': sheet.get('dropped_repeated_headers') or 0,
+        'preprocessor': sheet.get('preprocessor'),
+        # Only present when the file needed a non-default encoding, delimiter,
+        # or decimal convention — see services.tabular.dialect.
+        'dialect': sheet.get('dialect'),
+        'preamble': {
+            k: v for k, v in preamble.items() if not str(k).startswith('_')
+        },
+    }
 
 
 class DocumentIndexer:
@@ -294,6 +318,7 @@ class DocumentIndexer:
                     role_overrides=sheet.get('role_overrides') or {},
                     type_overrides=sheet.get('type_overrides') or {},
                     collection_id=self.collection_id,
+                    ingest_evidence=_ingest_evidence(sheet),
                 )
                 registered += 1
             except Exception as e:
@@ -385,6 +410,7 @@ class DocumentIndexer:
                     role_overrides=sheet.get('role_overrides') or {},
                     type_overrides=sheet.get('type_overrides') or {},
                     collection_id=self.collection_id,
+                    ingest_evidence=_ingest_evidence(sheet),
                 )
             except Exception as e:
                 logger.warning(

@@ -111,8 +111,14 @@ class RedactionLog:
         session_id: str | None = None,
         collection_id: str | None = None,
         limit: int = 50,
+        since: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Query recent redaction events."""
+        """Query recent redaction events.
+
+        ``since`` is an ISO-8601 timestamp compared lexicographically against
+        the stored ``timestamp`` column — the same shape ``summarize`` uses, so
+        a caller can window a summary and its underlying events identically.
+        """
         conditions: list[str] = []
         params: list[Any] = []
 
@@ -122,6 +128,9 @@ class RedactionLog:
         if collection_id:
             conditions.append("collection_id = ?")
             params.append(collection_id)
+        if since:
+            conditions.append("timestamp >= ?")
+            params.append(since)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         capped = max(1, min(limit, 500))

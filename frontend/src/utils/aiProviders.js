@@ -111,16 +111,31 @@ export const PROVIDER_DEFS = [
     keyPlaceholder: 'your Ollama API key',
     keyLink: 'https://ollama.com/settings/keys',
     defaultModel: 'gemma4:31b',
+    // Offline fallback only — "Refresh" replaces this with the live catalogue.
+    //
+    // Ordered by the usage tier ollama.com publishes per model, not by size:
+    // the binding constraint for most advisors is a *free* Ollama account, and
+    // a "High usage" model burns that allowance far faster. Only the Low and
+    // Medium tiers are listed here; the High / Extra High / metered models
+    // (glm-5.x, kimi-k2.x, kimi-k3, minimax-m3, nemotron-3-ultra,
+    // deepseek-v4-pro) stay reachable via Refresh or the Custom model ID field
+    // below — they just aren't suggested to someone who isn't paying.
+    //
+    // Mirrors `OllamaCloudProvider.USAGE_TIERS`; check both with
+    // `python scripts/refresh_ollama_cloud_tiers.py` before editing. An earlier
+    // version of this list carried three tags ollama.com does not serve
+    // (`qwen3-coder-next`, `deepseek-v3.2`, `glm-4.7`), which validated fine
+    // and then 404'd mid-chat.
     models: [
-      { id: 'gpt-oss:120b', label: 'GPT-OSS 120B (quality)' },
-      { id: 'gpt-oss:20b', label: 'GPT-OSS 20B (fast)' },
-      { id: 'gemma4:31b', label: 'Gemma 4 31B' },
-      { id: 'qwen3-coder-next', label: 'Qwen3 Coder Next' },
-      { id: 'kimi-k2.6', label: 'Kimi K2.6' },
-      { id: 'deepseek-v3.2', label: 'DeepSeek v3.2' },
-      { id: 'glm-4.7', label: 'GLM 4.7' },
-      { id: 'glm-5.1', label: 'GLM 5.1' },
-      { id: 'minimax-m2.7', label: 'MiniMax M2.7' },
+      { id: 'gemma4:31b', label: 'Gemma 4 31B — Low usage · 256K · text + vision · recommended' },
+      { id: 'gpt-oss:20b', label: 'GPT-OSS 20B — Low usage · 128K · text' },
+      { id: 'nemotron-3-nano:30b', label: 'Nemotron 3 Nano 30B — Low usage · 1M · text' },
+      { id: 'gpt-oss:120b', label: 'GPT-OSS 120B — Medium usage · 128K · text' },
+      { id: 'qwen3.5:397b', label: 'Qwen3.5 397B — Medium usage · 256K · text + vision' },
+      { id: 'mistral-large-3:675b', label: 'Mistral Large 3 — Medium usage · 256K · text + vision' },
+      { id: 'minimax-m2.7', label: 'MiniMax M2.7 — Medium usage · 200K · text' },
+      { id: 'nemotron-3-super', label: 'Nemotron 3 Super — Medium usage · 256K · text' },
+      { id: 'deepseek-v4-flash:0731', label: 'DeepSeek v4 Flash — Medium usage · 1M · text' },
     ],
   },
 ]
@@ -406,21 +421,33 @@ export function migrateLegacySettings() {
   if (changed) saveProvidersConfig(configs)
 }
 
+/**
+ * Ask the backend for a provider's live model list.
+ *
+ * Throws on failure — callers render the message. Swallowing the error and
+ * returning `[]` (the previous behaviour) made a broken discovery endpoint
+ * indistinguishable from a provider that simply has no list endpoint: the
+ * picker silently fell back to Finn's built-in list and the advisor had no
+ * way to tell that Refresh had failed.
+ */
 export async function fetchDynamicModels(providerId, apiKey, baseUrl = null) {
-  try {
-    const response = await fetch('/api/providers/models', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider_id: providerId,
-        api_key: apiKey,
-        base_url: baseUrl,
-      }),
-    });
-    if (!response.ok) throw new Error(`Failed to fetch models: ${response.statusText}`);
-    return await response.json();
-  } catch (e) {
-    console.error('Error fetching dynamic models:', e);
-    return [];
+  const response = await fetch('/api/providers/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider_id: providerId,
+      api_key: apiKey || null,
+      base_url: baseUrl || null,
+    }),
+  })
+  if (!response.ok) {
+    let detail = ''
+    try {
+      detail = (await response.json())?.detail || ''
+    } catch {
+      // non-JSON error body; fall back to the status line
+    }
+    throw new Error(detail || `Request failed (${response.status} ${response.statusText})`)
   }
+  return await response.json()
 }

@@ -523,9 +523,9 @@
                       v-if="canDiscoverModels(def.id)"
                       class="btn btn-xs btn-ghost"
                       @click="refreshProviderModelList(def.id)"
-                      :disabled="providerModelLoading.value[def.id]"
+                      :disabled="providerModelLoading[def.id]"
                     >
-                      {{ providerModelLoading.value[def.id] ? 'Refreshing…' : 'Refresh' }}
+                      {{ providerModelLoading[def.id] ? 'Refreshing…' : 'Refresh' }}
                     </button>
                   </div>
                 </div>
@@ -1997,12 +1997,28 @@ const canDiscoverModels = (id) => {
   return true
 }
 
+// Ollama publishes a per-model usage tier ("Low usage", "Medium usage", …)
+// that says how fast a model burns an account's allowance. On a free key that
+// is the number that actually decides which models are usable, so the picker
+// leads with the Low ones and says why.
+const OLLAMA_TIER_NOTE =
+  'Tiers are Ollama\'s own — "Low usage" models go furthest on a free key. Gemma 4 31B is the pick: Low usage, 256K context, and the only Low-tier model that reads images.'
+
 const providerModelHint = (id) => {
   const loading = providerModelLoading.value[id]
   const error = providerModelErrors.value[id]
   if (loading) return 'Refreshing models…'
-  if (error) return `Failed to load models: ${error}`
-  if (providerModelLists.value[id]?.length) return 'Loaded models from the provider.'
+  if (error) return `Couldn't load the model list: ${error}`
+  const list = providerModelLists.value[id]
+  if (id === 'ollama_cloud') {
+    return list?.length
+      ? `Live list from ollama.com — ${list.length} models. ${OLLAMA_TIER_NOTE}`
+      : OLLAMA_TIER_NOTE
+  }
+  if (list?.length) return `Live list from the provider — ${list.length} models.`
+  // An empty (not failed) response means the provider publishes no model
+  // endpoint. Say so, rather than implying the built-in list is authoritative.
+  if (Array.isArray(list)) return "This provider doesn't publish a model list — showing Finn's built-in list."
   return 'Override the default model. Leave blank to use provider defaults.'
 }
 
@@ -2027,7 +2043,9 @@ const refreshProviderModelList = async (providerId) => {
       ...providerModelErrors.value,
       [providerId]: err.message || 'Unable to load models.',
     }
-    providerModelLists.value = { ...providerModelLists.value, [providerId]: [] }
+    // Leave any previously-loaded list in place; clearing it would drop the
+    // advisor back to the built-in list with no indication that's what happened.
+    providerModelLists.value = { ...providerModelLists.value, [providerId]: undefined }
   } finally {
     providerModelLoading.value = { ...providerModelLoading.value, [providerId]: false }
   }

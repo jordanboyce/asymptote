@@ -857,7 +857,7 @@ def search_collection(
     # dumps, anything tabular without holdings semantics — also live in
     # the HoldingsStore but blowing them all into every search result
     # tanks latency without helping the model. Previously a 16-document
-    # SAPHIRE PRA collection (zero holdings, ~20 extracted PDF tables) was
+    # technical-PDF collection (zero holdings, ~20 extracted PDF tables) was
     # injecting hundreds of KB of irrelevant keyword/symbol tables into
     # every search_collection response, pushing one tool call from ~2 s
     # to ~24 s. If the user genuinely asks about a non-holdings table the
@@ -1536,8 +1536,12 @@ def query_table(
     }
     if effective_sql != sql:
         payload["original_sql"] = sql
-    if warnings:
-        payload["warnings"] = warnings
+    # execute_query may already have attached its own warnings (P0.6 aggregate
+    # coercion guards). Merge rather than overwrite — the rewrite notice and the
+    # coercion warning are independent and both matter.
+    merged_warnings = list(result.get("warnings") or []) + warnings
+    if merged_warnings:
+        payload["warnings"] = merged_warnings
     return _redact(payload, "query_table")
 
 

@@ -11,7 +11,7 @@
 
 import axios from 'axios'
 
-/** @typedef {'invalid_key' | 'network_error' | 'unsupported_provider' | ''} ValidateErrorCode */
+/** @typedef {'invalid_key' | 'network_error' | 'unsupported_provider' | 'unknown_model' | ''} ValidateErrorCode */
 
 /**
  * Map a /api/ai/validate-key response or an axios error to one of three
@@ -26,7 +26,12 @@ export function classifyValidateError({ response, axiosError } = {}) {
 
   // Prefer a stable backend code if present
   const code = response?.error_code || axiosError?.response?.data?.error_code
-  if (code === 'invalid_key' || code === 'network_error' || code === 'unsupported_provider') {
+  if (
+    code === 'invalid_key' ||
+    code === 'network_error' ||
+    code === 'unsupported_provider' ||
+    code === 'unknown_model'
+  ) {
     return code
   }
 
@@ -68,6 +73,8 @@ export function validateErrorMessage(code) {
       return "Couldn't reach the provider. Check your internet connection and try again."
     case 'unsupported_provider':
       return "This provider isn't supported yet. Pick another option."
+    case 'unknown_model':
+      return "Your key works, but that model isn't available on this provider. Hit Refresh next to the model list and pick one from it."
     default:
       return ''
   }

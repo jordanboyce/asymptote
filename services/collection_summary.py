@@ -43,8 +43,8 @@ def compute_collection_summary(store: Any, collection_id: str) -> Dict[str, Any]
             # tables, CSV exports of non-financial data — also live in the
             # HoldingsStore but have no holdings roles assigned, and rolling
             # their row counts into "positions" produced phantom totals on
-            # non-financial collections (a 16-doc SAPHIRE PRA collection was
-            # reporting "407 positions").
+            # non-financial collections (a 16-document technical-PDF
+            # collection with zero holdings reported "407 positions").
             if not is_holdings_table(roles_map):
                 created_at = created_at_by_table.get(base_table)
                 source_files.append({

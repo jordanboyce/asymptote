@@ -11,12 +11,6 @@ import tailwindcss from '@tailwindcss/vite'
 // proxy gets ECONNREFUSED.
 const apiTarget = process.env.VITE_API_URL || 'http://127.0.0.1:8000'
 
-// VITE_ELECTRON=true switches the build for the Electron shell:
-//   - outputs to ../electron/renderer/ (bundled into the .asar by electron-builder)
-//   - the value is also exposed to client code as import.meta.env.VITE_ELECTRON
-//     so vue-router can pick hash history (file:// compatible)
-const isElectronBuild = process.env.VITE_ELECTRON === 'true'
-
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -29,9 +23,11 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
-  base: isElectronBuild ? './' : '/',
+  base: '/',
   build: {
-    outDir: isElectronBuild ? '../electron/renderer' : '../static',
+    // ../static is committed and is what main.py serves — a source change does
+    // not reach the running app until this build runs.
+    outDir: '../static',
     emptyOutDir: true,
   },
   server: {

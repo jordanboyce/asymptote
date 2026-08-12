@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from services.financial.roles import detect_financial_role
+from services.tabular.column_resolver import resolve_table
 from services.financial.type_hints import FINANCIAL_TYPE_EXTENSIONS
 from services.tabular.inference import (
     CORE_TYPE_TO_SQLITE,
@@ -33,6 +34,10 @@ from services.tabular.inference import (
     should_preserve_raw,
 )
 from services.tabular.sql_validation import SQLValidationError, validate_select
+from services.tabular.aggregate_guard import (
+    check_aggregate_coercion,
+    check_null_aggregates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,20 @@ class HoldingsStore:
                 f'CREATE INDEX IF NOT EXISTS idx_csv_schemas_doc '
                 f'ON {self.SCHEMA_REGISTRY}(document_id)'
             )
+            # Ingest-time evidence for the Trust Report — vendor profile,
+            # header offset, dropped preamble. Added after the registry
+            # shipped, so existing Collections get the column on first open
+            # and report a partial (column-findings-only) report until their
+            # documents are re-ingested.
+            existing = {
+                row[1] for row in conn.execute(
+                    f'PRAGMA table_info({self.SCHEMA_REGISTRY})'
+                )
+            }
+            if 'ingest_json' not in existing:
+                conn.execute(
+                    f'ALTER TABLE {self.SCHEMA_REGISTRY} ADD COLUMN ingest_json TEXT'
+                )
             conn.commit()
 
     def _table_name(self, document_id: str, sheet_name: str = '') -> str:
@@ -97,6 +116,7 @@ class HoldingsStore:
         role_overrides: Optional[Dict[str, str]] = None,
         type_overrides: Optional[Dict[str, str]] = None,
         collection_id: Optional[str] = None,
+        ingest_evidence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create a typed table + schema entry for an ingested tabular file.
 
@@ -111,6 +131,11 @@ class HoldingsStore:
             (``'real'``, ``'currency'``, ``'percent'``, ``'date'``, etc.).
             Overrides the heuristic ``infer_column_type`` result. Supplied
             by the Vendor Profile system.
+        ingest_evidence:
+            Facts about the read that cannot be recovered from the stored
+            table — ``vendor_profile``, ``header_row``, ``preamble``,
+            ``dropped_repeated_headers``. Persisted verbatim and replayed by
+            :func:`services.tabular.ingest_report.build_ingest_report`.
         collection_id:
             Owning collection ID. Forwarded to LLM role inference so
             per-collection Presidio profiles apply when sample values are
@@ -148,14 +173,6 @@ class HoldingsStore:
                 used_idents.add(raw_ident.lower())
                 raw_sql_name = raw_ident
 
-            # Profile override beats heuristic; tag the source so callers can
-            # decide how much to trust each role assignment.
-            if col in role_overrides:
-                role: Optional[str] = role_overrides[col]
-                role_source: Optional[str] = 'profile'
-            else:
-                role = detect_financial_role(col, info['type'])
-                role_source = 'heuristic' if role else None
             sample_values = [
                 str(v)[:100]
                 for v in col_values[col][:5]
@@ -165,14 +182,40 @@ class HoldingsStore:
                 'name': col,
                 'sql_name': ident,
                 'type': info['type'],
-                'role': role,
-                'role_source': role_source,
+                'role': None,          # filled in by the resolver below
+                'role_source': None,
                 'raw_sql_name': raw_sql_name,
                 'null_count': info['null_count'],
                 'distinct_count': info['distinct_count'],
                 'stats': info['stats'],
                 'samples': sample_values,
             })
+
+        # Role resolution runs across the whole table at once rather than
+        # column by column, because its strongest evidence is cross-column:
+        # quantity x price = market value identifies three columns together
+        # and can correct a name-based guess that the per-column detector
+        # would have made confidently and wrongly. Profile overrides are
+        # passed through and win outright.
+        resolutions, coherence_notes = resolve_table(
+            columns=columns,
+            column_values=col_values,
+            column_types={c['name']: c['type'] for c in col_infos},
+            role_overrides=role_overrides,
+        )
+        for c in col_infos:
+            res = resolutions.get(c['name'])
+            if res is None:
+                continue
+            c['role'] = res.role
+            c['role_source'] = res.source if res.role else None
+            c['role_confidence'] = round(res.confidence, 3)
+            c['role_band'] = res.band
+            c['role_signals'] = res.signals
+            if res.rejected:
+                c['role_alternatives'] = [
+                    {'role': r, 'score': round(s, 3)} for r, s in res.rejected
+                ]
 
         # LLM-assisted role inference for unmapped columns. Layering inversion:
         # this Module reaches up to config + the LLM service. To be revisited
@@ -200,6 +243,14 @@ class HoldingsStore:
                             c['role_source'] = 'llm'
                 except Exception as exc:
                     logger.warning("LLM schema inference failed, continuing without: %s", exc)
+
+        # Coherence notes describe cross-column reasoning that cannot be
+        # recovered from the stored table (which column *lost* an arithmetic
+        # tie-break, and why), so they ride along with the other ingest-time
+        # evidence rather than being recomputed at report time.
+        if coherence_notes:
+            ingest_evidence = dict(ingest_evidence or {})
+            ingest_evidence['coherence_notes'] = coherence_notes
 
         table_name = self._table_name(document_id, sheet_name)
 
@@ -255,8 +306,8 @@ class HoldingsStore:
             conn.execute(
                 f'''INSERT INTO {self.SCHEMA_REGISTRY}
                     (document_id, sheet_name, filename, table_name, row_count,
-                     column_count, schema_json, financial_roles)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     column_count, schema_json, financial_roles, ingest_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(document_id, sheet_name) DO UPDATE SET
                         filename = excluded.filename,
                         table_name = excluded.table_name,
@@ -264,12 +315,14 @@ class HoldingsStore:
                         column_count = excluded.column_count,
                         schema_json = excluded.schema_json,
                         financial_roles = excluded.financial_roles,
+                        ingest_json = excluded.ingest_json,
                         created_at = CURRENT_TIMESTAMP''',
                 (
                     document_id, sheet_name, filename, table_name,
                     len(rows), len(col_infos),
                     json.dumps(schema_payload, default=str),
                     json.dumps(financial_roles),
+                    json.dumps(ingest_evidence, default=str) if ingest_evidence else None,
                 ),
             )
             conn.commit()
@@ -483,6 +536,42 @@ class HoldingsStore:
                 })
             return result
 
+    def get_ingest_reports(
+        self,
+        document_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Trust Reports for one document, or for every table in the Collection.
+
+        Each ingested sheet gets its own report. The findings are recomputed on
+        every call against the live table rather than cached at ingest time, so
+        a report never disagrees with the data it describes. Sheets ingested
+        before ``ingest_json`` existed still get a report — they just omit the
+        file-level lines (vendor profile, header offset) nothing recorded.
+        """
+        from services.tabular.ingest_report import build_ingest_report
+
+        where = 'WHERE document_id = ?' if document_id else ''
+        params = (document_id,) if document_id else ()
+        reports: List[Dict[str, Any]] = []
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f'''SELECT schema_json, ingest_json FROM {self.SCHEMA_REGISTRY}
+                    {where} ORDER BY filename, sheet_name''',
+                params,
+            ).fetchall()
+            for row in rows:
+                try:
+                    schema = json.loads(row['schema_json'])
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    evidence = json.loads(row['ingest_json']) if row['ingest_json'] else {}
+                except (TypeError, ValueError):
+                    evidence = {}
+                reports.append(build_ingest_report(conn, schema, evidence))
+        return reports
+
     def get_schema(
         self,
         identifier: str,
@@ -542,7 +631,13 @@ class HoldingsStore:
         sql: str,
         max_rows: int = _DEFAULT_MAX_QUERY_ROWS,
     ) -> Dict[str, Any]:
-        """Run a validated SELECT and return {columns, rows, row_count, truncated}."""
+        """Run a validated SELECT and return {columns, rows, row_count, truncated}.
+
+        When the query aggregates a column whose values are stored as TEXT,
+        a ``warnings`` key is added (P0.6). SQLite silently coerces such
+        operands to their leading numeric prefix, so the aggregate is wrong
+        rather than absent — see :mod:`services.tabular.aggregate_guard`.
+        """
         cleaned = validate_select(sql)
 
         uri = f'file:{self.db_path}?mode=ro'
@@ -562,9 +657,18 @@ class HoldingsStore:
                     break
                 rows.append([row[col] for col in columns])
 
-        return {
+            # Same connection, after the read — the guard samples stored types
+            # from the source tables the query referenced.
+            warnings = check_aggregate_coercion(conn, cleaned)
+
+        warnings.extend(check_null_aggregates(cleaned, columns, rows))
+
+        result: Dict[str, Any] = {
             'columns': columns,
             'rows': rows,
             'row_count': len(rows),
             'truncated': truncated,
         }
+        if warnings:
+            result['warnings'] = warnings
+        return result

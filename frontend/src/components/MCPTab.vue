@@ -138,7 +138,7 @@
           <div class="space-y-3">
             <div class="form-control">
               <label class="label p-0 pb-1" for="mcp-resource-name"><span class="label-text font-medium">Name</span></label>
-              <input id="mcp-resource-name" v-model="newResource.name" type="text" placeholder="e.g. Saphire Docs" class="input input-bordered w-full" />
+              <input id="mcp-resource-name" v-model="newResource.name" type="text" placeholder="e.g. Client Portfolios" class="input input-bordered w-full" />
             </div>
             <div class="form-control">
               <label class="label p-0 pb-1" for="mcp-resource-collection"><span class="label-text font-medium">Collection</span></label>

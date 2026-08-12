@@ -74,8 +74,8 @@ def test_non_financial_table_does_not_inflate_positions(tmp_path):
     ticker/account/holdings-measure column — also lives in HoldingsStore but
     must not count toward Position totals.
 
-    Regression: a 16-document SAPHIRE PRA collection (technical PDFs with
-    extracted rule-keyword and cut-set tables) was reporting "407 positions"
+    Regression: a 16-document technical-PDF collection (engineering documents
+    with extracted rule-keyword and lookup tables) was reporting "407 positions"
     in the Collection card, because compute_collection_summary fell back to
     raw row_count for every typed table regardless of whether it carried
     holdings roles. The Studio's Portfolio snapshot then offered to
@@ -88,8 +88,8 @@ def test_non_financial_table_does_not_inflate_positions(tmp_path):
     # Engineering-style table: looks tabular, has many rows, but no column
     # the role detector recognises as a holdings field.
     store.create_table(
-        document_id="doc-pra-1",
-        filename="saphire_rule_keywords.csv",
+        document_id="doc-generic-1",
+        filename="engineering_rule_keywords.csv",
         columns=["rule_id", "keyword", "category"],
         rows=[
             {"rule_id": f"R{i}", "keyword": f"kw_{i}", "category": "logic"}
@@ -98,7 +98,7 @@ def test_non_financial_table_does_not_inflate_positions(tmp_path):
         sheet_name="",
     )
 
-    summary = compute_collection_summary(store, collection_id="col-saphire")
+    summary = compute_collection_summary(store, collection_id="col-generic")
 
     assert summary["positions"] == 0, (
         "Non-holdings tables (no ticker/account/value role) must not "
@@ -111,6 +111,6 @@ def test_non_financial_table_does_not_inflate_positions(tmp_path):
     # The file should still appear in source_files so downstream UI knows
     # the collection has tabular data, just not financial tabular data.
     assert any(
-        f["filename"] == "saphire_rule_keywords.csv"
+        f["filename"] == "engineering_rule_keywords.csv"
         for f in summary["source_files"]
     )

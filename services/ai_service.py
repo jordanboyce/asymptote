@@ -49,17 +49,38 @@ KNOWN_MODELS: Dict[str, Dict[str, object]] = {
     "openai/gpt-4o":               {"tools": True,  "vision": True,  "context_window": 128_000},
     "openai/gpt-4o-mini":          {"tools": True,  "vision": True,  "context_window": 128_000},
     "meta/Llama-3.3-70B-Instruct": {"tools": True,  "vision": False, "context_window": 128_000},
-    # Ollama Cloud (gpt-oss family supports tool calling)
-    "gpt-oss:20b":                 {"tools": True,  "vision": False, "context_window": 128_000},
-    "gpt-oss:120b":                {"tools": True,  "vision": False, "context_window": 128_000},
-    # Ollama Cloud — Gemma 4 (Google open weights). 31b is free-tier-eligible
-    # at the time of writing; per the model page, text+image only (audio is
-    # advertised at the family level but not on the 31b variant).
+    # Ollama Cloud. Capabilities and context windows below are taken from each
+    # model's own ollama.com page (the vision/tools chips and the cloud tag's
+    # "· NNK context window ·" line), not inferred — see
+    # `OllamaCloudProvider.USAGE_TIERS` for the matching free-tier usage tier.
+    # Verified 2026-08-11. Models absent here are still selectable; they just
+    # get probed rather than asserted.
+    #
+    # Low usage — gentlest on a free Ollama account.
     "gemma4:31b":                  {"tools": True,  "vision": True,  "context_window": 256_000},
+    "gpt-oss:20b":                 {"tools": True,  "vision": False, "context_window": 128_000},
+    "nemotron-3-nano:30b":         {"tools": True,  "vision": False, "context_window": 1_000_000},
+    # Medium usage.
+    "gpt-oss:120b":                {"tools": True,  "vision": False, "context_window": 128_000},
+    "qwen3.5:397b":                {"tools": True,  "vision": True,  "context_window": 256_000},
+    "mistral-large-3:675b":        {"tools": True,  "vision": True,  "context_window": 256_000},
+    "minimax-m2.7":                {"tools": True,  "vision": False, "context_window": 200_000},
+    "nemotron-3-super":            {"tools": True,  "vision": False, "context_window": 256_000},
+    "deepseek-v4-flash:0731":      {"tools": True,  "vision": False, "context_window": 1_000_000},
+    "deepseek-v4-flash:preview":   {"tools": True,  "vision": False, "context_window": 1_000_000},
     # Ollama local (default — the LocalOllamaProvider uses ReAct, not native tools)
     "llama3.2":                    {"tools": False, "vision": False, "context_window": 128_000},
     "llama3.1":                    {"tools": False, "vision": False, "context_window": 128_000},
 }
+
+
+class ModelNotAvailableError(ValueError):
+    """The credentials work but the requested model isn't served by the endpoint.
+
+    Distinct from an auth failure on purpose: telling an advisor "that key
+    didn't validate" when the key is fine and only the model tag is wrong sends
+    them to re-copy a key that was never the problem.
+    """
 
 
 @dataclass
@@ -897,17 +918,16 @@ class OpenAIProvider(AIProvider):
             raise
 
     def list_models(self) -> List[Dict[str, str]]:
-        """Fetch available models from OpenAI API."""
-        try:
-            models_page = self.client.models.list()
-            # OpenAI returns a SyncPage object; convert to list of dicts
-            return [
-                {"id": m.id, "label": m.id} 
-                for m in models_page.data
-            ]
-        except Exception as e:
-            logger.error(f"OpenAI model list failed: {e}")
-            return []
+        """Fetch available models from the OpenAI-compatible /models endpoint.
+
+        Raises on failure rather than returning `[]`. An empty list is a real
+        answer ("this endpoint serves no models"); a bad key or an unreachable
+        host is not, and collapsing the two left the settings UI unable to tell
+        an advisor why Refresh did nothing.
+        """
+        models_page = self.client.models.list()
+        # OpenAI returns a SyncPage object; convert to list of dicts
+        return [{"id": m.id, "label": m.id} for m in models_page.data]
 
 
 class OllamaProvider(AIProvider):
@@ -1225,16 +1245,118 @@ class OllamaCloudProvider(OpenAIProvider):
     """
 
     FAST_MODEL = "gpt-oss:20b"
-    QUALITY_MODEL = "gpt-oss:120b"
+    QUALITY_MODEL = "gemma4:31b"
+
+    #: How hard each cloud model leans on an Ollama account's usage allowance,
+    #: as published on the model's own ollama.com page ("Low Usage",
+    #: "Medium Usage", …). Finn's users are overwhelmingly on the free tier, so
+    #: this — not raw parameter count — is what should drive the picker order.
+    #:
+    #: `metered` models publish an explicit per-1M-token price instead of a
+    #: usage tier; they bill separately and are pushed to the bottom.
+    #:
+    #: Scraped from ollama.com 2026-08-11. Presentation only: the *set* of
+    #: models always comes from the live catalogue, so an unlisted tag stays
+    #: fully selectable — it just carries no tier annotation rather than a
+    #: made-up one. Refresh with `scripts/refresh_ollama_cloud_tiers.py`.
+    USAGE_TIERS = {
+        # tag                       (tier,          context, modalities)
+        "gemma4:31b":               ("Low",         "256K",  "text + vision"),
+        "gpt-oss:20b":              ("Low",         "128K",  "text"),
+        "nemotron-3-nano:30b":      ("Low",         "1M",    "text"),
+        "gpt-oss:120b":             ("Medium",      "128K",  "text"),
+        "deepseek-v4-flash:0731":   ("Medium",      "1M",    "text"),
+        "deepseek-v4-flash:preview":("Medium",      "1M",    "text"),
+        "minimax-m2.7":             ("Medium",      "200K",  "text"),
+        "nemotron-3-super":         ("Medium",      "256K",  "text"),
+        "qwen3.5:397b":             ("Medium",      "256K",  "text + vision"),
+        "mistral-large-3:675b":     ("Medium",      "256K",  "text + vision"),
+        "glm-5.1":                  ("High",        "198K",  "text"),
+        "glm-5.2":                  ("High",        "976K",  "text"),
+        "kimi-k2.6":                ("High",        "256K",  "text + vision"),
+        "kimi-k2.7-code":           ("High",        "256K",  "text + vision"),
+        "minimax-m3":               ("High",        "512K",  "text + vision"),
+        "nemotron-3-ultra":         ("High",        "256K",  "text"),
+        "deepseek-v4-pro":          ("Extra High",  "1M",    "text"),
+        "kimi-k3":                  ("metered",     "1M",    "text + vision"),
+    }
+    _TIER_ORDER = ("Low", "Medium", "High", "Extra High", "metered")
+
+    #: Lead the picker with these when present. All three are "Low Usage" —
+    #: the gentlest on a free account — and all three do native tool calling,
+    #: which Finn's chat loop depends on. `gemma4:31b` is first because it is
+    #: the only Low-tier model that also does vision, at 256K context.
+    PREFERRED_MODELS = ("gemma4:31b", "gpt-oss:20b", "nemotron-3-nano:30b")
+
+    #: Human-readable names; anything absent falls back to its raw tag.
+    MODEL_NAMES = {
+        "gemma4:31b": "Gemma 4 31B",
+        "gpt-oss:20b": "GPT-OSS 20B",
+        "gpt-oss:120b": "GPT-OSS 120B",
+        "nemotron-3-nano:30b": "Nemotron 3 Nano 30B",
+        "qwen3.5:397b": "Qwen3.5 397B",
+        "mistral-large-3:675b": "Mistral Large 3",
+    }
 
     def __init__(self, api_key: str, model: Optional[str] = None):
         super().__init__(api_key, model=model, base_url="https://ollama.com/v1")
 
+    @classmethod
+    def describe_model(cls, model_id: str) -> str:
+        """Picker label: name, then what it costs a free account to run it."""
+        name = cls.MODEL_NAMES.get(model_id, model_id)
+        tier = cls.USAGE_TIERS.get(model_id)
+        if not tier:
+            return name
+        usage, context, modalities = tier
+        if usage == "metered":
+            return f"{name} — billed per token · {context} · {modalities}"
+        suffix = " · recommended" if model_id == cls.QUALITY_MODEL else ""
+        return f"{name} — {usage} usage · {context} · {modalities}{suffix}"
+
+    def list_models(self) -> List[Dict[str, str]]:
+        """Live catalogue from ollama.com, cheapest-on-a-free-account first.
+
+        Ordering is by published usage tier rather than by capability, because
+        the binding constraint for most Finn users is a free Ollama account,
+        not model quality. Models we have no tier for sort just above metered
+        ones — unknown, not assumed cheap.
+        """
+        models = super().list_models()
+        if not models:
+            return models
+
+        preferred = {mid: i for i, mid in enumerate(self.PREFERRED_MODELS)}
+        tier_rank = {t: i for i, t in enumerate(self._TIER_ORDER)}
+        unknown_rank = tier_rank["Extra High"] + 0.5  # above metered, below nothing else
+
+        def sort_key(m):
+            tier = self.USAGE_TIERS.get(m["id"])
+            return (
+                tier_rank.get(tier[0], unknown_rank) if tier else unknown_rank,
+                preferred.get(m["id"], len(preferred)),
+                m["id"],
+            )
+
+        models.sort(key=sort_key)
+        for m in models:
+            m["label"] = self.describe_model(m["id"])
+        return models
+
     def validate(self) -> bool:
-        from openai import AuthenticationError, RateLimitError, APIConnectionError
+        """Probe the *configured* model, not a hard-coded one.
+
+        Validation gates saving the provider config in Settings, so probing a
+        different model than the advisor selected made "Test connection" answer
+        the wrong question — a working key plus an unreachable `gpt-oss:20b`
+        blocked saving any model, and a bad model tag validated green and only
+        failed later mid-chat.
+        """
+        from openai import AuthenticationError, RateLimitError, APIConnectionError, NotFoundError
+        model = self.QUALITY_MODEL or self.FAST_MODEL
         try:
             self.client.chat.completions.create(
-                model=self.FAST_MODEL,
+                model=model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": "Hi"}],
             )
@@ -1242,6 +1364,12 @@ class OllamaCloudProvider(OpenAIProvider):
         except AuthenticationError:
             logger.warning("Ollama Cloud authentication failed — check your API key at ollama.com/settings/keys")
             return False
+        except NotFoundError as e:
+            logger.warning("Ollama Cloud model '%s' not available: %s", model, e)
+            raise ModelNotAvailableError(
+                f"Your key works, but model '{model}' isn't available on ollama.com. "
+                "Click Refresh to pull the current model list, then pick one."
+            ) from e
         except RateLimitError:
             return True
         except APIConnectionError as e:

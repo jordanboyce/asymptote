@@ -19,7 +19,6 @@
     "axios": "^1.13.4",
     "daisyui": "^5.5.17",
     "dompurify": "^3.4.0",
-    "gpt-tokenizer": "^3.4.0",
     "lucide-vue-next": "^0.563.0",
     "marked": "^18.0.0",
     "pinia": "^3.0.4",

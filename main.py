@@ -26,7 +26,7 @@ from services.chunker import TextChunker
 from services.embedder import EmbeddingService
 from services.vector_store import VectorStore
 from services.indexing import DocumentIndexer
-from services.ai_service import AIService, create_provider, detect_ollama
+from services.ai_service import AIService, ModelNotAvailableError, create_provider, detect_ollama
 from services.config_manager import config_manager
 from services.reindex_service import reindex_service
 from services.collection_service import collection_service
@@ -429,7 +429,7 @@ async def get_managed_provider():
 
 class ModelDiscoveryRequest(BaseModel):
     provider_id: str
-    api_key: str
+    api_key: Optional[str] = None
     base_url: Optional[str] = None
 
 @app.post(
@@ -441,27 +441,42 @@ class ModelDiscoveryRequest(BaseModel):
 async def discover_models(request: ModelDiscoveryRequest):
     """
     Fetch the list of available models for a specific AI provider using the provided API key.
-    
+
     Args:
-        provider_id: The ID of the provider (e.g., 'openai', 'anthropic', 'ollama')
-        api_key: The user's API key for that provider
+        provider_id: The ID of the provider (e.g., 'openai', 'anthropic', 'ollama_cloud')
+        api_key: The user's API key for that provider (omit for key-less providers)
         base_url: Optional base URL for OpenAI-compatible or Ollama providers
+
+    Returns `[]` when the provider has no model-list endpoint (Grok, Google,
+    GitHub Models) — the caller falls back to its built-in list. Anything that
+    actually *failed* raises, so the UI can say why instead of silently
+    rendering a stale list.
     """
-    try:
-        # Use the existing provider factory logic
-        provider = create_provider(
-            provider_id=request.provider_id,
-            api_key=request.api_key,
-            base_url=request.base_url
-        )
-        
-        models = provider.list_models()
-        return models
-    except Exception as e:
-        logger.error(f"Model discovery failed for {request.provider_id}: {e}")
+    provider_id = (request.provider_id or "").strip()
+    if provider_id not in ALL_AI_PROVIDERS + ("openai_compatible",):
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch models from provider: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown provider: {provider_id}. "
+                   f"Supported providers: {', '.join(ALL_AI_PROVIDERS)}",
+        )
+
+    extra: dict = {}
+    if request.base_url:
+        extra["base_url"] = request.base_url
+
+    try:
+        provider = create_provider(provider_id, request.api_key or None, **extra)
+    except ValueError as e:
+        # Missing key / missing base_url — a caller mistake, not a server fault.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    try:
+        return provider.list_models()
+    except Exception as e:
+        logger.error(f"Model discovery failed for {provider_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not fetch models from {provider_id}: {e}",
         )
 
 
@@ -1759,164 +1774,6 @@ async def scan_folder(request: ScanFolderRequest):
     }
 
 
-class OCRPlaygroundRequest(BaseModel):
-    """Request body for OCR playground preview."""
-
-    file_path: str
-    enable_ocr: bool = True
-    ocr_max_pages: int = 0
-    ocr_max_file_mb: int = 0
-    vision_ocr_provider: str = "none"
-    vision_ocr_model: str = ""
-    vision_ocr_api_key: str = ""
-    vision_ocr_dpi: int = 150
-    vision_ocr_enhance_image: bool = True
-    vision_ocr_cleanup_pass: bool = True
-    vision_ocr_cleanup_model: str = ""
-    vision_ocr_ollama_url: str = "http://localhost:11434"
-    vision_ocr_form_mode: bool = False
-    force_ocr: bool = False
-    max_chars_per_page: int = 6000
-    include_fields: bool = True
-    normalize_preview_text: bool = False
-
-
-@app.post(
-    "/api/ocr/playground",
-    summary="Run OCR preview on a PDF without indexing",
-    tags=["ocr"],
-)
-async def ocr_playground_preview(request: OCRPlaygroundRequest):
-    """
-    Run OCR/text extraction preview on a local PDF and return page-level output.
-
-    This endpoint does not index or store the result.
-    """
-    path = Path(request.file_path)
-    if not path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File not found: {request.file_path}",
-        )
-    if not path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Path is not a file: {request.file_path}",
-        )
-    if path.suffix.lower() != ".pdf":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OCR playground currently supports PDF files only",
-        )
-
-    try:
-        extractor = DocumentExtractor(
-            enable_ocr=request.enable_ocr,
-            ocr_max_pages=request.ocr_max_pages,
-            ocr_max_file_mb=request.ocr_max_file_mb,
-            vision_ocr_provider=request.vision_ocr_provider,
-            vision_ocr_model=request.vision_ocr_model,
-            vision_ocr_api_key=request.vision_ocr_api_key,
-            vision_ocr_dpi=request.vision_ocr_dpi,
-            vision_ocr_enhance_image=request.vision_ocr_enhance_image,
-            vision_ocr_cleanup_pass=request.vision_ocr_cleanup_pass,
-            vision_ocr_cleanup_model=request.vision_ocr_cleanup_model,
-            vision_ocr_ollama_url=request.vision_ocr_ollama_url,
-            vision_ocr_form_mode=request.vision_ocr_form_mode,
-        )
-
-        extraction_result = extractor.extract_text(path, force_ocr=request.force_ocr)
-        page_texts = extraction_result.page_texts
-        extraction_method = extraction_result.method
-        ocr_pages = extraction_result.ocr_pages
-        cleanup_pages = extraction_result.cleanup_pages
-
-        pages: List[Dict[str, Any]] = []
-        total_chars = 0
-        pages_with_fields = 0
-        pages_form_like = 0
-        pages_field_extraction_skipped = 0
-        max_chars = max(200, min(request.max_chars_per_page, 20000))
-
-        injection_warnings = extraction_result.injection_warnings  # page_num -> InjectionScanResult
-        flagged_pages = [p for p, r in injection_warnings.items() if r.is_flagged]
-
-        for page_num in sorted(page_texts.keys()):
-            raw_page_text = (page_texts.get(page_num) or "").strip()
-            page_text = DocumentExtractor.normalize_ocr_text(raw_page_text) if request.normalize_preview_text else raw_page_text
-            total_chars += len(page_text)
-            text_preview = page_text[:max_chars]
-            extracted_fields = None
-            form_score = 0.0
-            form_like = False
-            field_extraction_applied = False
-
-            if request.include_fields and text_preview:
-                form_score = estimate_form_likelihood(text_preview)
-                form_like = is_form_like_text(text_preview)
-
-                if form_like:
-                    field_extraction_applied = True
-                    pages_form_like += 1
-                    extracted_fields = extract_form_fields(text_preview)
-                    if extracted_fields:
-                        pages_with_fields += 1
-                else:
-                    pages_field_extraction_skipped += 1
-
-            page_injection = injection_warnings.get(page_num)
-            pages.append({
-                "page_number": page_num,
-                "char_count": len(page_text),
-                "raw_char_count": len(raw_page_text),
-                "text_preview": text_preview,
-                "extracted_fields": extracted_fields,
-                "form_score": round(form_score, 3),
-                "form_like": form_like,
-                "field_extraction_applied": field_extraction_applied,
-                "cleanup_applied": request.normalize_preview_text,
-                "injection_scan": page_injection.to_dict() if page_injection else None,
-            })
-
-        avg_chars_per_page = round(total_chars / max(len(page_texts), 1), 1) if page_texts else 0
-
-        overall_risk = max(
-            (r.risk_score for r in injection_warnings.values()), default=0.0
-        )
-
-        return {
-            "file_path": str(path),
-            "filename": path.name,
-            "enable_ocr_requested": request.enable_ocr,
-            "force_ocr": request.force_ocr,
-            "normalize_preview_text": request.normalize_preview_text,
-            "extraction_method": extraction_method,
-            "total_pages": len(page_texts),
-            "ocr_pages": ocr_pages,
-            "cleanup_pages": cleanup_pages,
-            "avg_chars_per_page": avg_chars_per_page,
-            "total_chars": total_chars,
-            "pages_with_fields": pages_with_fields,
-            "pages_form_like": pages_form_like,
-            "pages_field_extraction_skipped": pages_field_extraction_skipped,
-            "injection_scan": {
-                "overall_flagged": bool(flagged_pages),
-                "overall_risk_score": round(overall_risk, 3),
-                "flagged_pages": sorted(flagged_pages),
-            },
-            "pages": pages,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"OCR playground preview failed for {request.file_path}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"OCR preview failed: {str(e)}",
-        )
-
-
 
 class VisionOCRRequest(BaseModel):
     """Request body for vision-AI OCR playground."""
@@ -2327,6 +2184,11 @@ async def validate_api_key(
                 except Exception:
                     capabilities = None
         return {"valid": valid, "error": None, "capabilities": capabilities}
+    except ModelNotAvailableError as e:
+        # The key is fine; the model tag isn't served. Carry a stable code so
+        # the UI points at the model picker instead of the key field.
+        logger.warning(f"Model unavailable for {x_ai_provider}: {e}")
+        return {"valid": False, "error": str(e), "error_code": "unknown_model"}
     except Exception as e:
         error_str = str(e)
         logger.error(f"API key validation error for {x_ai_provider}: {e}")
@@ -4401,6 +4263,50 @@ async def list_collection_action_items_endpoint(
     }
 
 
+@app.get(
+    "/api/collections/{collection_id}/ingest-report",
+    tags=["documents"],
+    summary="Plain-language account of what happened to uploaded files",
+)
+async def get_ingest_report_endpoint(
+    collection_id: str,
+    document_id: str | None = None,
+    user_id: str = Depends(get_current_user_id),
+):
+    """The Trust Report: what Finn found, understood, and could not vouch for.
+
+    One report per ingested sheet, plus a rolled-up verdict across them. Pass
+    ``document_id`` to scope to a single upload — that's the call the post-
+    upload card makes; omitting it reports on the whole collection.
+
+    Findings are recomputed on every request against the live tables rather
+    than cached at ingest, so a report can never disagree with the data it
+    describes. Purely local: no AI provider is called and nothing leaves the
+    process.
+    """
+    require_collection_access(collection_id, user_id, required="read")
+
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        store = indexer.vector_store.holdings_store
+    except AttributeError:
+        raise HTTPException(status_code=422, detail="Holdings store unavailable.")
+
+    from services.tabular.ingest_report import summarize_reports
+
+    reports = store.get_ingest_reports(document_id)
+    return {
+        "collection_id": collection_id,
+        "document_id": document_id,
+        "summary": summarize_reports(reports),
+        "reports": reports,
+    }
+
+
 @app.post(
     "/api/collections/{collection_id}/action-items",
     response_model=ActionItemResponse,
@@ -5530,6 +5436,43 @@ async def get_redactions_log(
         for e in events
     ]
     return RedactionLogResponse(total_returned=len(safe_events), events=safe_events)
+
+
+@app.get(
+    "/api/redactions/boundary-report",
+    tags=["privacy"],
+    summary="What crossed to the AI provider, grouped by the boundary it crossed",
+)
+async def get_redactions_boundary_report(
+    collection_id: str | None = None,
+    session_id: str | None = None,
+    since: str | None = None,
+    reveal: bool = False,
+    limit: int = 500,
+):
+    """The Boundary Report: the redaction equivalent of the Trust Report.
+
+    ``/api/redactions/log`` answers "what fired"; this answers "what left, and
+    from where". Events are grouped by boundary — retrieved passages, tool
+    results, drafted prose — and repeated mentions of the same value collapse
+    into one substitution with an occurrence count.
+
+    ``reveal=true`` adds the ``original`` each replacement stood in for. That
+    is real PII, and it is the only place in the HTTP surface that returns any:
+    it is read from the local audit log and rendered in the advisor's own
+    browser, the same authorization the chat sources panel already assumes. It
+    is never sent to a model, and it is off unless asked for. Everything here
+    is computed locally; no AI provider is called.
+    """
+    from services.privacy.boundary_report import build_boundary_report
+
+    return build_boundary_report(
+        collection_id=collection_id,
+        session_id=session_id,
+        since=since,
+        reveal=bool(reveal),
+        limit=limit,
+    )
 
 
 @app.post(

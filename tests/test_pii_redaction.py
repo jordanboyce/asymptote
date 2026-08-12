@@ -254,7 +254,9 @@ class TestRedactionConfig:
         )
         clear_profile_cache()
         profile = get_redaction_profile("__test_nonexistent__")
-        assert profile.redaction_style == RedactionStyle.ENTITY_TYPE
+        # Default is pseudonymization, not [PERSON] tokens — a transcript
+        # naming three people has to stay answerable after redaction.
+        assert profile.redaction_style == RedactionStyle.CONSISTENT_PSEUDONYM
         assert profile.minimum_score_threshold == 0.4
         assert profile.strict_mode is True
 

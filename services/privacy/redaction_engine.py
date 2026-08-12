@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,21 @@ _PSEUDONYM_LAST = [
     "Smith", "Chen", "Patel", "Johnson", "Kim", "Williams", "Brown",
     "Garcia", "Miller", "Davis", "Lee", "Wilson", "Moore", "Taylor",
 ]
+
+
+def _stable_index(value: str, modulus: int) -> int:
+    """Deterministic index into a pseudonym pool.
+
+    Python's builtin ``hash()`` is salted per process (PYTHONHASHSEED), so
+    using it here meant "Robert Henderson" mapped to a different pseudonym
+    after every restart — the *consistent* in ``consistent_pseudonym`` only
+    held within a single run. SHA-256 makes the mapping stable for the life
+    of the deployment, which is what an advisor reading two briefs a week
+    apart (and a CCO auditing them) actually needs. Same approach as
+    ``services.privacy.column_sanitizer._short_hash``.
+    """
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % modulus
 
 
 @dataclass
@@ -294,8 +310,10 @@ class _RedactionEngine:
         for d in details:
             if d.entity_type == "PERSON" and d.original_text:
                 if d.original_text not in pseudonym_map:
-                    idx = hash(d.original_text) % len(_PSEUDONYM_FIRST)
-                    idx2 = hash(d.original_text + "_last") % len(_PSEUDONYM_LAST)
+                    idx = _stable_index(d.original_text, len(_PSEUDONYM_FIRST))
+                    idx2 = _stable_index(
+                        d.original_text + "_last", len(_PSEUDONYM_LAST)
+                    )
                     pseudonym_map[d.original_text] = (
                         f"{_PSEUDONYM_FIRST[idx]} {_PSEUDONYM_LAST[idx2]}"
                     )

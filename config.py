@@ -88,8 +88,10 @@ class Settings(BaseSettings):
     vision_ocr_form_mode: bool = False      # Form-aware prompt + ruled-line image preprocessing
 
     # PII redaction (Presidio-based, runs locally)
-    enable_pii_redaction: bool = True  # Redact PII from all MCP tool output
-    pii_redaction_style: str = "entity_type"  # redacted | entity_type | consistent_pseudonym | partial_mask | synthetic_placeholder
+    # Covers every document-derived payload that crosses to an external LLM:
+    # MCP tool responses, and retrieved RAG chunks via services/chat/context.py.
+    enable_pii_redaction: bool = True
+    pii_redaction_style: str = "consistent_pseudonym"  # redacted | entity_type | consistent_pseudonym | partial_mask | synthetic_placeholder
     pii_score_threshold: float = 0.4  # Presidio confidence floor (lower = more aggressive)
 
     # LLM-assisted column role inference (P0.5)

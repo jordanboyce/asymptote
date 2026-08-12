@@ -301,10 +301,10 @@ const PROVIDER_OPTIONS = [
   {
     id: 'ollama_cloud',
     name: 'Ollama Cloud',
-    tagline: 'Free tier — no credit card. Open-weight models.',
+    tagline: 'Free tier — no credit card. Open-weight models; defaults to Gemma 4 31B.',
     keyPlaceholder: 'your Ollama API key',
     keyLink: 'https://ollama.com/settings/keys',
-    defaultModel: 'gpt-oss:120b',
+    defaultModel: 'gemma4:31b',
   },
 ]
 const providerId = ref('anthropic')

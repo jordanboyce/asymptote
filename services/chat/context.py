@@ -150,11 +150,13 @@ def build_chat_turn(
     # prompt (with [Source N] tags) — see fallback note in the v4.4.4 spec.
     use_native_citations = isinstance(provider, AnthropicProvider)
     if use_native_citations:
-        documents, document_metadata = _build_citation_documents(filtered_results)
+        documents, document_metadata = _build_citation_documents(
+            filtered_results, collection_id,
+        )
         context_text = ""  # documents replace the prose block
     else:
         documents, document_metadata = [], []
-        context_text = _format_retrieved_context(filtered_results)
+        context_text = _format_retrieved_context(filtered_results, collection_id)
 
     try:
         collection_overview = build_collection_overview(
@@ -303,31 +305,72 @@ def _rerank(
         return context_results, result_collection_ids, None
 
 
-def _format_retrieved_context(filtered_results: list) -> str:
+def _redact_for_llm(
+    text: str, collection_id: str | None, source_label: str,
+) -> str:
+    """Scrub PII from a retrieved chunk before it crosses to an external LLM.
+
+    Retrieval is the one document-derived path into the prompt that the MCP
+    output boundary never covered: tool results go out through
+    ``mcp_server._redact``, and tabular holdings data is column-sanitized at
+    ingest (:mod:`services.privacy.column_sanitizer`), but RAG chunks were
+    read straight off the vector store into the system prompt. Meeting
+    transcripts are the worst case — they are almost entirely client names.
+
+    Redaction happens *here*, at the payload-construction site, and not on
+    ``filtered_results`` itself: those same result objects are streamed back
+    to the frontend as the ``sources`` panel, where the advisor is authorized
+    to see the real text. Only what travels to the model is scrubbed.
+    """
+    if not text:
+        return text
+    from services.privacy.redaction_middleware import redact_text_for_ai
+
+    return redact_text_for_ai(
+        text, collection_id=collection_id, source_label=source_label,
+    )
+
+
+def _format_retrieved_context(
+    filtered_results: list, collection_id: str | None = None,
+) -> str:
     if not filtered_results:
         return "No relevant context found."
     parts = [
-        f"[Source {i + 1}: {r.filename}, page {r.page_number}]\n{r.text_snippet}"
+        f"[Source {i + 1}: "
+        f"{_redact_for_llm(r.filename, collection_id, 'chat_context')}, "
+        f"page {r.page_number}]\n"
+        f"{_redact_for_llm(r.text_snippet, collection_id, 'chat_context')}"
         for i, r in enumerate(filtered_results)
     ]
     return "\n\n---\n\n".join(parts)
 
 
-def _build_citation_documents(filtered_results: list) -> tuple[list[dict], list[dict]]:
+def _build_citation_documents(
+    filtered_results: list, collection_id: str | None = None,
+) -> tuple[list[dict], list[dict]]:
     """Build Anthropic-native ``document`` content blocks plus a parallel
     metadata list keyed by ``document_index``.
 
     One block per retrieved chunk — Anthropic returns ``char_location``
     citations against each block independently, so per-chunk granularity
     is what makes the inline pills click-through to the right snippet.
+
+    Chunk text is redacted before it becomes a document block. Citations
+    still resolve: Anthropic's ``char_location`` offsets are computed
+    against the block *as sent*, and the frontend deep-links via the
+    parallel ``document_id`` / ``chunk_id`` metadata rather than offsets.
     """
     documents: list[dict] = []
     metadata: list[dict] = []
     for r in filtered_results:
-        text = r.text_snippet or ""
+        text = _redact_for_llm(r.text_snippet or "", collection_id, "chat_context")
         if not text:
             continue
-        title = f"{r.filename} — p.{r.page_number}"
+        title = (
+            f"{_redact_for_llm(r.filename, collection_id, 'chat_context')} "
+            f"— p.{r.page_number}"
+        )
         documents.append({
             "type": "document",
             "source": {

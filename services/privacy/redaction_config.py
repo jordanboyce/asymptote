@@ -95,7 +95,14 @@ _profile_cache: dict[str | None, RedactionProfile] = {}
 
 # Default profile for collections without explicit config
 _DEFAULT_PROFILE = RedactionProfile(
-    redaction_style=RedactionStyle.ENTITY_TYPE,
+    # Pseudonyms rather than [PERSON] tokens. Both keep real client names off
+    # the wire; the pseudonym keeps the *answer* usable. A transcript naming
+    # three people collapses to three identical [PERSON] tokens, and the model
+    # can no longer tell who agreed to what — the redaction boundary would be
+    # buying privacy with correctness. Stable per-name mapping comes from
+    # ``redaction_engine._stable_index``. Non-PERSON entities are unaffected
+    # and still render as [ACCOUNT_NUMBER], [SSN], etc.
+    redaction_style=RedactionStyle.CONSISTENT_PSEUDONYM,
     minimum_score_threshold=0.4,
     strict_mode=True,
     # PHONE_NUMBER at 0.4 fires on decimal numbers; DATE_TIME at 0.4 fires

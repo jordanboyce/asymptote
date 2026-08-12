@@ -513,13 +513,11 @@
 
             </div>
 
-            <OverviewTab v-if="activeTab === 'overview'" @open-brief="openBriefModal" @send-to-chat="handleSendToChat" />
+            <OverviewTab v-if="activeTab === 'overview'" @open-brief="openBriefModal" @send-to-chat="handleSendToChat" @switch-tab="switchTab" />
             <MeetingsTab v-if="activeTab === 'meetings'" />
             <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
             <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
-            <OCRPlaygroundTab v-if="activeTab === 'ocr'" @switch-tab="switchTab" />
-            <TokenizerTab v-if="activeTab === 'tokenizer'" />
             <DiagnosticsTab v-if="activeTab === 'diagnostics'" />
             <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @search-tab-toggled="onSearchTabToggled" />
           </div>
@@ -927,6 +925,13 @@
       @saved="handleNoteOfRecordSaved"
     />
 
+    <!-- Trust Report — auto-opens once an upload finishes indexing -->
+    <IngestReportModal
+      ref="ingestReportModal"
+      :collection-id="collectionStore.currentCollectionId || ''"
+      @send-to-chat="handleSendToChat"
+    />
+
     <!-- User feedback / issue-report modal -->
     <FeedbackModal
       :open="showFeedbackModal"
@@ -1065,7 +1070,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import axios from 'axios'
-import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, FileSearch, MessageSquare, Hash, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug, CircleHelp, LayoutDashboard } from 'lucide-vue-next'
+import { Search, FileText, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, MessageSquare, Share2, Users, Wrench, Plug, LayoutGrid, List, BookOpen, Activity, Mic, Square, Bug, CircleHelp, LayoutDashboard } from 'lucide-vue-next'
 import { isExpertMode, toggleExpertMode } from './utils/expertMode.js'
 import { useMeetingRecorder } from './composables/useMeetingRecorder.js'
 import { useThemeIcon } from './composables/useThemeIcon.js'
@@ -1091,8 +1096,6 @@ const tabs = computed(() => {
 
 const toolTabs = [
   { id: 'mcp', label: 'MCP Server', icon: Plug },
-  { id: 'ocr', label: 'OCR Preview', icon: FileSearch },
-  { id: 'tokenizer', label: 'Token Visualizer', icon: Hash },
   { id: 'diagnostics', label: 'Diagnostics', icon: Activity },
 ]
 import OverviewTab from './components/OverviewTab.vue'
@@ -1100,8 +1103,6 @@ import MeetingsTab from './components/MeetingsTab.vue'
 import SearchTab from './components/SearchTab.vue'
 import SourcesSidebar from './components/SourcesSidebar.vue'
 import AnalysisSidebar from './components/AnalysisSidebar.vue'
-import OCRPlaygroundTab from './components/OCRPlaygroundTab.vue'
-import TokenizerTab from './components/TokenizerTab.vue'
 import DiagnosticsTab from './components/DiagnosticsTab.vue'
 import ChatTab from './components/ChatTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
@@ -1112,6 +1113,7 @@ import WelcomeOnboarding from './components/WelcomeOnboarding.vue'
 import BriefModal from './components/BriefModal.vue'
 import FeedbackModal from './components/FeedbackModal.vue'
 import NoteOfRecordModal from './components/NoteOfRecordModal.vue'
+import IngestReportModal from './components/IngestReportModal.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import WelcomeBackCard from './components/WelcomeBackCard.vue'
 import HelpPanel from './components/HelpPanel.vue'
@@ -1180,7 +1182,7 @@ const currentTheme = ref('corporate')
 
 // In basic mode, expertise/MCP/OCR/tokenizer are hidden — bounce back to chat
 // if the user toggles to basic while one of those tabs is active.
-const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'ocr', 'tokenizer', 'diagnostics']
+const BASIC_HIDDEN_TABS = ['expertise', 'mcp', 'diagnostics']
 watch(isExpertMode, (expert) => {
   if (!expert && BASIC_HIDDEN_TABS.includes(activeTab.value)) {
     activeTab.value = 'chat'
@@ -1705,8 +1707,28 @@ watch(() => backgroundJobsStore.allJobs.map(j => j.status), (newStatuses, oldSta
   if (oldStatuses && newStatuses.some((s, i) => s === 'completed' && oldStatuses[i] !== 'completed')) {
     collectionStore.loadCollections()
     loadStats()
+    maybeShowIngestReport()
   }
 }, { deep: true })
+
+const ingestReportModal = ref(null)
+
+// Show the Trust Report unprompted once an upload finishes. Only fires when
+// the upload actually produced a table — audio, notes and prose PDFs have
+// nothing to report on, and a modal saying "nothing to report" is worse than
+// no modal. The panel inside re-fetches on open, so it always describes the
+// file that just landed.
+const maybeShowIngestReport = async () => {
+  const collectionId = collectionStore.currentCollectionId
+  if (!collectionId) return
+  try {
+    const { data } = await axios.get(`/api/collections/${collectionId}/ingest-report`)
+    if (data?.summary?.sheet_count > 0) ingestReportModal.value?.open()
+  } catch {
+    // A missing report is not worth interrupting the advisor over — the
+    // Overview tab's panel will surface the same thing on next visit.
+  }
+}
 
 // Clear completed jobs from the drawer
 const clearCompletedJobs = () => {

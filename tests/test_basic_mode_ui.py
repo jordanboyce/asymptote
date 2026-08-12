@@ -58,9 +58,19 @@ def test_app_vue_basic_hidden_tabs_bounce_to_chat():
     a now-invisible tab."""
     src = _read("App.vue")
     assert "BASIC_HIDDEN_TABS" in src, "App.vue must define BASIC_HIDDEN_TABS"
-    # Expected hidden-in-basic tab ids
-    for tab_id in ("expertise", "mcp", "ocr", "tokenizer", "diagnostics"):
-        assert f"'{tab_id}'" in src, f"BASIC_HIDDEN_TABS must include '{tab_id}'"
+    # Every expert-only tab must be listed. Derived from the toolTabs/expertise
+    # definitions rather than hardcoded, so retiring a tab doesn't fail this
+    # test spuriously — what matters is that no expert tab is left off the list.
+    hidden = re.search(r"BASIC_HIDDEN_TABS\s*=\s*\[([^\]]*)\]", src)
+    assert hidden, "BASIC_HIDDEN_TABS must be a literal array"
+    listed = set(re.findall(r"'([^']+)'", hidden.group(1)))
+    tool_tabs = re.search(r"const toolTabs\s*=\s*\[(.*?)\n\]", src, re.DOTALL)
+    assert tool_tabs, "App.vue must define toolTabs"
+    tool_ids = set(re.findall(r"id:\s*'([^']+)'", tool_tabs.group(1)))
+    assert tool_ids <= listed, (
+        f"expert-only tool tabs missing from BASIC_HIDDEN_TABS: {tool_ids - listed}"
+    )
+    assert "expertise" in listed, "BASIC_HIDDEN_TABS must include 'expertise'"
     assert re.search(
         r"watch\s*\(\s*isExpertMode\b.*?activeTab\.value\s*=\s*'chat'",
         src,

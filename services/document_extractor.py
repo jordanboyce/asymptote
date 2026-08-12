@@ -24,6 +24,9 @@ from services.audio_transcriber import AUDIO_EXTENSIONS, is_audio_file
 # Prompt injection detection
 from services.prompt_injection_detector import PromptInjectionDetector, InjectionScanResult
 
+# Character-encoding / delimiter / decimal-separator detection
+from services.tabular.dialect import FileDialect, open_text, sniff_dialect
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,6 +120,27 @@ def _detect_header_row(raw_rows: List[List[Any]], max_scan: int = 30) -> int:
     return 0
 
 
+def _dialect_evidence(dialect: FileDialect) -> Optional[Dict[str, Any]]:
+    """Persistable summary of how a file was decoded, or None if unremarkable.
+
+    Only non-default dialects are recorded. A plain UTF-8 comma CSV needs no
+    explanation, and storing one for every file would put a line in every
+    Trust Report that tells the advisor nothing.
+    """
+    if not dialect.is_non_default:
+        return None
+    return {
+        'encoding': dialect.encoding,
+        'encoding_label': dialect.encoding_label,
+        'encoding_confidence': dialect.encoding_confidence,
+        'encoding_source': dialect.encoding_source,
+        'delimiter': dialect.delimiter,
+        'delimiter_label': dialect.delimiter_label,
+        'delimiter_confidence': dialect.confidence,
+        'decimal': dialect.decimal,
+    }
+
+
 def _extract_preamble_metadata(preamble_rows: List[List[Any]]) -> Dict[str, Any]:
     """
     Pull key/value pairs from the rows above the detected header.
@@ -147,35 +171,43 @@ def _extract_preamble_metadata(preamble_rows: List[List[Any]]) -> Dict[str, Any]
     return metadata
 
 
-def _sniff_csv_header(csv_path: Path) -> Tuple[int, Dict[str, Any]]:
+def _sniff_csv_header(
+    csv_path: Path,
+    dialect: Optional[FileDialect] = None,
+) -> Tuple[int, Dict[str, Any], FileDialect]:
     """
     Read up to 30 raw rows via the csv stdlib (which tolerates ragged rows
     that would break pandas' C tokenizer), find the header row, and extract
     preamble metadata.
+
+    Also returns the detected :class:`FileDialect`. Header detection and the
+    subsequent pandas read must agree about encoding and delimiter — they used
+    to disagree, because this function sniffed a delimiter and then discarded
+    it, leaving ``pd.read_csv`` to assume a comma. A semicolon-delimited file
+    therefore had its header found correctly and its data loaded as a single
+    column of strings. Callers pass the returned dialect to
+    :meth:`FileDialect.pandas_kwargs`.
     """
     import csv
+    if dialect is None:
+        dialect = sniff_dialect(csv_path)
+
     raw_rows: List[List[str]] = []
     try:
-        with open(csv_path, "r", encoding="utf-8", errors="replace", newline="") as f:
-            sample = f.read(8192)
-            f.seek(0)
-            try:
-                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            except csv.Error:
-                dialect = csv.excel
-            reader = csv.reader(f, dialect)
+        with open_text(csv_path, dialect) as f:
+            reader = csv.reader(f, delimiter=dialect.delimiter, quotechar=dialect.quotechar)
             for i, row in enumerate(reader):
                 if i >= 30:
                     break
                 raw_rows.append(row)
     except Exception:
-        return 0, {}
+        return 0, {}, dialect
     if not raw_rows:
-        return 0, {}
+        return 0, {}, dialect
     header_idx = _detect_header_row(raw_rows)
     if header_idx == 0:
-        return 0, {}
-    return header_idx, _extract_preamble_metadata(raw_rows[:header_idx])
+        return 0, {}, dialect
+    return header_idx, _extract_preamble_metadata(raw_rows[:header_idx]), dialect
 
 
 def _sniff_dataframe_header(raw_df) -> Tuple[int, Dict[str, Any]]:
@@ -274,9 +306,14 @@ class DocumentExtractor:
         if re.fullmatch(r"[|+\-=_:.~,'`\"/\\]+", normalized):
             return True
 
+        # Short lines carrying one of these tokens are real content, not OCR
+        # speckle — a bare "Region III" or "Dear Ms. Chen" would otherwise trip
+        # the density heuristics below. Keep this list domain-neutral; tokens
+        # for a specific document corpus belong in that corpus's profile, not
+        # in the shared noise filter.
         protected_patterns = (
             r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b",
-            r"\b(?:docket|license|operating|appendix|region|dear|mr|mrs|ms|dr|ro|ler|pdr|nrc|office)\b",
+            r"\b(?:license|operating|appendix|region|dear|mr|mrs|ms|dr|office)\b",
         )
         if any(re.search(pattern, normalized, re.IGNORECASE) for pattern in protected_patterns):
             return False
@@ -708,10 +745,11 @@ class DocumentExtractor:
                 "Install it with: pip install pandas"
             )
 
-        # Read CSV — sniff header row to skip brokerage-style preamble lines
-        header_idx, doc_metadata = _sniff_csv_header(csv_path)
+        # Read CSV — sniff encoding/delimiter and the header row so
+        # brokerage-style preamble lines are skipped.
+        header_idx, doc_metadata, dialect = _sniff_csv_header(csv_path)
         try:
-            df = pd.read_csv(csv_path, skiprows=header_idx)
+            df = pd.read_csv(csv_path, skiprows=header_idx, **dialect.pandas_kwargs())
         except Exception as e:
             logger.error(f"Failed to read CSV {csv_path.name}: {e}")
             raise Exception(f"Failed to read CSV file: {e}")
@@ -778,10 +816,11 @@ class DocumentExtractor:
                 "Install it with: pip install pandas"
             )
 
-        # Read CSV — sniff header row to skip brokerage-style preamble lines
-        header_idx, _ = _sniff_csv_header(csv_path)
+        # Read CSV — sniff encoding/delimiter and the header row so
+        # brokerage-style preamble lines are skipped.
+        header_idx, _, dialect = _sniff_csv_header(csv_path)
         try:
-            df = pd.read_csv(csv_path, skiprows=header_idx)
+            df = pd.read_csv(csv_path, skiprows=header_idx, **dialect.pandas_kwargs())
         except Exception as e:
             logger.error(f"Failed to read CSV {csv_path.name}: {e}")
             raise Exception(f"Failed to read CSV file: {e}")
@@ -922,6 +961,12 @@ class DocumentExtractor:
                         'role_overrides': {},
                         'type_overrides': {},
                         'vendor_profile': None,
+                        'header_row': 0,
+                        'dropped_repeated_headers': 0,
+                        # The HBIL format has no single header row to offset
+                        # past — the preprocessor flattens nested per-account
+                        # sections instead. Named so the Trust Report can say so.
+                        'preprocessor': 'NetX360 multi-account layout',
                     }
                     self._apply_ingest_profile(sheet, file_path)
                     return [sheet]
@@ -931,9 +976,9 @@ class DocumentExtractor:
                     "falling back to standard CSV reader"
                 )
 
-            header_idx, doc_metadata = _sniff_csv_header(file_path)
+            header_idx, doc_metadata, dialect = _sniff_csv_header(file_path)
             try:
-                df = pd.read_csv(file_path, skiprows=header_idx)
+                df = pd.read_csv(file_path, skiprows=header_idx, **dialect.pandas_kwargs())
             except Exception as e:
                 raise Exception(f"Failed to read CSV file: {e}")
             if header_idx > 0:
@@ -942,6 +987,8 @@ class DocumentExtractor:
                     f"preamble fields: {[k for k in doc_metadata if not k.startswith('_')]}"
                 )
             sheet = self._dataframe_to_sheet(df, sheet_name='', document_metadata=doc_metadata)
+            sheet['header_row'] = header_idx
+            sheet['dialect'] = _dialect_evidence(dialect)
             self._apply_ingest_profile(sheet, file_path)
             return [sheet]
 
@@ -975,6 +1022,7 @@ class DocumentExtractor:
                 sheet = self._dataframe_to_sheet(
                     df, sheet_name=str(sheet_name), document_metadata=doc_metadata
                 )
+                sheet['header_row'] = header_idx
                 self._apply_ingest_profile(sheet, file_path)
                 sheets.append(sheet)
             return sheets
@@ -1113,6 +1161,7 @@ class DocumentExtractor:
         sheet = self._dataframe_to_sheet(
             df, sheet_name=sheet_name, document_metadata=doc_metadata
         )
+        sheet['header_row'] = header_idx
         # Drop sheets that ended up empty after _dataframe_to_sheet's
         # repeated-header filtering.
         if not sheet['rows']:
@@ -1158,6 +1207,7 @@ class DocumentExtractor:
         col_name_set = {c.lower().strip() for c in columns}
         rows: List[Dict[str, Any]] = []
         row_texts: List[str] = []
+        dropped_repeated_headers = 0
 
         for _, row in df.iterrows():
             row_dict: Dict[str, Any] = {}
@@ -1187,6 +1237,7 @@ class DocumentExtractor:
                 matching = sum(1 for v in non_null_str if v in col_name_set)
                 if matching / len(non_null_str) >= 0.6:
                     logger.debug("Skipped repeated header row in CSV sheet '%s'", sheet_name)
+                    dropped_repeated_headers += 1
                     continue
 
             rows.append(row_dict)
@@ -1199,6 +1250,9 @@ class DocumentExtractor:
             'rows': rows,
             'row_texts': row_texts,
             'document_metadata': document_metadata or {},
+            # Trust Report evidence: how many rows were silently removed
+            # because they were the column headings repeated mid-file.
+            'dropped_repeated_headers': dropped_repeated_headers,
         }
 
     def _extract_markdown(self, md_path: Path) -> Dict[int, str]:

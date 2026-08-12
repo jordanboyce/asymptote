@@ -322,7 +322,7 @@ const PROVIDER_TAGLINES = {
   grok: 'xAI Grok-3 / Grok-3 Mini.',
   google: 'Gemini 2.5 Pro and Flash variants.',
   github: 'GitHub Models marketplace — GPT, Llama, Mistral, DeepSeek, and more under one key.',
-  ollama_cloud: 'Open-weight models (GPT-OSS, Gemma, Qwen, DeepSeek). Free tier available.',
+  ollama_cloud: 'Open-weight models on a free tier — defaults to Gemma 4 31B (tools, vision, 256K context).',
   ollama: 'Local LLMs running on your machine — fully offline. Desktop app only.',
 }
 

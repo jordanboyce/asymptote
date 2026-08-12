@@ -236,9 +236,11 @@
         </div>
       </div>
 
-      <!-- PII redaction viewer drawer (R9.3 / R9.4 — Advisor Desktop UX §9.2).
-           Renders the audit-log events for the current chat session. Opens
-           from the persistent pill in the chat input toolbar. -->
+      <!-- PII redaction drawer (R9.3 / R9.4 — Advisor Desktop UX §9.2).
+           Opens from the persistent pill in the chat input toolbar. The body is
+           the Boundary Report: what crossed to the provider on the answer just
+           given, grouped by the boundary it crossed, with the real value
+           available beside the stand-in on request. -->
       <div
         v-if="redactionDrawerOpen"
         class="fixed inset-0 z-[200]"
@@ -248,13 +250,13 @@
         aria-labelledby="redaction-drawer-title"
       >
         <div class="absolute inset-0 bg-black/30" @click="closeRedactionDrawer" aria-hidden="true"></div>
-        <div class="absolute right-0 top-0 h-full w-96 max-w-[90vw] bg-base-100 shadow-2xl flex flex-col">
-          <div class="flex items-center justify-between p-4 border-b border-base-300">
+        <div class="absolute right-0 top-0 h-full w-[30rem] max-w-[95vw] bg-base-100 shadow-2xl flex flex-col">
+          <div class="flex items-center justify-between p-4 border-b border-base-300 shrink-0">
             <div class="flex items-center gap-2 min-w-0">
               <ShieldCheck v-if="piiRedactionEnabled" :size="16" class="text-success flex-shrink-0" aria-hidden="true" />
               <ShieldAlert v-else :size="16" class="text-warning flex-shrink-0" aria-hidden="true" />
               <h3 id="redaction-drawer-title" class="text-sm font-bold truncate">
-                PII redactions — this session
+                The redaction boundary
               </h3>
             </div>
             <button
@@ -266,81 +268,14 @@
             </button>
           </div>
 
-          <!-- Status banner -->
-          <div
-            v-if="!piiRedactionEnabled"
-            class="m-4 p-3 rounded-lg bg-warning/10 border border-warning/30 text-xs leading-snug"
-          >
-            <div class="font-medium text-base-content/90 mb-1">Redaction is currently disabled</div>
-            <div class="text-base-content/70">
-              Prompts sent to the AI provider may contain names, account numbers, and other client identifiers. Re-enable in Privacy settings.
-            </div>
-            <button
-              class="btn btn-xs btn-warning mt-2"
-              @click="closeRedactionDrawer(); $emit('switch-tab', 'settings')"
-            >
-              Open Settings
-            </button>
-          </div>
-
-          <!-- Summary -->
-          <div v-else class="px-4 pt-3 pb-2 border-b border-base-300/60">
-            <div class="flex items-baseline justify-between">
-              <span class="text-xs text-base-content/60 uppercase tracking-wider">Total redactions</span>
-              <span class="text-lg font-semibold tabular-nums">{{ redactionSessionTotal }}</span>
-            </div>
-            <div v-if="redactionSessionByType && Object.keys(redactionSessionByType).length > 0" class="mt-2 space-y-0.5">
-              <div
-                v-for="(count, type) in redactionSessionByType"
-                :key="type"
-                class="flex items-baseline justify-between text-xs"
-              >
-                <span class="text-base-content/70">{{ formatEntityName(type) }}</span>
-                <span class="tabular-nums text-base-content/80">{{ count }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Event list -->
-          <div class="flex-1 overflow-y-auto px-4 py-3">
-            <div v-if="redactionLoading && redactionEvents.length === 0" class="flex justify-center py-6">
-              <span class="loading loading-spinner loading-sm text-base-content/40"></span>
-            </div>
-            <div
-              v-else-if="!piiRedactionEnabled && redactionEvents.length === 0"
-              class="text-xs text-base-content/55 italic text-center py-6"
-            >
-              No redactions logged.
-            </div>
-            <div
-              v-else-if="piiRedactionEnabled && redactionEvents.length === 0"
-              class="text-xs text-base-content/55 italic text-center py-6"
-            >
-              No PII detected in this session yet. Events appear here as soon as a tool call or AI prompt redacts an identifier.
-            </div>
-            <ul v-else class="space-y-2">
-              <li
-                v-for="evt in redactionEvents"
-                :key="evt.id"
-                class="rounded border border-base-300 bg-base-200/40 px-3 py-2 text-xs space-y-0.5"
-              >
-                <div class="flex items-baseline justify-between gap-2">
-                  <span class="font-semibold text-base-content/85 truncate">{{ formatEntityName(evt.entity_type) }}</span>
-                  <span class="tabular-nums text-base-content/45 text-[11px]">{{ formatEventTime(evt.timestamp) }}</span>
-                </div>
-                <div class="text-base-content/55 truncate">
-                  Replaced with <span class="font-mono">{{ evt.replacement || '[REDACTED]' }}</span>
-                </div>
-                <div v-if="evt.tool_name" class="text-[11px] text-base-content/45 truncate">
-                  via {{ evt.tool_name }}
-                </div>
-              </li>
-            </ul>
-          </div>
-
-          <div class="px-4 py-3 border-t border-base-300/60 text-[11px] text-base-content/50 leading-snug">
-            Counts only — original text never leaves this device. Audit log retained locally.
-          </div>
+          <RedactionBoundaryPanel
+            ref="boundaryPanel"
+            variant="drawer"
+            :collection-id="collectionStore.currentCollectionId"
+            :turn-started-at="lastTurnStartedAt"
+            :session-started-at="chatSessionStartIso"
+            @open-settings="closeRedactionDrawer(); $emit('switch-tab', 'settings')"
+          />
         </div>
       </div>
 
@@ -1072,6 +1007,7 @@ import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import { createActionItem } from '../utils/meetingsApi'
 import SlashCommandPicker from './SlashCommandPicker.vue'
+import RedactionBoundaryPanel from './RedactionBoundaryPanel.vue'
 import { runSlashCommand, isSlashCommand, isStreamingSlashCommand, streamSlashCommand } from '../utils/slashCommands'
 import {
   getConfiguredProviderIds,
@@ -1144,29 +1080,14 @@ const loadPrivacyStatus = async () => {
 // counts from yesterday's sessions.
 const chatSessionStartIso = new Date().toISOString()
 const redactionDrawerOpen = ref(false)
-const redactionEvents = ref([])
-const redactionLoading = ref(false)
 const redactionSessionTotal = ref(0)
 const redactionSessionByType = ref({})
+const boundaryPanel = ref(null)
+// Stamped just before each send. The drawer defaults to this window so "what
+// did you just send about my client?" is answered about the answer on screen,
+// not about everything since the tab was opened.
+const lastTurnStartedAt = ref('')
 let redactionPollTimer = null
-
-function formatEntityName(type) {
-  if (!type) return '—'
-  return String(type)
-    .toLowerCase()
-    .split('_')
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ')
-}
-
-function formatEventTime(iso) {
-  if (!iso) return ''
-  try {
-    return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  } catch {
-    return ''
-  }
-}
 
 async function loadRedactionSummary() {
   const colId = collectionStore.currentCollectionId
@@ -1182,33 +1103,11 @@ async function loadRedactionSummary() {
   }
 }
 
-async function loadRedactionEvents() {
-  const colId = collectionStore.currentCollectionId
-  if (!colId) return
-  redactionLoading.value = true
-  try {
-    const { data } = await axios.get('/api/redactions/log', {
-      params: { collection_id: colId, limit: 100 },
-    })
-    // Filter to this session window so the drawer agrees with the pill count.
-    const events = (data?.events || []).filter(
-      (e) => !e.timestamp || e.timestamp >= chatSessionStartIso,
-    )
-    // Newest first.
-    events.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
-    redactionEvents.value = events
-  } catch {
-    redactionEvents.value = []
-  } finally {
-    redactionLoading.value = false
-  }
-}
-
 function startRedactionPolling() {
   stopRedactionPolling()
   redactionPollTimer = setInterval(() => {
     loadRedactionSummary()
-    if (redactionDrawerOpen.value) loadRedactionEvents()
+    if (redactionDrawerOpen.value) boundaryPanel.value?.load?.()
   }, 4000)
 }
 
@@ -1223,7 +1122,6 @@ function openRedactionDrawer() {
   redactionDrawerOpen.value = true
   // Close the settings drawer if it's open — they share the same right-side slot.
   settingsDrawerOpen.value = false
-  loadRedactionEvents()
   loadRedactionSummary()
   startRedactionPolling()
 }
@@ -1737,6 +1635,10 @@ const sendMessage = async () => {
   const collectionId = collectionStore.currentCollectionId
   chatStore.addMessage(collectionId, { role: 'user', content: userContent })
   await scrollToBottom()
+
+  // Opens the Boundary Report's default window on this turn. Stamped before
+  // the request so no redaction it causes falls outside the window.
+  lastTurnStartedAt.value = new Date().toISOString()
 
   loading.value = true
 

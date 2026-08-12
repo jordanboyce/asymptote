@@ -76,6 +76,13 @@
     <!-- Content -->
     <template v-else-if="brief">
 
+      <!-- Data health sits above the KPIs on purpose: if a column can't be
+           totalled, the advisor needs to know that before reading a total. -->
+      <IngestReportPanel
+        :collection-id="collectionId"
+        @send-to-chat="$emit('send-to-chat', $event)"
+      />
+
       <!-- KPI row -->
       <section class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-2">
@@ -330,6 +337,22 @@
       </p>
 
     </template>
+
+    <!-- The redaction boundary, made readable. Data health above answers "did
+         my file land right"; this answers "what left the box".
+
+         Deliberately outside the branch chain: a collection holding only
+         meeting transcripts has no portfolio data and lands in the empty state
+         above, and that is precisely the collection with the most to show here.
+         Gating this on `brief` would blank it exactly where it matters.
+
+         It sits last because it's the compliance read rather than the daily
+         one — the live surface is the drawer behind the chat PII pill. -->
+    <RedactionBoundaryPanel
+      v-if="collectionId && !error"
+      :collection-id="collectionId"
+      @open-settings="$emit('switch-tab', 'settings')"
+    />
   </div>
 </template>
 
@@ -354,8 +377,10 @@ import {
 } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useColorScheme } from '../composables/useThemeIcon'
+import IngestReportPanel from './IngestReportPanel.vue'
+import RedactionBoundaryPanel from './RedactionBoundaryPanel.vue'
 
-const emit = defineEmits(['open-brief', 'send-to-chat'])
+const emit = defineEmits(['open-brief', 'send-to-chat', 'switch-tab'])
 
 const collectionStore = useCollectionStore()
 const collectionId = computed(() => collectionStore.currentCollectionId)
