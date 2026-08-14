@@ -96,14 +96,39 @@ have authentication on the front door and an unlocked back one. Running
 `cloudflared` inside the project and never generating a public domain closes
 that off — Railway's edge has nothing to route.
 
+### 2.0 If you deleted a previous Railway project
+
+Deleting the project does not clean up what pointed *at* it. Before you start,
+clear the leftovers or you'll debug a tunnel that resolves to nothing:
+
+- **DNS**: in Cloudflare DNS, delete any `CNAME` / `TXT` records pointing at
+  the old `*.up.railway.app` host.
+- **Cloudflare tunnel**: if you're reusing an existing tunnel, its **Public
+  Hostname** still points at the old service's internal address. It must be
+  updated in §2.4 — a stale `finn.railway.internal` looks identical to a
+  misconfigured new one.
+- **Access application**: the app in Zero Trust survives and is fine to reuse.
+  Keep its AUD tag; you'll need it in §3.4 and it hasn't changed.
+- **Volume data is gone.** Deleting a project deletes its volumes. Nothing to
+  recover, and nothing to migrate in §2.5.
+
 ### 2.1 Create the project and the Finn service
+
+The repo now carries [railway.json](railway.json), so the build method,
+healthcheck path, and restart policy configure themselves — Railway reads it on
+first deploy and it overrides the dashboard. You do not need to set those by
+hand.
 
 1. Sign in at [railway.com](https://railway.com) → **New Project** →
    **Deploy from GitHub repo** → pick your Finn repo.
-2. Railway detects the `Dockerfile` and builds it. **The first build takes
-   15–25 minutes** — it installs torch, downloads `en_core_web_lg` (~560 MB)
-   and the embedding model. This is normal. Later builds are cached.
-3. Settings → rename the service to `finn`.
+2. Railway reads `railway.json`, sees `"builder": "DOCKERFILE"`, and builds.
+   **The first build takes 15–25 minutes** — it installs torch, downloads
+   `en_core_web_lg` (~560 MB) and the embedding model. This is normal, and
+   later builds are cached. The healthcheck timeout is set to 600s because
+   loading the embedding model into RAM makes first boot slow.
+3. Settings → rename the service to `finn`. **Do this before §2.4** — the
+   internal DNS name follows the service name, and renaming later breaks the
+   tunnel's hostname.
 4. **Settings → Networking → do NOT generate a domain.** If one was created
    automatically, delete it.
 
@@ -131,22 +156,39 @@ Two things the docs are quiet about and which will bite:
 Railway service → **Variables** → paste as raw editor:
 
 ```bash
+# ── required ──────────────────────────────────────────────────────────
 DATA_DIR=/app/data
 ENABLE_MULTI_USER=true
 ACCESS_TEAM_DOMAIN=your-team-name
 ACCESS_AUD=                          # fill in after §3.4
 CORS_ALLOW_ORIGINS=https://finn.yourdomain.com
-ENABLE_PII_REDACTION=true
 
-# Your AI provider key — testers won't have one.
-ANTHROPIC_API_KEY=sk-ant-...
+# ── AI, so testers don't need their own key ───────────────────────────
+# NOTE: this is an *Ollama Cloud* key, not Anthropic. It is the only
+# server-side key Finn reads. See the table below.
+FALLBACK_API_KEY=
+FALLBACK_MODEL=gemma4:31b
 
-# Feedback button (otherwise it 503s)
-RESEND_API_KEY=re_...
+# ── strongly recommended ──────────────────────────────────────────────
+ENABLE_PII_REDACTION=true            # default is already true; set it explicitly
+RESEND_API_KEY=                      # else the in-app "Report issue" button 503s
 FEEDBACK_EMAIL_TO=jordan.boyce@cyberlion.dev
 ```
 
 Do **not** set `PORT` — Railway injects it and the Dockerfile now honours it.
+Setting it by hand is a common cause of the 502 in §6.
+
+> **There is no `ANTHROPIC_API_KEY` setting.** Finn's only server-side
+> credential is `FALLBACK_API_KEY`, and it routes through **Ollama Cloud**
+> ([main.py:4695](main.py#L4695)) — any advisor-selected model is deliberately
+> stripped, since a `claude-…` id would 404 against ollama.com. Because
+> `Settings` is configured with `extra="ignore"`, an `ANTHROPIC_API_KEY`
+> variable is silently discarded: no error, no AI, no clue why.
+>
+> **To put testers on Anthropic instead**, there is no env var — each tester
+> pastes their own key in Settings, which multi-user mode stores per person.
+> That reintroduces the paste step `FALLBACK_API_KEY` exists to remove, so for
+> a tester pilot the Ollama Cloud path is the intended one.
 
 > If your Railway environment was created before **2025-10-16**, its private
 > network is IPv6-only and you must also set `HOST=::`. Newer environments do

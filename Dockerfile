@@ -14,6 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first for better caching
 COPY requirements.txt .
 
+# Install CPU-only torch FIRST, from PyTorch's CPU index.
+#
+# sentence-transformers depends on torch, and on Linux the default PyPI wheel
+# is the CUDA build — it drags in ~2.7 GB of nvidia_* packages (cuBLAS, cuDNN,
+# cuFFT…) that are dead weight on a server with no GPU. Measured: 11.9 GB image
+# before this line. Satisfying torch from the CPU index up front means the
+# requirements install below finds it already present and never reaches for the
+# CUDA build.
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Presidio's default NLP engine loads en_core_web_lg at runtime, and pip does

@@ -32,7 +32,10 @@ numpy<2.0.0
 
 # AI providers (optional - users provide their own API keys)
 anthropic>=0.40.0
-openai>=1.0.0
+# Same open-ended-pin hazard as `mcp` below: openai 3.0.0 is out, nothing here
+# has been tested against it, and a fresh container would silently install it.
+# Bump deliberately, not by rebuilding on a Tuesday.
+openai>=1.0.0,<3.0.0
 httpx>=0.28.0
 
 # Cloudflare Access JWT verification (multi-user / hosted deployments).
@@ -57,8 +60,14 @@ spacy>=3.7.0
 # Market data enrichment feeds (v4.2 — price history, classification, corporate events)
 yfinance>=0.2.40
 
-# MCP server
-mcp>=1.9.4
+# MCP server.
+# Upper bound is load-bearing: mcp 2.0.0 relocated `mcp.server.fastmcp`, which
+# services/mcp_server.py imports at module scope — and main.py imports that, so
+# the whole app dies at startup with ModuleNotFoundError. A local venv pinned by
+# luck to 1.x keeps working while every fresh container build breaks, which is
+# how this reached Railway as a CRASHED deploy that looked like a port problem.
+# Lift the bound only alongside the fastmcp import migration.
+mcp>=1.9.4,<2.0.0
 
 # Embedded job scheduler (weekly advisor digest in services.digest)
 APScheduler>=3.10.0

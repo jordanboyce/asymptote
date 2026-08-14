@@ -50,8 +50,11 @@ nginx/
 # Desktop app (not needed in server image)
 desktop/
 
-# Frontend source (pre-built assets are in static/)
-frontend/node_modules/
+# Frontend source. The server never reads it — `npm run build` outputs to
+# static/ at the repo root (vite.config.js -> outDir: '../static'), and that
+# is what main.py mounts. Excluding the whole directory, not just
+# node_modules, keeps the source tree and its lockfile out of the image.
+frontend/
 
 # SSL certs dir marker (actual certs handled by Dockerfile COPY)
 nginx/ssl/
