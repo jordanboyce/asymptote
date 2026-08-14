@@ -250,20 +250,72 @@ def test_general_kind_gets_base_tools_only():
     assert allowed == _BASE_NAMES
 
 
-def test_meetings_kind_gets_base_tools_only():
+_ADVISORY_NAMES = {
+    "prep_for_meeting", "get_client_profile",
+    "find_tax_loss_candidates", "generate_meeting_brief",
+}
+
+_MEETING_NAMES = {"get_meeting_notes", "list_action_items"}
+
+
+def test_meetings_kind_gets_meeting_tools_not_financial_ones():
     allowed = tools_for_kind("meetings")
-    assert allowed == _BASE_NAMES
+    assert _BASE_NAMES.issubset(allowed)
+    assert _MEETING_NAMES.issubset(allowed)
+    assert allowed.isdisjoint(_FINANCIAL_NAMES)
+    # prep degrades to the meeting half and records the portfolio as a gap,
+    # so it stays on the menu even with no holdings.
+    assert "prep_for_meeting" in allowed
 
 
 def test_financial_kind_gets_base_plus_financial_tools():
     allowed = tools_for_kind("financial")
     assert _BASE_NAMES.issubset(allowed)
     assert _FINANCIAL_NAMES.issubset(allowed)
+    assert _ADVISORY_NAMES.issubset(allowed)
 
 
 def test_mixed_kind_gets_all_tools():
     allowed = tools_for_kind("mixed")
-    assert allowed == tools_for_kind("financial")
+    assert allowed == (
+        tools_for_kind("financial") | tools_for_kind("meetings")
+    )
+    assert _MEETING_NAMES.issubset(allowed)
+    assert _ADVISORY_NAMES.issubset(allowed)
+
+
+def test_every_registered_tool_is_reachable_from_some_kind():
+    """A tool that ships in the registry but no kind advertises is invisible.
+
+    This is exactly how prep_for_meeting and get_client_profile shipped in
+    v4.6 and stayed unreachable on Anthropic/OpenAI: registered in
+    agent_tools, dispatched in structured_chat, never added to any kind's
+    allowlist, so filter_tool_specs dropped them from every turn.
+    """
+    from services.agent_tools import tool_names
+
+    reachable = set()
+    for kind in ("financial", "mixed", "meetings", "general"):
+        reachable |= tools_for_kind(kind)
+
+    unreachable = set(tool_names()) - reachable
+    assert not unreachable, (
+        f"registered but no kind advertises them: {sorted(unreachable)}"
+    )
+
+
+def test_every_advertised_tool_can_be_dispatched():
+    """The mirror failure: a kind advertises a name nothing can execute."""
+    from services.structured_chat import SUPPORTED_TOOLS
+
+    advertised = set()
+    for kind in ("financial", "mixed", "meetings", "general"):
+        advertised |= tools_for_kind(kind)
+
+    undispatchable = advertised - SUPPORTED_TOOLS
+    assert not undispatchable, (
+        f"advertised but no dispatcher: {sorted(undispatchable)}"
+    )
 
 
 def test_unknown_kind_returns_base_safely():

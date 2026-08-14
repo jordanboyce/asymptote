@@ -207,6 +207,100 @@ _TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "get_meeting_notes",
+        "description": (
+            "Return the structured notes extracted from this client's meeting "
+            "transcripts: concerns raised, decisions made, action items, "
+            "follow-up questions, and a sentiment summary per meeting. Use for "
+            "\"what did we tell her last time?\", \"what did we discuss in "
+            "March?\", \"what was decided?\". Notes are extracted from the "
+            "transcript only and never fabricated — if a meeting has no note "
+            "for something, say it was not recorded rather than inferring it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string", "description": "Omit to use the active chat collection."},
+                "document_id": {"type": "string", "description": "Only the notes for this one transcript."},
+                "since": {"type": "string", "description": "ISO timestamp lower bound on extraction time."},
+                "until": {"type": "string", "description": "ISO timestamp upper bound on extraction time."},
+            },
+        },
+    },
+    {
+        "name": "list_action_items",
+        "description": (
+            "Flat cross-meeting list of action items for this client. Use for "
+            "\"what's still open for the Hendersons?\", \"what did I promise "
+            "to do?\", \"anything outstanding before this call?\". Answers "
+            "deterministically from the meeting notes — no transcript search "
+            "needed."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string", "description": "Omit to use the active chat collection."},
+                "status": {"type": "string", "enum": ["open", "closed", "all"], "description": "Default 'open'."},
+                "assignee": {"type": "string", "description": "Case-insensitive substring: 'advisor', 'client', or a name."},
+            },
+        },
+    },
+    {
+        "name": "find_tax_loss_candidates",
+        "description": (
+            "Household-aware tax-loss harvesting plan. Use for \"any losses "
+            "worth harvesting?\", \"can I offset the gain we realized?\", "
+            "\"is this a wash sale?\". Restricts to TAXABLE accounts (a loss "
+            "inside an IRA/Roth/401(k) offsets nothing), ranks short-term "
+            "losses first, pairs each candidate with a non-substantially-"
+            "identical replacement, and flags symbols held anywhere else in "
+            "the household — including a spousal IRA/Roth — which is the "
+            "biggest source of accidental wash-sale violations. Report the "
+            "wash-sale flags; never present a candidate as actionable without "
+            "them."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string", "description": "Omit to use the active chat collection."},
+                "household_collection_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra collections that are part of the same household (e.g. a spouse's account).",
+                },
+                "min_loss": {"type": "number", "description": "Minimum dollar loss to consider. Default 500."},
+                "min_loss_pct": {"type": "number", "description": "Optional minimum loss as a percent of cost basis."},
+                "max_candidates": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+        },
+    },
+    {
+        "name": "generate_meeting_brief",
+        "description": (
+            "Portfolio-only pre-meeting brief: household totals, per-account "
+            "breakdown, top positions, underwater positions, concentration "
+            "alerts, cash drag, and sector allocation. Prefer prep_for_meeting "
+            "for actual meeting prep — it includes this plus meeting history, "
+            "open items, and IPS drift. Use this when the advisor wants the "
+            "portfolio picture alone. IMPORTANT: when a total could not be "
+            "computed safely it is returned as null with "
+            "`total_market_value_reliable: false` — that means the underlying "
+            "column is stored as text and any sum of it would be wrong. Say "
+            "the total could not be verified and why; never substitute a "
+            "number from elsewhere in the response."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string", "description": "Omit to use the active chat collection."},
+                "tax_loss_min": {"type": "number", "description": "Minimum loss for the tax-loss section. Default 500."},
+                "concentration_pct": {"type": "number", "description": "Concentration alert threshold, percent. Default 10."},
+                "cash_drag_min": {"type": "number", "description": "Cash-drag alert threshold, dollars. Default 50000."},
+                "top_n": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+        },
+    },
+    {
         "name": "list_collections",
         "description": "List every available collection (id, name, document count).",
         "parameters": {"type": "object", "properties": {}},

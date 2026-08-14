@@ -52,6 +52,10 @@ SUPPORTED_TOOLS = {
     "enrich_holdings",
     "prep_for_meeting",
     "get_client_profile",
+    "get_meeting_notes",
+    "list_action_items",
+    "find_tax_loss_candidates",
+    "generate_meeting_brief",
 }
 
 
@@ -180,7 +184,34 @@ def build_tool_use_instructions() -> str:
         '    Call this before judging a portfolio "concentrated", "overweight", '
         '"too much cash", or "due to rebalance" — those words mean nothing '
         'without the client\'s own targets. When `exists` is false, say the '
-        'policy is unset rather than substituting a generic rule of thumb.\n\n'
+        'policy is unset rather than substituting a generic rule of thumb.\n'
+        '  - get_meeting_notes — what was actually said in past meetings: '
+        'concerns, decisions, follow-up questions, sentiment. Use for "what '
+        'did we tell her last time?" / "what was decided in March?".\n'
+        '    <tool_call>{"tool": "get_meeting_notes"}</tool_call>\n'
+        '    Extracted from the transcript only. If something is not in the '
+        'notes, say it was not recorded — do not infer it from the portfolio.\n'
+        '  - list_action_items — the flat cross-meeting list of what is still '
+        'open. Use for "what\'s outstanding for this client?" / "what did I '
+        'promise to do?".\n'
+        '    <tool_call>{"tool": "list_action_items"}</tool_call>\n'
+        '    <tool_call>{"tool": "list_action_items", "status": "all", "assignee": "advisor"}</tool_call>\n'
+        '  - find_tax_loss_candidates — household-aware TLH plan. Taxable '
+        'accounts only, short-term losses ranked first, each candidate paired '
+        'with a non-substantially-identical replacement.\n'
+        '    <tool_call>{"tool": "find_tax_loss_candidates"}</tool_call>\n'
+        '    Always report the wash-sale flags alongside a candidate. A '
+        'harvest presented without them is the error this tool exists to '
+        'prevent — the symbol may be held in a spousal IRA you did not see.\n'
+        '  - generate_meeting_brief — the portfolio-only brief (totals, '
+        'accounts, top positions, concentration, cash drag, sectors). Prefer '
+        'prep_for_meeting for meeting prep; use this when only the portfolio '
+        'picture is wanted.\n'
+        '    <tool_call>{"tool": "generate_meeting_brief"}</tool_call>\n'
+        '    When a total comes back null with `total_market_value_reliable` '
+        'false, the underlying column is stored as text and every sum of it is '
+        'wrong. Say the total could not be verified and why. Do not reach into '
+        'another section of the response for a substitute number.\n\n'
         "COLLECTION META:\n"
         '  - list_collections — list every available collection (id, name, '
         'doc count). Use when the user references a different client/project.\n'
@@ -551,6 +582,72 @@ def execute_tool_calls(
             elif tool == "get_client_profile":
                 args_for_log = {"collection_id": collection_id}
                 data = mcp.get_client_profile(collection_id=collection_id)
+
+            elif tool == "get_meeting_notes":
+                args_for_log = {
+                    "collection_id": collection_id,
+                    "document_id": call.get("document_id"),
+                    "since": call.get("since"),
+                    "until": call.get("until"),
+                }
+                data = mcp.get_meeting_notes(
+                    collection_id=collection_id,
+                    document_id=call.get("document_id"),
+                    since=call.get("since"),
+                    until=call.get("until"),
+                )
+
+            elif tool == "list_action_items":
+                # "all" is the schema's way of saying "no status filter"; the
+                # MCP tool spells that as None.
+                status = call.get("status", "open")
+                if status == "all":
+                    status = None
+                args_for_log = {
+                    "collection_id": collection_id,
+                    "status": status,
+                    "assignee": call.get("assignee"),
+                }
+                data = mcp.list_action_items(
+                    collection_id=collection_id,
+                    status=status,
+                    assignee=call.get("assignee"),
+                )
+
+            elif tool == "find_tax_loss_candidates":
+                min_loss = float(call.get("min_loss", 500.0))
+                max_candidates = int(call.get("max_candidates", 25))
+                min_loss_pct = call.get("min_loss_pct")
+                args_for_log = {
+                    "collection_id": collection_id,
+                    "min_loss": min_loss,
+                    "min_loss_pct": min_loss_pct,
+                    "max_candidates": max_candidates,
+                }
+                data = mcp.find_tax_loss_candidates(
+                    collection_id=collection_id,
+                    household_collection_ids=call.get("household_collection_ids"),
+                    min_loss=min_loss,
+                    min_loss_pct=float(min_loss_pct) if min_loss_pct is not None else None,
+                    max_candidates=max_candidates,
+                )
+
+            elif tool == "generate_meeting_brief":
+                top_n = int(call.get("top_n", 10))
+                args_for_log = {
+                    "collection_id": collection_id,
+                    "tax_loss_min": float(call.get("tax_loss_min", 500.0)),
+                    "concentration_pct": float(call.get("concentration_pct", 10.0)),
+                    "cash_drag_min": float(call.get("cash_drag_min", 50000.0)),
+                    "top_n": top_n,
+                }
+                data = mcp.generate_meeting_brief(
+                    collection_id=collection_id,
+                    tax_loss_min=float(call.get("tax_loss_min", 500.0)),
+                    concentration_pct=float(call.get("concentration_pct", 10.0)),
+                    cash_drag_min=float(call.get("cash_drag_min", 50000.0)),
+                    top_n=top_n,
+                )
 
             else:
                 raise ValueError(f"No dispatcher for tool '{tool}'")

@@ -50,9 +50,36 @@ class Settings(BaseSettings):
     db_backend: Literal["sqlite", "postgresql"] = "sqlite"
     postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/finn
 
-    # Multi-user mode (user isolation via X-User-ID header from auth proxy)
+    # Multi-user mode (per-user data isolation). Identity arrives from an
+    # authenticating proxy in front of the app — see middleware/user_context.py.
     enable_multi_user: bool = False  # Set to True for per-user data isolation
     default_user_id: str = "default"  # User ID used in single-user mode
+
+    # ── Cloudflare Access ────────────────────────────────────────────────
+    # When both are set, multi-user identity is taken from a *verified*
+    # Cf-Access-Jwt-Assertion JWT. Cloudflare's own guidance: "Validation of
+    # the header alone is not sufficient — the JWT and signature must be
+    # confirmed to avoid identity spoofing."
+    #
+    #   access_team_domain — your Zero Trust team domain. "acme",
+    #     "acme.cloudflareaccess.com", and the full URL are all accepted.
+    #   access_aud — the Application Audience (AUD) tag, from
+    #     Zero Trust > Access > Applications > your app > Additional settings.
+    access_team_domain: str = ""
+    access_aud: str = ""
+
+    # Escape hatch for a non-Access authenticating proxy (oauth2-proxy,
+    # Authelia, Traefik forward-auth) that can only pass a plain X-User-ID
+    # header. OFF by default: with it on, anyone who can reach the origin
+    # directly can assert any identity simply by setting a header. Only turn
+    # this on when the origin is genuinely unreachable except through the
+    # proxy, and prefer Access + JWT verification when you have the choice.
+    trust_proxy_user_header: bool = False
+
+    # CORS. Default "*" suits a locally-run app. When hosting, set this to the
+    # exact origin(s) the browser will load the app from — a wildcard plus
+    # credentials lets any site script the API as the logged-in user.
+    cors_allow_origins: str = "*"  # comma-separated, or "*"
 
     # Hosted-deployment mode: delete original uploads after indexing so only
     # chunks + embeddings + metadata persist. Breaks re-indexing (needs the

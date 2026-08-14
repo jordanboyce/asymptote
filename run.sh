@@ -39,9 +39,14 @@ if [ ! -f "certs/server.crt" ]; then
     echo ""
 fi
 
+# Report the port the app will actually bind: PORT in .env, else the config
+# default. Hardcoding this drifts the moment someone overrides PORT.
+APP_PORT="$(grep -E '^[[:space:]]*PORT=' .env 2>/dev/null | tail -n1 | cut -d= -f2 | tr -d '[:space:]\r')"
+APP_PORT="${APP_PORT:-8000}"
+
 # Start the server
 echo ""
-echo "Starting server on port 8000"
+echo "Starting server on port $APP_PORT  ->  http://localhost:$APP_PORT"
 echo "(HTTPS if SSL_CERTFILE is set in .env, otherwise HTTP)"
 echo ""
 python main.py

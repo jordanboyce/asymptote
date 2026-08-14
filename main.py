@@ -235,10 +235,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware
+# Add CORS middleware.
+#
+# `allow_origins=["*"]` with `allow_credentials=True` is the permissive pairing
+# that suits a locally-run app and is wrong the moment this is hosted: it lets
+# any website in the user's browser drive this API as the logged-in user.
+# Starlette already refuses to echo a literal "*" back when credentials are
+# allowed, so the wildcard is less dangerous than it reads — but pinning the
+# origin is the thing that actually makes it safe. See CORS_ALLOW_ORIGINS.
+_cors_origins = [
+    o.strip() for o in (settings.cors_allow_origins or "*").split(",") if o.strip()
+] or ["*"]
+if _cors_origins == ["*"] and settings.enable_multi_user:
+    logger.warning(
+        "CORS is wide open (CORS_ALLOW_ORIGINS=*) while multi-user mode is on. "
+        "Set CORS_ALLOW_ORIGINS to the exact origin you serve the app from."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -314,6 +329,8 @@ async def health(collection_id: str = "default"):
     except Exception:
         pass
 
+    redaction = _redaction_health()
+
     try:
         stats = indexer_manager.get_collection_stats(collection_id)
         return {
@@ -322,13 +339,59 @@ async def health(collection_id: str = "default"):
             "indexed_chunks": stats["total_chunks"],
             "total_documents": stats["total_documents"],
             "total_pages": stats["total_pages"],
+            "redaction": redaction,
         }
     except Exception as e:
         return {
             "status": "healthy",
             "indexed_chunks": 0,
             "error": str(e),
+            "redaction": redaction,
         }
+
+
+def _redaction_health() -> dict:
+    """Report whether the PII boundary is actually live.
+
+    A deployment can lose redaction without losing anything else: the engine
+    degrades to a pass-through when Presidio is not importable
+    (``redaction_engine.available`` is False and ``redact_text_for_ai``
+    returns the text unchanged), and a container built without
+    ``en_core_web_lg`` raises only when the first redaction is attempted.
+    Either way the app looks healthy while the one guarantee it sells is off.
+
+    ``enforcing`` is the single field worth alerting on: redaction is
+    configured on AND the engine can actually run. A deploy check should
+    assert it — see HOSTING.md.
+    """
+    enabled = bool(getattr(settings, "enable_pii_redaction", False))
+    available = False
+    model_ready = False
+    detail = None
+
+    try:
+        from services.privacy.redaction_engine import redaction_engine
+        available = bool(redaction_engine.available)
+        if available:
+            try:
+                # Cheap end-to-end probe: exercises the real analyze path, so a
+                # missing spacy model surfaces here rather than mid-conversation.
+                redaction_engine.redact_text("Contact Jane Doe.")
+                model_ready = True
+            except Exception as e:
+                detail = f"{type(e).__name__}: {e}"
+    except Exception as e:  # pragma: no cover — import-time failure
+        detail = f"{type(e).__name__}: {e}"
+
+    out = {
+        "enabled": enabled,
+        "engine_available": available,
+        "model_ready": model_ready,
+        "enforcing": bool(enabled and available and model_ready),
+    }
+    if detail:
+        out["detail"] = detail
+    return out
 
 
 @app.get(
@@ -3698,8 +3761,13 @@ async def get_current_user(user_id: str = Depends(get_current_user_id)):
 
 
 @app.get("/api/users", summary="List all users", tags=["users"])
-async def list_users():
-    """List all known users (admin view)."""
+async def list_users(user_id: str = Depends(get_current_user_id)):
+    """List all known users.
+
+    Requires an authenticated caller. This had no dependency at all, which in
+    multi-user mode let any tester enumerate every other tester's email
+    address off an endpoint labelled "admin view".
+    """
     from services.app_database import app_db
     return {"users": app_db.get_all_users()}
 

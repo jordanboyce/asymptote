@@ -35,6 +35,11 @@ anthropic>=0.40.0
 openai>=1.0.0
 httpx>=0.28.0
 
+# Cloudflare Access JWT verification (multi-user / hosted deployments).
+# Already present transitively, but services/access_auth.py imports it
+# directly — pin it explicitly rather than relying on someone else's dep.
+PyJWT[crypto]>=2.8.0
+
 # Configuration
 python-dotenv>=1.0.0
 pydantic>=2.10.0

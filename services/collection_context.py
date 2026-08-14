@@ -68,6 +68,23 @@ _FINANCIAL_TOOLS: frozenset[str] = frozenset({
     "get_company_news",
 })
 
+# The advisor-workflow composites. Each one reads the typed holdings tables,
+# so they ride with _FINANCIAL_TOOLS rather than standing alone — offering
+# `find_tax_loss_candidates` on a collection with no positions only invites a
+# speculative call that comes back empty.
+_ADVISORY_TOOLS: frozenset[str] = frozenset({
+    "prep_for_meeting",
+    "get_client_profile",
+    "find_tax_loss_candidates",
+    "generate_meeting_brief",
+})
+
+# Driven by extracted meeting notes rather than by holdings.
+_MEETING_TOOLS: frozenset[str] = frozenset({
+    "get_meeting_notes",
+    "list_action_items",
+})
+
 
 # A table counts as "financial" only if it carries at least one Position-
 # defining role — ticker/cusip/isin or a holdings measure or an account
@@ -220,13 +237,17 @@ def tools_for_kind(kind: CollectionKind) -> frozenset[str]:
     add to them.
     """
     if kind == "financial":
-        return _BASE_TOOLS | _FINANCIAL_TOOLS
+        return _BASE_TOOLS | _FINANCIAL_TOOLS | _ADVISORY_TOOLS
     if kind == "mixed":
-        return _BASE_TOOLS | _FINANCIAL_TOOLS
-    # meetings + general — base only. Meeting-specific MCP tools
-    # (get_meeting_notes / list_action_items) currently live on the MCP
-    # endpoint only; when they're added to the chat-agent registry in a
-    # follow-up they'll join _BASE_TOOLS for kind == "meetings".
+        return _BASE_TOOLS | _FINANCIAL_TOOLS | _ADVISORY_TOOLS | _MEETING_TOOLS
+    if kind == "meetings":
+        # No holdings here, so the portfolio side of the loop stays off the
+        # menu — except `prep_for_meeting`, which is built to degrade: it
+        # returns the meeting history and records the missing portfolio as a
+        # gap rather than failing. That is the honest answer to "prep me for
+        # this meeting" on a transcripts-only collection.
+        return _BASE_TOOLS | _MEETING_TOOLS | frozenset({"prep_for_meeting"})
+    # general — nothing domain-specific to call.
     return _BASE_TOOLS
 
 

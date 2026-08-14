@@ -39,9 +39,17 @@ if not exist "certs\server.crt" (
     echo.
 )
 
+REM Report the port the app will actually bind: PORT in .env, else the config
+REM default. Hardcoding this drifts the moment someone overrides PORT.
+set "APP_PORT=8000"
+for /f "usebackq tokens=1,* delims==" %%A in (`findstr /r "^[ ]*PORT=" .env 2^>nul`) do (
+    if /i "%%A"=="PORT" set "APP_PORT=%%B"
+)
+set "APP_PORT=%APP_PORT: =%"
+
 REM Start the server
 echo.
-echo Starting server on port 8000
+echo Starting server on port %APP_PORT%  --^>  http://localhost:%APP_PORT%
 echo (HTTPS if SSL_CERTFILE is set in .env, otherwise HTTP)
 echo.
 python main.py
