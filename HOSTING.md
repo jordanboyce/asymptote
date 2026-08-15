@@ -175,8 +175,22 @@ RESEND_API_KEY=                      # else the in-app "Report issue" button 503
 FEEDBACK_EMAIL_TO=jordan.boyce@cyberlion.dev
 ```
 
-Do **not** set `PORT` — Railway injects it and the Dockerfile now honours it.
-Setting it by hand is a common cause of the 502 in §6.
+**`PORT` must equal the domain's `targetPort`, and Railway does not guarantee
+that for you.** Verified the hard way on 2026-08-14: Railway injects
+`PORT=8080` when the variable is unset, while the generated domain took
+`targetPort: 8000` from the Dockerfile's `EXPOSE 8000` at creation time. The
+app started perfectly, logged `Uvicorn running on http://0.0.0.0:8080`, and the
+edge returned 502 — knocking on 8000 where nothing listened. A *successful*
+deploy that 502s is this, every time.
+
+Set it explicitly so both ends agree:
+
+```bash
+PORT=8000
+```
+
+Then confirm the domain matches — Settings → Networking → the domain's target
+port. Either value works; they just have to be the same.
 
 > **There is no `ANTHROPIC_API_KEY` setting.** Finn's only server-side
 > credential is `FALLBACK_API_KEY`, and it routes through **Ollama Cloud**
@@ -195,6 +209,43 @@ Setting it by hand is a common cause of the 502 in §6.
 > both stacks and the default `0.0.0.0` is fine. Symptom if you get this
 > wrong: `cloudflared` resolves `finn.railway.internal` and then can't
 > connect, and the tunnel never turns healthy.
+
+### 2.4a Custom domain on Cloudflare (the simpler alternative to a tunnel)
+
+If you already have Access working on the hostname, attaching it to Railway
+directly is faster than the tunnel below. Two Cloudflare settings decide
+whether this works, and both are counter-intuitive.
+
+```bash
+railway domain finn.yourdomain.com --service finn
+```
+
+That prints the `CNAME` and `_railway-verify` `TXT` records to add. Then:
+
+**1. SSL/TLS encryption mode must be `Full` — not `Full (strict)`, not
+`Flexible`.** All three sound plausible and two break it:
+
+| Mode | Result |
+|---|---|
+| `Flexible` | Cloudflare sends plain HTTP; Railway redirects to HTTPS; **infinite redirect loop** |
+| `Full (strict)` | Expects a Cloudflare origin cert on the origin. Railway serves its own `*.up.railway.app` cert, so this fails |
+| **`Full`** | ✅ Correct — encrypted to Railway, cert not strictly validated |
+
+**2. Certificate issuance and Access want opposite things.** Railway's
+Let's Encrypt challenge has to reach the origin, and the Cloudflare proxy
+intercepts it; Access, meanwhile, only works on a *proxied* record. So the
+order matters:
+
+1. Add the CNAME **grey-clouded (DNS only)**.
+2. Wait for Railway to show the certificate issued (green check).
+3. **Switch to orange-clouded (Proxied)** — Access only applies now.
+4. Confirm the hostname returns the Access login page again.
+
+> During step 1–2 the hostname is briefly not behind Access. With
+> `ENABLE_MULTI_USER=true` and the Access variables set, Finn still refuses
+> every data request with a 401 during that window — the app's own auth does
+> not depend on Cloudflare being in front. Only `/health` answers. That is the
+> hardened middleware doing its job, and it is why this window is safe.
 
 ### 2.4 Add the cloudflared service
 
