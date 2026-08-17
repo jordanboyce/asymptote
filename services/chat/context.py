@@ -132,12 +132,23 @@ def build_chat_turn(
         structured_ctx = {
             "inline_block": "",
             "tool_tables": [],
+            "money_tables": [],
             "inlined_filenames": set(),
             "inlined_document_ids": set(),
         }
     inlined_filenames = structured_ctx["inlined_filenames"]
     tool_tables = structured_ctx["tool_tables"]
     inline_block = structured_ctx["inline_block"]
+    money_tables = structured_ctx.get("money_tables") or []
+
+    # Money-bearing tables that got inlined still need describing in the tool
+    # protocol. Without this the model is told to use the tools for their
+    # aggregates and then never shown which table names to pass -- and with a
+    # small table `tool_tables` is empty, so the whole protocol block used to
+    # vanish. That is the state in which it hand-summed and got it wrong.
+    described_tables = tool_tables + [
+        t for t in money_tables if t not in tool_tables
+    ]
 
     filtered_results = [
         r for r in context_results if r.filename not in inlined_filenames
@@ -197,7 +208,7 @@ def build_chat_turn(
         expertise_block=expertise_block,
         inline_block=inline_block,
         context_text=context_text,
-        tables_block=describe_tables_for_prompt(tool_tables) if tool_tables else "",
+        tables_block=describe_tables_for_prompt(described_tables) if described_tables else "",
         doc_filter_count=len(doc_filter) if doc_filter is not None else None,
         native_citations=use_native_citations and bool(documents),
         context_addendum=context_addendum,
@@ -569,16 +580,20 @@ def _assemble_system_prompt(
     if inline_block:
         base_parts.append(
             "When STRUCTURED TABLES are included below, they are the FULL contents "
-            "of CSV/XLSX files as JSONL — every row is present. For any numeric, "
-            "sum, count, average, filter, date-range, or ranking question about "
-            "those files, answer DIRECTLY from the JSONL rows and show your "
-            "arithmetic. Do NOT guess from chunk snippets and do NOT assume data "
-            "is missing."
+            "of CSV/XLSX files as JSONL — every row is present. For lookup, "
+            "filter, count, date-range and ranking questions about those files, "
+            "answer DIRECTLY from the JSONL rows. Do NOT guess from chunk "
+            "snippets and do NOT assume data is missing. "
+            "Where a table is marked AGGREGATE LOCK, its monetary totals are the "
+            "exception: call the structured tools for those instead of adding the "
+            "rows up yourself, and follow the lock's instructions exactly."
         )
     if tables_block:
         base_parts.append(
-            "For questions about the LARGE tables listed under TOOL USE PROTOCOL, "
-            "call the structured-query tools — do not estimate from row text."
+            "For questions about the tables listed under TOOL USE PROTOCOL, "
+            "call the structured-query tools — do not estimate from row text. "
+            "This holds even when the same table also appears inline: the inline "
+            "rows are for reading, the tools are for arithmetic."
         )
     if expertise_block:
         base_parts.append(

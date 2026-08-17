@@ -247,6 +247,22 @@ order matters:
 > not depend on Cloudflare being in front. Only `/health` answers. That is the
 > hardened middleware doing its job, and it is why this window is safe.
 
+**On this path, `TRUST_PROXY_USER_HEADER` must stay `false`. This is load-bearing.**
+
+Railway's edge routes on the `Host` header, which is what lets Cloudflare proxy
+to it at all — but it means anyone can reach your origin around Cloudflare by
+sending `Host: finn.yourdomain.com` to the `*.up.railway.app` address, even
+after you delete the generated domain. Verified on 2026-08-17: that request
+reaches the app and gets a 401 from the Access-JWT check.
+
+So on this path Access is the front door, and **Finn's signature verification is
+the only thing guarding the side one.** Setting `TRUST_PROXY_USER_HEADER=true`
+removes that guard entirely: the app would then believe a plaintext
+`Cf-Access-Authenticated-User-Email` header, and anyone could become any tester
+by asserting their address directly to the origin. The tunnel path in §2.4 is
+the one where the origin has no reachable address and that setting is merely
+unwise rather than fatal.
+
 ### 2.4 Add the cloudflared service
 
 1. Create the tunnel first: **Zero Trust → Networks → Tunnels → Create** →
@@ -384,6 +400,46 @@ curl -s https://finn.yourdomain.com/health | python -m json.tool
 **`"enforcing": true` is the one to check, on every deploy.** Anything else
 means the boundary is off. (You'll need to be signed in for this to return
 JSON rather than a Cloudflare login page.)
+
+**5. Redaction actually redacts.** `enforcing: true` says the engine loaded,
+not that it works. One call proves the boundary end to end:
+
+```bash
+curl -s -X POST https://finn.example.com/api/redactions/dry-run \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Call Margaret Whitfield at (617) 555-0142, SSN 219-09-9999"}'
+```
+
+Every one of the three has to come back replaced — a pseudonym for the name,
+`[PHONE_NUMBER]`, `[US_SSN]`. **Check for fragments, not just the whole
+string.** A partial result like `(617) [FINANCIAL_ACCOUNT]` means a recognizer
+is being suppressed by a score threshold and the area code is reaching the
+model; that shipped once and no test caught it, because the test only asserted
+the full literal was gone.
+
+---
+
+## 4a. Seed a demo client
+
+First launch is an empty screen, so a tester's first impression rides entirely
+on their own export landing well. Seed one household first:
+
+```bash
+python scripts/seed_demo_client.py --base-url https://finn.example.com
+```
+
+Idempotent — safe to re-run, and safe in a post-deploy hook. It creates the
+Alvarez Family Trust (clearly labelled sample data) and pushes it through the
+normal ingest path, so a successful seed is also a live check that ingest,
+the client profile store and prep all work on this deploy.
+
+Then open it and run **Prep for meeting**. Four things should appear in this
+order: the prohibited `XOM` holding, `TXN` over the concentration ceiling,
+cash over its band, and the harvestable losses. If prep comes back thin,
+something is wrong with this deploy — that page needs no API key and no
+network, so it should be identical to a local run.
+
+Delete the collection from the UI when you're done demoing.
 
 ---
 

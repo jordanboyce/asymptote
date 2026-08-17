@@ -30,6 +30,15 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Presidio's default NLP engine loads en_core_web_lg at runtime and pip does
+# not bring it in -- requirements.txt mentions it only in a comment. Without
+# this line the image builds and starts cleanly, then raises on the first
+# redaction. Redaction then fails open
+# (services/privacy/redaction_middleware.py), so client PII reaches the model
+# while /health and the UI still report the boundary as enforcing. Keep this
+# in lockstep with the main Dockerfile.
+RUN python -m spacy download en_core_web_lg
+
 # Copy application code
 COPY . .
 
@@ -43,5 +52,10 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 ENV DATA_DIR=/app/data
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV PORT=8000
+
+# Bind the port the platform assigns. A hardcoded 8000 makes the service
+# unreachable on Railway / Render / Fly / Cloud Run, which inject $PORT and
+# route to that alone -- the container looks healthy and every request 502s at
+# the edge. Mirrors the main Dockerfile.
+CMD ["sh", "-c", "exec uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]

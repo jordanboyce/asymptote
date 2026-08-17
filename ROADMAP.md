@@ -92,10 +92,91 @@ to report the number.
 > **base table**. Two tests pin this, including a negative control proving the view-based
 > check would have missed it.
 
-> **Still needs a human eye:** does the assistant actually *refuse* the number in chat, or
-> report $203 with a footnote? The brief no longer hands it over, and the tool description
-> tells the model to read `gaps` — but only a live run proves the model obeys. If it
-> reports anyway, the warning wording needs to be louder.
+> **`compute_portfolio_metric` was never actually guarded — fixed 2026-08-17.** This file
+> and [test_brief_coercion_guard.py](tests/test_brief_coercion_guard.py) both recorded that
+> the metric tool "was already guarded" and only the brief was exposed. That was wrong, and
+> it was the more dangerous half. Verified against a live container: asking
+> `compute_portfolio_metric` for `total_market_value` on the messy fixture returned a bare
+> **`203.0` with no warning, no flag, nothing** — on the default path, for the exact
+> question the demo asks, via the tool a model reaches for first.
+>
+> The guard it *did* have, `_sanity_check_sum`, is a **value** heuristic: it fires when a
+> SUM is NULL or near zero. 203.0 is neither. The failure mode is leading-prefix
+> truncation, not collapse to zero, so the heuristic was structurally incapable of seeing
+> it. `metrics.py` now runs the same **storage-type** check the brief uses, sampled against
+> the base table (the `__by_symbol` view launders it — see below), and **withholds**:
+> `value: null`, `reliable: false`, `value_withheld: true`. `concentration` withholds its
+> ratio too, since numerator and denominator share the broken column. Five tests, including
+> a rollup-view negative control and a precision check that the clean Pershing fixture
+> still returns its real total with no warning.
+>
+> **The lesson worth keeping: validate the column's storage type, never the plausibility of
+> the result.** Any future aggregate guard that reasons about the *value* will miss this.
+
+> **Answered live 2026-08-17, and the answer is not the reassuring one.** Three identical
+> turns through the keyless fallback (`gemma4:31b` on ollama.com), asking "what is the
+> total market value?" on `messy_unrealized_gl.csv`:
+>
+> | Run | Answer |
+> |---|---|
+> | 1 | "$186,325.45" — wrong by $21,402 |
+> | 2 | "$184,211.45" — wrong by $23,516 |
+> | 3 | Correct refusal, named all five unpriced holdings, gave no number |
+>
+> **$203 never appeared** — that failure mode is genuinely closed. But two of three runs
+> invented a *different* confidently wrong total, listed the nine correct addends, and
+> showed their arithmetic underneath, which makes the wrong number more persuasive rather
+> than less. $203 is absurd on sight and a prospect would catch it. $186,325.45 is not.
+>
+> **The cause is architectural, and the P0.6 guard cannot reach it.** The engine log reads
+> `[engine] iter=0 stop=end_turn tool_calls=0` — the agentic loop ran, the financial tools
+> were on the menu, and the model called none of them. It did not need to: tables under
+> **150 rows** (`_DEFAULT_INLINE_ROW_LIMIT`, [structured_chat.py:709](services/structured_chat.py#L709))
+> are inlined into the prompt as JSONL, and the system prompt then *instructs* the model to
+> do the sum by hand — "answer DIRECTLY from the JSONL rows and show your arithmetic"
+> ([chat/context.py:569-577](services/chat/context.py#L569-L577)). Only tables *over* 150
+> rows are pushed to the guarded tool path.
+>
+> So the guard protects the path a real client export almost never takes. A household with
+> 40 positions is inlined, hand-summed, and unchecked; the demo fixture at 14 rows is the
+> unguarded case. **Fixing `compute_portfolio_metric` was necessary and does not close
+> this.**
+>
+> **Fixed the same day — the AGGREGATE LOCK.** A table carrying a `market_value`,
+> `cost_basis` or `pnl` role is still inlined (row-level lookup is useful and exact), but
+> it is now returned in `money_tables` from `build_structured_context`, which does two
+> things. The inline block carries an explicit lock forbidding hand-computed monetary
+> totals and naming the tools to call instead; and the table is described in the TOOL USE
+> PROTOCOL block even though it was inlined. **That second half was the actual bug.**
+> `tables_block` was built from `tool_tables` alone, so with a small table it was empty —
+> the model was never told which table names it could query, while being told to do the
+> sum itself. It was obeying the prompt, not defying it.
+>
+> The old instruction — "answer DIRECTLY from the JSONL rows and show your arithmetic" —
+> now applies only to lookup, filter, count, ranking and date-range questions. A test
+> asserts the old wording cannot come back.
+>
+> Re-run live, same fixture, same three-turn protocol:
+>
+> | | Before | After |
+> |---|---|---|
+> | Tool calls | 0 / 3 | **3 / 3** (`compute_portfolio_metric`) |
+> | Invented a wrong total | 2 / 3 | **0 / 3** |
+> | Correct refusal naming the unpriced holdings | 1 / 3 | **3 / 3** |
+>
+> And the precision check, which matters as much: the same question against the clean seed
+> export returns **"The total market value of the client's portfolio is $2,380,000"** —
+> exact, via the tool. The lock withholds when the data is broken and answers when it is
+> not.
+>
+> **Both fixes are load-bearing and neither is sufficient alone.** Without the `metrics.py`
+> guard the tool hands back `203.0` and the model reports $203. Without the lock the model
+> never calls the tool. Anything that reintroduces hand-arithmetic over money columns
+> re-opens this.
+>
+> Model choice remains a smaller, separate factor: `gemma4:31b` is what every keyless
+> advisor gets, so its arithmetic *is* the default experience — which is precisely why the
+> arithmetic should not be its job.
 
 The other half is `euro_semicolon_holdings.csv` (a European export where every US-CSV
 assumption is wrong) and `opaque_columns.csv` (headers `Col_1`…`Col_7`, meaning nothing).
@@ -426,7 +507,7 @@ covers three advisors instead of two."*
 | **Untrusted-content guardrail** | ✅ **Shipped 2026-08-12** — every system prompt, 13 tests |
 | **Tester handoff** | 🟡 [TESTING.md](TESTING.md) ✅; feedback channel (`RESEND_API_KEY`) and packaging open |
 | **Auth / hosted access** | 🟡 Access JWT verification + 401-on-missing-identity ✅, [DEPLOYMENT.md](DEPLOYMENT.md) ✅; **not deployed**, runbook unverified live |
-| **Deployable container** | 🟡 Dockerfile `$PORT` + spaCy model fixed, `/health` reports redaction enforcement ✅, [HOSTING.md](HOSTING.md) ✅; **never built or run** |
+| **Deployable container** | 🟡 **Built and run 2026-08-17** — `$PORT` injection, `enforcing: true`, frontend served, seeded and prepped end to end. Still **not deployed to a real host** |
 | Monte Carlo, screening, planning, lead gen, account opening | ❌ Not v1 — see §3 and §8 |
 | Eval suite (v4.6.2) | ❌ Open |
 
@@ -481,26 +562,89 @@ harvestable losses. That cascade is the demo.
 
 Then stop building features and go sell it.
 
+### Container verification, 2026-08-17
+
+The image had never been built or run. It builds, and it works — but the run turned up
+four defects, three of them in code the register recorded as already fixed.
+
+- **`docker compose up -d --build` built the wrong Dockerfile.** `docker-compose.yml`
+  pointed at `Dockerfile.corporate`, which has neither the `$PORT` fix nor the
+  `spacy download en_core_web_lg` line. `certs/server.crt` exists, so it *builds* — and
+  produces exactly the fail-open image §7 describes as fixed: healthy-looking, then PII to
+  the model on the first redaction. The documented deployment command was the unfixed path.
+  Compose now points at `Dockerfile`; `Dockerfile.corporate` got both fixes so it is not a
+  trap for anyone who needs custom CAs.
+- **Phone-number redaction was switched off entirely.** `PHONE_NUMBER: 0.7` in
+  `entity_score_thresholds` was there to stop decimals being read as phone numbers, but
+  Presidio scores *every* US phone format at exactly 0.4 — so the bar dropped all of them.
+  It stayed invisible because it failed *partially*: the `FINANCIAL_ACCOUNT` recognizer
+  independently matches the trailing seven digits, so `(617) 555-0142` rendered as
+  `(617) [FINANCIAL_ACCOUNT]` — area code in plaintext, wrong entity type in the Boundary
+  Report, and the literal string gone, which was all `test_detects_phone` asserted.
+  Threshold removed; the decimal false positive is now handled precisely by a filter that
+  reads the characters *bracketing* the span (on `0.08245803` Presidio returns the span
+  `08245803`, so the point sits at `start-1` and an inside-only test misses it). Measured
+  after the change: zero phone false positives across all 687 non-empty cells of all eight
+  ingest fixtures.
+- **`compute_portfolio_metric` returned the $203.** See §0 — the big one.
+- **Cash was detected by security name only.** `_is_cash_like` read the position name, and
+  Pershing names its money-market sweep `AIGI FUND` with `Money Market Funds` in Security
+  Type. On every such export the sweep was measured against `max_single_position_pct` and
+  reported as a concentration breach, and `check_cash_policy` got `cash_market_value=None`
+  and recorded "no cash position identified" — so the client's own min/max cash bands
+  silently never evaluated. It reported itself unrun rather than wrong, which is the right
+  failure direction, but the advisor who set those bands never found out. Position rows now
+  carry `asset_class` through from the brief query and cash detection reads both.
+
+**A note on what this says about the test suite.** All four shipped under 931 green tests.
+Three were pinned by tests that asserted a *literal was absent* or that a number *existed*,
+rather than asserting the mechanism — absence of "(555) 123-4567" passed while the area
+code leaked; `US_SSN` was "covered" by a test that hand-built a `RedactionDetail` and never
+ran the analyzer. Assertions on boundary and correctness code should name the entity type,
+the guard that fired, and the value withheld.
+
 ### Demo-blocking, but not features
 
-- **`FALLBACK_API_KEY` is unset locally**, so the keyless path cannot be exercised — and
-  both live verifications below need a working chat turn. Note this file previously called
-  the setting `managed_ollama_cloud_api_key`; that name survives only in a docstring. The
-  real one is `fallback_api_key` / `FALLBACK_API_KEY` ([config.py:71](config.py#L71)),
-  consumed by `_build_ai_provider_from_headers` ([main.py:4646](main.py#L4646)).
-- **Does the model actually refuse the `$203`?** Unit tests prove the guard fires; only a
-  live run proves the model obeys it. If it reports the number with a footnote instead of
-  refusing, the warning wording needs to be louder.
-- **Exercise the Boundary Report against a live chat turn** — verified against historical
-  `search_collection` events, not a fresh `chat_context` one.
+- ~~**`FALLBACK_API_KEY` is unset locally**~~ — **set and verified 2026-08-17.** A chat
+  request carrying `provider: "anthropic"` and *no* `X-AI-Key` is silently swapped to
+  `ollama_cloud` and answers in ~25s. The real setting is `fallback_api_key` /
+  `FALLBACK_API_KEY` ([config.py:98](config.py#L98)), consumed by
+  `_build_ai_provider_from_headers` ([main.py:4695](main.py#L4695)).
+
+  > **It must be an ollama.com key.** That path hardcodes
+  > `create_provider("ollama_cloud", ...)`, so an Anthropic or OpenAI key put there is sent
+  > to ollama.com and returns 401 with nothing in the UI explaining why. There is no
+  > env-level `ANTHROPIC_API_KEY` setting at all — cloud keys arrive per-request as
+  > `X-AI-Key` or via `POST /api/agent/config`. `.env.example` now documents this; it had
+  > no `FALLBACK_API_KEY` entry before, which is how the confusion was available.
+- ~~**Does the model actually refuse the `$203`?**~~ **Run live 2026-08-17 — see §0.** It
+  never reports $203, and it does not need to be told not to: the coerced value no longer
+  reaches it. It invents its own wrong total instead, on a path the guard does not cover.
+  Read the §0 entry before treating this as closed.
+- ~~**Exercise the Boundary Report against a live chat turn.**~~ **Done 2026-08-17.** A turn
+  over a notes file carrying three client names, two phone numbers and an email produced a
+  report reading *"8 identifiers were replaced before anything reached the AI provider"*,
+  under boundary `retrieved_text` with `tools: ["chat_context"]` — the fresh event type,
+  not the historical `search_collection` one. Breakdown: 3 PERSON, 2 PHONE_NUMBER,
+  1 EMAIL_ADDRESS, 1 DATE_TIME, 1 LOCATION, and the model's reply named only pseudonyms
+  and placeholders.
+
+  > **This is also the live proof of the phone fix.** Both numbers were logged at score
+  > **0.4** — exactly the value the old `PHONE_NUMBER: 0.7` bar discarded. Under the
+  > previous config both would have crossed to ollama.com as `(617) [FINANCIAL_ACCOUNT]`,
+  > area code intact and mistyped in the report.
 - **Ask Ollama for a named subprocessor list.** Their policy says "model inference
   providers" without naming them, so the no-retention commitment rests on an unpublished
   flow-down — the one question a diligence reviewer will find in COMPLIANCE.md §2 Tier 1.
   An email, not code.
-- **`RESEND_API_KEY` is unset**, so the in-app "Report issue" button returns 503
-  ([config.py:146](config.py#L146)). That is the tester feedback channel — it should be
-  live before anyone outside the building is handed a build.
-  [TESTING.md](TESTING.md) §6 currently routes testers to email instead.
+- ~~**`RESEND_API_KEY` is unset**~~ — **set and verified 2026-08-17.**
+  `GET /api/feedback/config` now returns `{"enabled": true, "recipient":
+  "jordan.boyce@cyberlion.dev"}` and a `POST /api/feedback` came back
+  `{"ok": true, "id": ...}` instead of 503. **Confirm the mail actually landed** — a custom
+  `FEEDBACK_EMAIL_FROM` is set, and Resend returns `ok` on accepted-but-undeliverable if
+  that sending domain is not verified. Leaving `FEEDBACK_EMAIL_FROM` empty falls back to
+  Resend's `onboarding@resend.dev` sandbox sender, which works without a verified domain.
+  [TESTING.md](TESTING.md) §6 still routes testers to plain email and can now be updated.
 - ~~**`run.bat` / `run.sh` print the wrong port.**~~ **Done 2026-08-12** — both scripts
   hardcoded "Starting server on port 8000" at line 44. They now resolve `PORT` from `.env`
   (falling back to the config default of 8000) and print the full URL.
@@ -589,8 +733,21 @@ Still open before a build actually goes out:
   §6 of that doc — proving the origin is not reachable directly — is the one that
   matters and the one most likely to fail first time (Finn binds `0.0.0.0` by default;
   hosting wants `HOST=127.0.0.1`).
-- **A seed collection.** First launch is empty, so a tester's first impression depends
-  entirely on their own file landing well. A pre-ingested demo client would derisk that.
+- ~~**A seed collection.**~~ **Done 2026-08-17.**
+  [scripts/seed_demo_client.py](scripts/seed_demo_client.py) creates the Alvarez Family
+  Trust from [seed/demo_client_holdings.csv](seed/demo_client_holdings.csv) — a Pershing-shaped
+  export, so it lands through a real vendor profile rather than a synthetic path. It drives
+  the HTTP API rather than writing to the store, so the seed goes through the same ingest
+  the advisor's own file does; if ingest breaks, seeding breaks, which is the correct
+  coupling. Idempotent, so it is safe in a post-deploy step. `--force` recreates.
+
+  The holdings are built to exercise the whole cascade on a $2,380,000 book: a prohibited
+  `XOM` position, `TXN` at 21.85% against a 15% ceiling, cash at 20.88% against a 10%
+  target and 15% band, and three harvestable losses. Verified end to end in the container —
+  prep returns them in that priority order, with `matched_by: exact` on every allocation
+  line and profile completeness 1.0. **It is also a live precision check on the P0.6
+  guard**: the file is clean, so `total_market_value` must come back as exactly
+  $2,380,000 with no warning. It does.
 
 ### Deferred out of v1 — deliberately
 

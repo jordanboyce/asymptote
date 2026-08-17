@@ -304,9 +304,9 @@
           <div class="w-12 h-12 rounded-full bg-base-200 border border-base-300 flex items-center justify-center" aria-hidden="true">
             <Sparkles :size="20" class="text-primary/70" />
           </div>
-          <div class="text-center max-w-sm">
-            <p class="text-sm font-medium text-base-content/80">{{ emptyStateHeading }}</p>
-            <p class="text-xs text-base-content/50 mt-1">{{ emptyStateSubtext }}</p>
+          <div class="text-center max-w-[46ch]">
+            <p class="heading-brief text-lg">{{ emptyStateHeading }}</p>
+            <p class="text-sm text-base-content/55 mt-2 leading-relaxed text-pretty">{{ emptyStateSubtext }}</p>
           </div>
           <div v-if="hasAnyProvider && documentCount > 0" class="flex flex-wrap gap-2 justify-center max-w-md">
             <button
@@ -1211,17 +1211,23 @@ const suggestions = computed(() => {
   return _GENERAL_SUGGESTIONS
 })
 
+/* An empty state should teach the thing that is not obvious.
+ *
+ * "Ready to chat with <client>" repeated the name already sitting in the
+ * header chip, and "Try a question, or pick a suggestion below" narrated a
+ * text box the advisor is looking at. Neither earned its line. What an advisor
+ * genuinely cannot tell by looking is where the answers come from and what
+ * leaves the machine — so that is what these say now. */
 const emptyStateHeading = computed(() => {
   if (!hasAnyProvider.value) return 'Set up an AI provider to start'
   if (props.documentCount === 0) return 'Upload documents to begin'
-  const name = collectionStore.currentCollection?.name
-  return name ? `Ready to chat with ${name}` : 'Ready when you are'
+  return 'Ask about this client'
 })
 
 const emptyStateSubtext = computed(() => {
   if (!hasAnyProvider.value) return 'Add an Anthropic, OpenAI, or Ollama key in Settings.'
   if (props.documentCount === 0) return 'Drag a PDF, CSV, transcript, or any document into Sources to index it.'
-  return 'Try a question, or pick a suggestion below.'
+  return 'Answers come from this client’s own files, with names and account numbers replaced before anything reaches the model.'
 })
 
 // Expanded-details state for structured result cards: Set of "msgIdx:srIdx"

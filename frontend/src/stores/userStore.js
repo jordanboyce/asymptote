@@ -8,6 +8,7 @@ export const useUserStore = defineStore('user', () => {
   const multiUser = ref(false)
   const dbBackend = ref('sqlite')
   const loaded = ref(false)
+  const authFailed = ref(false)
 
   const isMultiUser = computed(() => multiUser.value)
 
@@ -18,10 +19,25 @@ export const useUserStore = defineStore('user', () => {
       displayName.value = response.data.display_name
       multiUser.value = response.data.multi_user
       dbBackend.value = response.data.db_backend
+      authFailed.value = false
       loaded.value = true
     } catch (err) {
+      // A 401 is not a transient failure — it means multi-user mode is on and
+      // the request carried no verified identity. Falling back to a synthetic
+      // "Default User" here used to make that look like a working single-user
+      // session: the shell rendered, the header showed a signed-in name, and
+      // then every data call 401'd with no explanation. Surface it instead.
+      if (err?.response?.status === 401) {
+        authFailed.value = true
+        userId.value = ''
+        displayName.value = ''
+        multiUser.value = true
+        loaded.value = true
+        return
+      }
       console.error('Failed to load user info:', err)
-      // Fallback for single-user mode
+      // Any other error (network, 5xx) genuinely is transient/unknown; the
+      // single-user default is the safe read since single-user mode never 401s.
       userId.value = 'default'
       displayName.value = 'Default User'
       multiUser.value = false
@@ -36,6 +52,7 @@ export const useUserStore = defineStore('user', () => {
     multiUser,
     dbBackend,
     loaded,
+    authFailed,
     isMultiUser,
     loadCurrentUser,
   }

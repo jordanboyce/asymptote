@@ -306,7 +306,7 @@ def check_concentration(
     if exclude_cash:
         kept = []
         for row in all_rows:
-            if _is_cash_like(str(row.get("name") or "")):
+            if _is_cash_like(str(row.get("name") or ""), row.get("asset_class")):
                 excluded_cash.append(str(row.get("name")))
             else:
                 kept.append(row)

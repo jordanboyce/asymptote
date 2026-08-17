@@ -132,6 +132,13 @@ class TestRedactionEngine:
         result = redaction_engine.redact_text("Call me at (555) 123-4567.")
         assert "(555) 123-4567" not in result.redacted_text
         assert result.had_pii
+        # Assert the entity type, not just the absence of the literal. This
+        # test passed for months while phone redaction was switched off: the
+        # FINANCIAL_ACCOUNT recognizer matched the trailing "123-4567" on its
+        # own, so the literal vanished while "(555) " stayed in plaintext.
+        entity_types = {d.entity_type for d in result.details}
+        assert "PHONE_NUMBER" in entity_types
+        assert "555" not in result.redacted_text
 
     def test_detects_credit_card(self):
         from services.privacy.redaction_engine import redaction_engine
@@ -191,6 +198,85 @@ class TestRedactionEngine:
 
         # Symbol should be untouched (not PII)
         assert redacted_rows[0]["Symbol"] == "AAPL"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Phone redaction and the decimal false positive
+# ---------------------------------------------------------------------------
+
+class TestPhoneNumberRedaction:
+    """Regression cover for a boundary failure that shipped silently.
+
+    ``entity_score_thresholds`` carried ``PHONE_NUMBER: 0.7`` to suppress
+    decimals being read as phone numbers. But Presidio scores *every* US phone
+    format at exactly 0.4, so the bar dropped all of them and phone redaction
+    was off entirely. Nothing caught it: the FINANCIAL_ACCOUNT recognizer
+    partially masked the last seven digits, which was enough to satisfy an
+    assertion that only checked the full literal was gone.
+
+    The fix is the threshold coming off plus a decimal filter that inspects the
+    characters bracketing the span. These tests pin both halves — a phone must
+    redact whole and by the right type, and a decimal must not be touched.
+    """
+
+    PHONE_FORMATS = [
+        "(617) 555-0142",
+        "617-555-0142",
+        "+1 617-555-0142",
+        "1-617-555-0142",
+    ]
+
+    @pytest.mark.parametrize("phone", PHONE_FORMATS)
+    def test_phone_redacts_whole_and_by_correct_type(self, phone):
+        from services.privacy.redaction_engine import redaction_engine
+        result = redaction_engine.redact_text(f"Reach the client at {phone} before Friday.")
+
+        assert "PHONE_NUMBER" in {d.entity_type for d in result.details}
+        # No fragment may survive -- the original bug leaked the area code.
+        assert "617" not in result.redacted_text
+        assert "555" not in result.redacted_text
+        assert "0142" not in result.redacted_text
+
+    def test_sentence_final_period_does_not_suppress_phone(self):
+        """The decimal filter must not treat "0142." as a decimal number."""
+        from services.privacy.redaction_engine import redaction_engine
+        result = redaction_engine.redact_text("Call 617-555-0142.")
+        assert "PHONE_NUMBER" in {d.entity_type for d in result.details}
+        assert "0142" not in result.redacted_text
+
+    @pytest.mark.parametrize("decimal_text", [
+        "Yield was 0.08245803 for the period",
+        "Price 1234.5678 and 0.0425 ratio",
+        "Return of 08245803.5 basis",
+        "Cost basis 1,234,567.89 on 12 lots",
+    ])
+    def test_decimals_are_not_redacted_as_phone_numbers(self, decimal_text):
+        from services.privacy.redaction_engine import redaction_engine
+        result = redaction_engine.redact_text(decimal_text)
+        assert "PHONE_NUMBER" not in {d.entity_type for d in result.details}
+        assert result.redacted_text == decimal_text
+
+    def test_clean_brokerage_export_produces_no_phone_false_positives(self):
+        """The precision property: real exports must stay quiet.
+
+        Lowering the threshold is only safe if it does not start firing on
+        vendor exports. Measured across all eight ingest fixtures at the time
+        of the fix: zero PHONE_NUMBER detections in 687 non-empty cells.
+        """
+        import csv
+        from pathlib import Path
+        from services.privacy.redaction_engine import redaction_engine
+
+        fixture = Path(__file__).parent / "fixtures" / "ingest" / "pershing_unrealized_gl.csv"
+        with fixture.open(newline="", encoding="utf-8-sig") as fh:
+            cells = [c for row in csv.reader(fh) for c in row if c.strip()]
+
+        assert cells, "fixture produced no cells to check"
+        for cell in cells:
+            result = redaction_engine.redact_text(cell)
+            assert "PHONE_NUMBER" not in {d.entity_type for d in result.details}, (
+                f"phone false positive on brokerage cell {cell!r}"
+            )
 
 
 # ---------------------------------------------------------------------------

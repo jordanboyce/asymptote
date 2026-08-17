@@ -16,21 +16,22 @@
   leaves the process to produce it.
 -->
 <template>
-  <section :class="variant === 'inline' ? 'rounded-lg border border-base-300 bg-base-100' : ''">
+  <!-- Inline variant sits inside the Overview's rule rhythm, so it carries a
+       hairline rather than a card border — a bordered box here nested another
+       bordered box inside it for every sheet, which is the card-in-card the
+       design brief rules out. -->
+  <section :class="variant === 'inline' ? 'rule-t rule-b py-4' : ''">
     <!-- Header + overall verdict -->
-    <header
-      class="flex items-start justify-between gap-3 flex-wrap px-4 py-3"
-      :class="variant === 'inline' ? 'border-b border-base-300/60' : ''"
-    >
+    <header class="flex items-start justify-between gap-3 flex-wrap">
       <div class="min-w-0">
-        <h2 class="text-sm font-semibold tracking-tight flex items-center gap-2">
-          <ShieldCheck :size="15" class="text-primary shrink-0" aria-hidden="true" />
-          Data health
+        <h2 class="label-eyebrow flex items-center gap-1.5">
+          <ShieldCheck :size="12" class="shrink-0" aria-hidden="true" />
+          Data check
         </h2>
-        <p v-if="summary" class="mt-1 text-xs" :class="gradeTextClass(summary.grade)">
+        <p v-if="summary" class="mt-1.5 text-[0.9375rem]" :class="gradeTextClass(summary.grade)">
           {{ summary.headline }}
         </p>
-        <p v-else-if="loading" class="mt-1 text-xs text-base-content/55">Checking your files…</p>
+        <p v-else-if="loading" class="mt-1.5 text-sm text-base-content/55">Checking your files…</p>
       </div>
 
       <div v-if="summary && summary.sheet_count" class="flex items-center gap-2 shrink-0">
@@ -49,7 +50,7 @@
       </div>
     </header>
 
-    <div class="px-4 py-3 flex flex-col gap-3">
+    <div class="pt-3 flex flex-col gap-3">
       <!-- Error -->
       <div v-if="error" role="alert" class="alert alert-error text-xs py-2">
         <AlertTriangle :size="14" aria-hidden="true" />
@@ -68,11 +69,17 @@
       </p>
 
       <!-- One block per ingested sheet -->
+      <!-- One sheet per block, separated by a rule. An unreliable sheet is the
+           one case that earns an enclosing border: it is the "do not read the
+           totals" state, and it should look different from its neighbours
+           rather than merely be worded differently. Alarm is scarce
+           (principle 4), so everything else stays quiet. -->
       <article
         v-for="report in reports"
         :key="report.table_name"
-        class="rounded-lg border bg-base-100"
-        :class="report.grade === 'unreliable' ? 'border-error/40' : 'border-base-300'"
+        :class="report.grade === 'unreliable'
+          ? 'border border-error/40 rounded-md bg-error/[0.03]'
+          : 'rule-t pt-3 first:border-t-0 first:pt-0'"
       >
         <!-- File line -->
         <div class="px-3 py-2.5 flex items-start justify-between gap-3 flex-wrap">

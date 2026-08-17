@@ -2,7 +2,16 @@ services:
   finn:
     build:
       context: .
-      dockerfile: Dockerfile.corporate
+      # Dockerfile, not Dockerfile.corporate. This pointed at the corporate
+      # variant, so `docker compose up -d --build` -- the documented
+      # deployment command -- built an image that omits
+      # `python -m spacy download en_core_web_lg`. Presidio loads that model
+      # at runtime, so the container started clean and then failed on the
+      # first redaction; redaction fails open, meaning client PII would reach
+      # the model while the UI still reported the boundary as on.
+      # Switch to Dockerfile.corporate only if you need custom CA certs, and
+      # read the note at the top of that file first.
+      dockerfile: Dockerfile
     container_name: finn-api
     ports:
       - "8000:8000"

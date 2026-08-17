@@ -68,6 +68,55 @@ def _sanity_check_sum(
         )
 
 
+def _coercion_guard(
+    conn: Any,
+    base_table: str,
+    column: str,
+    warnings: List[str],
+) -> bool:
+    """P0.6 storage-type guard. True when the aggregate must not be reported.
+
+    ``_sanity_check_sum`` above is a *value* heuristic: it fires on NULL and on
+    near-zero sums. That misses the failure this product exists to prevent.
+    When a market-value column stays TEXT, SQLite coerces each "27,431.50" to
+    its leading numeric prefix — 27 — so the total lands at $203 against a real
+    $207,727.45. It is neither NULL nor near zero, so the heuristic passes it
+    through as a clean number, which is the worst possible outcome: confidently
+    wrong, and the one figure an advisor reads out loud.
+
+    This is a *type* check instead, and it samples ``base_table`` rather than
+    whatever table the metric actually queried. The ``__by_symbol`` rollup view
+    launders the bug — its column is declared ``SUM("Market_Value")``, so the
+    already-truncated value arrives typed REAL and sampling the view finds
+    nothing wrong. Same reasoning as ``brief_generator._guard``; see the
+    negative-control test there.
+    """
+    from services.tabular.aggregate_guard import check_aggregate_coercion
+
+    found = check_aggregate_coercion(conn, f'SELECT SUM("{column}") FROM "{base_table}"')
+    for warning in found:
+        if warning not in warnings:
+            warnings.append(warning)
+    return bool(found)
+
+
+def _withhold(result: Dict[str, Any], *value_keys: str) -> Dict[str, Any]:
+    """Blank out computed figures the guard says are wrong.
+
+    Returning the number with a warning attached is not good enough. A caveat
+    next to "$203" still leaves "$203" on the page, and both a model and a
+    human repeat the figure and drop the asterisk. The brief already withholds
+    rather than caveats (``total_market_value: null`` plus
+    ``total_market_value_reliable: false``); this keeps the tool surface
+    consistent with it.
+    """
+    for key in value_keys:
+        result[key] = None
+    result['reliable'] = False
+    result['value_withheld'] = True
+    return result
+
+
 def _sanity_check_breakdown(groups: List[Dict[str, Any]], warnings: List[str]) -> None:
     """P0.6: warn when portfolio weights don't sum to ~100%."""
     pcts = [g.get('pct') for g in groups if g.get('pct') is not None]
@@ -198,8 +247,11 @@ def compute_financial_metric(
             col = require('market_value')
             value = scalar(f'SELECT SUM("{col}") FROM "{table}"')
             _sanity_check_sum(value, col, row_count, warnings)
+            unreliable = _coercion_guard(conn, base_table, col, warnings)
             result = {'metric': metric, 'filename': schema['filename'],
                       'column': col, 'value': value, 'table_used': table}
+            if unreliable:
+                _withhold(result, 'value')
             if warnings:
                 result['warnings'] = warnings
             return result
@@ -208,8 +260,11 @@ def compute_financial_metric(
             col = require('cost_basis')
             value = scalar(f'SELECT SUM("{col}") FROM "{table}"')
             _sanity_check_sum(value, col, row_count, warnings)
+            unreliable = _coercion_guard(conn, base_table, col, warnings)
             result = {'metric': metric, 'filename': schema['filename'],
                       'column': col, 'value': value, 'table_used': table}
+            if unreliable:
+                _withhold(result, 'value')
             if warnings:
                 result['warnings'] = warnings
             return result
@@ -218,8 +273,11 @@ def compute_financial_metric(
             col = require('pnl')
             value = scalar(f'SELECT SUM("{col}") FROM "{table}"')
             _sanity_check_sum(value, col, row_count, warnings)
+            unreliable = _coercion_guard(conn, base_table, col, warnings)
             result = {'metric': metric, 'filename': schema['filename'],
                       'column': col, 'value': value, 'table_used': table}
+            if unreliable:
+                _withhold(result, 'value')
             if warnings:
                 result['warnings'] = warnings
             return result
@@ -264,6 +322,7 @@ def compute_financial_metric(
             )
             pct = (top / total * 100.0) if total and top is not None else None
             _sanity_check_sum(total, mv, row_count, warnings)
+            unreliable = _coercion_guard(conn, base_table, mv, warnings)
             result = {
                 'metric': metric,
                 'filename': schema['filename'],
@@ -273,6 +332,10 @@ def compute_financial_metric(
                 'concentration_pct': pct,
                 'table_used': table,
             }
+            if unreliable:
+                # The ratio is as untrustworthy as its operands -- both numerator
+                # and denominator come from the same coerced column.
+                _withhold(result, 'top_n_value', 'total_value', 'concentration_pct')
             if warnings:
                 result['warnings'] = warnings
             return result

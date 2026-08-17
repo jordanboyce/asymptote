@@ -315,7 +315,7 @@ def _build_policy(
         cash_mv = (cash_mv or 0.0) + (alert.get("market_value") or 0.0)
     if cash_mv is None:
         for pos in positions:
-            if _is_cash_like(str(pos.get("name") or "")):
+            if _is_cash_like(str(pos.get("name") or ""), pos.get("asset_class")):
                 cash_mv = (cash_mv or 0.0) + (pos.get("market_value") or 0.0)
 
     cash = check_cash_policy(profile, cash_mv, total_mv)

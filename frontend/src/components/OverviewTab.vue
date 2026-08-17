@@ -1,25 +1,31 @@
 <template>
   <div class="flex flex-col gap-5 max-w-7xl mx-auto">
 
-    <!-- Header -->
-    <header class="flex items-end justify-between gap-4 flex-wrap pb-3 border-b border-base-300/60">
-      <div class="min-w-0">
-        <h1 class="text-[22px] leading-none font-semibold tracking-tight flex items-center gap-2">
-          <LayoutDashboard :size="20" class="text-primary" aria-hidden="true" />
-          Overview
+    <!-- The masthead of a client report is the client's name. The word
+         "Overview" was saying nothing the active tab wasn't already saying, and
+         it pushed the one piece of orienting information — whose money this is —
+         down into grey subtext. Principle 6: say it once. -->
+    <header class="flex items-end justify-between gap-6 pb-4">
+      <div class="min-w-0 flex-1">
+        <p class="label-eyebrow">Client overview</p>
+        <!-- Wraps rather than truncates. A masthead that ends in "…" tells the
+             advisor less than the tab already did, and household names are
+             routinely long ("The Alvarez Family Revocable Trust"). -->
+        <h1 class="heading-brief mt-1 text-[26px] leading-tight text-balance">
+          {{ collectionName || 'No client selected' }}
         </h1>
-        <p v-if="collectionName" class="mt-2 text-xs text-base-content/55">
-          <span class="font-medium text-base-content/70">{{ collectionName }}</span>
-          <span class="mx-1.5 text-base-content/25">·</span>
+        <p class="provenance mt-1.5">
           <span v-if="brief?.generated_at">Computed {{ relativeTime(brief.generated_at) }}</span>
           <span v-else-if="loading">Computing…</span>
-          <span class="mx-1.5 text-base-content/25" v-if="brief?.tables_scanned != null">·</span>
-          <span v-if="brief?.tables_scanned != null" class="tabular-nums">
-            {{ brief.tables_scanned }} table{{ brief.tables_scanned === 1 ? '' : 's' }} scanned
-          </span>
+          <template v-if="brief?.tables_scanned != null">
+            <span class="mx-1.5 opacity-40">·</span>
+            <span>{{ brief.tables_scanned }} table{{ brief.tables_scanned === 1 ? '' : 's' }} scanned</span>
+          </template>
+          <span class="mx-1.5 opacity-40">·</span>
+          <span>Computed on this machine</span>
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 shrink-0">
         <button
           class="btn btn-sm btn-ghost gap-1.5"
           @click="reload"
@@ -60,16 +66,25 @@
 
     <!-- Loading skeleton (only on first load — subsequent reloads keep the
          old data visible to avoid layout flicker) -->
+    <!-- The skeleton mirrors the masthead's geometry so the page doesn't
+         reflow when real figures land. -->
     <div v-else-if="loading && !brief" class="flex flex-col gap-4">
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div v-for="i in 3" :key="i" class="rounded-lg border border-base-300 bg-base-100 px-3 py-2 animate-pulse">
-          <div class="h-3 w-24 bg-base-300 rounded mb-2"></div>
-          <div class="h-6 w-32 bg-base-300 rounded"></div>
+      <div class="rule-t rule-b py-5">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-6">
+          <div
+            v-for="i in 3"
+            :key="i"
+            class="animate-pulse sm:not-first:pl-8 sm:not-first:border-l sm:not-first:border-[var(--rule)]"
+          >
+            <div class="h-2.5 w-24 rounded-sm bg-[var(--rule-strong)]"></div>
+            <div class="mt-2.5 h-7 w-36 rounded-sm bg-[var(--rule-strong)]"></div>
+            <div class="mt-2.5 h-2 w-28 rounded-sm bg-[var(--rule)]"></div>
+          </div>
         </div>
       </div>
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div class="rounded-lg border border-base-300 bg-base-100 h-72 animate-pulse"></div>
-        <div class="rounded-lg border border-base-300 bg-base-100 h-72 animate-pulse"></div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="h-72 animate-pulse rounded-sm bg-[var(--surface-sunk)]"></div>
+        <div class="h-72 animate-pulse rounded-sm bg-[var(--surface-sunk)]"></div>
       </div>
     </div>
 
@@ -83,34 +98,36 @@
         @send-to-chat="$emit('send-to-chat', $event)"
       />
 
-      <!-- KPI row -->
-      <section class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-2">
-          <div class="text-[11px] uppercase tracking-wider text-base-content/55">Total market value</div>
-          <div class="text-2xl font-semibold tabular-nums mt-0.5">{{ fmtMoney(hs.total_market_value) }}</div>
-        </div>
-        <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-2">
-          <div class="text-[11px] uppercase tracking-wider text-base-content/55">Total cost basis</div>
-          <div v-if="hs.total_cost_basis != null" class="text-2xl font-semibold tabular-nums mt-0.5">
-            {{ fmtMoney(hs.total_cost_basis) }}
-          </div>
-          <div v-else class="text-xs text-base-content/45 italic mt-1.5">Not in export</div>
-        </div>
-        <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-2">
-          <div class="text-[11px] uppercase tracking-wider text-base-content/55">Unrealized P&amp;L</div>
+      <!-- The masthead of the brief. Three figures set like a printed report:
+           serif, tabular, separated by rules rather than boxed into tiles, each
+           carrying its own provenance line.
+
+           The withheld case is the one that matters. When the P0.6 guard can't
+           trust a column, the value arrives null — and this used to render a
+           bare "—" in 24px bold with no explanation, which reads as "zero" or
+           "broken" rather than "we checked, and we won't tell you a number we
+           can't stand behind." That refusal is the product; it gets stated. -->
+      <section class="rule-t rule-b py-5">
+        <dl class="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-6">
           <div
-            v-if="hs.total_unrealized_pnl != null"
-            class="text-2xl font-semibold tabular-nums mt-0.5"
-            :class="pnlToneClass(hs.total_unrealized_pnl)"
+            v-for="fig in headlineFigures"
+            :key="fig.key"
+            class="min-w-0 sm:not-first:pl-8 sm:not-first:border-l sm:not-first:border-[var(--rule)]"
           >
-            {{ pnlPrefix(hs.total_unrealized_pnl) }}{{ fmtMoney(Math.abs(hs.total_unrealized_pnl)) }}
+            <dt class="label-eyebrow">{{ fig.label }}</dt>
+            <dd class="mt-1.5">
+              <div v-if="fig.value !== null" class="figure figure-lg" :class="fig.tone">
+                {{ fig.value }}
+              </div>
+              <div v-else class="figure-withheld figure-lg" aria-label="Not available">—</div>
+              <p class="provenance mt-1.5 text-pretty">{{ fig.note }}</p>
+            </dd>
           </div>
-          <div v-else class="text-xs text-base-content/45 italic mt-1.5">Needs cost basis</div>
-        </div>
+        </dl>
       </section>
 
       <!-- Open action items from meetings -->
-      <section class="rounded-lg border border-base-300 bg-base-100 px-3 py-3">
+      <section class="rule-t pt-5">
         <div class="flex items-center justify-between gap-3 flex-wrap">
           <h3 class="overview-card-title">
             <CheckSquare :size="14" class="text-primary" aria-hidden="true" />
@@ -171,7 +188,7 @@
       <!-- Charts row: sector donut + top positions bar -->
       <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <!-- Sector allocation -->
-        <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-3">
+        <div class="rule-t pt-5">
           <h3 class="overview-card-title">
             <PieChart :size="14" aria-hidden="true" />
             Sector allocation
@@ -191,7 +208,7 @@
         </div>
 
         <!-- Top positions -->
-        <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-3">
+        <div class="rule-t pt-5">
           <h3 class="overview-card-title">
             <BarChart3 :size="14" aria-hidden="true" />
             Top positions
@@ -212,7 +229,7 @@
       <!-- Alerts row: concentration + cash drag -->
       <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <!-- Concentration -->
-        <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-3">
+        <div class="rule-t pt-5">
           <h3 class="overview-card-title">
             <AlertTriangle :size="14" class="text-warning" aria-hidden="true" />
             Concentration alerts
@@ -256,7 +273,7 @@
         </div>
 
         <!-- Cash drag -->
-        <div class="rounded-lg border border-base-300 bg-base-100 px-3 py-3">
+        <div class="rule-t pt-5">
           <h3 class="overview-card-title">
             <Wallet :size="14" aria-hidden="true" />
             Cash drag
@@ -283,7 +300,7 @@
       </section>
 
       <!-- Tax-loss snapshot -->
-      <section class="rounded-lg border border-base-300 bg-base-100 px-3 py-3">
+      <section class="rule-t pt-5">
         <h3 class="overview-card-title">
           <TrendingDown :size="14" class="text-error" aria-hidden="true" />
           Tax-loss candidates
@@ -583,7 +600,7 @@ const topPositionsOptions = computed(() => ({
     enabled: true,
     formatter: (val) => fmtMoneyShort(val),
     offsetX: 28,
-    style: { fontSize: '10px', colors: ['var(--fallback-bc, oklch(var(--bc)))'] },
+    style: { fontSize: '10px', colors: ['var(--ink-55)'] },
   },
   xaxis: {
     labels: { formatter: (val) => fmtMoneyShort(val), style: { fontSize: '10px' } },
@@ -619,6 +636,90 @@ function fmtMoney(n) {
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`
   return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 }
+
+/* The headline figures are written out in full: $2,380,000, not $2.38M.
+ *
+ * Abbreviation is fine on a chart axis where space is scarce and precision is
+ * not the point. It is wrong on the number an advisor reads to a client —
+ * "$2.38M" silently discards $80,000 of range, and a rounded headline is
+ * exactly the imprecision this audience has learned to distrust in software.
+ * Tabular figures keep the longer strings aligned down the row. */
+function fmtMoneyExact(n) {
+  if (n == null || isNaN(n)) return '—'
+  const sign = n < 0 ? '-' : ''
+  return `${sign}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+}
+
+/* Why the coercion guard withheld a column, in the advisor's language.
+ *
+ * The backend warning is written for the model — it names SQLite coercion and
+ * prescribes a CAST. An advisor does not need the SQL; they need to know the
+ * number is unavailable, that it is the file's fault and not theirs, and what
+ * to do. The engineering detail stays one click away in the Trust Report. */
+function withheldReason(column) {
+  const w = (brief.value?.warnings || []).find(
+    x => !column || (x.column || '').toLowerCase().includes(column),
+  )
+  if (!w) return null
+  // Column names arrive SQL-sanitised ("Market_Value"). The advisor's file says
+  // "Market Value", and quoting an identifier they never typed makes Finn look
+  // like it is describing a different file than the one they uploaded.
+  const columnLabel = (w.column || 'source').replace(/_/g, ' ')
+  const file = w.filename ? ` in ${w.filename}` : ''
+  return `Withheld — the ${columnLabel} column${file} holds text in some rows, so a total would be wrong. See the data check above.`
+}
+
+/* The three figures at the top of the brief.
+ *
+ * `value: null` is a deliberate state, not a missing one: the template renders
+ * an em dash in muted serif and prints `note` underneath. Every branch has a
+ * note, so a figure is never unexplained — a blank provenance line would put
+ * us right back where we started. */
+const headlineFigures = computed(() => {
+  const h = hs.value || {}
+  const sourceCount = (h.sources || []).length
+  const positions = Array.isArray(brief.value?.top_positions) ? brief.value.top_positions.length : 0
+
+  const mvReliable = h.total_market_value_reliable !== false && h.total_market_value != null
+  const cbReliable = h.total_cost_basis_reliable !== false && h.total_cost_basis != null
+  const pnlReliable = h.total_unrealized_pnl_reliable !== false && h.total_unrealized_pnl != null
+
+  return [
+    {
+      key: 'mv',
+      label: 'Total market value',
+      value: mvReliable ? fmtMoneyExact(h.total_market_value) : null,
+      tone: '',
+      note: mvReliable
+        ? `Summed from ${sourceCount || 1} source${sourceCount === 1 ? '' : 's'}${positions ? ` · ${positions} positions` : ''}`
+        : withheldReason('market') || 'Withheld — the market value column could not be totalled reliably.',
+    },
+    {
+      key: 'cb',
+      label: 'Total cost basis',
+      value: cbReliable ? fmtMoneyExact(h.total_cost_basis) : null,
+      tone: '',
+      note: cbReliable
+        ? 'Summed from the cost basis column'
+        : h.total_cost_basis == null && h.total_cost_basis_reliable !== false
+          ? 'Not present in this export — most position files omit it.'
+          : withheldReason('cost') || 'Withheld — the cost basis column could not be totalled reliably.',
+    },
+    {
+      key: 'pnl',
+      label: 'Unrealized gain / loss',
+      value: pnlReliable
+        ? `${pnlPrefix(h.total_unrealized_pnl)}${fmtMoneyExact(Math.abs(h.total_unrealized_pnl))}`
+        : null,
+      tone: pnlReliable ? pnlToneClass(h.total_unrealized_pnl) : '',
+      note: pnlReliable
+        ? 'Market value less cost basis'
+        : cbReliable
+          ? withheldReason('') || 'Withheld — cannot be derived from the columns in this export.'
+          : 'Needs a cost basis column to compute.',
+    },
+  ]
+})
 
 function fmtMoneyShort(n) {
   if (n == null || isNaN(n)) return '—'
@@ -755,25 +856,37 @@ function downloadFollowupInvite() {
 </script>
 
 <style scoped>
+/* Section headings in the brief voice: serif, quiet, sitting on a hairline
+ * rather than floating inside a boxed card header. Restyled centrally so
+ * every section on this tab picks it up without touching each template. */
 .overview-card-title {
-  font-size: 0.85rem;
+  font-family: var(--font-serif);
+  font-size: 1rem;
   font-weight: 600;
+  letter-spacing: -0.005em;
   display: flex;
-  align-items: center;
-  gap: 0.4rem;
+  align-items: baseline;
+  gap: 0.45rem;
 }
+/* The icon each heading carries wants to sit on the text baseline, not the
+ * flex baseline, or it rides high next to a serif cap-height. */
+.overview-card-title :deep(svg) { align-self: center; }
+
 .overview-card-meta {
-  font-size: 0.7rem;
+  font-family: var(--font-sans);
+  font-size: var(--text-micro);
   font-weight: 500;
-  color: hsl(var(--bc) / 0.5);
+  color: var(--ink-55);
   letter-spacing: 0.02em;
-  margin-left: 0.4rem;
+  margin-left: 0.15rem;
 }
+
+/* Empty states are statements, not apologies — no italics, no shrug. */
 .overview-card-empty {
-  font-size: 0.8rem;
-  font-style: italic;
-  color: hsl(var(--bc) / 0.55);
+  font-size: var(--text-small);
+  color: var(--ink-55);
   padding: 0.75rem 0;
+  max-width: 62ch;
 }
 .chart-clickable :deep(.apexcharts-pie-area),
 .chart-clickable :deep(.apexcharts-bar-area),

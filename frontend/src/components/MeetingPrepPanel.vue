@@ -18,16 +18,16 @@
      in a room full of compliance officers that is the interesting part.
 -->
 <template>
-  <section :class="variant === 'inline' ? 'rounded-lg border border-base-300 bg-base-100' : ''">
+  <section :class="variant === 'inline' ? 'rule-t rule-b py-4' : ''">
 
     <!-- Header -->
     <header
-      class="flex items-start justify-between gap-3 flex-wrap px-4 py-3"
-      :class="variant === 'inline' ? 'border-b border-base-300/60' : ''"
+      class="flex items-start justify-between gap-3 flex-wrap"
+      :class="variant === 'inline' ? '' : 'px-4 py-3 border-b border-base-300/60'"
     >
       <div class="min-w-0">
-        <h2 class="text-sm font-semibold tracking-tight flex items-center gap-2">
-          <ClipboardList :size="15" class="text-primary shrink-0" aria-hidden="true" />
+        <h2 class="label-eyebrow flex items-center gap-1.5">
+          <ClipboardList :size="12" class="shrink-0" aria-hidden="true" />
           Meeting prep
         </h2>
         <p v-if="page" class="mt-1 text-xs text-base-content/60 tabular-nums">
@@ -66,7 +66,7 @@
       </div>
     </header>
 
-    <div class="px-4 py-3 flex flex-col gap-4">
+    <div class="flex flex-col gap-5" :class="variant === 'inline' ? 'pt-4' : 'px-4 py-3'">
 
       <!-- Error -->
       <div v-if="error" role="alert" class="alert alert-error text-xs py-2">
@@ -83,7 +83,7 @@
 
         <!-- ── Agenda ───────────────────────────────────────────────── -->
         <section>
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/55 mb-2">
+          <h3 class="label-eyebrow mb-2.5">
             What to raise
           </h3>
 
@@ -92,35 +92,54 @@
             what wasn't verified below before treating that as all-clear.
           </p>
 
-          <ol v-else class="flex flex-col gap-1.5">
+          <!-- A numbered agenda, rule-separated, in the order prep decided.
+               Priority was previously encoded three times over — border colour,
+               icon colour, and a badge on every row — which made every item
+               look flagged and left the one thing that genuinely cannot wait
+               competing with a low-priority note about SEC filings. The order
+               is the priority; only "high" is called out in words, and only
+               "high" tints its icon. Alarm is scarce (principle 4). -->
+          <ol v-else class="rule-list">
             <li
               v-for="(point, i) in page.talking_points"
               :key="i"
-              class="rounded-lg border bg-base-100 px-3 py-2.5 flex items-start gap-2.5"
-              :class="priorityBorder(point.priority)"
+              class="flex items-baseline gap-3.5 py-3"
             >
-              <component
-                :is="categoryIcon(point.category)"
-                :size="14"
-                class="mt-0.5 shrink-0"
-                :class="priorityText(point.priority)"
-                aria-hidden="true"
-              />
-              <div class="min-w-0 flex-1">
-                <p class="text-sm font-medium leading-snug">{{ point.headline }}</p>
-                <p class="mt-1 text-xs text-base-content/60 leading-relaxed">{{ point.detail }}</p>
-                <p class="mt-1 text-[11px] text-base-content/40">{{ point.source }}</p>
-              </div>
-              <span class="badge badge-xs shrink-0 mt-0.5" :class="priorityBadge(point.priority)">
-                {{ point.priority }}
+              <span class="figure text-[0.9375rem] w-5 shrink-0 text-right" :class="point.priority === 'high' ? '' : 'opacity-40'">
+                {{ i + 1 }}
               </span>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline gap-2 flex-wrap">
+                  <component
+                    :is="categoryIcon(point.category)"
+                    :size="13"
+                    class="shrink-0 self-center"
+                    :class="point.category === 'compliance' ? 'text-error' : 'text-base-content/35'"
+                    aria-hidden="true"
+                  />
+                  <p class="text-sm font-semibold leading-snug min-w-0">{{ point.headline }}</p>
+                  <!-- Only a policy breach gets a word. `priority: high` covers
+                       five of nine items on a typical book, so labelling all of
+                       them "cannot wait" made the phrase mean nothing and left
+                       a held-against-exclusion-list position looking exactly
+                       like an allocation drift. The ordering already carries
+                       priority; this marks the one category an advisor is
+                       personally exposed on. -->
+                  <span
+                    v-if="point.category === 'compliance'"
+                    class="label-eyebrow text-error/90 shrink-0"
+                  >Policy breach</span>
+                </div>
+                <p class="mt-1 text-sm text-base-content/70 leading-relaxed max-w-[68ch]">{{ point.detail }}</p>
+                <p class="provenance mt-1">{{ point.source }}</p>
+              </div>
             </li>
           </ol>
         </section>
 
         <!-- ── What wasn't checked ──────────────────────────────────── -->
         <section v-if="page.gaps.length">
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-warning/90 mb-2 flex items-center gap-1.5">
+          <h3 class="label-eyebrow text-warning/90 mb-2.5 flex items-center gap-1.5">
             <AlertTriangle :size="12" aria-hidden="true" />
             What Finn could not check
           </h3>

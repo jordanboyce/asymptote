@@ -105,10 +105,24 @@ _DEFAULT_PROFILE = RedactionProfile(
     redaction_style=RedactionStyle.CONSISTENT_PSEUDONYM,
     minimum_score_threshold=0.4,
     strict_mode=True,
-    # PHONE_NUMBER at 0.4 fires on decimal numbers; DATE_TIME at 0.4 fires
-    # on words like "Annual" and "Monthly". Raise these.
+    # DATE_TIME at 0.4 fires on words like "Annual" and "Monthly". Raise it.
+    #
+    # PHONE_NUMBER is deliberately NOT raised. Presidio scores *every* US
+    # phone format at exactly 0.4 — "(617) 555-0142", "617-555-0142" and
+    # "+1 617-555-0142" all come back 0.4 — so the 0.7 bar this entry used to
+    # carry dropped 100% of them and switched phone redaction off entirely.
+    #
+    # That failure was invisible because it was partial: the FINANCIAL_ACCOUNT
+    # recognizer's `account_with_dashes` pattern independently matches the last
+    # seven digits, so "(617) 555-0142" rendered as "(617) [FINANCIAL_ACCOUNT]"
+    # — area code in plaintext, wrong entity type in the Boundary Report, and
+    # the literal string gone, which is all the old test asserted.
+    #
+    # The false positive that motivated the raise (decimals like 0.08245803
+    # detected as phone numbers) is handled precisely instead, by the
+    # decimal-point filter in redaction_engine.redact_text. Use that filter for
+    # new false positives; do not raise this threshold back up.
     entity_score_thresholds={
-        "PHONE_NUMBER": 0.7,
         "DATE_TIME": 0.6,
         # PERSON at 0.4 fires on 3-4 letter all-caps strings (tickers like
         # GLW, TXN, IBM, KO) and on company names containing common given

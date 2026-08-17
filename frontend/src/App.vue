@@ -1,6 +1,32 @@
 <template>
   <div class="h-screen flex flex-col overflow-hidden bg-base-200" :class="{ 'select-none cursor-col-resize': isResizing || isResizingAnalysis }">
 
+    <!-- ── Not authenticated ──
+         Multi-user mode is on but the request carried no verified Cloudflare
+         Access identity, so every data call will 401. Rendering the normal
+         shell here just produces an app that looks logged in and silently
+         fails, which is indistinguishable from the product being broken. -->
+    <div v-if="userStore.authFailed" class="h-full flex items-center justify-center p-6 bg-base-200">
+      <div class="max-w-md w-full bg-base-100 border border-base-300 rounded-box p-6 text-center">
+        <img :src="headerLogoSrc" alt="" class="h-10 w-10 mx-auto mb-3">
+        <h1 class="font-bold text-lg mb-2">Sign in to continue</h1>
+        <p class="text-sm text-base-content/70 mb-4">
+          Finn could not verify your identity. This app is protected by
+          Cloudflare Access — you need to sign in before your data will load.
+        </p>
+        <button class="btn btn-primary btn-sm" @click="reloadForAuth">
+          Sign in
+        </button>
+        <p class="text-xs text-base-content/50 mt-4">
+          If signing in returns you here, the site is reachable without passing
+          through Cloudflare Access. Ask your administrator to check that this
+          hostname is proxied and covered by an Access application.
+        </p>
+      </div>
+    </div>
+
+    <template v-else>
+
     <!-- ── Header ── -->
     <header class="flex items-center gap-2 px-3 h-11 bg-base-100 border-b border-base-300 flex-shrink-0 z-50">
 
@@ -33,12 +59,17 @@
       <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
 
       <!-- Tabs (hidden on collections overview) -->
+      <!-- The active tab is marked with a rule under it rather than a filled
+           pill. A row of grey pills reads as app chrome; an underline reads as
+           a tab in a document, which is the register this product wants — and
+           it keeps the header quiet enough that the client's name beside it
+           stays the loudest thing in the bar. -->
       <template v-if="!isCollectionsView">
         <button
           v-for="tab in tabs"
           :key="tab.id"
-          class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
-          :class="activeTab === tab.id ? 'bg-base-200 font-semibold' : 'font-normal'"
+          class="tab-rule btn btn-xs btn-ghost gap-1.5 rounded-none hover:bg-base-200/60"
+          :class="activeTab === tab.id ? 'tab-rule-active font-semibold' : 'font-normal opacity-70 hover:opacity-100'"
           @click="activeTab = tab.id"
           :aria-label="tab.label"
           :aria-current="activeTab === tab.id ? 'page' : undefined"
@@ -52,8 +83,10 @@
       <div v-if="!isCollectionsView && isExpertMode" class="dropdown dropdown-bottom">
         <label
           tabindex="0"
-          class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
-          :class="toolTabs.some(t => t.id === activeTab) ? 'bg-base-200 font-semibold' : 'font-normal'"
+          class="tab-rule btn btn-xs btn-ghost gap-1.5 rounded-none hover:bg-base-200/60"
+          :class="toolTabs.some(t => t.id === activeTab)
+            ? 'tab-rule-active font-semibold'
+            : 'font-normal opacity-70 hover:opacity-100'"
           aria-label="Tools menu"
           aria-haspopup="menu"
         >
@@ -1064,6 +1097,8 @@
         </div>
       </div>
     </div>
+
+    </template>
   </div>
 </template>
 
@@ -1768,6 +1803,12 @@ async function loadManagedProvider() {
   }
 }
 
+// Cloudflare Access intercepts at the edge, so a plain reload is what triggers
+// the login redirect — there is no in-app credential to submit.
+function reloadForAuth() {
+  window.location.reload()
+}
+
 onMounted(async () => {
   // Probe managed-provider availability first; if the server has a fallback
   // key configured, this bootstraps the provider so `checkOnboardingNeeded()`
@@ -1800,6 +1841,14 @@ onMounted(async () => {
 
   // Load user info
   await userStore.loadCurrentUser()
+
+  // Nothing below this point can succeed without an identity — every one of
+  // these calls would 401. Stop here and let the sign-in screen render rather
+  // than firing a burst of failing requests behind it.
+  if (userStore.authFailed) {
+    updateThemeFromStorage()
+    return
+  }
 
   // Load collections
   await collectionStore.loadCollections()

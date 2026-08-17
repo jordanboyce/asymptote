@@ -274,6 +274,29 @@ def test_concentration_breach_reports_the_trim_amount():
     assert top["trim_dollars"] == 650_000.0
 
 
+def test_money_market_is_excluded_from_concentration_by_asset_class():
+    """A cash sweep named "AIGI FUND" carries no cash keyword in its name.
+
+    Real Pershing exports name the money-market sweep something like
+    "AIGI FUND" and put "Money Market Funds" in the Security Type column.
+    Cash detection used to read the name only, so the sweep was measured
+    against the single-position ceiling and reported as a concentration
+    breach -- a reading that is not meaningful for a cash vehicle.
+    """
+    profile = _profile(max_single_position_pct=15)
+    result = check_concentration(profile, [
+        {"name": "AIGI FUND", "ticker": "MMFAIGI", "market_value": 497_000,
+         "asset_class": "Money Market Funds"},
+        {"name": "Texas Instruments", "ticker": "TXN", "market_value": 520_000,
+         "asset_class": "Common Stocks"},
+        {"name": "Coca Cola", "ticker": "KO", "market_value": 1_363_000,
+         "asset_class": "Common Stocks"},
+    ])
+
+    assert "MMFAIGI" not in [b["ticker"] for b in result["breaches"]]
+    assert "AIGI FUND" in result["excluded_cash_positions"]
+
+
 def test_position_under_the_ceiling_is_not_a_breach():
     profile = _profile(max_single_position_pct=30)
     result = check_concentration(profile, [

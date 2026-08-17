@@ -298,3 +298,36 @@ def test_multi_table_household_merge(tmp_path):
     assert brief["tables_scanned"] == 2
     assert brief["household_summary"]["total_market_value"] == pytest.approx(150_000, rel=0.01)
     assert brief["household_summary"]["total_cost_basis"] == pytest.approx(120_000, rel=0.01)
+
+
+# ── cash detection ────────────────────────────────────────────────────────
+
+
+class TestCashDetection:
+    """``_is_cash_like`` has to read the asset class, not just the name.
+
+    Pershing names its money-market sweep "AIGI FUND" and puts
+    "Money Market Funds" in Security Type. Matching on the name alone missed
+    it on every such export, which silently disabled the client's cash bands
+    and reported the sweep as a concentration breach.
+    """
+
+    def test_name_alone_still_matches(self):
+        from services.brief_generator import _is_cash_like
+        assert _is_cash_like("Schwab Cash Sweep")
+        assert _is_cash_like("FIDELITY MONEY MARKET FUND")
+
+    def test_asset_class_matches_when_the_name_does_not(self):
+        from services.brief_generator import _is_cash_like
+        assert not _is_cash_like("AIGI FUND")
+        assert _is_cash_like("AIGI FUND", "Money Market Funds")
+
+    def test_ordinary_equity_is_not_cash(self):
+        from services.brief_generator import _is_cash_like
+        assert not _is_cash_like("Texas Instruments Inc", "Common Stocks")
+        assert not _is_cash_like("Vanguard Total Bond Market ETF", "Corporate Bonds")
+
+    def test_missing_asset_class_is_tolerated(self):
+        from services.brief_generator import _is_cash_like
+        assert not _is_cash_like("AIGI FUND", None)
+        assert not _is_cash_like("", None)

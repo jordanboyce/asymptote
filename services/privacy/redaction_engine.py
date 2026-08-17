@@ -34,6 +34,33 @@ _PSEUDONYM_LAST = [
 ]
 
 
+def _looks_like_decimal(text: str, start: int, end: int) -> bool:
+    """True if the span at [start:end) is part of a decimal number.
+
+    Presidio's phone recognizer matches long digit runs, so a yield of
+    ``0.08245803`` or a price of ``1234.5678`` reads as a phone number. Three
+    shapes have to be caught, and only the first is visible from inside the
+    span:
+
+    - ``617.555.0142``  -- the point is within the span
+    - ``0.08245803``    -- Presidio returns "08245803"; the point is at start-1
+    - ``08245803.5``    -- the point is at end
+
+    A bare point on either side is not enough on its own: "Call 617-555-0142."
+    ends a sentence and is a real phone number. Require a digit on the far
+    side of the point, which a sentence-ending period never has.
+    """
+    if "." in text[start:end]:
+        return True
+    before = text[:start]
+    if before.endswith(".") and len(before) >= 2 and before[-2].isdigit():
+        return True
+    after = text[end:]
+    if after.startswith(".") and len(after) >= 2 and after[1].isdigit():
+        return True
+    return False
+
+
 def _stable_index(value: str, modulus: int) -> int:
     """Deterministic index into a pseudonym pool.
 
@@ -201,11 +228,21 @@ class _RedactionEngine:
                 )
             ]
 
-        # Drop PHONE_NUMBER detections on strings containing a decimal point
-        # (Presidio flags long decimal sequences like 0.08245803 as phone numbers)
+        # Drop PHONE_NUMBER detections that are really decimal numbers.
+        # Presidio flags long digit runs like 0.08245803 as phone numbers, and
+        # a financial export is full of them.
+        #
+        # Checking only *inside* the span is not enough: on "0.08245803"
+        # Presidio returns the span "08245803", so the decimal point sits one
+        # character to the left and an inside-only test misses it — which is
+        # how "Yield was 0.[PHONE_NUMBER]" got through. Look at the characters
+        # bracketing the span as well.
         results = [
             r for r in results
-            if not (r.entity_type == "PHONE_NUMBER" and "." in text[r.start:r.end])
+            if not (
+                r.entity_type == "PHONE_NUMBER"
+                and _looks_like_decimal(text, r.start, r.end)
+            )
         ]
 
         # Per-call exclusion (for output-side advisor-drafted documents).

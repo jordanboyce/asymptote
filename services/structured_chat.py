@@ -787,6 +787,20 @@ def render_table_as_rows(
     return {"columns": columns, "rows": rows}
 
 
+# Roles whose totals are money an advisor reads out loud. A table carrying
+# any of these must not have its aggregates computed by the model in its head
+# -- see ``_AGGREGATE_LOCK_RULE``.
+_MONEY_ROLES = frozenset({"market_value", "cost_basis", "pnl"})
+
+
+def table_is_money_bearing(table: Dict[str, Any]) -> bool:
+    """True when a table has a column whose SUM is a figure someone acts on."""
+    for col in table.get("columns", []) or []:
+        if col.get("role") in _MONEY_ROLES:
+            return True
+    return False
+
+
 def build_structured_context(
     tables: List[Dict[str, Any]],
     stores: Dict[str, HoldingsStore],
@@ -799,14 +813,35 @@ def build_structured_context(
     can answer numeric/aggregation questions without depending on top-K chunk
     retrieval. For large tables we fall back to the SQL tool-use loop.
 
+    **Money-bearing tables are an exception to "just do the arithmetic".**
+    Inlining plus "show your arithmetic" asks the model to hand-sum a column,
+    and a model that hand-sums a column gets it wrong. Measured 2026-08-17 on
+    a 14-row fixture, three identical turns: $186,325.45, $184,211.45, and a
+    correct refusal, against a true total of $207,727.45. Each wrong answer
+    listed the right nine addends and showed its working underneath, which
+    makes a wrong total *more* persuasive, not less.
+
+    Worse, that path bypasses the P0.6 guard entirely — the guard lives in
+    ``compute_portfolio_metric`` / ``generate_meeting_brief``, and a model
+    doing mental arithmetic calls neither. Since the inline threshold is 150
+    rows, essentially every real client export took the unguarded path.
+
+    So these tables are still inlined (row-level lookup is genuinely useful
+    and exact), but they are also reported in ``money_tables`` so the caller
+    can advertise the structured tools for them and forbid hand-computed
+    aggregates. Exactness comes from the tool; the rows are for context.
+
     Returns a dict:
       - inline_block: str, full JSONL prompt section (or '')
       - tool_tables: list[dict], the subset still needing the tool loop
+      - money_tables: list[dict], inlined tables whose aggregates must go
+        through the tools rather than being summed in the prompt
       - inlined_filenames: set[str], filenames fully represented in the prompt
       - inlined_document_ids: set[str], document_ids fully represented
     """
     inline_parts: List[str] = []
     tool_tables: List[Dict[str, Any]] = []
+    money_tables: List[Dict[str, Any]] = []
     inlined_filenames: Set[str] = set()
     inlined_document_ids: Set[str] = set()
     running = 0
@@ -832,10 +867,16 @@ def build_structured_context(
             if c.get("role")
         ]
         roles_line = f"  detected roles: {', '.join(role_cols)}\n" if role_cols else ""
+        is_money = table_is_money_bearing(t)
+        money_line = (
+            "  AGGREGATE LOCK: totals/sums/averages for this file must come "
+            "from the structured tools, not from adding these rows up.\n"
+            if is_money else ""
+        )
         header = (
             f'--- TABLE: {t["filename"]}{sheet_suffix} '
             f'({row_count} rows, {t.get("column_count", 0)} cols) ---\n'
-            f'{roles_line}'
+            f'{roles_line}{money_line}'
         )
         block = header + jsonl
 
@@ -845,6 +886,8 @@ def build_structured_context(
 
         inline_parts.append(block)
         running += len(block)
+        if is_money:
+            money_tables.append(t)
         if t.get("filename"):
             inlined_filenames.add(t["filename"])
         if t.get("document_id"):
@@ -852,21 +895,40 @@ def build_structured_context(
 
     inline_block = ""
     if inline_parts:
+        lock_note = ""
+        if money_tables:
+            names = ", ".join(sorted({t["filename"] for t in money_tables}))
+            lock_note = (
+                "\nAGGREGATE LOCK — applies to: " + names + "\n"
+                "These files hold money columns. Do NOT add, average, or rank "
+                "their monetary values yourself, and do NOT present a total you "
+                "worked out from the rows above. Call `compute_portfolio_metric` "
+                "(or `query_table` / `aggregate_table` for anything it does not "
+                "cover) and report what it returns. Two reasons, both of which "
+                "have bitten: hand arithmetic over a column of figures is "
+                "unreliable even when every row is visible, and the tools carry "
+                "coercion guards that catch a column silently ingested as text — "
+                "a check you cannot perform by reading. If a tool withholds a "
+                "value (`value: null`, `reliable: false`), say the figure could "
+                "not be computed and give its reason. Never substitute your own "
+                "sum for a withheld one.\n"
+            )
         inline_block = (
             "STRUCTURED TABLES (AUTHORITATIVE FULL DATA):\n"
             "The complete contents of the following CSV/XLSX files are included "
-            "below as JSONL — one JSON object per row, every row present. For "
-            "any numeric, aggregation, sum, count, average, filter, ranking, or "
-            "date-range question about these files, answer DIRECTLY and "
-            "EXCLUSIVELY from the JSONL rows below. Do NOT rely on any chunk "
-            "snippets for these files — the JSONL is complete and authoritative. "
-            "Show your arithmetic when summing so the user can verify.\n\n"
+            "below as JSONL — one JSON object per row, every row present. Use "
+            "them for row-level lookup, filtering, counting and date ranges, and "
+            "prefer them over chunk snippets, which are partial. For monetary "
+            "aggregates see the AGGREGATE LOCK below.\n"
+            + lock_note
+            + "\n"
             + "\n\n".join(inline_parts)
         )
 
     return {
         "inline_block": inline_block,
         "tool_tables": tool_tables,
+        "money_tables": money_tables,
         "inlined_filenames": inlined_filenames,
         "inlined_document_ids": inlined_document_ids,
     }

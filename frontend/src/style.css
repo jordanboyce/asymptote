@@ -1,4 +1,15 @@
 @import "tailwindcss";
+
+/* Self-hosted, never a CDN. Finn's whole claim is that client data does not
+ * leave the machine; fetching fonts from Google on every page load would put
+ * a request to a third party on the critical path of a privacy product, and
+ * would simply fail in the air-gapped and proxied environments this ships
+ * into. Latin subsets only — ~115KB total, built into static/. */
+@import "@fontsource-variable/public-sans/index.css";
+@import "@fontsource/spectral/400.css";
+@import "@fontsource/spectral/500.css";
+@import "@fontsource/spectral/600.css";
+
 @plugin "daisyui" {
    /* Finn ships with two themes only: corporate for light, business for dark.
     * --default marks corporate as the boot theme; --prefersdark tells daisy
@@ -6,6 +17,164 @@
     * explicitly picked a theme. Both themes set `color-scheme` on :root so
     * useThemeIcon.js reactively swaps light/dark image variants. */
    themes: corporate --default, business --prefersdark;
+}
+
+/* ─── Type system ───────────────────────────────────────────────────────── */
+/* Two faces, each with a job. Spectral (serif) carries statements of fact —
+ * figures read aloud to a client, section headings, the brief. Public Sans
+ * carries the working interface. The split is the point: when an advisor sees
+ * serif, they are looking at something asserted about their client's money.
+ *
+ * See .impeccable.md for why these two and not the reflex picks. */
+@theme {
+  --font-sans: "Public Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Spectral", ui-serif, Georgia, serif;
+
+  /* Fixed rem steps, not fluid clamp — this is a product UI, not a marketing
+   * page, and fluid type in a dense table makes column widths jump as the
+   * window resizes. Ratio ~1.25 so hierarchy is legible at a glance. */
+  --text-micro: 0.6875rem;   /* 11px — provenance, column labels */
+  --text-tiny: 0.75rem;      /* 12px — secondary metadata */
+  --text-small: 0.8125rem;   /* 13px — dense table body, controls */
+  --text-body: 0.9375rem;    /* 15px — reading text */
+  --text-lead: 1.125rem;     /* 18px — section leads */
+  --text-figure: 1.5rem;     /* 24px — a figure in context */
+  --text-headline: 2rem;     /* 32px — the one number on a page */
+}
+
+:root {
+  /* Alpha-blended ink. DaisyUI 5 emits complete color values
+   * (--color-base-content: oklch(22% .03 278)), so the DaisyUI 4 idiom of
+   * wrapping a bare --bc in oklch() with a slash-alpha is invalid CSS and
+   * silently drops. It was doing exactly that across chat markdown, the note
+   * editor and chart labels — muted text was not muted, table hairlines were
+   * not drawn. color-mix is the v5-correct way to get a tint. */
+  --ink-90: color-mix(in oklab, var(--color-base-content) 90%, transparent);
+  --ink-70: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  --ink-55: color-mix(in oklab, var(--color-base-content) 55%, transparent);
+  --ink-40: color-mix(in oklab, var(--color-base-content) 40%, transparent);
+
+  /* Hairlines. The private-bank brief separates with a rule and space, not a
+   * box — see principle 1. --rule is the workhorse; --rule-strong closes a
+   * section. */
+  --rule: color-mix(in oklab, var(--color-base-content) 12%, transparent);
+  --rule-strong: color-mix(in oklab, var(--color-base-content) 26%, transparent);
+
+  --surface-sunk: color-mix(in oklab, var(--color-base-content) 4%, transparent);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  /* Public Sans has real tabular figures. Turning them on globally means any
+   * column of numbers aligns without each table opting in — and columns of
+   * money that do not align are the tell of software an advisor will not
+   * trust with money. `cv11` gives the disambiguated l/I. */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ─── Brief primitives ──────────────────────────────────────────────────── */
+/* The vocabulary of the printed report, available anywhere. */
+
+/* A figure an advisor might read out loud. Serif, because in this interface
+ * serif means "asserted fact about your client's money". */
+.figure {
+  font-family: var(--font-serif);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  color: var(--color-base-content);
+}
+.figure-lg { font-size: var(--text-headline); }
+.figure-md { font-size: var(--text-figure); }
+
+/* A figure that could not be computed. Principle 2: withheld is a designed
+ * state, not an error and not a blank. An em dash holds the column so the
+ * table does not reflow, and the reason sits underneath in .provenance. */
+.figure-withheld {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  color: var(--ink-40);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+/* The footnote under a figure: which file, which column, which check ran.
+ * Small caps-ish label treatment, never louder than the figure it explains. */
+.provenance {
+  font-size: var(--text-micro);
+  line-height: 1.45;
+  color: var(--ink-55);
+  letter-spacing: 0.01em;
+}
+
+/* Column and section labels. Uppercase is fine here — these are always short.
+ * Never used for a sentence (see typography rules). */
+.label-eyebrow {
+  font-size: var(--text-micro);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-55);
+}
+
+/* Section heading in the brief voice. */
+.heading-brief {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--color-base-content);
+}
+
+/* Hairline separators — the private-bank alternative to a card border. */
+.rule-t { border-top: 1px solid var(--rule); }
+.rule-b { border-bottom: 1px solid var(--rule); }
+.rule-strong-b { border-bottom: 1px solid var(--rule-strong); }
+
+/* Rows separated by rules rather than wrapped in cards. Last row keeps its
+ * rule off so a list never ends on a dangling line. */
+.rule-list > * + * { border-top: 1px solid var(--rule); }
+
+/* Numeric cell: right-aligned and tabular so decimals stack. */
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums lining-nums;
+  white-space: nowrap;
+}
+
+/* ─── Tab rule ──────────────────────────────────────────────────────────── */
+/* The active-tab marker. Drawn as a pseudo-element pinned to the bottom of
+ * the header so switching tabs cannot change the header's height — a border
+ * on the button itself would, and the whole shell would shift by a pixel on
+ * every click. Sits flush with the header's own bottom border. */
+.tab-rule {
+  position: relative;
+  border: 0;
+}
+.tab-rule::after {
+  content: "";
+  position: absolute;
+  left: 0.35rem;
+  right: 0.35rem;
+  bottom: -0.5rem;
+  height: 2px;
+  background: var(--color-primary);
+  opacity: 0;
+  transform: scaleX(0.6);
+  transform-origin: center;
+  /* ease-out-quart: decelerates like a real object, no bounce. */
+  transition: opacity 180ms cubic-bezier(0.25, 1, 0.5, 1),
+              transform 180ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+.tab-rule-active::after { opacity: 1; transform: scaleX(1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-rule::after { transition: none; }
 }
 
 /* ─── Assistant chat markdown ───────────────────────────────────────────── */
@@ -30,7 +199,7 @@
 .chat-markdown h1 { font-size: 1.15rem; }
 .chat-markdown h2 { font-size: 1.05rem; }
 .chat-markdown h3 { font-size: 0.975rem; }
-.chat-markdown h4 { font-size: 0.9rem; color: oklch(var(--bc) / 0.8); }
+.chat-markdown h4 { font-size: 0.9rem; color: var(--ink-70); }
 .chat-markdown p { margin: 0; }
 .chat-markdown strong { font-weight: 600; }
 .chat-markdown em { font-style: italic; }
@@ -48,12 +217,12 @@
   font-size: 0.85em;
   padding: 0.1rem 0.35rem;
   border-radius: 0.25rem;
-  background: oklch(var(--b3) / 0.6);
-  color: oklch(var(--bc) / 0.9);
+  background: var(--surface-sunk);
+  color: var(--ink-90);
 }
 .chat-markdown pre {
-  background: oklch(var(--b3) / 0.5);
-  border: 1px solid oklch(var(--bc) / 0.1);
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   overflow-x: auto;
@@ -64,23 +233,28 @@
   padding: 0;
   font-size: inherit;
 }
+/* A quotation is indented and set in the serif, the way a pulled passage is
+ * set in a printed report — not tagged with a heavy colored stripe. */
 .chat-markdown blockquote {
-  border-left: 3px solid oklch(var(--bc) / 0.2);
-  padding-left: 0.75rem;
-  color: oklch(var(--bc) / 0.7);
-  font-style: italic;
+  border-left: 1px solid var(--rule-strong);
+  padding-left: 1rem;
+  margin-left: 0.125rem;
+  color: var(--ink-70);
+  font-family: var(--font-serif);
+  font-size: 0.95em;
+  font-style: normal;
 }
 .chat-markdown hr {
   border: 0;
-  border-top: 1px solid oklch(var(--bc) / 0.15);
+  border-top: 1px solid var(--rule);
   margin: 1rem 0;
 }
 .chat-markdown a {
-  color: oklch(var(--p));
+  color: var(--color-primary);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.chat-markdown a:hover { color: oklch(var(--pf)); }
+.chat-markdown a:hover { color: color-mix(in oklab, var(--color-primary) 80%, var(--color-base-content)); }
 .chat-markdown table {
   border-collapse: collapse;
   width: 100%;
@@ -89,11 +263,11 @@
   overflow-x: auto;
 }
 .chat-markdown thead {
-  background: oklch(var(--b3) / 0.5);
+  background: var(--surface-sunk);
 }
 .chat-markdown th,
 .chat-markdown td {
-  border: 1px solid oklch(var(--bc) / 0.12);
+  border: 1px solid var(--rule);
   padding: 0.4rem 0.6rem;
   text-align: left;
   vertical-align: top;

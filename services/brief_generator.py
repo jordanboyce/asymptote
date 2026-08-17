@@ -126,12 +126,31 @@ def _dedupe_alerts(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(merged.values()) + passthrough
 
 
-def _is_cash_like(name: str) -> bool:
-    """Return True when a position name looks like a cash / money-market entry."""
-    if not name:
-        return False
-    lower = name.lower().strip()
-    return any(kw in lower for kw in _CASH_KEYWORDS)
+def _is_cash_like(name: str, asset_class: str | None = None) -> bool:
+    """Return True when a position looks like a cash / money-market entry.
+
+    Checks the asset class as well as the name, because the name on its own is
+    not reliable. A Pershing money-market sweep comes through as "AIGI FUND"
+    with a Security Type of "Money Market Funds" -- no cash keyword appears in
+    the name at all. Reading only the name had two consequences on every such
+    export, both of them quiet:
+
+    - the sweep was judged against ``max_single_position_pct`` and reported as
+      a concentration breach, which is not a meaningful reading of a cash
+      vehicle and looks naive in front of a prospect; and
+    - ``check_cash_policy`` received ``cash_market_value=None`` and recorded
+      "no cash position identified", so the client's own min/max cash bands
+      never evaluated -- the check reported itself as unrun rather than
+      wrong, but an advisor who set those bands never found out they were
+      being skipped.
+    """
+    for value in (name, asset_class):
+        if not value:
+            continue
+        lower = str(value).lower().strip()
+        if any(kw in lower for kw in _CASH_KEYWORDS):
+            return True
+    return False
 
 
 def _scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> Any:
@@ -217,6 +236,7 @@ def _process_table(
     cb_col = roles.get('cost_basis')
     pnl_col = roles.get('pnl')
     sector_col = roles.get('sector')
+    asset_class_col = roles.get('asset_class')
     account_col = roles.get('account')
     name_col = roles.get('name') or roles.get('ticker') or roles.get('cusip')
     ticker_col = roles.get('ticker')
@@ -317,6 +337,12 @@ def _process_table(
                 select_parts.append(_safe_label_select(ticker_col, 'ticker'))
             if sector_col:
                 select_parts.append(f'"{sector_col}" AS sector')
+            # Carry the asset class through. Without it, cash detection can
+            # only look at the security name, and a Pershing money-market
+            # sweep is named "AIGI FUND" -- no cash keyword anywhere in it.
+            # See _is_cash_like.
+            if asset_class_col and asset_class_col not in (name_col, sector_col):
+                select_parts.append(f'"{asset_class_col}" AS asset_class')
 
             _, top_rows = _rows(
                 conn,
@@ -383,7 +409,7 @@ def _process_table(
                 f'FROM "{table}" WHERE "{mv_col}" IS NOT NULL AND "{mv_col}" > 0',
             )
             for pos in all_pos:
-                if _is_cash_like(str(pos.get('name') or '')):
+                if _is_cash_like(str(pos.get('name') or ''), pos.get('asset_class')):
                     mv = pos.get('market_value') or 0
                     if mv >= cash_drag_min:
                         result['cash_drag_alerts'].append({

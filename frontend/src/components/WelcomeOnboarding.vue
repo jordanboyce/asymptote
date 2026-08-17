@@ -26,20 +26,25 @@
       </div>
 
       <!-- Logo + heading (welcome stage only) -->
+      <!-- A fiduciary's first question about new software is not "what can it
+           do" but "where does my client data go". Leading with the boundary
+           answers that before it is asked; "Welcome to Finn" answered nothing
+           and spent the most valuable line on the screen doing it. -->
       <div v-if="stage === 'welcome'" class="text-center mb-8">
         <img :src="logoSrc" alt="" class="w-14 h-14 mx-auto mb-5 opacity-90" />
-        <h1 id="welcome-title" class="text-2xl font-semibold tracking-tight">
-          Welcome to Finn
+        <h1 id="welcome-title" class="heading-brief text-[1.75rem] leading-tight">
+          Client data stays on this machine
         </h1>
         <p class="text-sm text-base-content/60 mt-3 max-w-sm mx-auto leading-relaxed">
-          {{ hasManagedProvider ? "Let's get you set up in two short steps." : "Let's get you set up in three short steps." }}
+          {{ hasManagedProvider
+            ? 'Two short steps, then you can load a brokerage export.'
+            : 'Three short steps, then you can load a brokerage export.' }}
         </p>
       </div>
 
       <!-- ── Stage 1: welcome / privacy ──────────────────────────────────── -->
       <div v-if="stage === 'welcome'" class="space-y-5">
         <div class="bg-base-100 rounded-lg p-5 space-y-4 text-sm leading-relaxed">
-          <p class="font-medium text-base">How Finn handles your data.</p>
           <ul class="space-y-2 text-base-content/75">
             <li class="flex gap-2">
               <span class="text-primary font-semibold">·</span>
@@ -75,7 +80,7 @@
       <!-- ── Stage 2: provider + key ─────────────────────────────────────── -->
       <div v-else-if="stage === 'provider'" class="space-y-5">
         <div class="text-center">
-          <h2 class="text-xl font-semibold">Choose an AI provider</h2>
+          <h2 class="heading-brief text-xl">Choose an AI provider</h2>
           <p class="text-sm text-base-content/60 mt-2">
             We recommend Anthropic Claude — deepest reasoning and the richest tool-use. You can change this later in Settings.
           </p>
@@ -166,9 +171,13 @@
       <!-- ── Stage 3: first collection ───────────────────────────────────── -->
       <div v-else-if="stage === 'collection'" class="space-y-5">
         <div class="text-center">
-          <h2 class="text-xl font-semibold">Create your first collection</h2>
+          <!-- "Collection" is the internal identifier, not the user-facing
+               word — the UI was relabelled to Clients in August and this
+               screen was missed. Identifiers below stay as they are. -->
+          <h2 class="heading-brief text-xl">Add your first client</h2>
           <p class="text-sm text-base-content/60 mt-2">
-            One collection per client household — usually the household name.
+            One client per household. Their brokerage exports, meeting notes and
+            policy all live together under this name.
           </p>
         </div>
 
@@ -222,7 +231,7 @@
           </svg>
         </div>
         <div>
-          <h2 class="text-xl font-semibold">You're all set</h2>
+          <h2 class="heading-brief text-xl">You're all set</h2>
           <p class="text-sm text-base-content/60 mt-2">
             <span v-if="createdCollection">
               Upload a brokerage export to <span class="font-medium">{{ createdCollection.name }}</span>, then ask Finn about the portfolio.

@@ -210,7 +210,7 @@ onBeforeUnmount(() => {
    semantic tokens only. The .prose class from Tailwind Typography would
    collide with DaisyUI themes, so we override the bits we care about. */
 .markdown-editor-surface .ProseMirror {
-  color: hsl(var(--bc));
+  color: var(--color-base-content);
   font-size: 0.9rem;
   line-height: 1.6;
 }
@@ -236,10 +236,11 @@ onBeforeUnmount(() => {
 .markdown-editor-surface .ProseMirror ol { list-style: decimal; }
 .markdown-editor-surface .ProseMirror li > p { margin: 0; }
 .markdown-editor-surface .ProseMirror blockquote {
-  border-left: 3px solid hsl(var(--bc) / 0.2);
-  padding-left: 0.8em;
-  color: hsl(var(--bc) / 0.75);
-  font-style: italic;
+  border-left: 1px solid var(--rule-strong);
+  padding-left: 1em;
+  color: var(--ink-70);
+  font-family: var(--font-serif);
+  font-style: normal;
 }
 .markdown-editor-surface .ProseMirror code {
   background: hsl(var(--b2));
@@ -248,7 +249,7 @@ onBeforeUnmount(() => {
   font-size: 0.85em;
 }
 .markdown-editor-surface .ProseMirror p.is-editor-empty:first-child::before {
-  color: hsl(var(--bc) / 0.4);
+  color: var(--ink-40);
   content: attr(data-placeholder);
   float: left;
   height: 0;

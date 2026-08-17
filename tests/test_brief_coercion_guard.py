@@ -6,10 +6,15 @@ two restricted rows hold "See note 3" / "Priced monthly", which drops the
 truncates every "27,431.50" to 27 and `SUM()` returns $203 for a $207,727
 book.
 
-`compute_portfolio_metric` and `query_table` were already guarded. The brief
-was not — it ran raw `SUM()` in its own SQL — so the pre-meeting page, the
-one number an advisor reads out loud, was the one place the guard didn't
-reach. These tests pin that shut.
+The brief ran raw `SUM()` in its own SQL, so the pre-meeting page — the one
+number an advisor reads out loud — reported $203. These tests pin that shut.
+
+`compute_portfolio_metric` was long believed to be guarded already. It was
+not. What it had was `_sanity_check_sum`, a value heuristic that fires on
+NULL and near-zero sums; 203.0 is neither, so the tool returned it as a clean
+number with no warning on its default path. That is covered at the bottom of
+this file now. Anything that validates an aggregate must check the column's
+storage *type*, not the plausibility of the result.
 
 The second test is the subtle one: the `__by_symbol` rollup view *launders*
 the bug. Its column is defined as `SUM("Market_Value")`, so downstream the
@@ -179,3 +184,159 @@ def test_clean_fixtures_produce_no_warnings_and_a_real_total(tmp_path, fixture):
     assert summary.get("total_market_value_reliable") is not False
     assert summary["total_market_value"] is not None
     assert summary["total_market_value"] > 0
+
+
+# ── the same bug, one surface over ────────────────────────────────────────
+#
+# The module docstring above says compute_portfolio_metric "was already
+# guarded". It was not, and the guard it did have could not have caught this.
+# `_sanity_check_sum` is a *value* heuristic: it fires when a SUM comes back
+# NULL or near zero. The coerced total is 203.0 -- neither -- so it sailed
+# through as a clean number with no warning attached, on the default code
+# path, for the exact question the demo asks. Verified against a live
+# container before the fix.
+
+
+@pytest.fixture
+def clean_store(tmp_path):
+    return _store_with(tmp_path, "pershing_unrealized_gl.csv")
+
+
+def test_metric_tool_withholds_the_coerced_total(messy_store):
+    from services.financial.metrics import compute_financial_metric
+
+    result = compute_financial_metric(
+        messy_store, "messy_unrealized_gl.csv", "total_market_value"
+    )
+
+    assert result["value"] is None, (
+        "compute_portfolio_metric returned a market-value total for a column "
+        "that coerces -- this is the $203 bug on the tool surface"
+    )
+    assert result["value"] != COERCED_TOTAL
+    assert result["reliable"] is False
+    assert result["value_withheld"] is True
+    assert any("DO NOT report this number" in w for w in result["warnings"])
+
+
+def test_metric_tool_guard_survives_the_rollup_view(messy_store):
+    """The negative control: group_by_symbol=True reads the laundering view.
+
+    The `__by_symbol` view declares its column as SUM("Market_Value"), so the
+    truncated value arrives typed REAL and a guard that samples the queried
+    table finds nothing wrong. The guard has to sample the base table.
+    """
+    from services.financial.metrics import compute_financial_metric
+
+    result = compute_financial_metric(
+        messy_store, "messy_unrealized_gl.csv", "total_market_value",
+        group_by_symbol=True,
+    )
+
+    assert result["table_used"].endswith("__by_symbol"), "expected the view path"
+    assert result["value"] is None
+    assert result["reliable"] is False
+
+
+def test_metric_tool_withholds_derived_concentration(messy_store):
+    """Numerator and denominator share the broken column, so the ratio goes too."""
+    from services.financial.metrics import compute_financial_metric
+
+    result = compute_financial_metric(
+        messy_store, "messy_unrealized_gl.csv", "concentration"
+    )
+
+    assert result["concentration_pct"] is None
+    assert result["total_value"] is None
+    assert result["top_n_value"] is None
+    assert result["reliable"] is False
+
+
+def test_metric_tool_stays_quiet_on_a_clean_export(clean_store):
+    """Precision, not noise -- a clean vendor file must report its total.
+
+    This is the property a guard change must not break: the clean Pershing
+    fixture has to come back with a real number and no warning at all.
+    """
+    from services.financial.metrics import compute_financial_metric
+
+    result = compute_financial_metric(
+        clean_store, "pershing_unrealized_gl.csv", "total_market_value"
+    )
+
+    assert result["value"] is not None
+    assert result["value"] > 0
+    assert result.get("reliable") is not False
+    assert result.get("value_withheld") is not True
+    assert not result.get("warnings")
+
+
+# ── the aggregate lock ────────────────────────────────────────────────────
+#
+# Guarding the tool is only half the job: a small table gets inlined into the
+# prompt as JSONL, and the prompt used to tell the model to sum it by hand and
+# "show your arithmetic". It did, and it was wrong -- three identical live
+# turns on this 14-row fixture returned $186,325.45, $184,211.45 and a correct
+# refusal, against a true $207,727.45. No tool was called, so no guard ran.
+# Since the inline threshold is 150 rows, that was the path essentially every
+# real client export took.
+
+
+def _money_table():
+    return {
+        "filename": "holdings.csv",
+        "row_count": 12,
+        "column_count": 4,
+        "columns": [
+            {"name": "Symbol", "role": "ticker"},
+            {"name": "Market Value", "role": "market_value"},
+        ],
+    }
+
+
+def _plain_table():
+    return {
+        "filename": "attendees.csv",
+        "row_count": 12,
+        "column_count": 2,
+        "columns": [
+            {"name": "Name", "role": None},
+            {"name": "Email", "role": None},
+        ],
+    }
+
+
+def test_money_bearing_table_is_detected_by_role():
+    from services.structured_chat import table_is_money_bearing
+
+    assert table_is_money_bearing(_money_table())
+    assert not table_is_money_bearing(_plain_table())
+    assert not table_is_money_bearing({"columns": []})
+    assert not table_is_money_bearing({})
+
+
+def test_cost_basis_and_pnl_also_lock():
+    from services.structured_chat import table_is_money_bearing
+
+    for role in ("cost_basis", "pnl"):
+        assert table_is_money_bearing({"columns": [{"name": "c", "role": role}]}), role
+
+
+def test_prompt_no_longer_tells_the_model_to_hand_sum_money():
+    """The old instruction and the fix cannot both be present."""
+    from services.chat.context import _assemble_system_prompt
+
+    prompt = _assemble_system_prompt(
+        collection_overview="",
+        expertise_block="",
+        inline_block="STRUCTURED TABLES (AUTHORITATIVE FULL DATA):\n...",
+        context_text="",
+        tables_block="",
+        doc_filter_count=None,
+        native_citations=False,
+        context_addendum="",
+    )
+
+    assert "AGGREGATE LOCK" in prompt
+    # The instruction that produced the wrong totals.
+    assert "answer DIRECTLY from the JSONL rows and show your arithmetic" not in prompt

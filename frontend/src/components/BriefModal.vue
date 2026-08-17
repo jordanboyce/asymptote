@@ -653,7 +653,7 @@ function horizontalBarBase({ valueFormatter, valueFormatterShort, color }) {
       enabled: true,
       formatter: valueFormatterShort,
       offsetX: 34,
-      style: { fontSize: '10px', colors: ['var(--fallback-bc, oklch(var(--bc)))'] },
+      style: { fontSize: '10px', colors: ['var(--ink-55)'] },
     },
     xaxis: {
       labels: { formatter: valueFormatterShort, style: { fontSize: '10px' } },
@@ -989,13 +989,13 @@ defineExpose({ open, close })
 .brief-section-meta {
   font-size: 0.7rem;
   font-weight: 500;
-  color: hsl(var(--bc) / 0.5);
+  color: var(--ink-55);
   letter-spacing: 0.02em;
 }
 .brief-empty {
   font-size: 0.8rem;
   font-style: italic;
-  color: hsl(var(--bc) / 0.55);
+  color: var(--ink-55);
   padding: 0.5rem 0;
 }
 </style>
