@@ -21,6 +21,13 @@ Three layers, so no single mistake exposes the corpus:
 Prerequisite: your domain is on Cloudflare (free plan is fine; Zero Trust
 free tier covers up to 50 users).
 
+> **Scripted alternative:** [scripts/provision_cloudflare.py](../scripts/provision_cloudflare.py)
+> performs steps 1–3 (plus the DNS record and secrets bookkeeping) in one
+> idempotent run, given an API token with *Cloudflare Tunnel: Edit*,
+> *Access: Apps and Policies: Edit*, *Access: Service Tokens: Edit*, and
+> *Zone DNS: Edit* permissions. The dashboard steps below are the manual
+> equivalent.
+
 1. **Create the tunnel.** Zero Trust dashboard → *Networks → Tunnels →
    Create a tunnel* (Cloudflared connector). Name it `asymptote`. Copy the
    token from the install command — that's `TUNNEL_TOKEN`.
@@ -40,8 +47,14 @@ free tier covers up to 50 users).
 # .env next to docker-compose.yml:
 #   TUNNEL_TOKEN=<from step 1>
 #   AUTH_PASSWORD=<long random string, e.g. `openssl rand -base64 33`>
+#   MCP_ALLOWED_HOSTS=asymptote.<your-domain>
 docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d --build
 ```
+
+`MCP_ALLOWED_HOSTS` matters: the MCP SDK ships DNS-rebinding protection that
+only trusts localhost `Host` headers, and the tunnel forwards the public
+hostname. Without this setting the UI works but every `/mcp` request is
+rejected with `Invalid Host header`.
 
 ## Verify the door is actually closed
 
@@ -54,10 +67,16 @@ curl -sS --max-time 5 http://<host-ip>:8473/health && echo "REACHABLE — fix th
 curl -sS -o /dev/null -w "%{http_code}\n" https://asymptote.<your-domain>/api/collections
 # expect 302 (Access login), never 200/401 from the app itself
 
-# 3. With a service token it must work:
-curl -sS https://asymptote.<your-domain>/health \
+# 3. With the service token + app password, the MCP handshake must succeed
+#    (the token is scoped to /mcp — it will NOT open /health or the UI):
+curl -sS -X POST https://asymptote.<your-domain>/mcp/ \
   -H "CF-Access-Client-Id: <token-id>.access" \
-  -H "CF-Access-Client-Secret: <token-secret>"
+  -H "CF-Access-Client-Secret: <token-secret>" \
+  -H "Authorization: Bearer <AUTH_PASSWORD>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"verify","version":"0"}}}'
+# expect a JSON-RPC result with "serverInfo": {"name": "Asymptote", ...}
 ```
 
 ## Pointing MCP clients at it
@@ -67,7 +86,7 @@ password. For clients that support custom headers (Claude Code, most MCP
 SDKs), configure the `/mcp` endpoint with:
 
 ```
-URL:     https://asymptote.<your-domain>/mcp
+URL:     https://asymptote.<your-domain>/mcp/
 Headers: CF-Access-Client-Id: <token-id>.access
          CF-Access-Client-Secret: <token-secret>
          Authorization: Bearer <AUTH_PASSWORD>
@@ -76,7 +95,7 @@ Headers: CF-Access-Client-Id: <token-id>.access
 For example, from Claude Code:
 
 ```bash
-claude mcp add --transport http asymptote https://asymptote.<your-domain>/mcp \
+claude mcp add --transport http asymptote https://asymptote.<your-domain>/mcp/ \
   -H "CF-Access-Client-Id: <token-id>.access" \
   -H "CF-Access-Client-Secret: <token-secret>" \
   -H "Authorization: Bearer <AUTH_PASSWORD>"

@@ -20,6 +20,8 @@ openpyxl>=3.1.0
 
 # Embeddings and vector search
 sentence-transformers>=3.0.0
+# transformers 5.x breaks sentence-transformers' PreTrainedModel import
+transformers>=4.41,<5
 faiss-cpu
 numpy<2.0.0
 
@@ -34,7 +36,8 @@ pydantic>=2.10.0
 pydantic-settings>=2.6.0
 
 # MCP server
-mcp>=1.9.4
+# mcp 2.x renamed FastMCP -> MCPServer; migrate deliberately before unpinning
+mcp>=1.9.4,<2
 
 # Testing
 pytest>=8.0.0

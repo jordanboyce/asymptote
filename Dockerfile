@@ -44,7 +44,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # (server image ships full-featured: OCR + audio transcription)
 COPY requirements.txt requirements-ocr.txt requirements-audio.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir "torch==2.11.0" torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt -r requirements-ocr.txt -r requirements-audio.txt
 
 # ── Stage 3: runtime ──

@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     # UI is needed. Required whenever the server is reachable beyond loopback.
     auth_password: str = ""
 
+    # Extra Host header values the embedded /mcp endpoint accepts, comma-
+    # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding
+    # protection that only trusts localhost Hosts by default; when the app is
+    # served through a tunnel or reverse proxy under a public hostname, list
+    # that hostname here. Localhost stays allowed either way.
+    mcp_allowed_hosts: str = ""
+
     # OCR configuration — deliberately minimal: an on/off switch and an engine.
     # Scanned pages either go through a vision-capable LLM (best quality) or the
     # free local engine (Docling/Tesseract) when no provider is set. Rendering

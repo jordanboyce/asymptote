@@ -11,6 +11,7 @@ from typing import Any, Literal
 from urllib.parse import parse_qs, urlencode
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
 from config import settings
@@ -53,11 +54,30 @@ MCP_CONFIG_FIELDS = (
     "mcp_max_source_length",
 )
 
+def _transport_security() -> TransportSecuritySettings:
+    """DNS-rebinding protection with localhost plus any configured public hosts.
+
+    Without an explicit setting the MCP SDK trusts only localhost Host headers,
+    which breaks the endpoint behind a tunnel/reverse proxy (the original
+    public Host is forwarded). MCP_ALLOWED_HOSTS extends the allowlist while
+    keeping the protection itself enabled.
+    """
+    hosts = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*", "[::1]", "[::1]:*"]
+    origins = ["http://127.0.0.1", "http://127.0.0.1:*", "http://localhost", "http://localhost:*"]
+    for host in settings.mcp_allowed_hosts.split(","):
+        host = host.strip()
+        if host:
+            hosts += [host, f"{host}:*"]
+            origins += [f"https://{host}", f"http://{host}"]
+    return TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
+
+
 _asymptote_mcp = FastMCP(
     "Asymptote",
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
+    transport_security=_transport_security(),
 )
 
 
