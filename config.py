@@ -33,7 +33,13 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
     # "local" = sentence-transformers (downloaded from HuggingFace)
     # "ollama" = Ollama /api/embed (fully local, no HF dependency)
-    embedding_provider: Literal["local", "ollama"] = "local"
+    # "ollama_cloud" = ollama.com /api/embed with an API key — no local model
+    #   at all; note chunks are sent to ollama.com at index time and queries
+    #   at search time, so pick this only when that egress is acceptable.
+    embedding_provider: Literal["local", "ollama", "ollama_cloud"] = "local"
+    # Key for embedding_provider="ollama_cloud". Empty falls back to the team
+    # key saved on the Ollama Cloud provider card (Settings → AI Providers).
+    ollama_cloud_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"   # used for embeddings and inference
     ollama_embedding_model: str = "nomic-embed-text"  # Ollama model when embedding_provider="ollama"
 

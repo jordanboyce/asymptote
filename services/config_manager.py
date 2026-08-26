@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # an ephemeral filesystem), so the DB must be able to restore every field.
 VALID_CONFIG_FIELDS = {
     "embedding_model", "embedding_provider", "ollama_base_url", "ollama_embedding_model",
+    "ollama_cloud_api_key",
     "chunk_size", "chunk_overlap",
     "default_top_k", "max_top_k",
     "enable_ocr",
@@ -40,7 +41,7 @@ VALID_CONFIG_FIELDS = {
 # place of the stored value, and an update carrying MASKED_SECRET back is
 # treated as "leave unchanged" — so a client can round-trip the config without
 # either seeing the secret or wiping it.
-SECRET_CONFIG_FIELDS = {"vision_ocr_api_key"}
+SECRET_CONFIG_FIELDS = {"vision_ocr_api_key", "ollama_cloud_api_key"}
 MASKED_SECRET = "********"
 
 
@@ -62,6 +63,7 @@ class ConfigManager:
             "embedding_provider": settings.embedding_provider,
             "ollama_base_url": settings.ollama_base_url,
             "ollama_embedding_model": settings.ollama_embedding_model,
+            "ollama_cloud_api_key": settings.ollama_cloud_api_key,
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
             "default_top_k": settings.default_top_k,
@@ -131,7 +133,7 @@ class ConfigManager:
         }
 
         # Fields that require restart
-        restart_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "host", "port"}
+        restart_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "ollama_cloud_api_key", "host", "port"}
         # Fields that require re-indexing
         reindex_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "chunk_size", "chunk_overlap"}
         # OCR fields that can be applied at runtime (no restart needed)
