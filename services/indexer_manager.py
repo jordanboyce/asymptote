@@ -260,14 +260,16 @@ class IndexerManager:
         """
         try:
             indexer = self.get_indexer(collection_id)
-            total_chunks = indexer.vector_store.get_total_chunks()
-            documents = indexer.list_documents()
+            # SQL aggregates, not a full list_documents() walk — this backs
+            # /health and the stats endpoint, so it must stay flat as the
+            # collection grows (63k documents was a ~25MB list previously).
+            doc_stats = indexer.get_document_stats()
 
             return {
                 "collection_id": collection_id,
-                "total_documents": len(documents),
-                "total_chunks": total_chunks,
-                "total_pages": sum(d.get("total_pages", 0) or d.get("num_pages", 0) for d in documents),
+                "total_documents": doc_stats["total_documents"],
+                "total_chunks": indexer.vector_store.get_total_chunks(),
+                "total_pages": doc_stats["total_pages"],
             }
         except Exception as e:
             logger.error(f"Failed to get stats for '{collection_id}': {e}")

@@ -262,6 +262,39 @@ async def get_collection(collection_id: str, user_id: str = Depends(get_current_
     return collection
 
 
+@router.get(
+    "/api/collections/{collection_id}/stats",
+    summary="Get collection stats (SQL-backed counts)",
+    tags=["collections"],
+)
+async def get_collection_stats(collection_id: str):
+    """
+    Cheap canonical stats for a collection.
+
+    Counts come from SQL aggregates over the collection's metadata store
+    (COUNT/SUM on the documents table, COUNT on chunks), so the response
+    stays O(1)-ish regardless of collection size. This is what the frontend
+    header/footer and chat gate should poll — never the unpaginated
+    /documents list.
+
+    Returns:
+        - collection_id
+        - total_documents
+        - total_pages
+        - total_chunks
+    """
+    from api.deps import get_indexer
+
+    try:
+        get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    return indexer_manager.get_collection_stats(collection_id)
+
+
 @router.put(
     "/api/collections/{collection_id}",
     summary="Update collection settings",
