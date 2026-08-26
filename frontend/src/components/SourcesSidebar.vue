@@ -57,7 +57,7 @@
                 Folder
               </label>
               <input id="sb-file-input" type="file" multiple class="sr-only" @change="handleBrowserFiles" :disabled="indexing || isRecording" />
-              <input id="sb-folder-input" type="file" webkitdirectory class="sr-only" @change="handleBrowserFolder" :disabled="indexing || isRecording" />
+              <input id="sb-folder-input" type="file" webkitdirectory class="sr-only" @click="folderScanning = true" @change="handleBrowserFolder" @cancel="folderScanning = false" :disabled="indexing || isRecording" />
             </template>
             <template v-else>
               <!-- Desktop: buttons call native OS file picker via backend -->
@@ -104,16 +104,24 @@
             </div>
           </div>
 
+          <!-- Folder enumeration hint: the browser walks the whole directory
+               before the change event fires, which takes a while on huge trees -->
+          <div v-if="folderScanning && selectedPaths.length === 0" class="flex items-center gap-2 text-xs text-base-content/60">
+            <span class="loading loading-spinner loading-xs"></span>
+            Reading folder…
+          </div>
+
           <!-- Selected paths -->
           <div v-if="selectedPaths.length > 0" class="space-y-1.5">
             <div class="flex items-center justify-between">
-              <span class="text-xs text-base-content/60">{{ selectedPaths.length }} selected</span>
+              <span class="text-xs text-base-content/60">{{ selectedPaths.length.toLocaleString() }} selected</span>
               <button class="btn btn-ghost btn-xs" @click="clearAllPaths" :disabled="indexing">Clear</button>
             </div>
 
-            <!-- compact path list -->
+            <!-- compact path list. Only a preview renders: a 75k-file folder
+                 selection must not become 75k DOM rows. -->
             <div class="max-h-24 overflow-y-auto space-y-0.5">
-              <div v-for="(item, idx) in selectedPaths" :key="idx" class="flex items-center gap-1 text-xs">
+              <div v-for="(item, idx) in visibleSelectedPaths" :key="idx" class="flex items-center gap-1 text-xs">
                 <span class="flex-1 truncate text-base-content/70" :title="item.path">{{ item.name }}</span>
                 <button
                   class="btn btn-ghost btn-xs btn-circle p-0 w-5 h-5 min-h-0"
@@ -123,6 +131,9 @@
                 >
                   <X :size="10" />
                 </button>
+              </div>
+              <div v-if="selectedPaths.length > SELECTED_PREVIEW" class="text-xs text-base-content/45 px-1 py-0.5">
+                …and {{ (selectedPaths.length - SELECTED_PREVIEW).toLocaleString() }} more
               </div>
             </div>
 
@@ -153,7 +164,8 @@
           <!-- Success -->
           <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
             <CheckCircle :size="12" aria-hidden="true" />
-            <span>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
+            <span v-if="indexResult.background">{{ indexResult.count.toLocaleString() }} file(s) uploaded — indexing continues in the background</span>
+            <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
             <button
               class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0"
               @click="indexSuccess = false"
@@ -507,7 +519,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, markRaw, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
@@ -530,6 +542,9 @@ const capabilities = ref({})
 
 // Index state
 const selectedPaths = ref([]) // Array of { path: string, name: string, isFolder?: boolean, size?: number, file?: File }
+const folderScanning = ref(false) // browser is enumerating a picked directory
+const SELECTED_PREVIEW = 50
+const visibleSelectedPaths = computed(() => selectedPaths.value.slice(0, SELECTED_PREVIEW))
 const indexing = ref(false)
 const indexProgressPercent = ref(0)
 const currentIndexingFile = ref('')
@@ -762,28 +777,34 @@ const getFilename = (path) => {
   return path.split(/[/\\]/).pop()
 }
 
-// Handle files selected via browser <input type="file"> (headless/Docker mode)
-const handleBrowserFiles = (event) => {
-  const files = Array.from(event.target.files || [])
+// Handle files selected via browser <input type="file"> (headless/Docker mode).
+// Items are markRaw'd (proxying File objects is pure overhead) and appended in
+// ONE assignment — per-item reactive pushes froze the tab on a 75k-file folder.
+const _appendBrowserSelection = (files, nameOf) => {
   const existingNames = new Set(selectedPaths.value.map(p => p.name))
+  const additions = []
   for (const file of files) {
-    if (!existingNames.has(file.name)) {
-      selectedPaths.value.push({ path: '', name: file.name, size: file.size, file })
+    const name = nameOf(file)
+    if (!existingNames.has(name)) {
+      additions.push(markRaw({ path: '', name, size: file.size, file }))
+      existingNames.add(name)
     }
   }
+  if (additions.length) selectedPaths.value = selectedPaths.value.concat(additions)
+}
+
+const handleBrowserFiles = (event) => {
+  _appendBrowserSelection(Array.from(event.target.files || []), (f) => f.name)
   event.target.value = ''
 }
 
 // Handle folder selected via browser <input webkitdirectory> (headless/Docker mode)
 const handleBrowserFolder = (event) => {
-  const files = Array.from(event.target.files || [])
-  const existingNames = new Set(selectedPaths.value.map(p => p.name))
-  for (const file of files) {
-    const relativeName = file.webkitRelativePath || file.name
-    if (!existingNames.has(relativeName)) {
-      selectedPaths.value.push({ path: '', name: relativeName, size: file.size, file })
-    }
-  }
+  folderScanning.value = false
+  _appendBrowserSelection(
+    Array.from(event.target.files || []),
+    (f) => f.webkitRelativePath || f.name,
+  )
   event.target.value = ''
 }
 
@@ -909,8 +930,12 @@ const indexFiles = async () => {
       }
       if (batch.length) batches.push(batch)
 
+      // Phase 1 — transfer: stage batches to the server (no indexing in the
+      // request, so each batch is just an upload and finishes fast). The tab
+      // must stay open only for this phase.
       uploading.value = true
       uploadingCount.value = browserItems.length
+      const stagedPaths = []
       let uploaded = 0
       try {
         for (const group of batches) {
@@ -920,11 +945,11 @@ const indexFiles = async () => {
           }
           formData.append('collection_id', collectionStore.currentCollectionId)
           try {
-            const response = await axios.post('/documents/upload', formData, {
+            const response = await axios.post('/documents/upload-staged', formData, {
               headers: { 'Content-Type': 'multipart/form-data' }
             })
-            successCount += response.data.documents_processed || 0
-            totalChunks += response.data.total_chunks || 0
+            for (const s of response.data.staged || []) stagedPaths.push(s.path)
+            for (const f of response.data.failed || []) errors.push(`${f.filename}: ${f.error}`)
           } catch (err) {
             const errorMsg = err.response?.data?.detail || err.message
             errors.push(`Upload batch (${group[0].name}…): ${errorMsg}`)
@@ -939,14 +964,31 @@ const indexFiles = async () => {
         uploading.value = false
         uploadingCount.value = 0
       }
-      if (filePaths.length === 0 && folders.length === 0 && successCount > 0) {
-        indexSuccess.value = true
-        indexResult.value = { count: successCount, chunks: totalChunks }
-        justIndexed.value = true
-        addSectionOpen.value = false
-        loadDocuments()
-        setTimeout(() => loadDocuments(), 1500)
-        emit('document-deleted')
+
+      // Phase 2 — hand off: one server-side background job indexes the staged
+      // files. It shows up in the background-jobs drawer with live progress,
+      // survives page refreshes, and keeps running if the tab closes.
+      if (stagedPaths.length > 0) {
+        try {
+          const jobResp = await axios.post('/documents/index-local-async', {
+            file_paths: stagedPaths,
+            collection_id: collectionStore.currentCollectionId,
+            copy_to_library: false,
+          })
+          backgroundJobsStore.addUploadJob(jobResp.data)
+          successCount += stagedPaths.length
+          if (filePaths.length === 0 && folders.length === 0) {
+            indexSuccess.value = true
+            indexResult.value = { count: stagedPaths.length, chunks: 0, background: true }
+            justIndexed.value = true
+            addSectionOpen.value = false
+          }
+        } catch (err) {
+          const detail = err.response?.data?.detail || err.message
+          errors.push(err.response?.status === 409
+            ? 'Another indexing job is running — wait for it to finish, then re-add this folder.'
+            : `Failed to start background indexing: ${detail}`)
+        }
       }
     }
 

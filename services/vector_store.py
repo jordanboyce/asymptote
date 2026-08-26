@@ -1,6 +1,7 @@
 """FAISS-based vector store with SQLite metadata for scalability."""
 
 import os
+import threading
 from pathlib import Path
 from typing import List, Optional, Dict
 import logging
@@ -59,6 +60,14 @@ class VectorStore:
 
         # BM25 keyword search index
         self.bm25_index = BM25Index(self.bm25_db_path)
+
+        # FAISS indexes are NOT thread-safe under concurrent mutation: an
+        # upload batch adding vectors while a delete removes them (or a search
+        # scans them) is a native crash, not an exception. One reentrant lock
+        # serializes every touch of self.index — adds, removes, searches,
+        # saves. Discovered live: concurrent upload+delete segfaulted the
+        # server twice during a bulk cleanup.
+        self._index_lock = threading.RLock()
 
         self._load_or_create_index()
 
@@ -169,19 +178,20 @@ class VectorStore:
 
         # Re-indexed chunk_ids get a fresh row id from INSERT OR REPLACE, so
         # evict any existing vectors for them first to avoid orphaned ids.
-        stale = self.metadata_store.get_ids_for_chunk_ids([c.chunk_id for c in chunks])
-        if stale:
-            self.index.remove_ids(np.asarray(list(stale.values()), dtype=np.int64))
+        with self._index_lock:
+            stale = self.metadata_store.get_ids_for_chunk_ids([c.chunk_id for c in chunks])
+            if stale:
+                self.index.remove_ids(np.asarray(list(stale.values()), dtype=np.int64))
 
-        # Add metadata to SQLite first — its assigned row ids become the FAISS ids
-        chunk_dicts = [chunk.model_dump() for chunk in chunks]
-        self.metadata_store.add_chunks(chunk_dicts)
+            # Add metadata to SQLite first — its assigned row ids become the FAISS ids
+            chunk_dicts = [chunk.model_dump() for chunk in chunks]
+            self.metadata_store.add_chunks(chunk_dicts)
 
-        id_by_chunk = self.metadata_store.get_ids_for_chunk_ids(
-            [chunk.chunk_id for chunk in chunks]
-        )
-        ids = np.asarray([id_by_chunk[chunk.chunk_id] for chunk in chunks], dtype=np.int64)
-        self.index.add_with_ids(embeddings_normalized.astype(np.float32), ids)
+            id_by_chunk = self.metadata_store.get_ids_for_chunk_ids(
+                [chunk.chunk_id for chunk in chunks]
+            )
+            ids = np.asarray([id_by_chunk[chunk.chunk_id] for chunk in chunks], dtype=np.int64)
+            self.index.add_with_ids(embeddings_normalized.astype(np.float32), ids)
 
         # Add to BM25 index for keyword search
         bm25_docs = [(chunk.chunk_id, chunk.text) for chunk in chunks]
@@ -233,8 +243,9 @@ class VectorStore:
             if not allowed_ids:
                 return []
 
-        k = self.index.ntotal if filtering else min(top_k, self.index.ntotal)
-        similarities, labels = self.index.search(query_normalized, k)
+        with self._index_lock:
+            k = self.index.ntotal if filtering else min(top_k, self.index.ntotal)
+            similarities, labels = self.index.search(query_normalized, k)
 
         # Keep the top_k hits (post-filter) before touching SQLite, then
         # batch-fetch metadata for just those.
@@ -313,7 +324,8 @@ class VectorStore:
         # then batch-fetch metadata for just those.
         query_normalized = query_embedding / np.linalg.norm(query_embedding)
         query_normalized = query_normalized.reshape(1, -1).astype(np.float32)
-        semantic_sims, semantic_labels = self.index.search(query_normalized, candidate_k)
+        with self._index_lock:
+            semantic_sims, semantic_labels = self.index.search(query_normalized, candidate_k)
 
         semantic_hits: List[tuple] = []
         for similarity, row_id in zip(semantic_sims[0], semantic_labels[0]):
@@ -447,7 +459,8 @@ class VectorStore:
 
         if row_ids:
             # Remove the vectors in place
-            removed = self.index.remove_ids(np.asarray(row_ids, dtype=np.int64))
+            with self._index_lock:
+                removed = self.index.remove_ids(np.asarray(row_ids, dtype=np.int64))
             logger.info(f"Removed {removed} vectors from FAISS index for document {document_id}")
 
         return num_deleted
@@ -463,8 +476,9 @@ class VectorStore:
 
     def save(self):
         """Persist the FAISS index to disk (metadata is already in SQLite)."""
-        logger.info(f"Saving FAISS index with {self.index.ntotal} vectors")
-        self._write_index_atomic(self.index)
+        with self._index_lock:
+            logger.info(f"Saving FAISS index with {self.index.ntotal} vectors")
+            self._write_index_atomic(self.index)
         logger.info("Index saved successfully")
 
     def _write_index_atomic(self, index: faiss.Index):
@@ -473,10 +487,23 @@ class VectorStore:
         A crash mid-write must never leave a truncated faiss.index behind —
         faiss.read_index refuses truncated files, which would make the whole
         collection unopenable.
+
+        The temp name is unique per write: concurrent savers (an upload batch
+        and a document delete, say) previously shared one .tmp path, and the
+        loser's os.replace raced a FileNotFoundError that took the server down.
+        Last rename wins; both renames are complete, valid index files.
         """
-        tmp_path = self.index_path.with_suffix(".index.tmp")
-        faiss.write_index(index, str(tmp_path))
-        os.replace(tmp_path, self.index_path)
+        tmp_path = self.index_path.with_suffix(f".index.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            faiss.write_index(index, str(tmp_path))
+            os.replace(tmp_path, self.index_path)
+        finally:
+            # A failed write must not litter the collection dir.
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def get_total_chunks(self) -> int:
         """Get the total number of chunks in the index."""
@@ -487,7 +514,8 @@ class VectorStore:
         logger.info("Clearing vector store index and metadata")
 
         # Create new empty FAISS index
-        self.index = self._new_index()
+        with self._index_lock:
+            self.index = self._new_index()
 
         # Clear all metadata from database
         self.metadata_store.clear_all()
