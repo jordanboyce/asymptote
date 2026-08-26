@@ -251,7 +251,7 @@ class ExtractionResult:
 class DocumentExtractor:
     """Extracts text from various document formats (PDF, TXT, DOCX, CSV, MD, JSON, JSONL) and code files."""
 
-    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS | AUDIO_EXTENSIONS
+    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.html', '.htm', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS | AUDIO_EXTENSIONS
     TABULAR_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
     AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
 
@@ -515,6 +515,8 @@ class DocumentExtractor:
             result = ExtractionResult(self._extract_xlsx(file_path), method="text")
         elif file_ext == '.md':
             result = ExtractionResult(self._extract_markdown(file_path), method="text")
+        elif file_ext in ('.html', '.htm'):
+            result = ExtractionResult(self._extract_html(file_path), method="text")
         elif file_ext == '.json':
             result = ExtractionResult(self._extract_json(file_path), method="text")
         elif file_ext == '.jsonl':
@@ -1079,6 +1081,62 @@ class DocumentExtractor:
             page_texts[i] = section
 
         return page_texts
+
+    def _extract_html(self, html_path: Path) -> Dict[int, str]:
+        """
+        Extract text from an HTML file, chunking by h1/h2 headings.
+
+        Mirrors _extract_markdown's section shape so citations point at a
+        heading-delimited section rather than one giant page. Old report
+        exports are frequently malformed; BeautifulSoup's html.parser backend
+        tolerates that and detects the encoding from <meta> tags / BOMs.
+        Tables are flattened to one pipe-separated line per row so their
+        contents stay searchable.
+
+        Returns:
+            Dictionary mapping section numbers to text (split on h1/h2)
+        """
+        from bs4 import BeautifulSoup, NavigableString
+
+        soup = BeautifulSoup(html_path.read_bytes(), "html.parser")
+
+        for tag in soup(["script", "style", "noscript", "template", "iframe", "svg", "canvas"]):
+            tag.decompose()
+
+        for table in soup.find_all("table"):
+            rows = []
+            for tr in table.find_all("tr"):
+                cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
+                if any(cells):
+                    rows.append(" | ".join(cells))
+            table.replace_with(NavigableString("\n" + "\n".join(rows) + "\n"))
+
+        title = soup.title.get_text(strip=True) if soup.title else ""
+
+        # Sentinel before each h1/h2 marks a section boundary; it can't occur
+        # in text because NUL bytes never survive parsing.
+        marker = "\x00SECTION\x00"
+        for heading in soup.find_all(["h1", "h2"]):
+            heading.insert_before(NavigableString(marker))
+
+        body = soup.body or soup
+        text = "\n".join(line.strip() for line in body.get_text("\n").splitlines())
+
+        sections = []
+        for part in text.split(marker):
+            part = re.sub(r"\n{3,}", "\n\n", part).strip()
+            if part:
+                sections.append(part)
+
+        if not sections:
+            if not title:
+                logger.warning(f"No extractable text in HTML file: {html_path.name}")
+                return {1: ""}
+            sections = [title]
+        elif title and title.lower() not in sections[0][:300].lower():
+            sections[0] = f"{title}\n\n{sections[0]}"
+
+        return {i: section for i, section in enumerate(sections, start=1)}
 
     def _extract_json(self, json_path: Path) -> Dict[int, str]:
         """
