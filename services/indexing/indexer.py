@@ -844,6 +844,14 @@ class DocumentIndexer:
             "ai_usage": ai_usage,
         }
 
+    def list_documents_page(self, limit: int, offset: int = 0, q: str = "") -> List[dict]:
+        """One page of documents (newest first, optional filename filter)."""
+        return self.vector_store.metadata_store.list_documents_page(limit, offset=offset, q=q)
+
+    def count_documents(self, q: str = "") -> int:
+        """Total documents, honoring the same filename filter as the paged list."""
+        return self.vector_store.metadata_store.count_documents(q=q)
+
     def list_documents(self) -> List[dict]:
         """
         List all indexed documents.

@@ -527,6 +527,63 @@ class MetadataStore:
             cursor = conn.execute("SELECT COUNT(*) FROM chunks")
             return cursor.fetchone()[0]
 
+    def count_documents(self, q: str = "") -> int:
+        """Count documents, optionally filtered by a filename substring."""
+        with sqlite_connect(self.db_path) as conn:
+            if q:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM documents WHERE filename LIKE ? ESCAPE '\\'",
+                    (f"%{self._escape_like(q)}%",),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) FROM documents").fetchone()
+            return row[0]
+
+    @staticmethod
+    def _escape_like(q: str) -> str:
+        return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _document_row_to_dict(row) -> dict:
+        r = dict(row)
+        if r.get("injection_warnings"):
+            r["injection_warnings"] = json.loads(r["injection_warnings"])
+        return r
+
+    def list_documents_page(self, limit: int, offset: int = 0, q: str = "") -> List[dict]:
+        """One page of documents, newest first, optionally filename-filtered.
+
+        The unpaged list_documents() walks the whole table — fine for hundreds
+        of documents, pathological for a 75k-document collection. This is the
+        SQL-side pagination the sidebar uses; the shape of each row matches
+        list_documents().
+        """
+        with sqlite_connect(self.db_path) as conn:
+            self._ensure_v3_1_columns(conn)
+            conn.row_factory = sqlite3.Row
+            where = ""
+            params: list = []
+            if q:
+                where = "WHERE d.filename LIKE ? ESCAPE '\\'"
+                params.append(f"%{self._escape_like(q)}%")
+            params += [limit, offset]
+            cursor = conn.execute(f"""
+                SELECT
+                    d.document_id,
+                    d.filename,
+                    d.num_chunks,
+                    d.num_pages,
+                    d.source_type,
+                    d.source_path,
+                    d.upload_timestamp,
+                    d.injection_warnings
+                FROM documents d
+                {where}
+                ORDER BY COALESCE(d.upload_timestamp, '1970-01-01') DESC, d.document_id
+                LIMIT ? OFFSET ?
+            """, params)
+            return [self._document_row_to_dict(row) for row in cursor.fetchall()]
+
     def list_documents(self) -> List[dict]:
         """
         List all documents with their statistics.

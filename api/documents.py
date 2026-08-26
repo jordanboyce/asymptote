@@ -762,14 +762,26 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
 )
 async def list_documents(
     collection_id: str = "default",
+    limit: int = 0,
+    offset: int = 0,
+    q: str = "",
 ) -> DocumentListResponse:
     """
-    List all indexed documents with their metadata.
+    List indexed documents with their metadata.
 
     Args:
         collection_id: Collection to list documents from (default: "default")
+        limit: Page size. 0 (the default) returns everything — the
+            backwards-compatible behavior for existing callers. Pass a
+            positive limit for large collections: pagination happens in SQL
+            and the per-document filesystem timestamp fallback is skipped,
+            so a page over a 75k-document collection stays fast.
+        offset: Page start (only meaningful with limit > 0).
+        q: Optional filename substring filter (applies to paged mode; the
+            total_documents in the response honors it).
 
-    Returns filename, page count, and chunk count for each document.
+    Returns filename, page count, and chunk count for each document, plus
+    total_documents (the full filtered count, not the page size).
     """
     try:
         # Get indexer for the collection
@@ -784,7 +796,13 @@ async def list_documents(
         # Get document directory for this collection
         document_dir = indexer_manager.get_documents_path(collection_id)
 
-        documents = indexer.list_documents()
+        paged = limit > 0
+        if paged:
+            documents = indexer.list_documents_page(limit, offset=offset, q=q)
+            total_documents = indexer.count_documents(q=q)
+        else:
+            documents = indexer.list_documents()
+            total_documents = len(documents)
 
         # Convert to DocumentMetadata objects
         doc_metadata_list = []
@@ -802,9 +820,12 @@ async def list_documents(
                 doc_path = document_dir / doc["filename"]
 
             # Get timestamp from file modification time or upload_timestamp
-            # Handle None values by defaulting to empty string
+            # Handle None values by defaulting to empty string. The stat()
+            # fallback is skipped in paged mode: one filesystem stat per
+            # document is exactly the kind of per-row cost pagination exists
+            # to avoid, and rows missing upload_timestamp are legacy-rare.
             indexed_at = doc.get("upload_timestamp") or ""
-            if not indexed_at and doc_path.exists():
+            if not indexed_at and not paged and doc_path.exists():
                 from datetime import datetime
                 mtime = doc_path.stat().st_mtime
                 indexed_at = datetime.fromtimestamp(mtime).isoformat()
@@ -827,7 +848,7 @@ async def list_documents(
 
         return DocumentListResponse(
             documents=doc_metadata_list,
-            total_documents=len(doc_metadata_list),
+            total_documents=total_documents,
         )
 
     except Exception as e:
