@@ -599,9 +599,9 @@
                     <input type="radio" class="radio radio-primary radio-sm" value="local" v-model="embeddingProvider" />
                     <span class="text-sm">Local <span class="text-xs text-base-content/50">(sentence-transformers)</span></span>
                   </label>
-                  <label class="flex items-center gap-2 cursor-pointer">
+                  <label v-if="!isRemoteDeployment() || embeddingProvider === 'ollama'" class="flex items-center gap-2 cursor-pointer">
                     <input type="radio" class="radio radio-primary radio-sm" value="ollama" v-model="embeddingProvider" @change="detectEmbeddingOllama" />
-                    <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(fully local, no HF download)</span></span>
+                    <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(server-side Ollama instance)</span></span>
                   </label>
                 </div>
               </div>
@@ -864,6 +864,7 @@ import {
   testProviderConnection,
   fetchServerProviderIds,
   migrateLegacySettings,
+  isRemoteDeployment,
 } from '../utils/aiProviders.js'
 
 const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
@@ -1230,14 +1231,19 @@ const systemInfo = ref({ db_backend: 'sqlite', multi_user: false, user_id: 'defa
 
 // Air-gapped deployments: the backend rejects cloud providers, so don't
 // offer them. Only local Ollama and self-hosted endpoints remain.
-const visibleProviderDefs = computed(() =>
-  systemInfo.value.offline_mode ? PROVIDER_DEFS.filter(d => d.type === 'local') : PROVIDER_DEFS
-)
-const availableEndpointPresets = computed(() =>
-  systemInfo.value.offline_mode
-    ? CUSTOM_ENDPOINT_PRESETS.filter(p => !p.baseUrl || !p.baseUrl.startsWith('https://'))
-    : CUSTOM_ENDPOINT_PRESETS
-)
+const visibleProviderDefs = computed(() => {
+  if (systemInfo.value.offline_mode) return PROVIDER_DEFS.filter(d => d.type === 'local')
+  // Hosted: hide "local machine" providers — localhost is the server there,
+  // not the machine the user is browsing from. Server-side .env still works.
+  if (isRemoteDeployment()) return PROVIDER_DEFS.filter(d => d.type !== 'local')
+  return PROVIDER_DEFS
+})
+const availableEndpointPresets = computed(() => {
+  let presets = CUSTOM_ENDPOINT_PRESETS
+  if (systemInfo.value.offline_mode) presets = presets.filter(p => !p.baseUrl || !p.baseUrl.startsWith('https://'))
+  if (isRemoteDeployment()) presets = presets.filter(p => !p.baseUrl || !p.baseUrl.includes('localhost'))
+  return presets
+})
 
 async function loadSystemInfo() {
   try {
