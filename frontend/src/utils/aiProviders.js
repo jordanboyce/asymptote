@@ -16,7 +16,8 @@ export const PROVIDER_DEFS = [
     keyPlaceholder: 'sk-ant-...',
     keyLink: 'https://console.anthropic.com/settings/keys',
     models: [
-      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 (quality)' },
+      { id: 'claude-sonnet-5', label: 'Claude Sonnet 5 (quality)' },
+      { id: 'claude-opus-5', label: 'Claude Opus 5 (best)' },
       { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)' },
     ],
   },
@@ -99,6 +100,7 @@ export const PROVIDER_DEFS = [
     keyPlaceholder: 'your Ollama API key',
     keyLink: 'https://ollama.com/settings/keys',
     models: [
+      { id: 'gemma4:31b', label: 'Gemma 4 31B (free tier)' },
       { id: 'gpt-oss:120b', label: 'GPT-OSS 120B (quality)' },
       { id: 'gpt-oss:20b', label: 'GPT-OSS 20B (fast)' },
     ],
