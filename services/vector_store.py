@@ -1,6 +1,7 @@
 """FAISS-based vector store with SQLite metadata for scalability."""
 
 import os
+import threading
 from pathlib import Path
 from typing import List, Optional, Dict
 import logging
@@ -473,10 +474,23 @@ class VectorStore:
         A crash mid-write must never leave a truncated faiss.index behind —
         faiss.read_index refuses truncated files, which would make the whole
         collection unopenable.
+
+        The temp name is unique per write: concurrent savers (an upload batch
+        and a document delete, say) previously shared one .tmp path, and the
+        loser's os.replace raced a FileNotFoundError that took the server down.
+        Last rename wins; both renames are complete, valid index files.
         """
-        tmp_path = self.index_path.with_suffix(".index.tmp")
-        faiss.write_index(index, str(tmp_path))
-        os.replace(tmp_path, self.index_path)
+        tmp_path = self.index_path.with_suffix(f".index.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            faiss.write_index(index, str(tmp_path))
+            os.replace(tmp_path, self.index_path)
+        finally:
+            # A failed write must not litter the collection dir.
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def get_total_chunks(self) -> int:
         """Get the total number of chunks in the index."""
