@@ -4,7 +4,7 @@ import logging
 from typing import List, Optional
 from pathlib import Path
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
 from config import settings
@@ -348,4 +348,29 @@ async def get_ollama_vision_models():
         "available": True,
         "models": vision_models,
         "total_models": len(all_models),
+    }
+
+
+@router.get(
+    "/api/me",
+    summary="Who is signed in, and how",
+    tags=["system"],
+)
+async def whoami(request: Request):
+    """
+    Identity and sign-out info for the header menu.
+
+    - Behind Cloudflare Access with CF_ACCESS_* configured, `identity` is the
+      SSO email (or service-token name) from the verified Access JWT, and
+      `logout_url` is Cloudflare's session-clearing endpoint on this host.
+    - Password-authenticated or open deployments report those modes instead;
+      browsers cache Basic credentials, so there is no reliable app-side
+      sign-out for the password path.
+    """
+    via = getattr(request.state, "auth_via", None) or ("open" if not settings.auth_password else "password")
+    identity = getattr(request.state, "auth_identity", None)
+    return {
+        "authenticated_via": via,
+        "identity": identity,
+        "logout_url": "/cdn-cgi/access/logout" if via == "cloudflare-access" else None,
     }

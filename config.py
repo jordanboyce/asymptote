@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     # UI is needed. Required whenever the server is reachable beyond loopback.
     auth_password: str = ""
 
+    # Trust Cloudflare Access authentication. When both are set, a request
+    # carrying a valid Cf-Access-Jwt-Assertion (signed by the team's keys,
+    # audience = one of the listed Access app AUD tags) is authenticated
+    # WITHOUT the shared password — no browser Basic-auth prompt after SSO,
+    # and service-token MCP clients drop the bearer header. AUTH_PASSWORD
+    # still works as a fallback for direct/non-Access access paths.
+    cf_access_team_domain: str = ""  # e.g. "yourteam.cloudflareaccess.com"
+    cf_access_aud: str = ""  # comma-separated Access application AUD tags
+
     # Extra Host header values the embedded /mcp endpoint accepts, comma-
     # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding
     # protection that only trusts localhost Hosts by default; when the app is
