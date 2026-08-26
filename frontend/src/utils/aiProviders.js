@@ -354,6 +354,19 @@ export async function testProviderConnection(providerId, { apiKey = '', baseUrl 
   }
 }
 
+/**
+ * True when the app is being used at a remote origin (hosted deployment).
+ * "Local" options (Ollama on localhost, LM Studio, vLLM presets) point at the
+ * *server's* network in that case — an option labeled "runs on this machine"
+ * would mislead, because the browser's machine is not the server. Local
+ * installs (localhost origins) keep the full list; server-side .env config
+ * can still enable any provider regardless of what the UI offers.
+ */
+export function isRemoteDeployment() {
+  const h = window.location.hostname
+  return !(h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1')
+}
+
 /** Whether a provider is local/private (not cloud). */
 export function isLocalProvider(providerId) {
   const cfg = getProviderConfig(providerId)
