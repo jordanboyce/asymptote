@@ -14,11 +14,6 @@ import pytest
 import services.mcp_server as mcp
 
 
-def _settings():
-    import config
-    return config.settings
-
-
 def test_no_per_tool_enabled_gate_exists():
     # The helper itself is gone; only ToggleableMCPApp consults enable_mcp.
     assert not hasattr(mcp, "_ensure_enabled")
@@ -29,7 +24,7 @@ def test_no_per_tool_enabled_gate_exists():
 def test_toggleable_http_app_still_gates(monkeypatch):
     import asyncio
 
-    monkeypatch.setattr(_settings(), "enable_mcp", False)
+    monkeypatch.setattr(mcp.settings, "enable_mcp", False)
     sent = []
 
     async def receive():  # pragma: no cover - never called for a 503
@@ -48,7 +43,7 @@ def test_tool_function_runs_with_mcp_disabled(monkeypatch):
     # A cheap registry-backed tool must not raise the old RuntimeError when
     # the endpoint toggle is off. Any error it raises must not be about MCP
     # being disabled.
-    monkeypatch.setattr(_settings(), "enable_mcp", False)
+    monkeypatch.setattr(mcp.settings, "enable_mcp", False)
     try:
         result = mcp.list_collections()
     except RuntimeError as e:
