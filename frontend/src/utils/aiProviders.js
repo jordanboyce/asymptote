@@ -1,7 +1,9 @@
 /**
  * Shared AI provider utilities.
- * Used by SettingsTab, ChatTab, and SearchTab to read/write provider configs
- * and build API request headers in a consistent way.
+ * Used by every AI surface (App top bar, SettingsTab, ChatTab, SearchTab,
+ * ArtifactsTab) to read/write provider configs, resolve which provider a
+ * surface should use (see "Provider resolution chain" below), and build API
+ * request headers in a consistent way.
  */
 
 // `models` here are curated RECOMMENDATIONS only (2-3 per provider) — the
@@ -193,15 +195,74 @@ export function getAISettings() {
   }
 }
 
-/** Get the active provider id. */
+/** Get the active (app-wide default) provider id. */
 export function getActiveProvider() {
   return getAISettings().provider || null
 }
 
-/** Set the active provider. */
+/** Set the active (app-wide default) provider. */
 export function setActiveProviderLS(id) {
   const settings = getAISettings()
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, provider: id }))
+  notifyProviderChange()
+}
+
+// ── Provider resolution chain ──────────────────────────────────────────────
+//
+// THE single source of truth for "which provider does this surface use".
+// Every AI surface (Chat, Search, Generate, …) resolves its provider through
+// this chain — no surface keeps its own independent provider state:
+//
+//   1. Explicit per-surface override, stored under
+//      `asymptote_provider_override_<surface>` (only honored while that
+//      provider is still configured). Set from the surface's own picker
+//      (e.g. Chat's settings drawer); empty/absent means "follow global".
+//   2. Global active provider — `ai_settings.provider`, set via the
+//      "Use as default" control in Settings or the top-bar provider pill.
+//   3. First configured provider, where "configured" includes server-stored
+//      team keys (call fetchServerProviderIds() first so those count).
+//
+// There is no frontend JS test setup in this repo (no vitest/jest), so this
+// comment is the normative documentation of the chain. If a test runner is
+// ever added, resolveProvider() below is the function to pin down.
+
+const OVERRIDE_KEY_PREFIX = 'asymptote_provider_override_'
+
+/** The stored per-surface override, or '' when the surface follows global. */
+export function getProviderOverride(surface) {
+  return localStorage.getItem(OVERRIDE_KEY_PREFIX + surface) || ''
+}
+
+/** Set (or clear, with ''/null) a surface's provider override. */
+export function setProviderOverride(surface, providerId) {
+  if (providerId) localStorage.setItem(OVERRIDE_KEY_PREFIX + surface, providerId)
+  else localStorage.removeItem(OVERRIDE_KEY_PREFIX + surface)
+  notifyProviderChange()
+}
+
+/**
+ * Resolve the provider a surface should use (see chain above).
+ * Pass no surface to resolve the app-wide default (steps 2–3 only).
+ * Returns '' when nothing is configured.
+ */
+export function resolveProvider(surface = null) {
+  const configured = getConfiguredProviderIds()
+  if (surface) {
+    const override = getProviderOverride(surface)
+    if (override && configured.includes(override)) return override
+  }
+  const active = getActiveProvider()
+  if (active && configured.includes(active)) return active
+  return configured[0] || ''
+}
+
+/**
+ * Broadcast that provider config/selection changed so long-lived surfaces
+ * (top-bar pill, open tabs) re-resolve. localStorage isn't reactive, hence
+ * an explicit event rather than watchers.
+ */
+export function notifyProviderChange() {
+  window.dispatchEvent(new CustomEvent('asymptote:provider-changed'))
 }
 
 /**
@@ -410,4 +471,21 @@ export function migrateLegacySettings() {
   }
 
   if (changed) saveProvidersConfig(configs)
+
+  // Legacy 'chat_provider' (Chat's private pre-unification choice) folds into
+  // the resolution chain: it becomes the global default when none was ever
+  // set, a chat-specific override when it disagrees with the global, and
+  // disappears entirely when it matches (chat then follows global).
+  const legacyChat = localStorage.getItem('chat_provider')
+  if (legacyChat !== null) {
+    localStorage.removeItem('chat_provider')
+    if (legacyChat) {
+      const active = getActiveProvider()
+      if (!active) {
+        setActiveProviderLS(legacyChat)
+      } else if (legacyChat !== active && !getProviderOverride('chat')) {
+        setProviderOverride('chat', legacyChat)
+      }
+    }
+  }
 }

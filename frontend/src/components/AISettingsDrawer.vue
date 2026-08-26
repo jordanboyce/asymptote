@@ -35,6 +35,22 @@
 
           <!-- Single mode: radio list -->
           <div v-if="mode === 'single'" class="space-y-1.5">
+            <!-- "Follow the app-wide default" option (provider = '') -->
+            <label
+              v-if="allowGlobal"
+              class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors text-sm"
+              :class="provider === '' ? 'bg-primary/20 border-primary font-medium' : 'bg-base-200/60 border-base-300 hover:bg-base-100'"
+            >
+              <input
+                type="radio"
+                class="radio radio-xs radio-primary"
+                :checked="provider === ''"
+                @change="provider = ''"
+              />
+              <span class="flex-1">Global<span v-if="globalProviderId" class="text-base-content/50"> ({{ displayName(globalProviderId) }})</span></span>
+              <span class="badge badge-xs badge-primary badge-outline">default</span>
+            </label>
+
             <label
               v-for="pid in configuredProviders"
               :key="pid"
@@ -48,8 +64,13 @@
                 @change="provider = pid"
               />
               <span class="flex-1">{{ displayName(pid) }}</span>
+              <span v-if="allowGlobal && provider === pid" class="badge badge-xs badge-warning">override</span>
               <span class="badge badge-xs badge-outline">{{ isLocalProvider(pid) ? 'local' : 'cloud' }}</span>
             </label>
+
+            <p v-if="allowGlobal && provider" class="text-xs text-warning/80 px-1">
+              Overriding the global default<template v-if="globalProviderId"> ({{ displayName(globalProviderId) }})</template> for this surface.
+            </p>
           </div>
 
           <!-- Multi mode: checkbox list -->
@@ -71,14 +92,14 @@
             </label>
           </div>
 
-          <!-- Single mode: compact model select for the selected provider -->
-          <div v-if="mode === 'single' && provider && hasModelOverrides" class="flex items-center justify-between gap-2 px-1">
+          <!-- Single mode: compact model select for the effective provider -->
+          <div v-if="mode === 'single' && effectiveProvider && hasModelOverrides" class="flex items-center justify-between gap-2 px-1">
             <span class="text-xs text-base-content/50">Model</span>
             <select
               class="select select-xs select-bordered max-w-[180px]"
-              :value="overrideFor(provider)"
-              :aria-label="`Model for ${displayName(provider)}`"
-              @change="setOverride(provider, $event.target.value)"
+              :value="overrideFor(effectiveProvider)"
+              :aria-label="`Model for ${displayName(effectiveProvider)}`"
+              @change="setOverride(effectiveProvider, $event.target.value)"
             >
               <option value="">Provider default</option>
               <option v-if="missingOverride" :value="missingOverride">{{ missingOverride }}</option>
@@ -223,6 +244,14 @@ const props = defineProps({
   topKLabel: { type: String, default: 'Top K results' },
   topKMin: { type: Number, default: 1 },
   topKMax: { type: Number, default: 20 },
+  /**
+   * Single mode only: offer a "Global (provider)" option that clears the
+   * surface's override (provider v-model = ''). globalProviderId is what the
+   * shared resolution chain currently yields for this surface without an
+   * override, shown so users know what "Global" means right now.
+   */
+  allowGlobal: { type: Boolean, default: false },
+  globalProviderId: { type: String, default: '' },
 })
 
 const emit = defineEmits(['switch-tab'])
@@ -248,6 +277,12 @@ const hasModelOverrides = computed(() => modelOverrides.value != null)
 const close = () => { open.value = false }
 
 const displayName = getProviderDisplayName
+
+// Single mode: the provider actually in effect — the explicit selection, or
+// the globally resolved one while following "Global".
+const effectiveProvider = computed(() =>
+  provider.value || (props.allowGlobal ? props.globalProviderId : '')
+)
 
 // ── Provider selection ─────────────────────────────────────────────────────
 
@@ -288,18 +323,18 @@ const modelsLoading = ref(false)
 let modelFetchSeq = 0
 
 const loadModels = async () => {
-  if (props.mode !== 'single' || !provider.value || !hasModelOverrides.value) return
+  if (props.mode !== 'single' || !effectiveProvider.value || !hasModelOverrides.value) return
   const seq = ++modelFetchSeq
   modelsLoading.value = true
   try {
-    const { models } = await fetchProviderModels(provider.value)
+    const { models } = await fetchProviderModels(effectiveProvider.value)
     if (seq === modelFetchSeq) liveModels.value = models || []
   } finally {
     if (seq === modelFetchSeq) modelsLoading.value = false
   }
 }
 
-watch([open, provider], ([isOpen]) => {
+watch([open, effectiveProvider], ([isOpen]) => {
   if (isOpen) loadModels()
 })
 
@@ -309,7 +344,7 @@ const otherModels = computed(() => liveModels.value.filter(m => !m.recommended))
 // A previously saved override that the live list doesn't contain — keep it
 // selectable so the stored value still displays.
 const missingOverride = computed(() => {
-  const cur = overrideFor(provider.value)
+  const cur = overrideFor(effectiveProvider.value)
   if (!cur) return null
   return liveModels.value.some(m => m.id === cur) ? null : cur
 })

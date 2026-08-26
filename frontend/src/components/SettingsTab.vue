@@ -170,6 +170,7 @@
                   <div v-if="getProviderModelLabel(def.id)" class="text-xs text-base-content/50 mt-0.5 truncate">{{ getProviderModelLabel(def.id) }}</div>
                 </div>
                 <div class="flex items-center gap-2 flex-shrink-0">
+                  <span v-if="activeProviderId === def.id" class="badge badge-primary badge-xs">Default</span>
                   <span v-if="isServerProvider(def.id) && !hasLocalKey(def.id)" class="badge badge-success badge-xs">Team key</span>
                   <span v-else-if="isProviderConfigured(def.id)" class="badge badge-success badge-xs">Connected</span>
                   <span v-else class="text-base-content/35 text-xs hidden sm:block">Not connected</span>
@@ -241,6 +242,13 @@
                       <span v-if="savingProvider === 'ollama'" class="loading loading-spinner loading-xs"></span>
                       Connect
                     </button>
+                    <button
+                      v-if="isProviderConfigured('ollama') && activeProviderId !== 'ollama'"
+                      class="btn btn-sm btn-outline btn-primary"
+                      @click="setDefaultProvider('ollama')"
+                      title="Make Ollama the app-wide default provider"
+                    >Use as default</button>
+                    <span v-else-if="isProviderConfigured('ollama')" class="text-xs text-base-content/50 self-center">App-wide default</span>
                     <button
                       v-if="isProviderConfigured('ollama')"
                       class="btn btn-sm btn-ghost text-error"
@@ -325,6 +333,13 @@
                       {{ connectingProvider === def.id ? '' : 'Connect' }}
                     </button>
                     <button
+                      v-if="isProviderConfigured(def.id) && activeProviderId !== def.id"
+                      class="btn btn-sm btn-outline btn-primary"
+                      @click="setDefaultProvider(def.id)"
+                      :title="`Make ${def.name} the app-wide default provider`"
+                    >Use as default</button>
+                    <span v-else-if="isProviderConfigured(def.id)" class="text-xs text-base-content/50">App-wide default</span>
+                    <button
                       v-if="isProviderConfigured(def.id) && !editBuffer.keyDirty"
                       class="btn btn-sm btn-ghost text-error"
                       @click="removeProvider(def.id)"
@@ -352,6 +367,7 @@
                   <div class="text-xs text-base-content/50 mt-0.5 truncate">{{ cp.baseUrl }}</div>
                 </div>
                 <div class="flex items-center gap-2 flex-shrink-0">
+                  <span v-if="activeProviderId === cp.id" class="badge badge-primary badge-xs">Default</span>
                   <span class="badge badge-success badge-xs">Connected</span>
                   <ChevronDown
                     :size="14"
@@ -402,6 +418,13 @@
                   <p v-if="modelState[cp.id]?.error" class="text-error text-sm mt-1">{{ modelState[cp.id].error }}</p>
                 </div>
                 <div class="flex gap-2">
+                  <button
+                    v-if="activeProviderId !== cp.id"
+                    class="btn btn-sm btn-outline btn-primary"
+                    @click="setDefaultProvider(cp.id)"
+                    :title="`Make ${cp.name} the app-wide default provider`"
+                  >Use as default</button>
+                  <span v-else class="text-xs text-base-content/50 self-center">App-wide default</span>
                   <button class="btn btn-sm btn-ghost text-error" @click="removeProvider(cp.id)">Remove</button>
                 </div>
               </div>
@@ -901,6 +924,9 @@ import {
   fetchServerProviderIds,
   migrateLegacySettings,
   isRemoteDeployment,
+  getActiveProvider,
+  setActiveProviderLS,
+  notifyProviderChange,
 } from '../utils/aiProviders.js'
 
 const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
@@ -1310,9 +1336,32 @@ const clearError = ref('')
 const clearModal = ref(null)
 
 // Bumped after every provider-config write so computeds/template re-read
-// localStorage (which is not reactive by itself).
+// localStorage (which is not reactive by itself). Also broadcasts to the
+// other surfaces (top-bar pill, open tabs) via the shared change event.
 const configVersion = ref(0)
-const bumpConfig = () => { configVersion.value++ }
+const bumpConfig = () => {
+  configVersion.value++
+  notifyProviderChange()
+}
+
+// ── App-wide default provider ──
+// The "Use as default" control writes ai_settings.provider — step 2 of the
+// resolution chain every surface goes through (see aiProviders.js).
+const activeProviderId = computed(() => {
+  configVersion.value // reactivity hook
+  return getActiveProvider()
+})
+
+const setDefaultProvider = (id) => {
+  setActiveProviderLS(id)
+  bumpConfig()
+}
+
+// A freshly connected provider becomes the default when none was ever chosen,
+// so the top-bar pill and "Default" badge reflect what the chain resolves to.
+const ensureDefaultProvider = (id) => {
+  if (!getActiveProvider()) setActiveProviderLS(id)
+}
 
 // Providers with a server-stored team key (hosted/multi-user instances).
 const serverProviderIds = ref([])
@@ -1460,6 +1509,7 @@ const connectProvider = async (id) => {
   }
 
   upsertProviderConfig(id, { apiKey: key, model })
+  ensureDefaultProvider(id)
   bumpConfig()
   editBuffer.value.keyStatus = 'valid'
   editBuffer.value.keyDirty = false
@@ -1483,6 +1533,11 @@ const removeProvider = (id) => {
   const next = { ...modelState.value }
   delete next[id]
   modelState.value = next
+  // Removing the app-wide default hands the role to the next configured
+  // provider (or clears it) instead of leaving a dangling id in ai_settings.
+  if (getActiveProvider() === id) {
+    setActiveProviderLS(getConfiguredProviderIds()[0] || '')
+  }
   bumpConfig()
   expandedProvider.value = null
 }
@@ -1519,6 +1574,7 @@ const connectOllama = async () => {
       model: editBuffer.value.model || '',
       available: true,
     })
+    ensureDefaultProvider('ollama')
     bumpConfig()
     invalidateModelCache('ollama')
   }
@@ -1544,6 +1600,7 @@ const testAndAddEndpoint = async () => {
 
   // Same stored shape as before (ChatTab/SearchTab rely on it)
   upsertProviderConfig(id, { id, name, baseUrl, apiKey, model: '', isCustom: true })
+  ensureDefaultProvider(id)
   bumpConfig()
 
   const { models } = await fetchProviderModels(id, { force: true })
