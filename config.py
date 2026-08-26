@@ -148,6 +148,14 @@ class Settings(BaseSettings):
     # v3.0: CSV indexing configuration
     csv_row_level_indexing: bool = True  # Index CSV rows individually
 
+    # Bulk ingest tuning (upload/index jobs over many small files). Chunks are
+    # accumulated across files until bulk_flush_chunks, then embedded together
+    # (so EMBED_BATCH_SIZE batches actually fill) and persisted in one
+    # SQLite/BM25/FAISS pass. Extraction runs in a small worker pool so it
+    # overlaps embedding; embedding itself stays serialized on the encode lock.
+    bulk_flush_chunks: int = 256
+    bulk_extract_workers: int = 4
+
     # Audio transcription (meeting recordings via local Whisper)
     # Model size: tiny | base | small | medium | large-v3
     #   tiny   ~39MB   fastest, lowest accuracy

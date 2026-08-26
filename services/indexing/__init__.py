@@ -1,5 +1,5 @@
 """Document indexing services."""
 
-from .indexer import DocumentIndexer
+from .indexer import ChunkBatcher, DocumentIndexer, PreparedDocument
 
-__all__ = ["DocumentIndexer"]
+__all__ = ["ChunkBatcher", "DocumentIndexer", "PreparedDocument"]

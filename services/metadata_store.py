@@ -590,20 +590,66 @@ class MetadataStore:
             source_path: Original filesystem path (for local references)
             source_type: Source type: 'upload' or 'local_reference'
         """
+        self.add_documents([{
+            "document_id": document_id,
+            "filename": filename,
+            "num_pages": num_pages,
+            "num_chunks": num_chunks,
+            "upload_timestamp": upload_timestamp,
+            "source_format": source_format,
+            "extraction_method": extraction_method,
+            "embedding_model": embedding_model,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "source_path": source_path,
+            "source_type": source_type,
+            "injection_warnings": injection_warnings,
+        }])
+
+    def add_documents(self, documents: List[dict]):
+        """
+        Add many document metadata rows in a single transaction.
+
+        Bulk ingest records one row per file; committing them together instead
+        of once per file is a large part of what makes many-small-file corpora
+        index at full speed.
+
+        Args:
+            documents: List of dicts with the same keys as add_document's
+                arguments (missing optional keys use the same defaults).
+        """
+        if not documents:
+            return
+
         with sqlite_connect(self.db_path) as conn:
             # Ensure v3.1 columns exist (defensive migration for cached instances)
             self._ensure_v3_1_columns(conn)
 
-            injection_warnings_json = json.dumps(injection_warnings) if injection_warnings else None
-            conn.execute("""
+            conn.executemany("""
                 INSERT OR REPLACE INTO documents
                 (document_id, filename, num_pages, num_chunks, upload_timestamp,
                  source_format, extraction_method, embedding_model, chunk_size,
                  chunk_overlap, schema_version, source_path, source_type, injection_warnings)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (document_id, filename, num_pages, num_chunks, upload_timestamp,
-                  source_format, extraction_method, embedding_model, chunk_size,
-                  chunk_overlap, SCHEMA_VERSION, source_path, source_type, injection_warnings_json))
+            """, [
+                (
+                    doc["document_id"],
+                    doc["filename"],
+                    doc["num_pages"],
+                    doc["num_chunks"],
+                    doc["upload_timestamp"],
+                    doc.get("source_format"),
+                    doc.get("extraction_method", "text"),
+                    doc.get("embedding_model"),
+                    doc.get("chunk_size"),
+                    doc.get("chunk_overlap"),
+                    SCHEMA_VERSION,
+                    doc.get("source_path"),
+                    doc.get("source_type", "upload"),
+                    json.dumps(doc["injection_warnings"]) if doc.get("injection_warnings") else None,
+                )
+                for doc in documents
+            ])
             conn.commit()
 
     def get_all_chunks_ordered(self) -> List[dict]:
