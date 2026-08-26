@@ -868,25 +868,56 @@ const indexFiles = async () => {
   const errors = []
 
   try {
-    // Browser-uploaded File objects (headless/Docker mode) → multipart POST to /documents/upload
+    // Browser-uploaded File objects (headless/Docker mode) → multipart POST to
+    // /documents/upload, in batches. One request per batch keeps each POST
+    // under proxy body-size caps (Cloudflare: 100MB) and response timeouts
+    // (~100s), which is what makes very large folder drops (tens of
+    // thousands of files) work from the browser at all. One failed batch is
+    // reported and skipped; the rest continue.
     if (browserItems.length > 0) {
+      const BATCH_MAX_FILES = 40
+      const BATCH_MAX_BYTES = 25 * 1024 * 1024
+      const batches = []
+      let batch = []
+      let batchBytes = 0
+      for (const item of browserItems) {
+        const size = item.size || item.file.size || 0
+        if (batch.length && (batch.length >= BATCH_MAX_FILES || batchBytes + size > BATCH_MAX_BYTES)) {
+          batches.push(batch)
+          batch = []
+          batchBytes = 0
+        }
+        batch.push(item)
+        batchBytes += size
+      }
+      if (batch.length) batches.push(batch)
+
       uploading.value = true
       uploadingCount.value = browserItems.length
+      let uploaded = 0
       try {
-        const formData = new FormData()
-        for (const item of browserItems) {
-          formData.append('files', item.file, item.name)
+        for (const group of batches) {
+          const formData = new FormData()
+          for (const item of group) {
+            formData.append('files', item.file, item.name)
+          }
+          formData.append('collection_id', collectionStore.currentCollectionId)
+          try {
+            const response = await axios.post('/documents/upload', formData, {
+              headers: { 'Content-Type': 'multipart/form-data' }
+            })
+            successCount += response.data.documents_processed || 0
+            totalChunks += response.data.total_chunks || 0
+          } catch (err) {
+            const errorMsg = err.response?.data?.detail || err.message
+            errors.push(`Upload batch (${group[0].name}…): ${errorMsg}`)
+            console.error('Browser upload error:', err)
+          }
+          uploaded += group.length
+          uploadingCount.value = browserItems.length - uploaded
+          indexProgressPercent.value = (uploaded / browserItems.length) * 100
+          currentIndexingFile.value = group[group.length - 1].name
         }
-        formData.append('collection_id', collectionStore.currentCollectionId)
-        const response = await axios.post('/documents/upload', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        })
-        successCount += response.data.documents_processed || 0
-        totalChunks += response.data.total_chunks || 0
-      } catch (err) {
-        const errorMsg = err.response?.data?.detail || err.message
-        errors.push(`Upload: ${errorMsg}`)
-        console.error('Browser upload error:', err)
       } finally {
         uploading.value = false
         uploadingCount.value = 0
