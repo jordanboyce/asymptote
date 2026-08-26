@@ -13,15 +13,20 @@ import shutil
 import json
 import asyncio
 import queue
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Dict, Callable, Any
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
+from config import settings
 from services.app_database import app_db
 from services.indexer_manager import indexer_manager
 from services.collection_service import collection_service
+from services.indexing import ChunkBatcher
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +65,22 @@ class ProgressEvent:
         """Format as SSE event string."""
         data = json.dumps(asdict(self))
         return f"event: {self.event_type}\ndata: {data}\n\n"
+
+
+@dataclass
+class _BulkFileWork:
+    """One file in a bulk index job, with job-type-specific hooks.
+
+    stage() runs in an extraction worker thread and must return the path to
+    index (copying into the library first when the job requires it).
+    finalize(indexer, doc_metadata) runs after the document is persisted;
+    cleanup() runs when the file fails (e.g. to remove a staged copy).
+    """
+
+    display_name: str
+    stage: Callable[[], Path]
+    finalize: Optional[Callable[[Any, Any], None]] = None
+    cleanup: Optional[Callable[[], None]] = None
 
 
 class UploadService:
@@ -255,241 +276,43 @@ class UploadService:
         copy_to_library: bool,
     ):
         """Run local file indexing in background thread."""
-        results = {
-            "documents_processed": 0,
-            "total_pages": 0,
-            "total_chunks": 0,
-            "document_ids": [],
-            "failed_files": [],
-        }
+        documents_dir = indexer_manager.get_documents_path(collection_id) if copy_to_library else None
+        # Staging resolves filename collisions with an exists() loop; serialize
+        # it so two same-named files staged by different extraction workers
+        # can't race into the same destination path.
+        copy_lock = threading.Lock()
 
-        try:
-            app_db.update_upload_job(job_id, status="running")
-
-            indexer = indexer_manager.get_indexer(collection_id)
-            documents_dir = indexer_manager.get_documents_path(collection_id) if copy_to_library else None
-
-            total_files = len(file_paths)
-            logger.info(f"Starting local index job {job_id}: {total_files} files, copy={copy_to_library}")
-
-            for idx, file_path in enumerate(file_paths, 1):
-                if self._is_cancelled(job_id):
-                    logger.info(f"Job {job_id} cancelled by user")
-                    app_db.update_upload_job(
-                        job_id,
-                        status="cancelled",
-                        error="Cancelled by user",
-                        result_summary=json.dumps(results),
-                    )
-                    self._broadcast_event(ProgressEvent(
-                        job_id=job_id,
-                        event_type="job_cancelled",
-                        phase="cancelled",
-                        error="Cancelled by user",
-                    ))
-                    return
-
-                source_path = Path(file_path)
-                filename = source_path.name
-
-                try:
-                    self._broadcast_event(ProgressEvent(
-                        job_id=job_id,
-                        event_type="file_start",
-                        phase=UploadPhase.EXTRACTING.value,
-                        current_file=filename,
-                        file_index=idx,
-                        total_files=total_files,
-                        overall_percent=((idx - 1) / total_files) * 100,
-                    ))
-
-                    app_db.update_upload_job(
-                        job_id,
-                        current_file=filename,
-                        processed_files=idx - 1,
-                        phase=UploadPhase.EXTRACTING.value,
-                    )
-
-                    logger.info(f"Indexing ({idx}/{total_files}): {filename}")
-
-                    # Determine index path based on copy mode
-                    if copy_to_library:
-                        # Copy file to library
-                        final_path = documents_dir / filename
+        def make_work(source_path: Path) -> _BulkFileWork:
+            if copy_to_library:
+                def stage() -> Path:
+                    with copy_lock:
+                        final_path = documents_dir / source_path.name
                         counter = 1
                         while final_path.exists():
-                            stem = source_path.stem
-                            suffix = source_path.suffix
-                            final_path = documents_dir / f"{stem}_{counter}{suffix}"
+                            final_path = documents_dir / f"{source_path.stem}_{counter}{source_path.suffix}"
                             counter += 1
                         shutil.copy2(str(source_path), str(final_path))
-                        index_path = final_path
-                        source_type = "upload"
-                        stored_source_path = None
-                    else:
-                        # Index in-place
-                        index_path = source_path
-                        source_type = "local_reference"
-                        stored_source_path = str(source_path.absolute())
+                    return final_path
 
-                    # Create progress callback
-                    def progress_callback(
-                        phase: str,
-                        progress: int,
-                        detail: str = None,
-                        chunks_done: int = 0,
-                        chunks_total: int = 0,
-                    ):
-                        phase_weights = {
-                            "extracting": 0.2,
-                            "chunking": 0.1,
-                            "embedding": 0.6,
-                            "saving": 0.1,
-                        }
-                        phase_starts = {
-                            "extracting": 0,
-                            "chunking": 0.2,
-                            "embedding": 0.3,
-                            "saving": 0.9,
-                        }
+                return _BulkFileWork(display_name=source_path.name, stage=stage)
 
-                        file_progress = phase_starts.get(phase, 0) + (
-                            phase_weights.get(phase, 0) * progress / 100
-                        )
-                        overall = ((idx - 1) + file_progress) / total_files * 100
+            def stage() -> Path:
+                return source_path
 
-                        if progress % 5 == 0 or progress == 100:
-                            app_db.update_upload_job(
-                                job_id,
-                                phase=phase,
-                                phase_progress=progress,
-                                phase_detail=detail,
-                                chunks_processed=chunks_done,
-                                chunks_total=chunks_total,
-                            )
+            def finalize(indexer, doc_metadata):
+                indexer.vector_store.metadata_store.update_document_source(
+                    doc_metadata.document_id,
+                    source_path=str(source_path.absolute()),
+                    source_type="local_reference",
+                )
 
-                        self._broadcast_event(ProgressEvent(
-                            job_id=job_id,
-                            event_type="phase_progress",
-                            phase=phase,
-                            current_file=filename,
-                            file_index=idx,
-                            total_files=total_files,
-                            phase_progress=progress,
-                            phase_detail=detail,
-                            chunks_processed=chunks_done,
-                            chunks_total=chunks_total,
-                            overall_percent=overall,
-                        ))
+            return _BulkFileWork(display_name=source_path.name, stage=stage, finalize=finalize)
 
-                    # Index the document
-                    doc_metadata = indexer.index_document_with_progress(
-                        index_path,
-                        index_path.name,
-                        progress_callback=progress_callback,
-                    )
-
-                    # Update source info if indexing in-place
-                    if source_type == "local_reference":
-                        indexer.vector_store.metadata_store.update_document_source(
-                            doc_metadata.document_id,
-                            source_path=stored_source_path,
-                            source_type=source_type,
-                        )
-
-                    collection_service.add_document(collection_id, doc_metadata.document_id)
-
-                    results["documents_processed"] += 1
-                    results["total_pages"] += doc_metadata.total_pages
-                    results["total_chunks"] += doc_metadata.total_chunks
-                    results["document_ids"].append(doc_metadata.document_id)
-
-                    app_db.update_upload_job(
-                        job_id,
-                        processed_files=idx,
-                        phase=UploadPhase.COMPLETED.value,
-                    )
-
-                    self._broadcast_event(ProgressEvent(
-                        job_id=job_id,
-                        event_type="file_complete",
-                        phase=UploadPhase.COMPLETED.value,
-                        current_file=filename,
-                        file_index=idx,
-                        total_files=total_files,
-                        overall_percent=(idx / total_files) * 100,
-                        chunks_total=doc_metadata.total_chunks,
-                    ))
-
-                    logger.info(
-                        f"Indexed {filename}: {doc_metadata.total_pages} pages, "
-                        f"{doc_metadata.total_chunks} chunks"
-                    )
-
-                except Exception as e:
-                    logger.error(f"Failed to index {filename}: {e}")
-                    results["failed_files"].append({
-                        "filename": filename,
-                        "error": str(e),
-                    })
-
-                    self._broadcast_event(ProgressEvent(
-                        job_id=job_id,
-                        event_type="file_error",
-                        phase=UploadPhase.FAILED.value,
-                        current_file=filename,
-                        file_index=idx,
-                        total_files=total_files,
-                        error=str(e),
-                    ))
-
-            if results["documents_processed"] > 0:
-                indexer.save_index()
-
-            app_db.update_upload_job(
-                job_id,
-                status="completed",
-                processed_files=total_files,
-                current_file=None,
-                phase=UploadPhase.COMPLETED.value,
-                result_summary=json.dumps(results),
-            )
-
-            self._broadcast_event(ProgressEvent(
-                job_id=job_id,
-                event_type="job_complete",
-                phase=UploadPhase.COMPLETED.value,
-                total_files=total_files,
-                overall_percent=100.0,
-            ))
-
-            logger.info(
-                f"Local index job {job_id} completed: {results['documents_processed']}/{total_files} files"
-            )
-
-        except Exception as e:
-            logger.error(f"Local index job {job_id} failed: {e}")
-            app_db.update_upload_job(
-                job_id,
-                status="failed",
-                phase=UploadPhase.FAILED.value,
-                error=str(e),
-                result_summary=json.dumps(results),
-            )
-
-            self._broadcast_event(ProgressEvent(
-                job_id=job_id,
-                event_type="job_error",
-                phase=UploadPhase.FAILED.value,
-                error=str(e),
-            ))
-
-        finally:
-            with self._lock:
-                if job_id in self._active_threads:
-                    del self._active_threads[job_id]
-                if job_id in self._cancel_flags:
-                    del self._cancel_flags[job_id]
+        logger.info(
+            f"Starting local index job {job_id}: {len(file_paths)} files, copy={copy_to_library}"
+        )
+        works = [make_work(Path(fp)) for fp in file_paths]
+        self._process_bulk_job(job_id, works, collection_id)
 
 
     def start_repo_index(
@@ -592,6 +415,96 @@ class UploadService:
         collection_id: str,
     ):
         """Run repository indexing in background thread."""
+        documents_dir = indexer_manager.get_documents_path(collection_id)
+        repo = Path(repo_path)
+
+        def make_work(source_path: Path) -> _BulkFileWork:
+            # Create safe filename preserving relative path structure
+            try:
+                rel_path = source_path.relative_to(repo)
+                safe_filename = str(rel_path).replace('/', '_').replace('\\', '_')
+            except ValueError:
+                safe_filename = source_path.name
+            dest_path = documents_dir / safe_filename
+
+            def stage() -> Path:
+                shutil.copy2(str(source_path), str(dest_path))
+                return dest_path
+
+            def cleanup():
+                # Clean up copied file
+                try:
+                    if dest_path.exists():
+                        dest_path.unlink()
+                except Exception:
+                    pass
+
+            return _BulkFileWork(display_name=safe_filename, stage=stage, cleanup=cleanup)
+
+        logger.info(
+            f"Starting repo index job {job_id}: {len(file_paths)} files from {repo_path}"
+        )
+        works = [make_work(Path(fp)) for fp in file_paths]
+        self._process_bulk_job(job_id, works, collection_id)
+
+    def _make_file_progress_callback(
+        self,
+        job_id: int,
+        filename: str,
+        idx: int,
+        total_files: int,
+        write_job: Callable[..., None],
+    ):
+        """Per-file phase-weighted progress callback for the single-file path."""
+        phase_weights = {"extracting": 0.2, "chunking": 0.1, "embedding": 0.6, "saving": 0.1}
+        phase_starts = {"extracting": 0, "chunking": 0.2, "embedding": 0.3, "saving": 0.9}
+
+        def progress_callback(
+            phase: str,
+            progress: int,
+            detail: str = None,
+            chunks_done: int = 0,
+            chunks_total: int = 0,
+        ):
+            file_progress = phase_starts.get(phase, 0) + (
+                phase_weights.get(phase, 0) * progress / 100
+            )
+            overall = ((idx - 1) + file_progress) / total_files * 100
+
+            write_job(
+                phase=phase,
+                phase_progress=progress,
+                phase_detail=detail,
+                chunks_processed=chunks_done,
+                chunks_total=chunks_total,
+            )
+            self._broadcast_event(ProgressEvent(
+                job_id=job_id,
+                event_type="phase_progress",
+                phase=phase,
+                current_file=filename,
+                file_index=idx,
+                total_files=total_files,
+                phase_progress=progress,
+                phase_detail=detail,
+                chunks_processed=chunks_done,
+                chunks_total=chunks_total,
+                overall_percent=overall,
+            ))
+
+        return progress_callback
+
+    def _process_bulk_job(self, job_id: int, works: List[_BulkFileWork], collection_id: str):
+        """Shared bulk pipeline behind local-index and repo-index jobs.
+
+        Extraction/chunking runs in a small worker pool while chunks accumulate
+        across files; each flush embeds one large batch (so EMBED_BATCH_SIZE
+        batches actually fill, the encode lock still taken per internal batch)
+        and persists chunk rows, BM25 entries, FAISS vectors, and document rows
+        as single batched writes. Files are consumed and reported strictly in
+        submission order, so per-file progress events and the processed_files
+        counter behave like the old one-file-at-a-time loop.
+        """
         results = {
             "documents_processed": 0,
             "total_pages": 0,
@@ -599,150 +512,302 @@ class UploadService:
             "document_ids": [],
             "failed_files": [],
         }
+        total_files = len(works)
+        resolved = 0  # files fully persisted or failed
+        # SSE events stay per-file, but the upload_jobs row (read by the
+        # polling endpoint) only needs a few writes per second.
+        last_db_write = 0.0
+
+        def write_job(force: bool = False, **fields):
+            nonlocal last_db_write
+            now = time.monotonic()
+            if force or now - last_db_write >= 0.5:
+                app_db.update_upload_job(job_id, **fields)
+                last_db_write = now
 
         try:
             app_db.update_upload_job(job_id, status="running")
-
             indexer = indexer_manager.get_indexer(collection_id)
-            documents_dir = indexer_manager.get_documents_path(collection_id)
-            repo = Path(repo_path)
 
-            total_files = len(file_paths)
-            logger.info(f"Starting repo index job {job_id}: {total_files} files from {repo_path}")
+            def fail_file(idx: int, work: _BulkFileWork, error: Exception):
+                nonlocal resolved
+                resolved += 1
+                logger.error(f"Failed to index {work.display_name}: {error}")
+                results["failed_files"].append({
+                    "filename": work.display_name,
+                    "error": str(error),
+                })
+                if work.cleanup:
+                    try:
+                        work.cleanup()
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            f"Cleanup failed for {work.display_name}: {cleanup_error}"
+                        )
+                write_job(processed_files=resolved)
+                self._broadcast_event(ProgressEvent(
+                    job_id=job_id,
+                    event_type="file_error",
+                    phase=UploadPhase.FAILED.value,
+                    current_file=work.display_name,
+                    file_index=idx,
+                    total_files=total_files,
+                    error=str(error),
+                ))
 
-            for idx, file_path in enumerate(file_paths, 1):
-                if self._is_cancelled(job_id):
-                    logger.info(f"Job {job_id} cancelled")
-                    app_db.update_upload_job(
-                        job_id,
-                        status="cancelled",
-                        error="Cancelled by user",
-                        result_summary=json.dumps(results),
+            def complete_file(idx: int, work: _BulkFileWork, doc_metadata):
+                nonlocal resolved
+                try:
+                    if work.finalize:
+                        work.finalize(indexer, doc_metadata)
+                    collection_service.add_document(collection_id, doc_metadata.document_id)
+                except Exception as e:
+                    fail_file(idx, work, e)
+                    return
+                resolved += 1
+                results["documents_processed"] += 1
+                results["total_pages"] += doc_metadata.total_pages
+                results["total_chunks"] += doc_metadata.total_chunks
+                results["document_ids"].append(doc_metadata.document_id)
+                write_job(processed_files=resolved, phase=UploadPhase.COMPLETED.value)
+                self._broadcast_event(ProgressEvent(
+                    job_id=job_id,
+                    event_type="file_complete",
+                    phase=UploadPhase.COMPLETED.value,
+                    current_file=work.display_name,
+                    file_index=idx,
+                    total_files=total_files,
+                    overall_percent=(resolved / total_files) * 100,
+                    chunks_total=doc_metadata.total_chunks,
+                ))
+                logger.info(
+                    f"Indexed {work.display_name}: {doc_metadata.total_pages} pages, "
+                    f"{doc_metadata.total_chunks} chunks"
+                )
+
+            def persist_batch(batch):
+                """Embed + persist a list of (idx, work, prepared) in one pass."""
+                if not batch:
+                    return
+                chunks_total = sum(len(p.chunks) for _, _, p in batch)
+                resolved_before = resolved
+                detail = (
+                    f"Embedding {chunks_total} chunks from {len(batch)} files"
+                    if len(batch) > 1 else f"Embedding {chunks_total} chunks"
+                )
+                last_idx, last_work, _ = batch[-1]
+
+                def embed_progress(done: int, total: int):
+                    percent = min(100, int(done / total * 100)) if total else 100
+                    write_job(
+                        phase=UploadPhase.EMBEDDING.value,
+                        phase_progress=percent,
+                        phase_detail=detail,
+                        chunks_processed=done,
+                        chunks_total=total,
                     )
                     self._broadcast_event(ProgressEvent(
                         job_id=job_id,
-                        event_type="job_cancelled",
-                        phase="cancelled",
+                        event_type="phase_progress",
+                        phase=UploadPhase.EMBEDDING.value,
+                        current_file=last_work.display_name,
+                        file_index=last_idx,
+                        total_files=total_files,
+                        phase_progress=percent,
+                        phase_detail=detail,
+                        chunks_processed=done,
+                        chunks_total=total,
+                        overall_percent=(
+                            (resolved_before + (done / total) * len(batch))
+                            / total_files * 100
+                        ) if total else 0,
                     ))
+
+                try:
+                    metas = indexer.index_prepared_documents(
+                        [p for _, _, p in batch],
+                        progress_callback=embed_progress,
+                    )
+                except Exception as e:
+                    # One poisoned file must not sink its whole batch: retry
+                    # each file alone so only the real culprit(s) fail.
+                    # Re-persisting a chunk_id is idempotent (INSERT OR
+                    # REPLACE + stale-vector eviction), so a partially
+                    # persisted batch is safe to retry.
+                    logger.warning(
+                        f"Bulk batch of {len(batch)} files failed ({e}); retrying per file"
+                    )
+                    for idx, work, prep in batch:
+                        try:
+                            meta = indexer.index_prepared_documents([prep])[0]
+                            complete_file(idx, work, meta)
+                        except Exception as file_error:
+                            fail_file(idx, work, file_error)
                     return
 
-                source_path = Path(file_path)
-                # Create safe filename preserving relative path structure
-                try:
-                    rel_path = source_path.relative_to(repo)
-                    safe_filename = str(rel_path).replace('/', '_').replace('\\', '_')
-                except ValueError:
-                    safe_filename = source_path.name
+                for (idx, work, _), meta in zip(batch, metas):
+                    complete_file(idx, work, meta)
 
+            batcher = ChunkBatcher(settings.bulk_flush_chunks)
+            max_workers = max(1, settings.bulk_extract_workers)
+            executor = ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix=f"extract-job-{job_id}",
+            )
+
+            def stage_and_prepare(work: _BulkFileWork):
+                index_path = work.stage()
+                return index_path, indexer.prepare_document(index_path, index_path.name)
+
+            work_iter = iter(enumerate(works, 1))
+            pending = deque()
+
+            def submit_next():
                 try:
+                    idx, work = next(work_iter)
+                except StopIteration:
+                    return
+                pending.append((idx, work, executor.submit(stage_and_prepare, work)))
+
+            try:
+                # Bounded lookahead: a 75k-file job never holds more than a
+                # window of extracted chunks waiting in futures.
+                for _ in range(max_workers * 2):
+                    submit_next()
+
+                while pending:
+                    if self._is_cancelled(job_id):
+                        if results["documents_processed"] > 0:
+                            # Keep the on-disk FAISS index consistent with the
+                            # chunk rows already committed to SQLite.
+                            indexer.save_index()
+                        # Staged-but-never-indexed files (in-flight futures and
+                        # the unflushed accumulator) get their cleanup hook so
+                        # cancelled jobs don't leave stray library copies.
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        leftovers = list(pending) + [
+                            (idx, work, None) for idx, work, _ in batcher.drain()
+                        ]
+                        for _, work, future in leftovers:
+                            if future is not None:
+                                try:
+                                    future.result(timeout=30)
+                                except Exception:
+                                    continue
+                            if work.cleanup:
+                                try:
+                                    work.cleanup()
+                                except Exception:
+                                    pass
+                        logger.info(f"Job {job_id} cancelled by user")
+                        app_db.update_upload_job(
+                            job_id,
+                            status="cancelled",
+                            error="Cancelled by user",
+                            result_summary=json.dumps(results),
+                        )
+                        self._broadcast_event(ProgressEvent(
+                            job_id=job_id,
+                            event_type="job_cancelled",
+                            phase="cancelled",
+                            error="Cancelled by user",
+                        ))
+                        return
+
+                    idx, work, future = pending.popleft()
+                    submit_next()
+
                     self._broadcast_event(ProgressEvent(
                         job_id=job_id,
                         event_type="file_start",
                         phase=UploadPhase.EXTRACTING.value,
-                        current_file=safe_filename,
+                        current_file=work.display_name,
                         file_index=idx,
                         total_files=total_files,
-                        overall_percent=((idx - 1) / total_files) * 100,
+                        overall_percent=(resolved / total_files) * 100,
                     ))
-
-                    app_db.update_upload_job(
-                        job_id,
-                        current_file=safe_filename,
-                        processed_files=idx - 1,
+                    write_job(
+                        current_file=work.display_name,
+                        processed_files=resolved,
                         phase=UploadPhase.EXTRACTING.value,
                     )
+                    logger.info(f"Indexing ({idx}/{total_files}): {work.display_name}")
 
-                    logger.info(f"Indexing ({idx}/{total_files}): {safe_filename}")
-
-                    # Copy file to library
-                    dest_path = documents_dir / safe_filename
-                    shutil.copy2(str(source_path), str(dest_path))
-
-                    # Create progress callback
-                    def progress_callback(
-                        phase: str,
-                        progress: int,
-                        detail: str = None,
-                        chunks_done: int = 0,
-                        chunks_total: int = 0,
-                    ):
-                        phase_weights = {"extracting": 0.2, "chunking": 0.1, "embedding": 0.6, "saving": 0.1}
-                        phase_starts = {"extracting": 0, "chunking": 0.2, "embedding": 0.3, "saving": 0.9}
-
-                        file_progress = phase_starts.get(phase, 0) + (phase_weights.get(phase, 0) * progress / 100)
-                        overall = ((idx - 1) + file_progress) / total_files * 100
-
-                        if progress % 5 == 0 or progress == 100:
-                            app_db.update_upload_job(
-                                job_id, phase=phase, phase_progress=progress,
-                                phase_detail=detail, chunks_processed=chunks_done, chunks_total=chunks_total,
-                            )
-
-                        self._broadcast_event(ProgressEvent(
-                            job_id=job_id, event_type="phase_progress", phase=phase,
-                            current_file=safe_filename, file_index=idx, total_files=total_files,
-                            phase_progress=progress, phase_detail=detail,
-                            chunks_processed=chunks_done, chunks_total=chunks_total, overall_percent=overall,
-                        ))
-
-                    # Index the document
-                    doc_metadata = indexer.index_document_with_progress(
-                        dest_path, safe_filename, progress_callback=progress_callback,
-                    )
-
-                    collection_service.add_document(collection_id, doc_metadata.document_id)
-
-                    results["documents_processed"] += 1
-                    results["total_pages"] += doc_metadata.total_pages
-                    results["total_chunks"] += doc_metadata.total_chunks
-                    results["document_ids"].append(doc_metadata.document_id)
-
-                    app_db.update_upload_job(job_id, processed_files=idx, phase=UploadPhase.COMPLETED.value)
-
-                    self._broadcast_event(ProgressEvent(
-                        job_id=job_id, event_type="file_complete", phase=UploadPhase.COMPLETED.value,
-                        current_file=safe_filename, file_index=idx, total_files=total_files,
-                        overall_percent=(idx / total_files) * 100, chunks_total=doc_metadata.total_chunks,
-                    ))
-
-                except Exception as e:
-                    logger.error(f"Failed to index {safe_filename}: {e}")
-                    results["failed_files"].append({"filename": safe_filename, "error": str(e)})
-                    self._broadcast_event(ProgressEvent(
-                        job_id=job_id, event_type="file_error", phase=UploadPhase.FAILED.value,
-                        current_file=safe_filename, file_index=idx, total_files=total_files, error=str(e),
-                    ))
-                    # Clean up copied file
                     try:
-                        if dest_path.exists():
-                            dest_path.unlink()
-                    except Exception:
-                        pass
+                        index_path, prepared = future.result()
+                    except Exception as e:
+                        fail_file(idx, work, e)
+                        continue
+
+                    if prepared is None:
+                        # Tabular file (structured-only path): flush what's
+                        # pending first so completion events stay ordered,
+                        # then index it through the single-file path.
+                        persist_batch(batcher.drain())
+                        try:
+                            doc_metadata = indexer.index_document_with_progress(
+                                index_path,
+                                index_path.name,
+                                progress_callback=self._make_file_progress_callback(
+                                    job_id, work.display_name, idx, total_files, write_job
+                                ),
+                            )
+                        except Exception as e:
+                            fail_file(idx, work, e)
+                            continue
+                        complete_file(idx, work, doc_metadata)
+                        continue
+
+                    persist_batch(batcher.add((idx, work, prepared), len(prepared.chunks)))
+
+                persist_batch(batcher.drain())
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
             if results["documents_processed"] > 0:
                 indexer.save_index()
 
             app_db.update_upload_job(
-                job_id, status="completed", processed_files=total_files,
-                current_file=None, phase=UploadPhase.COMPLETED.value,
+                job_id,
+                status="completed",
+                processed_files=total_files,
+                current_file=None,
+                phase=UploadPhase.COMPLETED.value,
                 result_summary=json.dumps(results),
             )
-
             self._broadcast_event(ProgressEvent(
-                job_id=job_id, event_type="job_complete", phase=UploadPhase.COMPLETED.value,
-                total_files=total_files, overall_percent=100.0,
+                job_id=job_id,
+                event_type="job_complete",
+                phase=UploadPhase.COMPLETED.value,
+                total_files=total_files,
+                overall_percent=100.0,
             ))
-
-            logger.info(f"Repo index job {job_id} completed: {results['documents_processed']}/{total_files} files")
+            logger.info(
+                f"Bulk index job {job_id} completed: "
+                f"{results['documents_processed']}/{total_files} files"
+            )
 
         except Exception as e:
-            logger.error(f"Repo index job {job_id} failed: {e}")
+            logger.error(f"Bulk index job {job_id} failed: {e}")
+            # Best effort: keep the on-disk FAISS index consistent with the
+            # chunk rows already committed to SQLite before the crash.
+            if results["documents_processed"] > 0:
+                try:
+                    indexer.save_index()
+                except Exception as save_error:
+                    logger.error(f"Could not save index after job failure: {save_error}")
             app_db.update_upload_job(
-                job_id, status="failed", phase=UploadPhase.FAILED.value,
-                error=str(e), result_summary=json.dumps(results),
+                job_id,
+                status="failed",
+                phase=UploadPhase.FAILED.value,
+                error=str(e),
+                result_summary=json.dumps(results),
             )
             self._broadcast_event(ProgressEvent(
-                job_id=job_id, event_type="job_error", phase=UploadPhase.FAILED.value, error=str(e),
+                job_id=job_id,
+                event_type="job_error",
+                phase=UploadPhase.FAILED.value,
+                error=str(e),
             ))
 
         finally:

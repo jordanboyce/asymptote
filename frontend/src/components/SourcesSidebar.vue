@@ -5,7 +5,7 @@
     <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Sources">
       <Library :size="15" class="text-base-content/60 flex-shrink-0" aria-hidden="true" />
       <span class="font-semibold text-sm flex-1">Sources</span>
-      <span v-if="documents.length > 0" class="badge badge-xs badge-neutral" :aria-label="`${documents.length} source${documents.length === 1 ? '' : 's'}`">{{ documents.length }}</span>
+      <span v-if="docTotal > 0" class="badge badge-xs badge-neutral" :aria-label="`${docTotal} source${docTotal === 1 ? '' : 's'}`">{{ docTotal.toLocaleString() }}</span>
       <button
         class="btn btn-ghost btn-xs btn-circle"
         @click="loadDocuments"
@@ -250,6 +250,14 @@
           aria-label="Select all sources"
         />
         <span class="text-xs font-semibold text-base-content/60 flex-1" id="sources-list-heading">Your Sources</span>
+        <input
+          v-if="docTotal > 20 || docSearch"
+          v-model="docSearch"
+          type="search"
+          placeholder="Filter…"
+          class="input input-bordered input-xs w-28"
+          aria-label="Filter sources by filename"
+        />
         <button
           v-if="selectedDocuments.length > 0"
           class="btn btn-xs btn-error gap-1"
@@ -273,6 +281,7 @@
           <span class="loading loading-spinner loading-sm"></span>
           <p class="text-xs text-base-content/50 mt-2">Syncing sources…</p>
         </template>
+        <p v-else-if="docSearch" class="text-xs text-base-content/50">No sources match “{{ docSearch }}”.</p>
         <p v-else class="text-xs text-base-content/50">No sources yet. Use Add Sources above to get started.</p>
       </div>
 
@@ -358,6 +367,14 @@
               <Trash2 :size="12" />
             </button>
           </div>
+        </div>
+
+        <!-- Load more (paged: only the first pages are in the DOM) -->
+        <div v-if="documents.length < docTotal" class="p-2 text-center">
+          <button class="btn btn-xs btn-ghost" @click="loadMoreDocuments" :disabled="loadingMore">
+            <span v-if="loadingMore" class="loading loading-spinner loading-xs"></span>
+            Load more ({{ documents.length.toLocaleString() }} of {{ docTotal.toLocaleString() }})
+          </button>
         </div>
       </div>
 
@@ -868,25 +885,56 @@ const indexFiles = async () => {
   const errors = []
 
   try {
-    // Browser-uploaded File objects (headless/Docker mode) → multipart POST to /documents/upload
+    // Browser-uploaded File objects (headless/Docker mode) → multipart POST to
+    // /documents/upload, in batches. One request per batch keeps each POST
+    // under proxy body-size caps (Cloudflare: 100MB) and response timeouts
+    // (~100s), which is what makes very large folder drops (tens of
+    // thousands of files) work from the browser at all. One failed batch is
+    // reported and skipped; the rest continue.
     if (browserItems.length > 0) {
+      const BATCH_MAX_FILES = 40
+      const BATCH_MAX_BYTES = 25 * 1024 * 1024
+      const batches = []
+      let batch = []
+      let batchBytes = 0
+      for (const item of browserItems) {
+        const size = item.size || item.file.size || 0
+        if (batch.length && (batch.length >= BATCH_MAX_FILES || batchBytes + size > BATCH_MAX_BYTES)) {
+          batches.push(batch)
+          batch = []
+          batchBytes = 0
+        }
+        batch.push(item)
+        batchBytes += size
+      }
+      if (batch.length) batches.push(batch)
+
       uploading.value = true
       uploadingCount.value = browserItems.length
+      let uploaded = 0
       try {
-        const formData = new FormData()
-        for (const item of browserItems) {
-          formData.append('files', item.file, item.name)
+        for (const group of batches) {
+          const formData = new FormData()
+          for (const item of group) {
+            formData.append('files', item.file, item.name)
+          }
+          formData.append('collection_id', collectionStore.currentCollectionId)
+          try {
+            const response = await axios.post('/documents/upload', formData, {
+              headers: { 'Content-Type': 'multipart/form-data' }
+            })
+            successCount += response.data.documents_processed || 0
+            totalChunks += response.data.total_chunks || 0
+          } catch (err) {
+            const errorMsg = err.response?.data?.detail || err.message
+            errors.push(`Upload batch (${group[0].name}…): ${errorMsg}`)
+            console.error('Browser upload error:', err)
+          }
+          uploaded += group.length
+          uploadingCount.value = browserItems.length - uploaded
+          indexProgressPercent.value = (uploaded / browserItems.length) * 100
+          currentIndexingFile.value = group[group.length - 1].name
         }
-        formData.append('collection_id', collectionStore.currentCollectionId)
-        const response = await axios.post('/documents/upload', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        })
-        successCount += response.data.documents_processed || 0
-        totalChunks += response.data.total_chunks || 0
-      } catch (err) {
-        const errorMsg = err.response?.data?.detail || err.message
-        errors.push(`Upload: ${errorMsg}`)
-        console.error('Browser upload error:', err)
       } finally {
         uploading.value = false
         uploadingCount.value = 0
@@ -1013,21 +1061,55 @@ const toggleSelectAll = () => {
   }
 }
 
+// Paged loading: the sidebar only ever holds the pages the user has seen.
+// A 75k-document collection would otherwise mean a ~30MB response and 75k
+// DOM rows on every refresh.
+const DOC_PAGE = 200
+const docTotal = ref(0)
+const docSearch = ref('')
+const loadingMore = ref(false)
+
+const _docParams = (offset) => ({
+  collection_id: collectionStore.currentCollectionId,
+  limit: DOC_PAGE,
+  offset,
+  ...(docSearch.value ? { q: docSearch.value } : {}),
+})
+
 const loadDocuments = async () => {
   loading.value = true
   error.value = ''
 
   try {
-    const collectionId = collectionStore.currentCollectionId
-    const response = await axios.get(`/documents?collection_id=${collectionId}`)
+    const response = await axios.get('/documents', { params: _docParams(0) })
     documents.value = response.data.documents || []
-    if (documents.value.length > 0) justIndexed.value = false
+    docTotal.value = response.data.total_documents ?? documents.value.length
+    if (docTotal.value > 0) justIndexed.value = false
   } catch (err) {
     error.value = err.response?.data?.detail || 'Failed to load sources'
   } finally {
     loading.value = false
   }
 }
+
+const loadMoreDocuments = async () => {
+  loadingMore.value = true
+  try {
+    const response = await axios.get('/documents', { params: _docParams(documents.value.length) })
+    documents.value = documents.value.concat(response.data.documents || [])
+    docTotal.value = response.data.total_documents ?? docTotal.value
+  } catch (err) {
+    error.value = err.response?.data?.detail || 'Failed to load more sources'
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+let _docSearchTimer = null
+watch(docSearch, () => {
+  clearTimeout(_docSearchTimer)
+  _docSearchTimer = setTimeout(loadDocuments, 250)
+})
 
 const openChunks = async (doc) => {
   chunkDocument.value = doc

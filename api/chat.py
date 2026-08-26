@@ -1018,7 +1018,16 @@ def validate_api_key(  # sync: provider round-trip runs in the threadpool
             provider = create_provider(x_ai_provider, x_ai_key, **extra)
 
         valid = provider.validate()
-        return {"valid": valid, "error": None}
+        if not valid:
+            # The provider's API rejected the key — say so explicitly, so a bad
+            # key doesn't read as "the integration is broken".
+            label = getattr(provider, "PROVIDER_LABEL", x_ai_provider)
+            hint = getattr(provider, "KEY_HINT", "")
+            msg = f"{label} rejected this API key."
+            if hint:
+                msg += f" Double-check it (or create a new one) at {hint}"
+            return {"valid": False, "error": msg}
+        return {"valid": True, "error": None}
     except Exception as e:
         error_str = str(e)
         logger.error(f"API key validation error for {x_ai_provider}: {e}")
@@ -1031,6 +1040,9 @@ def validate_api_key(  # sync: provider round-trip runs in the threadpool
         elif any(kw in error_str.lower() for kw in ("connection error", "connect error", "connection refused", "name or service not known", "failed to establish")):
             host = "ollama.com" if x_ai_provider == "ollama_cloud" else "the provider's API"
             return {"valid": False, "error": f"Could not reach {host}. Check your network connection and try again."}
+        elif "model" in error_str.lower() and any(kw in error_str.lower() for kw in ("not found", "does not exist", "not_found", "unknown", "invalid model", "no access")):
+            tried = x_ai_model or "the default model"
+            return {"valid": False, "error": f"The key was accepted, but the provider rejected the model ({tried}). Pick a model your plan includes and test again."}
         else:
             return {"valid": False, "error": error_str}
 

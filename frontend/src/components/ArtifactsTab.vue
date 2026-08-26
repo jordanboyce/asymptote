@@ -100,6 +100,8 @@ import {
   getAPIProviderName,
   buildProviderHeaders,
   getProviderDisplayName,
+  getConfiguredProviderIds,
+  fetchServerProviderIds,
 } from '../utils/aiProviders.js'
 
 marked.setOptions({ gfm: true, breaks: true })
@@ -125,6 +127,18 @@ const renderedContent = computed(() => {
 })
 
 onMounted(async () => {
+  // Resolve the provider with the same fallback chain chat uses: the active
+  // provider if it's actually configured, else the first configured one
+  // (including server-stored team keys). A one-shot read of the "active"
+  // key alone claimed no provider existed when keys were saved but none
+  // was ever explicitly marked active.
+  try {
+    await fetchServerProviderIds()
+  } catch { /* offline from server config is fine — local configs still count */ }
+  const configured = getConfiguredProviderIds()
+  const active = getActiveProvider()
+  providerId.value = active && configured.includes(active) ? active : (configured[0] || active || '')
+
   try {
     const resp = await fetch('/api/artifacts/types')
     if (resp.ok) {

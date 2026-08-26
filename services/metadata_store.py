@@ -527,6 +527,63 @@ class MetadataStore:
             cursor = conn.execute("SELECT COUNT(*) FROM chunks")
             return cursor.fetchone()[0]
 
+    def count_documents(self, q: str = "") -> int:
+        """Count documents, optionally filtered by a filename substring."""
+        with sqlite_connect(self.db_path) as conn:
+            if q:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM documents WHERE filename LIKE ? ESCAPE '\\'",
+                    (f"%{self._escape_like(q)}%",),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) FROM documents").fetchone()
+            return row[0]
+
+    @staticmethod
+    def _escape_like(q: str) -> str:
+        return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _document_row_to_dict(row) -> dict:
+        r = dict(row)
+        if r.get("injection_warnings"):
+            r["injection_warnings"] = json.loads(r["injection_warnings"])
+        return r
+
+    def list_documents_page(self, limit: int, offset: int = 0, q: str = "") -> List[dict]:
+        """One page of documents, newest first, optionally filename-filtered.
+
+        The unpaged list_documents() walks the whole table — fine for hundreds
+        of documents, pathological for a 75k-document collection. This is the
+        SQL-side pagination the sidebar uses; the shape of each row matches
+        list_documents().
+        """
+        with sqlite_connect(self.db_path) as conn:
+            self._ensure_v3_1_columns(conn)
+            conn.row_factory = sqlite3.Row
+            where = ""
+            params: list = []
+            if q:
+                where = "WHERE d.filename LIKE ? ESCAPE '\\'"
+                params.append(f"%{self._escape_like(q)}%")
+            params += [limit, offset]
+            cursor = conn.execute(f"""
+                SELECT
+                    d.document_id,
+                    d.filename,
+                    d.num_chunks,
+                    d.num_pages,
+                    d.source_type,
+                    d.source_path,
+                    d.upload_timestamp,
+                    d.injection_warnings
+                FROM documents d
+                {where}
+                ORDER BY COALESCE(d.upload_timestamp, '1970-01-01') DESC, d.document_id
+                LIMIT ? OFFSET ?
+            """, params)
+            return [self._document_row_to_dict(row) for row in cursor.fetchall()]
+
     def list_documents(self) -> List[dict]:
         """
         List all documents with their statistics.
@@ -590,20 +647,66 @@ class MetadataStore:
             source_path: Original filesystem path (for local references)
             source_type: Source type: 'upload' or 'local_reference'
         """
+        self.add_documents([{
+            "document_id": document_id,
+            "filename": filename,
+            "num_pages": num_pages,
+            "num_chunks": num_chunks,
+            "upload_timestamp": upload_timestamp,
+            "source_format": source_format,
+            "extraction_method": extraction_method,
+            "embedding_model": embedding_model,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "source_path": source_path,
+            "source_type": source_type,
+            "injection_warnings": injection_warnings,
+        }])
+
+    def add_documents(self, documents: List[dict]):
+        """
+        Add many document metadata rows in a single transaction.
+
+        Bulk ingest records one row per file; committing them together instead
+        of once per file is a large part of what makes many-small-file corpora
+        index at full speed.
+
+        Args:
+            documents: List of dicts with the same keys as add_document's
+                arguments (missing optional keys use the same defaults).
+        """
+        if not documents:
+            return
+
         with sqlite_connect(self.db_path) as conn:
             # Ensure v3.1 columns exist (defensive migration for cached instances)
             self._ensure_v3_1_columns(conn)
 
-            injection_warnings_json = json.dumps(injection_warnings) if injection_warnings else None
-            conn.execute("""
+            conn.executemany("""
                 INSERT OR REPLACE INTO documents
                 (document_id, filename, num_pages, num_chunks, upload_timestamp,
                  source_format, extraction_method, embedding_model, chunk_size,
                  chunk_overlap, schema_version, source_path, source_type, injection_warnings)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (document_id, filename, num_pages, num_chunks, upload_timestamp,
-                  source_format, extraction_method, embedding_model, chunk_size,
-                  chunk_overlap, SCHEMA_VERSION, source_path, source_type, injection_warnings_json))
+            """, [
+                (
+                    doc["document_id"],
+                    doc["filename"],
+                    doc["num_pages"],
+                    doc["num_chunks"],
+                    doc["upload_timestamp"],
+                    doc.get("source_format"),
+                    doc.get("extraction_method", "text"),
+                    doc.get("embedding_model"),
+                    doc.get("chunk_size"),
+                    doc.get("chunk_overlap"),
+                    SCHEMA_VERSION,
+                    doc.get("source_path"),
+                    doc.get("source_type", "upload"),
+                    json.dumps(doc["injection_warnings"]) if doc.get("injection_warnings") else None,
+                )
+                for doc in documents
+            ])
             conn.commit()
 
     def get_all_chunks_ordered(self) -> List[dict]:

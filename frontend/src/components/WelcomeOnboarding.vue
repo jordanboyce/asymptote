@@ -207,6 +207,7 @@ import {
   setActiveProviderLS,
   testProviderConnection,
   fetchProviderModels,
+  isRemoteDeployment,
 } from '../utils/aiProviders.js'
 
 const props = defineProps({
@@ -232,14 +233,18 @@ onMounted(async () => {
   } catch { /* assume standard */ }
 })
 
-const cards = computed(() =>
-  offline.value
-    ? [
-        { id: 'ollama', title: 'Ollama (local)', desc: 'Private, runs on this machine' },
-        { id: 'custom', title: 'Your own endpoint', desc: 'LM Studio, vLLM, any self-hosted OpenAI-compatible URL' },
-      ]
-    : CARDS
-)
+const cards = computed(() => {
+  if (offline.value) {
+    return [
+      { id: 'ollama', title: 'Ollama (local)', desc: 'Private, runs on this machine' },
+      { id: 'custom', title: 'Your own endpoint', desc: 'LM Studio, vLLM, any self-hosted OpenAI-compatible URL' },
+    ]
+  }
+  // Hosted: "runs on this machine" would mislead — the browser's machine is
+  // not the server. Cloud providers and custom URLs remain.
+  if (isRemoteDeployment()) return CARDS.filter(c => c.id !== 'ollama')
+  return CARDS
+})
 
 const availablePresets = computed(() =>
   offline.value

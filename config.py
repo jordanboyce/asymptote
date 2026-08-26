@@ -33,7 +33,13 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
     # "local" = sentence-transformers (downloaded from HuggingFace)
     # "ollama" = Ollama /api/embed (fully local, no HF dependency)
-    embedding_provider: Literal["local", "ollama"] = "local"
+    # "ollama_cloud" = ollama.com /api/embed with an API key — no local model
+    #   at all; note chunks are sent to ollama.com at index time and queries
+    #   at search time, so pick this only when that egress is acceptable.
+    embedding_provider: Literal["local", "ollama", "ollama_cloud"] = "local"
+    # Key for embedding_provider="ollama_cloud". Empty falls back to the team
+    # key saved on the Ollama Cloud provider card (Settings → AI Providers).
+    ollama_cloud_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"   # used for embeddings and inference
     ollama_embedding_model: str = "nomic-embed-text"  # Ollama model when embedding_provider="ollama"
 
@@ -114,6 +120,13 @@ class Settings(BaseSettings):
     # UI is needed. Required whenever the server is reachable beyond loopback.
     auth_password: str = ""
 
+    # Extra Host header values the embedded /mcp endpoint accepts, comma-
+    # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding
+    # protection that only trusts localhost Hosts by default; when the app is
+    # served through a tunnel or reverse proxy under a public hostname, list
+    # that hostname here. Localhost stays allowed either way.
+    mcp_allowed_hosts: str = ""
+
     # OCR configuration — deliberately minimal: an on/off switch and an engine.
     # Scanned pages either go through a vision-capable LLM (best quality) or the
     # free local engine (Docling/Tesseract) when no provider is set. Rendering
@@ -147,6 +160,14 @@ class Settings(BaseSettings):
 
     # v3.0: CSV indexing configuration
     csv_row_level_indexing: bool = True  # Index CSV rows individually
+
+    # Bulk ingest tuning (upload/index jobs over many small files). Chunks are
+    # accumulated across files until bulk_flush_chunks, then embedded together
+    # (so EMBED_BATCH_SIZE batches actually fill) and persisted in one
+    # SQLite/BM25/FAISS pass. Extraction runs in a small worker pool so it
+    # overlaps embedding; embedding itself stays serialized on the encode lock.
+    bulk_flush_chunks: int = 256
+    bulk_extract_workers: int = 4
 
     # Audio transcription (meeting recordings via local Whisper)
     # Model size: tiny | base | small | medium | large-v3

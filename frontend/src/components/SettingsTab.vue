@@ -599,9 +599,13 @@
                     <input type="radio" class="radio radio-primary radio-sm" value="local" v-model="embeddingProvider" />
                     <span class="text-sm">Local <span class="text-xs text-base-content/50">(sentence-transformers)</span></span>
                   </label>
-                  <label class="flex items-center gap-2 cursor-pointer">
+                  <label v-if="!isRemoteDeployment() || embeddingProvider === 'ollama'" class="flex items-center gap-2 cursor-pointer">
                     <input type="radio" class="radio radio-primary radio-sm" value="ollama" v-model="embeddingProvider" @change="detectEmbeddingOllama" />
-                    <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(fully local, no HF download)</span></span>
+                    <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(server-side Ollama instance)</span></span>
+                  </label>
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" class="radio radio-primary radio-sm" value="ollama_cloud" v-model="embeddingProvider" />
+                    <span class="text-sm">Ollama Cloud <span class="text-xs text-base-content/50">(hosted API, needs key)</span></span>
                   </label>
                 </div>
               </div>
@@ -670,6 +674,38 @@
                   <p v-else class="text-xs text-base-content/50 mt-1">
                     Recommended: <code>nomic-embed-text</code> or <code>mxbai-embed-large</code>.
                     Pull first: <code>ollama pull nomic-embed-text</code>
+                  </p>
+                </div>
+              </div>
+
+              <!-- Ollama Cloud: model + API key -->
+              <div v-if="embeddingProvider === 'ollama_cloud'" class="space-y-3 mt-3">
+                <div class="form-control">
+                  <label class="label p-0 pb-1" for="embedding-cloud-model"><span class="label-text text-xs font-medium">Embedding model</span></label>
+                  <input
+                    id="embedding-cloud-model"
+                    v-model="ollamaEmbeddingModel"
+                    type="text"
+                    placeholder="nomic-embed-text"
+                    class="input input-bordered input-sm w-full max-w-sm"
+                  />
+                  <p class="text-xs text-base-content/50 mt-1">
+                    An embedding model served by <a href="https://ollama.com/search?c=embedding" target="_blank" class="link link-primary">ollama.com</a>.
+                  </p>
+                </div>
+                <div class="form-control">
+                  <label class="label p-0 pb-1" for="embedding-cloud-key"><span class="label-text text-xs font-medium">API key <span class="font-normal text-base-content/50">(optional)</span></span></label>
+                  <input
+                    id="embedding-cloud-key"
+                    v-model="ollamaCloudApiKey"
+                    type="password"
+                    placeholder="blank = use your Ollama Cloud provider key"
+                    class="input input-bordered input-sm w-full max-w-sm"
+                    autocomplete="off"
+                  />
+                  <p class="text-xs text-base-content/50 mt-1">
+                    Falls back to the key saved on the Ollama Cloud card under AI Providers.
+                    Note: document chunks are sent to ollama.com at index time and queries at search time.
                   </p>
                 </div>
               </div>
@@ -864,6 +900,7 @@ import {
   testProviderConnection,
   fetchServerProviderIds,
   migrateLegacySettings,
+  isRemoteDeployment,
 } from '../utils/aiProviders.js'
 
 const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
@@ -919,7 +956,8 @@ const ocrOllamaVisionTotal = ref(0)
 const ollamaNumCtx = ref(8192)
 
 // Embedding settings
-const embeddingProvider = ref('local')  // 'local' | 'ollama'
+const embeddingProvider = ref('local')  // 'local' | 'ollama' | 'ollama_cloud'
+const ollamaCloudApiKey = ref('')  // masked round-trip: '********' means leave unchanged
 const embeddingModel = ref('all-MiniLM-L6-v2')  // local sentence-transformers model
 const ollamaEmbeddingModel = ref('nomic-embed-text')  // ollama model for embeddings
 const ollamaBaseUrl = ref('http://localhost:11434')
@@ -1024,6 +1062,8 @@ const loadEmbeddingSettings = (data) => {
   embeddingModel.value = data.embedding_model || 'all-MiniLM-L6-v2'
   ollamaEmbeddingModel.value = data.ollama_embedding_model || 'nomic-embed-text'
   ollamaBaseUrl.value = data.ollama_base_url || 'http://localhost:11434'
+  // Secrets round-trip masked: '********' shown when set, sent back unchanged.
+  ollamaCloudApiKey.value = data.ollama_cloud_api_key || ''
 }
 
 const saveEmbeddingSettings = async () => {
@@ -1033,6 +1073,7 @@ const saveEmbeddingSettings = async () => {
       embedding_model: embeddingModel.value,
       ollama_embedding_model: ollamaEmbeddingModel.value,
       ollama_base_url: ollamaBaseUrl.value,
+      ollama_cloud_api_key: ollamaCloudApiKey.value,
     })
     embeddingSettingsSaved.value = true
     embeddingNeedsReindex.value = result.data.requires_reindex || false
@@ -1230,14 +1271,19 @@ const systemInfo = ref({ db_backend: 'sqlite', multi_user: false, user_id: 'defa
 
 // Air-gapped deployments: the backend rejects cloud providers, so don't
 // offer them. Only local Ollama and self-hosted endpoints remain.
-const visibleProviderDefs = computed(() =>
-  systemInfo.value.offline_mode ? PROVIDER_DEFS.filter(d => d.type === 'local') : PROVIDER_DEFS
-)
-const availableEndpointPresets = computed(() =>
-  systemInfo.value.offline_mode
-    ? CUSTOM_ENDPOINT_PRESETS.filter(p => !p.baseUrl || !p.baseUrl.startsWith('https://'))
-    : CUSTOM_ENDPOINT_PRESETS
-)
+const visibleProviderDefs = computed(() => {
+  if (systemInfo.value.offline_mode) return PROVIDER_DEFS.filter(d => d.type === 'local')
+  // Hosted: hide "local machine" providers — localhost is the server there,
+  // not the machine the user is browsing from. Server-side .env still works.
+  if (isRemoteDeployment()) return PROVIDER_DEFS.filter(d => d.type !== 'local')
+  return PROVIDER_DEFS
+})
+const availableEndpointPresets = computed(() => {
+  let presets = CUSTOM_ENDPOINT_PRESETS
+  if (systemInfo.value.offline_mode) presets = presets.filter(p => !p.baseUrl || !p.baseUrl.startsWith('https://'))
+  if (isRemoteDeployment()) presets = presets.filter(p => !p.baseUrl || !p.baseUrl.includes('localhost'))
+  return presets
+})
 
 async function loadSystemInfo() {
   try {

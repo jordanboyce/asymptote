@@ -24,18 +24,22 @@ EMBED_BATCH_SIZE = 32
 class OllamaEmbeddingService:
     """Generates embeddings via Ollama's /api/embed endpoint.
 
-    Requires Ollama running locally (or reachable at base_url) with the
-    chosen embedding model already pulled (e.g. `ollama pull nomic-embed-text`).
-    No HuggingFace download, no sentence-transformers dependency for this path.
+    Works against a local/self-hosted Ollama daemon (no API key) or against
+    Ollama Cloud (base_url https://ollama.com + api_key). Requires the chosen
+    embedding model to be available on that endpoint (`ollama pull <model>`
+    locally; hosted models are served on demand). No HuggingFace download,
+    no sentence-transformers dependency for this path.
     """
 
     def __init__(
         self,
         model_name: str = "nomic-embed-text",
         base_url: str = "http://localhost:11434",
+        api_key: str = "",
     ):
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
         logger.info(f"Initialising Ollama embedding: model={model_name} url={self.base_url}")
         # Probe once to verify connectivity and discover dimensionality.
         try:
@@ -43,18 +47,29 @@ class OllamaEmbeddingService:
             self.embedding_dim = len(sample[0])
             logger.info(f"Ollama embedding ready: dim={self.embedding_dim}")
         except Exception as e:
+            if api_key:
+                hint = (
+                    f"Check that your Ollama Cloud API key is valid and that "
+                    f"'{model_name}' is an embedding model available at {self.base_url}."
+                )
+            else:
+                hint = (
+                    f"Make sure Ollama is running and the model is pulled "
+                    f"(`ollama pull {model_name}`)."
+                )
             raise RuntimeError(
-                f"Cannot connect to Ollama at {self.base_url} with model '{model_name}'. "
-                f"Make sure Ollama is running and the model is pulled "
-                f"(`ollama pull {model_name}`). Error: {e}"
+                f"Cannot reach Ollama at {self.base_url} with model '{model_name}'. {hint} Error: {e}"
             ) from e
 
     def _call_api(self, texts: List[str]) -> List[List[float]]:
         payload = json.dumps({"model": self.model_name, "input": texts}).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(
             f"{self.base_url}/api/embed",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -273,3 +288,47 @@ class EmbeddingService:
             prompt_name=self._query_prompt_name,
             prompt=self._query_prompt,
         )
+
+
+OLLAMA_CLOUD_BASE_URL = "https://ollama.com"
+
+
+def create_embedding_service(collection_model: Optional[str] = None):
+    """Build the embedding service the current settings call for.
+
+    This is the ONE place provider selection happens — the indexer manager and
+    the reindex service both route through it, so a reindex can never silently
+    re-embed with a different provider than query time uses.
+
+    - "local": sentence-transformers; `collection_model` (a per-collection
+      override) wins over the global EMBEDDING_MODEL.
+    - "ollama": self-hosted daemon at OLLAMA_BASE_URL, no key.
+    - "ollama_cloud": ollama.com with a bearer key — OLLAMA_CLOUD_API_KEY from
+      .env, falling back to the team key saved on the Ollama Cloud provider
+      card in Settings.
+    """
+    from config import settings
+
+    provider = settings.embedding_provider
+    if provider == "ollama":
+        return OllamaEmbeddingService(
+            model_name=settings.ollama_embedding_model,
+            base_url=settings.ollama_base_url,
+        )
+    if provider == "ollama_cloud":
+        api_key = settings.ollama_cloud_api_key
+        if not api_key:
+            from services.app_database import app_db
+            api_key = app_db.get_agent_api_key("ollama_cloud") or ""
+        if not api_key:
+            raise RuntimeError(
+                "EMBEDDING_PROVIDER=ollama_cloud needs an API key: set "
+                "OLLAMA_CLOUD_API_KEY in .env, or save an Ollama Cloud team key "
+                "under Settings → AI Providers."
+            )
+        return OllamaEmbeddingService(
+            model_name=settings.ollama_embedding_model,
+            base_url=OLLAMA_CLOUD_BASE_URL,
+            api_key=api_key,
+        )
+    return EmbeddingService(model_name=collection_model or settings.embedding_model)

@@ -16,7 +16,8 @@ export const PROVIDER_DEFS = [
     keyPlaceholder: 'sk-ant-...',
     keyLink: 'https://console.anthropic.com/settings/keys',
     models: [
-      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 (quality)' },
+      { id: 'claude-sonnet-5', label: 'Claude Sonnet 5 (quality)' },
+      { id: 'claude-opus-5', label: 'Claude Opus 5 (best)' },
       { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)' },
     ],
   },
@@ -99,6 +100,7 @@ export const PROVIDER_DEFS = [
     keyPlaceholder: 'your Ollama API key',
     keyLink: 'https://ollama.com/settings/keys',
     models: [
+      { id: 'gemma4:31b', label: 'Gemma 4 31B (free tier)' },
       { id: 'gpt-oss:120b', label: 'GPT-OSS 120B (quality)' },
       { id: 'gpt-oss:20b', label: 'GPT-OSS 20B (fast)' },
     ],
@@ -352,6 +354,19 @@ export async function testProviderConnection(providerId, { apiKey = '', baseUrl 
   } catch (err) {
     return { valid: false, error: err?.response?.data?.detail || err.message }
   }
+}
+
+/**
+ * True when the app is being used at a remote origin (hosted deployment).
+ * "Local" options (Ollama on localhost, LM Studio, vLLM presets) point at the
+ * *server's* network in that case — an option labeled "runs on this machine"
+ * would mislead, because the browser's machine is not the server. Local
+ * installs (localhost origins) keep the full list; server-side .env config
+ * can still enable any provider regardless of what the UI offers.
+ */
+export function isRemoteDeployment() {
+  const h = window.location.hostname
+  return !(h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1')
 }
 
 /** Whether a provider is local/private (not cloud). */

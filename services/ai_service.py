@@ -119,8 +119,10 @@ class AIProvider(ABC):
 class AnthropicProvider(AIProvider):
     """Anthropic Claude provider."""
 
+    PROVIDER_LABEL = "Anthropic"
+    KEY_HINT = "https://console.anthropic.com/settings/keys"
     FAST_MODEL = "claude-haiku-4-5-20251001"
-    QUALITY_MODEL = "claude-sonnet-4-5-20250929"
+    QUALITY_MODEL = "claude-sonnet-5"
 
     def __init__(self, api_key: str, model: Optional[str] = None):
         import anthropic
@@ -261,7 +263,7 @@ class AnthropicProvider(AIProvider):
             )
             return True
         except anthropic.AuthenticationError:
-            logger.warning("Anthropic authentication failed")
+            logger.warning("%s authentication failed", self.PROVIDER_LABEL)
             return False
         except anthropic.RateLimitError as e:
             # Quota/billing issues mean the key is valid but account has no credits
@@ -282,6 +284,9 @@ class AnthropicProvider(AIProvider):
 
 
 class OpenAIProvider(AIProvider):
+
+    PROVIDER_LABEL = "OpenAI"
+    KEY_HINT = "https://platform.openai.com/api-keys"
     """OpenAI provider."""
 
     FAST_MODEL = "gpt-4o-mini"
@@ -410,6 +415,10 @@ class OpenAIProvider(AIProvider):
         }
 
     def validate(self) -> bool:
+        # Shared by every OpenAI-compatible subclass (Grok, Google, GitHub,
+        # Ollama Cloud, OpenRouter, custom endpoints). Pings FAST_MODEL, which
+        # __init__ overrides with the user's selected model when one is chosen —
+        # so validation exercises the model that chat will actually use.
         from openai import AuthenticationError, RateLimitError
         try:
             self.client.chat.completions.create(
@@ -419,20 +428,14 @@ class OpenAIProvider(AIProvider):
             )
             return True
         except AuthenticationError:
-            logger.warning("OpenAI authentication failed")
+            logger.warning("%s authentication failed", self.PROVIDER_LABEL)
             return False
         except RateLimitError as e:
             # Quota/billing issues mean the key is valid but account has no credits
-            # Check if it's a quota error vs rate limit
-            error_message = str(e)
-            if "quota" in error_message.lower() or "insufficient_quota" in error_message.lower():
-                logger.warning(f"OpenAI key valid but quota exceeded: {e}")
-                return True  # Key is valid, just no credits
-            else:
-                logger.warning(f"OpenAI rate limit: {e}")
-                return True  # Key is valid, just rate limited
+            logger.warning(f"{self.PROVIDER_LABEL} key valid but rate/quota limited: {e}")
+            return True
         except Exception as e:
-            logger.error(f"OpenAI validation error: {e}")
+            logger.error(f"{self.PROVIDER_LABEL} validation error: {e}")
             raise
 
 
@@ -600,34 +603,20 @@ class OllamaProvider(AIProvider):
 class GrokProvider(OpenAIProvider):
     """Grok (xAI) provider — OpenAI-compatible API."""
 
+    PROVIDER_LABEL = "Grok (xAI)"
+    KEY_HINT = "https://console.x.ai"
     FAST_MODEL = "grok-3-mini"
     QUALITY_MODEL = "grok-3"
 
     def __init__(self, api_key: str, model: Optional[str] = None):
         super().__init__(api_key, model=model, base_url="https://api.x.ai/v1")
 
-    def validate(self) -> bool:
-        from openai import AuthenticationError, RateLimitError
-        try:
-            self.client.chat.completions.create(
-                model=self.FAST_MODEL,
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            return True
-        except AuthenticationError:
-            logger.warning("Grok authentication failed")
-            return False
-        except RateLimitError:
-            return True
-        except Exception as e:
-            logger.error(f"Grok validation error: {e}")
-            raise
-
 
 class GoogleProvider(OpenAIProvider):
     """Google Gemini provider via the OpenAI-compatible endpoint."""
 
+    PROVIDER_LABEL = "Google Gemini"
+    KEY_HINT = "https://aistudio.google.com/apikey"
     FAST_MODEL = "gemini-2.0-flash"
     QUALITY_MODEL = "gemini-2.5-pro-preview-03-25"
 
@@ -637,24 +626,6 @@ class GoogleProvider(OpenAIProvider):
             model=model,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
-
-    def validate(self) -> bool:
-        from openai import AuthenticationError, RateLimitError
-        try:
-            self.client.chat.completions.create(
-                model=self.FAST_MODEL,
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            return True
-        except AuthenticationError:
-            logger.warning("Google authentication failed")
-            return False
-        except RateLimitError:
-            return True
-        except Exception as e:
-            logger.error(f"Google validation error: {e}")
-            raise
 
 
 class GitHubProvider(OpenAIProvider):
@@ -670,6 +641,8 @@ class GitHubProvider(OpenAIProvider):
     Model IDs are namespaced like `openai/gpt-4o`, `meta/Llama-3.3-70B-Instruct`.
     """
 
+    PROVIDER_LABEL = "GitHub Models"
+    KEY_HINT = "https://github.com/settings/tokens"
     FAST_MODEL = "openai/gpt-4o-mini"
     QUALITY_MODEL = "openai/gpt-4o"
 
@@ -679,24 +652,6 @@ class GitHubProvider(OpenAIProvider):
             model=model,
             base_url="https://models.github.ai/inference",
         )
-
-    def validate(self) -> bool:
-        from openai import AuthenticationError, RateLimitError
-        try:
-            self.client.chat.completions.create(
-                model=self.FAST_MODEL,
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            return True
-        except AuthenticationError:
-            logger.warning("GitHub Models authentication failed")
-            return False
-        except RateLimitError:
-            return True
-        except Exception as e:
-            logger.error(f"GitHub Models validation error: {e}")
-            raise
 
 
 class OllamaCloudProvider(OpenAIProvider):
@@ -709,32 +664,13 @@ class OllamaCloudProvider(OpenAIProvider):
     Supports native function calling and vision (inherited from OpenAIProvider).
     """
 
+    PROVIDER_LABEL = "Ollama Cloud"
+    KEY_HINT = "https://ollama.com/settings/keys"
     FAST_MODEL = "gpt-oss:20b"
     QUALITY_MODEL = "gpt-oss:120b"
 
     def __init__(self, api_key: str, model: Optional[str] = None):
         super().__init__(api_key, model=model, base_url="https://ollama.com/v1")
-
-    def validate(self) -> bool:
-        from openai import AuthenticationError, RateLimitError, APIConnectionError
-        try:
-            self.client.chat.completions.create(
-                model=self.FAST_MODEL,
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            return True
-        except AuthenticationError:
-            logger.warning("Ollama Cloud authentication failed — check your API key at ollama.com/settings/keys")
-            return False
-        except RateLimitError:
-            return True
-        except APIConnectionError as e:
-            logger.error("Ollama Cloud connection failed: %s", e)
-            raise ConnectionError("Could not reach ollama.com. Check your network connection and try again.") from e
-        except Exception as e:
-            logger.error("Ollama Cloud validation error: %s", e)
-            raise
 
 
 class OpenRouterProvider(OpenAIProvider):
@@ -751,29 +687,13 @@ class OpenRouterProvider(OpenAIProvider):
     `openai/gpt-4o`, `meta-llama/llama-3.3-70b-instruct`.
     """
 
+    PROVIDER_LABEL = "OpenRouter"
+    KEY_HINT = "https://openrouter.ai/keys"
     FAST_MODEL = "anthropic/claude-3.5-haiku"
     QUALITY_MODEL = "anthropic/claude-3.5-sonnet"
 
     def __init__(self, api_key: str, model: Optional[str] = None):
         super().__init__(api_key, model=model, base_url="https://openrouter.ai/api/v1")
-
-    def validate(self) -> bool:
-        from openai import AuthenticationError, RateLimitError
-        try:
-            self.client.chat.completions.create(
-                model=self.FAST_MODEL,
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Hi"}],
-            )
-            return True
-        except AuthenticationError:
-            logger.warning("OpenRouter authentication failed — check your key at openrouter.ai/keys")
-            return False
-        except RateLimitError:
-            return True
-        except Exception as e:
-            logger.error(f"OpenRouter validation error: {e}")
-            raise
 
 
 class BedrockProvider(AnthropicProvider):
