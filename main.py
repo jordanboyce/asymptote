@@ -6,6 +6,7 @@ frontend serving. Endpoints live in `api/` (one router module per domain);
 business logic lives in `services/`.
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -200,8 +201,27 @@ if settings.auth_password:
         # preflight can be answered; the actual request still authenticates.
         if request.method == "OPTIONS":
             return await call_next(request)
+
+        # Cloudflare Access trust: a valid signed assertion from the edge is
+        # stronger auth than the shared password (per-identity, revocable),
+        # and accepting it removes the browser's second login prompt after
+        # SSO. Signature/issuer/audience/expiry are all verified — a spoofed
+        # header without the team's private key gets nowhere.
+        from services.access_jwt import get_verifier
+        verifier = get_verifier()
+        if verifier is not None:
+            assertion = request.headers.get("cf-access-jwt-assertion", "")
+            if assertion:
+                claims = await asyncio.to_thread(verifier.verify, assertion)
+                if claims is not None:
+                    request.state.auth_identity = verifier.identity_from_claims(claims)
+                    request.state.auth_via = "cloudflare-access"
+                    return await call_next(request)
+
         presented = _password_from_auth_header(request.headers.get("authorization", ""))
         if presented and secrets.compare_digest(presented, settings.auth_password):
+            request.state.auth_identity = None
+            request.state.auth_via = "password"
             return await call_next(request)
         return JSONResponse(
             {"detail": "Not authenticated"},

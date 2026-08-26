@@ -128,6 +128,22 @@
       >
         <Settings :size="16" />
       </button>
+
+      <!-- Signed-in identity + sign out (Cloudflare Access deployments only) -->
+      <div v-if="me.authenticated_via === 'cloudflare-access'" class="dropdown dropdown-end">
+        <button tabindex="0" class="btn btn-ghost btn-circle btn-sm" :title="me.identity || 'Signed in'" aria-label="Account menu">
+          <CircleUser :size="16" />
+        </button>
+        <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-50 w-64 p-2 shadow border border-base-300">
+          <li class="menu-title"><span class="truncate">{{ me.identity || 'Signed in' }}</span></li>
+          <li>
+            <a :href="me.logout_url" class="text-error">
+              <LogOut :size="14" />
+              Sign out
+            </a>
+          </li>
+        </ul>
+      </div>
     </header>
 
     <!-- ── Body ── -->
@@ -943,7 +959,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
 import axios from 'axios'
-import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck } from 'lucide-vue-next'
+import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut } from 'lucide-vue-next'
 
 const chatTabEnabled = ref(true)
 
@@ -1053,6 +1069,15 @@ const startResize = (e) => {
 
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
+}
+
+// Signed-in identity (Cloudflare Access deployments); drives the account menu.
+const me = ref({ authenticated_via: null, identity: null, logout_url: null })
+const loadMe = async () => {
+  try {
+    const resp = await axios.get('/api/me')
+    me.value = resp.data
+  } catch { /* open or password deployments simply show no account menu */ }
 }
 
 const stats = ref({
@@ -1481,6 +1506,9 @@ onMounted(async () => {
 
   // Keep the provider pill current when any surface changes provider config.
   window.addEventListener('asymptote:provider-changed', refreshProviderPill)
+
+  // Who's signed in (Access deployments) — drives the account/sign-out menu.
+  loadMe()
 
   // Server-stored team keys count as configured providers — the pill may
   // appear (or change) once they're known.

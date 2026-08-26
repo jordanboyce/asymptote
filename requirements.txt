@@ -36,6 +36,10 @@ python-dotenv>=1.0.0
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
 
+# Cloudflare Access JWT verification (edge-auth trust)
+PyJWT>=2.8.0
+cryptography>=42.0.0
+
 # MCP server
 # mcp 2.x renamed FastMCP -> MCPServer; migrate deliberately before unpinning
 mcp>=1.9.4,<2
