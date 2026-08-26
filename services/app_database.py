@@ -44,7 +44,14 @@ def _get_document_count_from_metadata(collection_id: str, data_dir: Path = None)
 
     try:
         with sqlite_connect(metadata_db_path) as conn:
-            cursor = conn.execute("SELECT COUNT(DISTINCT document_id) FROM chunks")
+            try:
+                # documents table is authoritative: counts zero-chunk docs
+                # (CSV/XLSX live in the structured store) and avoids a
+                # COUNT(DISTINCT) scan over millions of chunk rows.
+                cursor = conn.execute("SELECT COUNT(*) FROM documents")
+            except sqlite3.OperationalError:
+                # Legacy metadata.db without a documents table
+                cursor = conn.execute("SELECT COUNT(DISTINCT document_id) FROM chunks")
             return cursor.fetchone()[0]
     except Exception as e:
         logger.warning(f"Could not read metadata.db for collection {collection_id}: {e}")

@@ -527,6 +527,19 @@ class MetadataStore:
             cursor = conn.execute("SELECT COUNT(*) FROM chunks")
             return cursor.fetchone()[0]
 
+    def get_document_stats(self) -> dict:
+        """Collection totals straight from SQL: document count and page sum.
+
+        Backs the stats endpoint the frontend polls — materializing the full
+        document list just to sum two columns is pathological at 63k+
+        documents, so the aggregation stays in the database.
+        """
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(num_pages), 0) FROM documents"
+            ).fetchone()
+            return {"total_documents": row[0], "total_pages": row[1]}
+
     def count_documents(self, q: str = "") -> int:
         """Count documents, optionally filtered by a filename substring."""
         with sqlite_connect(self.db_path) as conn:
