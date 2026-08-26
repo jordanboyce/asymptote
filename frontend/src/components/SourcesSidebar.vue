@@ -57,7 +57,7 @@
                 Folder
               </label>
               <input id="sb-file-input" type="file" multiple class="sr-only" @change="handleBrowserFiles" :disabled="indexing || isRecording" />
-              <input id="sb-folder-input" type="file" webkitdirectory class="sr-only" @change="handleBrowserFolder" :disabled="indexing || isRecording" />
+              <input id="sb-folder-input" type="file" webkitdirectory class="sr-only" @click="folderScanning = true" @change="handleBrowserFolder" @cancel="folderScanning = false" :disabled="indexing || isRecording" />
             </template>
             <template v-else>
               <!-- Desktop: buttons call native OS file picker via backend -->
@@ -104,16 +104,24 @@
             </div>
           </div>
 
+          <!-- Folder enumeration hint: the browser walks the whole directory
+               before the change event fires, which takes a while on huge trees -->
+          <div v-if="folderScanning && selectedPaths.length === 0" class="flex items-center gap-2 text-xs text-base-content/60">
+            <span class="loading loading-spinner loading-xs"></span>
+            Reading folder…
+          </div>
+
           <!-- Selected paths -->
           <div v-if="selectedPaths.length > 0" class="space-y-1.5">
             <div class="flex items-center justify-between">
-              <span class="text-xs text-base-content/60">{{ selectedPaths.length }} selected</span>
+              <span class="text-xs text-base-content/60">{{ selectedPaths.length.toLocaleString() }} selected</span>
               <button class="btn btn-ghost btn-xs" @click="clearAllPaths" :disabled="indexing">Clear</button>
             </div>
 
-            <!-- compact path list -->
+            <!-- compact path list. Only a preview renders: a 75k-file folder
+                 selection must not become 75k DOM rows. -->
             <div class="max-h-24 overflow-y-auto space-y-0.5">
-              <div v-for="(item, idx) in selectedPaths" :key="idx" class="flex items-center gap-1 text-xs">
+              <div v-for="(item, idx) in visibleSelectedPaths" :key="idx" class="flex items-center gap-1 text-xs">
                 <span class="flex-1 truncate text-base-content/70" :title="item.path">{{ item.name }}</span>
                 <button
                   class="btn btn-ghost btn-xs btn-circle p-0 w-5 h-5 min-h-0"
@@ -123,6 +131,9 @@
                 >
                   <X :size="10" />
                 </button>
+              </div>
+              <div v-if="selectedPaths.length > SELECTED_PREVIEW" class="text-xs text-base-content/45 px-1 py-0.5">
+                …and {{ (selectedPaths.length - SELECTED_PREVIEW).toLocaleString() }} more
               </div>
             </div>
 
@@ -507,7 +518,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, markRaw, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
@@ -530,6 +541,9 @@ const capabilities = ref({})
 
 // Index state
 const selectedPaths = ref([]) // Array of { path: string, name: string, isFolder?: boolean, size?: number, file?: File }
+const folderScanning = ref(false) // browser is enumerating a picked directory
+const SELECTED_PREVIEW = 50
+const visibleSelectedPaths = computed(() => selectedPaths.value.slice(0, SELECTED_PREVIEW))
 const indexing = ref(false)
 const indexProgressPercent = ref(0)
 const currentIndexingFile = ref('')
@@ -762,28 +776,34 @@ const getFilename = (path) => {
   return path.split(/[/\\]/).pop()
 }
 
-// Handle files selected via browser <input type="file"> (headless/Docker mode)
-const handleBrowserFiles = (event) => {
-  const files = Array.from(event.target.files || [])
+// Handle files selected via browser <input type="file"> (headless/Docker mode).
+// Items are markRaw'd (proxying File objects is pure overhead) and appended in
+// ONE assignment — per-item reactive pushes froze the tab on a 75k-file folder.
+const _appendBrowserSelection = (files, nameOf) => {
   const existingNames = new Set(selectedPaths.value.map(p => p.name))
+  const additions = []
   for (const file of files) {
-    if (!existingNames.has(file.name)) {
-      selectedPaths.value.push({ path: '', name: file.name, size: file.size, file })
+    const name = nameOf(file)
+    if (!existingNames.has(name)) {
+      additions.push(markRaw({ path: '', name, size: file.size, file }))
+      existingNames.add(name)
     }
   }
+  if (additions.length) selectedPaths.value = selectedPaths.value.concat(additions)
+}
+
+const handleBrowserFiles = (event) => {
+  _appendBrowserSelection(Array.from(event.target.files || []), (f) => f.name)
   event.target.value = ''
 }
 
 // Handle folder selected via browser <input webkitdirectory> (headless/Docker mode)
 const handleBrowserFolder = (event) => {
-  const files = Array.from(event.target.files || [])
-  const existingNames = new Set(selectedPaths.value.map(p => p.name))
-  for (const file of files) {
-    const relativeName = file.webkitRelativePath || file.name
-    if (!existingNames.has(relativeName)) {
-      selectedPaths.value.push({ path: '', name: relativeName, size: file.size, file })
-    }
-  }
+  folderScanning.value = false
+  _appendBrowserSelection(
+    Array.from(event.target.files || []),
+    (f) => f.webkitRelativePath || f.name,
+  )
   event.target.value = ''
 }
 
