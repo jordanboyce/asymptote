@@ -117,3 +117,4 @@ CLAUDE.md
 AGENTS.md
 .mcp.json
 *.local.md
+docker-compose.ingest.yml
