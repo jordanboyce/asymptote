@@ -11,7 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 import services.embedder as embedder
-from config import settings
+
+
+def _settings():
+    # Resolved at call time: test_auth.py reloads the config module mid-suite,
+    # so a module-level `from config import settings` here would go stale and
+    # monkeypatches would land on an object the factory no longer reads.
+    import config
+    return config.settings
 
 
 @pytest.fixture()
@@ -33,23 +40,23 @@ def stub_services(monkeypatch):
 
 
 def test_local_uses_global_model(monkeypatch, stub_services):
-    monkeypatch.setattr(settings, "embedding_provider", "local")
-    monkeypatch.setattr(settings, "embedding_model", "all-MiniLM-L6-v2")
+    monkeypatch.setattr(_settings(), "embedding_provider", "local")
+    monkeypatch.setattr(_settings(), "embedding_model", "all-MiniLM-L6-v2")
     embedder.create_embedding_service()
     assert stub_services["local"] == {"model_name": "all-MiniLM-L6-v2"}
 
 
 def test_local_collection_override_wins(monkeypatch, stub_services):
-    monkeypatch.setattr(settings, "embedding_provider", "local")
-    monkeypatch.setattr(settings, "embedding_model", "all-MiniLM-L6-v2")
+    monkeypatch.setattr(_settings(), "embedding_provider", "local")
+    monkeypatch.setattr(_settings(), "embedding_model", "all-MiniLM-L6-v2")
     embedder.create_embedding_service(collection_model="BAAI/bge-base-en-v1.5")
     assert stub_services["local"] == {"model_name": "BAAI/bge-base-en-v1.5"}
 
 
 def test_ollama_provider_uses_base_url_no_key(monkeypatch, stub_services):
-    monkeypatch.setattr(settings, "embedding_provider", "ollama")
-    monkeypatch.setattr(settings, "ollama_base_url", "http://box:11434")
-    monkeypatch.setattr(settings, "ollama_embedding_model", "mxbai-embed-large")
+    monkeypatch.setattr(_settings(), "embedding_provider", "ollama")
+    monkeypatch.setattr(_settings(), "ollama_base_url", "http://box:11434")
+    monkeypatch.setattr(_settings(), "ollama_embedding_model", "mxbai-embed-large")
     embedder.create_embedding_service()
     assert stub_services["ollama"] == {
         "model_name": "mxbai-embed-large",
@@ -59,9 +66,9 @@ def test_ollama_provider_uses_base_url_no_key(monkeypatch, stub_services):
 
 
 def test_ollama_cloud_uses_env_key(monkeypatch, stub_services):
-    monkeypatch.setattr(settings, "embedding_provider", "ollama_cloud")
-    monkeypatch.setattr(settings, "ollama_cloud_api_key", "env-key")
-    monkeypatch.setattr(settings, "ollama_embedding_model", "nomic-embed-text")
+    monkeypatch.setattr(_settings(), "embedding_provider", "ollama_cloud")
+    monkeypatch.setattr(_settings(), "ollama_cloud_api_key", "env-key")
+    monkeypatch.setattr(_settings(), "ollama_embedding_model", "nomic-embed-text")
     embedder.create_embedding_service()
     assert stub_services["ollama"] == {
         "model_name": "nomic-embed-text",
@@ -73,9 +80,9 @@ def test_ollama_cloud_uses_env_key(monkeypatch, stub_services):
 def test_ollama_cloud_falls_back_to_team_key(monkeypatch, stub_services):
     from services.app_database import app_db
 
-    monkeypatch.setattr(settings, "embedding_provider", "ollama_cloud")
-    monkeypatch.setattr(settings, "ollama_cloud_api_key", "")
-    monkeypatch.setattr(settings, "ollama_embedding_model", "nomic-embed-text")
+    monkeypatch.setattr(_settings(), "embedding_provider", "ollama_cloud")
+    monkeypatch.setattr(_settings(), "ollama_cloud_api_key", "")
+    monkeypatch.setattr(_settings(), "ollama_embedding_model", "nomic-embed-text")
     monkeypatch.setattr(
         app_db, "get_agent_api_key", lambda provider: "team-key" if provider == "ollama_cloud" else None
     )
@@ -86,8 +93,8 @@ def test_ollama_cloud_falls_back_to_team_key(monkeypatch, stub_services):
 def test_ollama_cloud_without_any_key_fails_closed(monkeypatch, stub_services):
     from services.app_database import app_db
 
-    monkeypatch.setattr(settings, "embedding_provider", "ollama_cloud")
-    monkeypatch.setattr(settings, "ollama_cloud_api_key", "")
+    monkeypatch.setattr(_settings(), "embedding_provider", "ollama_cloud")
+    monkeypatch.setattr(_settings(), "ollama_cloud_api_key", "")
     monkeypatch.setattr(app_db, "get_agent_api_key", lambda provider: None)
     with pytest.raises(RuntimeError, match="OLLAMA_CLOUD_API_KEY"):
         embedder.create_embedding_service()
