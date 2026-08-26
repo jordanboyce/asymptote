@@ -665,7 +665,7 @@ This means text extraction returned empty content and OCR could not recover text
 
 1. Enable OCR in **Settings → OCR** and pick an engine:
    - **Vision AI** (recommended): uses a vision-capable model from an AI provider you've already configured — most accurate for complex layouts and degraded scans.
-   - **Local**: free/offline via Docling or Tesseract. Requires `pip install -r requirements-ocr.txt`; on bare-metal Windows also install **Tesseract OCR** and **Poppler** and add them to `PATH`. The Docker image ships with both preinstalled.
+   - **Local**: free/offline via Tesseract (`pip install -r requirements-ocr.txt`; on bare-metal Windows also install **Tesseract OCR** and **Poppler** and add them to `PATH` — the Docker image ships both preinstalled). For the highest-quality local OCR, add Docling (`pip install -r requirements-docling.txt`, or build the image with `--build-arg WITH_DOCLING=1`) — it's the heavyweight optional and is not in the default hosted image.
 2. Re-index the PDF after changing OCR settings.
 
 #### 6. "Out of memory"

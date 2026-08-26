@@ -2,9 +2,11 @@
 #
 # Optional feature sets live in separate files so a base install stays small
 # (the extras below pull in multi-GB ML runtimes):
-#   pip install -r requirements-ocr.txt       # scanned-PDF OCR (docling, tesseract)
+#   pip install -r requirements-ocr.txt       # scanned-PDF OCR (tesseract-based, light)
+#   pip install -r requirements-docling.txt   # highest-quality local OCR (heavy: torch vision stack)
 #   pip install -r requirements-audio.txt     # audio transcription (faster-whisper)
 #   pip install -r requirements-postgres.txt  # enterprise Postgres backend
+#   pip install -r requirements-dev.txt       # test tooling (pytest)
 
 # Core API framework
 fastapi>=0.115.0
@@ -16,15 +18,19 @@ pypdf>=5.0.0
 pdfplumber>=0.11.0
 python-docx>=1.1.0
 beautifulsoup4>=4.12.0
-pandas>=2.2.0
+pandas>=2.2.2,<3
 openpyxl>=3.1.0
 
 # Embeddings and vector search
 sentence-transformers>=3.0.0
 # transformers 5.x breaks sentence-transformers' PreTrainedModel import
 transformers>=4.41,<5
-faiss-cpu
-numpy<2.0.0
+# faiss-cpu >=1.9 and numpy >=2.1 move together: both ship prebuilt wheels
+# for modern Pythons (numpy<2 had no py3.13 wheel — every fresh Docker build
+# compiled numpy from source for ~10 minutes). pandas stays on the 2.x line
+# deliberately; pandas 3 is a majors-only migration to do on purpose.
+faiss-cpu>=1.9
+numpy>=2.1,<3
 
 # AI providers (optional - users provide their own API keys)
 anthropic>=0.40.0
@@ -32,7 +38,6 @@ openai>=1.0.0
 httpx>=0.28.0
 
 # Configuration
-python-dotenv>=1.0.0
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
 
@@ -44,5 +49,3 @@ cryptography>=42.0.0
 # mcp 2.x renamed FastMCP -> MCPServer; migrate deliberately before unpinning
 mcp>=1.9.4,<2
 
-# Testing
-pytest>=8.0.0

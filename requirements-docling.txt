@@ -1,0 +1,5 @@
+# Docling layout-model OCR — the heavyweight optional (torch vision stack,
+# opencv). The default hosted image skips it: scanned-PDF OCR still works via
+# tesseract (requirements-ocr.txt) or a vision-capable LLM provider. Install
+# for the highest-quality local OCR, or build the image with WITH_DOCLING=1.
+docling>=2.0.0
