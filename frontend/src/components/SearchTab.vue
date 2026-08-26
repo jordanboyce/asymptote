@@ -460,6 +460,7 @@ import {
   getProviderDisplayName,
   getAISettings,
   migrateLegacySettings,
+  resolveProvider,
 } from '../utils/aiProviders.js'
 
 const props = defineProps({
@@ -611,13 +612,16 @@ const initializeProviders = () => {
   // Filter to only configured providers
   const validProviders = savedSelection.filter(p => configuredProviderIds.value.includes(p))
 
-  // Default to all configured if no valid saved selection
   if (validProviders.length > 0) {
+    // The saved multi-selection is Search's explicit per-surface override.
     selectedProviders.value = validProviders
   } else {
-    selectedProviders.value = [...configuredProviderIds.value]
+    // No override yet: follow the shared resolution chain (global default,
+    // else first configured). Not persisted — a later change of the global
+    // default should flow through until the user picks providers here.
+    const resolved = resolveProvider()
+    selectedProviders.value = resolved ? [resolved] : []
   }
-  localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(selectedProviders.value))
 
   // Restore model overrides
   try {
@@ -642,6 +646,10 @@ const onSelectedProvidersUpdate = (list) => {
 onMounted(async () => {
   initializeProviders()
 
+  // Re-init when the global default (or provider config) changes elsewhere —
+  // a saved selection here is respected, only the un-overridden default moves.
+  window.addEventListener('asymptote:provider-changed', initializeProviders)
+
   // Server-stored team keys (hosted deployments) count as configured —
   // re-run provider init once we know which providers the server covers.
   await fetchServerProviderIds()
@@ -650,6 +658,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopLoadingPhaseAnimation()
+  window.removeEventListener('asymptote:provider-changed', initializeProviders)
 })
 
 // Get configured AI settings from Settings tab (features only - rerank/synthesize)

@@ -84,6 +84,39 @@
         <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
       </button>
 
+      <!-- Global AI provider pill: app-wide default + click-to-switch menu -->
+      <div v-if="providerPill.configured.length > 0" class="dropdown dropdown-end hidden sm:block">
+        <label
+          tabindex="0"
+          class="btn btn-xs btn-ghost gap-1 normal-case font-normal h-7 min-h-0 border border-base-300 rounded-full px-2.5"
+          :title="`Default AI provider: ${providerPill.name}`"
+          :aria-label="`Default AI provider: ${providerPill.name}${providerPill.model ? ', model ' + providerPill.model : ''}. Click to switch.`"
+          aria-haspopup="menu"
+        >
+          <Sparkles :size="11" class="text-primary flex-shrink-0" aria-hidden="true" />
+          <span class="text-xs max-w-44 truncate">
+            {{ providerPill.name }}<span v-if="providerPill.model" class="text-base-content/50"> · {{ providerPill.model }}</span>
+          </span>
+          <ChevronDown :size="10" class="text-base-content/40 flex-shrink-0" aria-hidden="true" />
+        </label>
+        <ul tabindex="0" class="dropdown-content z-[60] menu p-2 shadow-lg bg-base-100 border border-base-300 rounded-box w-64">
+          <li class="menu-title"><span class="text-xs">Default AI provider</span></li>
+          <li v-for="pid in providerPill.configured" :key="pid">
+            <button
+              class="flex items-center gap-2"
+              :class="{ 'active': pid === providerPill.id }"
+              @click="setGlobalProvider(pid)"
+            >
+              <Check v-if="pid === providerPill.id" :size="12" class="flex-shrink-0" aria-hidden="true" />
+              <span v-else class="w-3 flex-shrink-0" aria-hidden="true"></span>
+              <span class="flex-1 text-left text-sm truncate">{{ providerDisplayName(pid) }}</span>
+              <span v-if="providerPill.teamIds.includes(pid)" class="badge badge-success badge-xs">Team key</span>
+            </button>
+          </li>
+          <li class="menu-title pt-1"><span class="text-xs font-normal text-base-content/50">Chat can override this per conversation.</span></li>
+        </ul>
+      </div>
+
       <!-- Settings button -->
       <button
         class="btn btn-ghost btn-circle btn-sm"
@@ -910,7 +943,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
 import axios from 'axios'
-import { Search, Settings, Plus, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck } from 'lucide-vue-next'
+import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck } from 'lucide-vue-next'
 
 const chatTabEnabled = ref(true)
 
@@ -937,16 +970,57 @@ const MCPTab = defineAsyncComponent(() => import('./components/MCPTab.vue'))
 const ShareModal = defineAsyncComponent(() => import('./components/ShareModal.vue'))
 const ExpertiseLibrary = defineAsyncComponent(() => import('./components/ExpertiseLibrary.vue'))
 const WelcomeOnboarding = defineAsyncComponent(() => import('./components/WelcomeOnboarding.vue'))
-import { getConfiguredProviderIds } from './utils/aiProviders.js'
+import {
+  getConfiguredProviderIds,
+  getServerProviderIds,
+  fetchServerProviderIds,
+  resolveProvider,
+  setActiveProviderLS,
+  getProviderDisplayName,
+  getProviderConfig,
+  migrateLegacySettings,
+} from './utils/aiProviders.js'
 import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
 import { useBackgroundJobsStore } from './stores/backgroundJobsStore'
 
+// Fold legacy provider keys (chat_provider, ai_api_key_*) into the unified
+// config before any tab mounts and reads it.
+migrateLegacySettings()
+
 const collectionStore = useCollectionStore()
 const searchStore = useSearchStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const userStore = useUserStore()
+
+// ── Global provider pill (top bar) ──
+// Shows the app-wide default provider resolved by the shared chain in
+// aiProviders.js; the dropdown switches ai_settings.provider directly.
+// localStorage isn't reactive, so a version counter bumps on the
+// 'asymptote:provider-changed' event every write path dispatches.
+const providerPillVersion = ref(0)
+const refreshProviderPill = () => { providerPillVersion.value++ }
+
+const providerPill = computed(() => {
+  providerPillVersion.value // reactivity hook
+  const configured = getConfiguredProviderIds()
+  const id = resolveProvider()
+  return {
+    id,
+    configured,
+    teamIds: getServerProviderIds(),
+    name: id ? getProviderDisplayName(id) : '',
+    model: (id && getProviderConfig(id)?.model) || '',
+  }
+})
+
+const providerDisplayName = getProviderDisplayName
+
+const setGlobalProvider = (pid) => {
+  setActiveProviderLS(pid) // dispatches the change event → pill refreshes
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+}
 
 // Restore the last active tab so a refresh doesn't dump the user back in Chat
 const VALID_TABS = ['chat', 'search', 'generate', 'expertise', 'mcp', 'settings', 'collections']
@@ -1394,6 +1468,13 @@ onMounted(async () => {
   // the screen paints immediately — the rest of the boot continues behind it.
   checkOnboardingNeeded()
 
+  // Keep the provider pill current when any surface changes provider config.
+  window.addEventListener('asymptote:provider-changed', refreshProviderPill)
+
+  // Server-stored team keys count as configured providers — the pill may
+  // appear (or change) once they're known.
+  fetchServerProviderIds().then(refreshProviderPill)
+
   // Load UI feature flags from server config
   try {
     const cfgResp = await axios.get('/api/config')
@@ -1440,5 +1521,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   backgroundJobsStore.cleanup()
+  window.removeEventListener('asymptote:provider-changed', refreshProviderPill)
 })
 </script>

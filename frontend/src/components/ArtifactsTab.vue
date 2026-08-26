@@ -91,17 +91,16 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useCollectionStore } from '../stores/collectionStore'
 import {
-  getActiveProvider,
   getAPIProviderName,
   buildProviderHeaders,
   getProviderDisplayName,
-  getConfiguredProviderIds,
   fetchServerProviderIds,
+  resolveProvider,
 } from '../utils/aiProviders.js'
 
 marked.setOptions({ gfm: true, breaks: true })
@@ -117,7 +116,10 @@ const error = ref('')
 const result = ref(null)
 const copied = ref(false)
 
-const providerId = ref(getActiveProvider() || '')
+// Generate has no per-surface override: it follows the app-wide default via
+// the shared resolution chain and just displays "Using X".
+const providerId = ref(resolveProvider())
+const refreshProvider = () => { providerId.value = resolveProvider() }
 
 const providerDisplayName = (id) => getProviderDisplayName(id)
 
@@ -127,17 +129,15 @@ const renderedContent = computed(() => {
 })
 
 onMounted(async () => {
-  // Resolve the provider with the same fallback chain chat uses: the active
-  // provider if it's actually configured, else the first configured one
-  // (including server-stored team keys). A one-shot read of the "active"
-  // key alone claimed no provider existed when keys were saved but none
-  // was ever explicitly marked active.
+  // Track global default switches made while this tab is open (top-bar pill,
+  // Settings "Use as default").
+  window.addEventListener('asymptote:provider-changed', refreshProvider)
+
+  // Server-stored team keys count as configured — re-resolve once known.
   try {
     await fetchServerProviderIds()
   } catch { /* offline from server config is fine — local configs still count */ }
-  const configured = getConfiguredProviderIds()
-  const active = getActiveProvider()
-  providerId.value = active && configured.includes(active) ? active : (configured[0] || active || '')
+  refreshProvider()
 
   try {
     const resp = await fetch('/api/artifacts/types')
@@ -152,6 +152,10 @@ onMounted(async () => {
     // Non-fatal: fall back to a minimal default set.
     types.value = [{ type: 'summary', label: 'Executive summary', description: 'Overview of the collection.' }]
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('asymptote:provider-changed', refreshProvider)
 })
 
 const generate = async () => {

@@ -89,8 +89,10 @@
         mode="single"
         title="Chat Settings"
         :configured-providers="configuredProviders"
-        :provider="selectedProvider"
+        :provider="providerOverride"
         @update:provider="selectProvider"
+        allow-global
+        :global-provider-id="globalProvider"
         v-model:top-k="topK"
         v-model:search-mode="searchMode"
         v-model:rerank="rerank"
@@ -484,6 +486,16 @@
               >
                 <SlidersHorizontal :size="14" />
               </button>
+              <!-- Visible cue that this chat overrides the global provider -->
+              <button
+                v-if="providerOverride && hasAnyProvider"
+                class="badge badge-warning badge-xs gap-1 cursor-pointer border-0"
+                :title="`This chat overrides the global default and uses ${providerDisplayName(selectedProvider)}. Click to change.`"
+                :aria-label="`Provider override active: ${providerDisplayName(selectedProvider)}. Open chat settings to change.`"
+                @click="settingsDrawerOpen = true"
+              >
+                {{ providerDisplayName(selectedProvider) }}
+              </button>
               <button
                 class="btn btn-ghost btn-xs btn-circle font-mono"
                 @mousedown.prevent="toggleSlashPicker"
@@ -547,6 +559,9 @@ import {
   buildProviderHeaders,
   getAPIProviderName,
   getProviderDisplayName,
+  resolveProvider,
+  getProviderOverride,
+  setProviderOverride,
 } from '../utils/aiProviders.js'
 
 const props = defineProps({
@@ -575,11 +590,28 @@ const searchMode = ref(localStorage.getItem('chat_search_mode') || 'semantic')
 const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 
-// Provider state. A ref (not computed) because the list can grow after mount:
-// server-stored team keys are fetched async and count as configured.
+// Provider state. Refs (not computeds over localStorage) because the list can
+// grow after mount: server-stored team keys are fetched async and count as
+// configured. Chat resolves through the shared chain in aiProviders.js —
+// an explicit chat override when set, otherwise the global default.
 const configuredProviders = ref(getConfiguredProviderIds())
-const selectedProvider = ref(localStorage.getItem('chat_provider') || '')
+const providerOverride = ref(getProviderOverride('chat'))
+const globalProvider = ref(resolveProvider())
+const selectedProvider = computed(() =>
+  providerOverride.value && configuredProviders.value.includes(providerOverride.value)
+    ? providerOverride.value
+    : globalProvider.value
+)
 const hasAnyProvider = computed(() => configuredProviders.value.length > 0)
+
+// Re-read everything provider-related from localStorage. Called on mount,
+// after team keys arrive, and whenever any surface fires provider-changed
+// (e.g. the top-bar pill switching the global default).
+const refreshProviders = () => {
+  configuredProviders.value = getConfiguredProviderIds()
+  providerOverride.value = getProviderOverride('chat')
+  globalProvider.value = resolveProvider()
+}
 
 // Per-provider model overrides for chat: { providerId: modelId | '' }.
 // '' / absent means the provider's configured default model.
@@ -722,16 +754,11 @@ const providerBadgeClass = (provider) => ({
   'badge-neutral': !['anthropic','openai','ollama','ollama_cloud','grok','google'].includes(provider),
 })
 
+// '' = follow the global default; anything else is an explicit chat override
+// persisted through the standardized override key in aiProviders.js.
 const selectProvider = (provider) => {
-  selectedProvider.value = provider
-  localStorage.setItem('chat_provider', provider)
-}
-
-const ensureValidProvider = () => {
-  if (!selectedProvider.value || !configuredProviders.value.includes(selectedProvider.value)) {
-    const first = configuredProviders.value[0]
-    if (first) selectProvider(first)
-  }
+  providerOverride.value = provider || ''
+  setProviderOverride('chat', provider || null)
 }
 
 const scrollToBottom = async () => {
@@ -992,19 +1019,19 @@ const handlePrefill = (e) => {
 }
 
 onMounted(async () => {
-  ensureValidProvider()
   scrollToBottom()
   window.addEventListener('asymptote:prefill-chat', handlePrefill)
+  window.addEventListener('asymptote:provider-changed', refreshProviders)
 
   // Pick up providers whose key lives on the server (team deployments):
   // they become selectable without the user ever entering a key.
   await fetchServerProviderIds()
-  configuredProviders.value = getConfiguredProviderIds()
-  ensureValidProvider()
+  refreshProviders()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('asymptote:prefill-chat', handlePrefill)
+  window.removeEventListener('asymptote:provider-changed', refreshProviders)
   if (autoScrollTimer) {
     clearTimeout(autoScrollTimer)
     autoScrollTimer = null
