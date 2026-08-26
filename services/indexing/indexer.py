@@ -852,6 +852,10 @@ class DocumentIndexer:
         """Total documents, honoring the same filename filter as the paged list."""
         return self.vector_store.metadata_store.count_documents(q=q)
 
+    def get_document_stats(self) -> dict:
+        """SQL-aggregated totals: {total_documents, total_pages}."""
+        return self.vector_store.metadata_store.get_document_stats()
+
     def list_documents(self) -> List[dict]:
         """
         List all indexed documents.

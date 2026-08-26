@@ -71,6 +71,37 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
     return jobs
   })
 
+  // Live-refresh signal: while a job is indexing, bump dataRefreshTick so
+  // the sources sidebar and header/footer stats can update mid-job instead
+  // of waiting for completion. Throttled to at most every ~10s, or sooner
+  // once ~200 more files have been processed since the last signal.
+  const REFRESH_INTERVAL_MS = 10000
+  const REFRESH_FILE_STEP = 200
+  const dataRefreshTick = ref(0)
+  const dataRefreshCollectionId = ref(null)
+  const _refreshMarks = {} // job key -> { at, processed }
+
+  function maybeSignalDataRefresh(jobKey, status, collectionId, processedFiles) {
+    if (status !== 'running' && status !== 'pending') {
+      delete _refreshMarks[jobKey]
+      return
+    }
+    const processed = processedFiles || 0
+    const mark = _refreshMarks[jobKey]
+    if (!mark) {
+      // First progress event starts the throttle clock; no refresh yet.
+      _refreshMarks[jobKey] = { at: Date.now(), processed }
+      return
+    }
+    const now = Date.now()
+    if (now - mark.at >= REFRESH_INTERVAL_MS || processed - mark.processed >= REFRESH_FILE_STEP) {
+      mark.at = now
+      mark.processed = processed
+      dataRefreshCollectionId.value = collectionId
+      dataRefreshTick.value++
+    }
+  }
+
   // Actions
   function addUploadJob(jobData) {
     // Remove any existing job with same ID
@@ -123,6 +154,8 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
       if (jobData.chunks_total !== undefined) job.chunksTotal = jobData.chunks_total
       // Job type
       if (jobData.job_type !== undefined) job.jobType = jobData.job_type
+
+      maybeSignalDataRefresh(job.jobId, job.status, job.collectionId, job.processedFiles)
     }
   }
 
@@ -152,6 +185,8 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
     } else if (eventData.event_type === 'file_start' || eventData.event_type === 'phase_progress') {
       job.status = 'running'
     }
+
+    maybeSignalDataRefresh(job.jobId, job.status, job.collectionId, job.processedFiles)
   }
 
   function startSSEStream(jobId) {
@@ -303,6 +338,14 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
       try {
         const response = await axios.get('/api/reindex/status')
         reindexJob.value = response.data
+        if (reindexJob.value) {
+          maybeSignalDataRefresh(
+            'reindex',
+            reindexJob.value.status,
+            reindexJob.value.collection_id,
+            reindexJob.value.processed_documents,
+          )
+        }
       } catch (err) {
         if (err.response?.status === 404) {
           reindexJob.value = null
@@ -373,6 +416,10 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
     hasActiveJobs,
     activeJobCount,
     allJobs,
+
+    // Live-refresh signal (throttled; watched by App and SourcesSidebar)
+    dataRefreshTick,
+    dataRefreshCollectionId,
 
     // Actions
     addUploadJob,

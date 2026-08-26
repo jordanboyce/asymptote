@@ -62,3 +62,46 @@ def test_page_row_shape_matches_full_list(store):
     full = store.list_documents()[0]
     paged = store.list_documents_page(1)[0]
     assert set(paged.keys()) == set(full.keys())
+
+
+def test_document_stats(store):
+    stats = store.get_document_stats()
+    assert stats == {"total_documents": 25, "total_pages": 25}
+
+
+def test_document_stats_empty_store(tmp_path):
+    s = MetadataStore(tmp_path / "empty.db")
+    assert s.get_document_stats() == {"total_documents": 0, "total_pages": 0}
+
+
+def test_registry_count_uses_documents_table(tmp_path):
+    # The collection registry derives document_count from the metadata store.
+    # Counting the documents table (not DISTINCT chunks) means zero-chunk
+    # docs — CSV/XLSX that live entirely in the structured store — count too.
+    from services.app_database import _get_document_count_from_metadata
+
+    indexes_dir = tmp_path / "collections" / "c1" / "indexes"
+    indexes_dir.mkdir(parents=True)
+    s = MetadataStore(indexes_dir / "metadata.db")
+    s.add_document(
+        document_id="d1",
+        filename="table.csv",
+        num_pages=1,
+        num_chunks=0,
+        upload_timestamp="2026-01-01T00:00:00",
+    )
+    assert _get_document_count_from_metadata("c1", data_dir=tmp_path) == 1
+    assert _get_document_count_from_metadata("missing", data_dir=tmp_path) == 0
+
+
+def test_document_stats_sums_pages(tmp_path):
+    s = MetadataStore(tmp_path / "pages.db")
+    for i, pages in enumerate([3, 7, 0]):
+        s.add_document(
+            document_id=f"doc{i}",
+            filename=f"file-{i}.pdf",
+            num_pages=pages,
+            num_chunks=1,
+            upload_timestamp=f"2026-02-0{i + 1}T00:00:00",
+        )
+    assert s.get_document_stats() == {"total_documents": 3, "total_pages": 10}

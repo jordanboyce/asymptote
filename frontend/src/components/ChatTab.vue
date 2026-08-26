@@ -127,12 +127,20 @@
         </template>
       </AISettingsDrawer>
 
-      <!-- No data notice -->
-      <div v-if="documentCount === 0" class="alert alert-warning flex-shrink-0 py-2">
+      <!-- No data notice / mid-ingest status -->
+      <div v-if="documentCount === 0 && indexingActive" class="alert alert-info flex-shrink-0 py-2" role="status">
+        <span class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+        <span class="text-sm">Indexing in progress — chat becomes available as documents land.</span>
+      </div>
+      <div v-else-if="documentCount === 0" class="alert alert-warning flex-shrink-0 py-2">
         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
         </svg>
         <span class="text-sm">No documents indexed. Upload and index sources before chatting.</span>
+      </div>
+      <div v-else-if="indexingActive" class="alert alert-info flex-shrink-0 py-2" role="status">
+        <span class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+        <span class="text-sm">{{ documentCount.toLocaleString() }} {{ documentCount === 1 ? 'source' : 'sources' }} indexed so far — indexing continues in the background.</span>
       </div>
 
       <!-- Error -->
@@ -550,6 +558,7 @@ const renderAssistantMarkdown = (text) => {
 import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
+import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
 import AISettingsDrawer from './AISettingsDrawer.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
@@ -575,6 +584,17 @@ const emit = defineEmits(['switch-tab'])
 
 const chatStore = useChatStore()
 const collectionStore = useCollectionStore()
+const backgroundJobsStore = useBackgroundJobsStore()
+
+// A job is actively indexing into the current collection. With zero documents
+// this softens the "no data" warning into an info banner; with documents it
+// annotates that more are landing (retrieval already works mid-ingest).
+const indexingActive = computed(() =>
+  backgroundJobsStore.allJobs.some(j =>
+    (j.status === 'running' || j.status === 'pending') &&
+    j.collectionId === collectionStore.currentCollectionId
+  )
+)
 
 // UI state
 const loading = ref(false)

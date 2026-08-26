@@ -1340,6 +1340,22 @@ async function removeExpertisePack(packId) {
   }
 }
 
+// Live refresh while a job is indexing into this collection (throttled in
+// the jobs store): re-pull the first page + total so the badge and list grow
+// mid-job. Quiet — no loading spinner, and any load-more position
+// intentionally resets to page one. docSearch is preserved via _docParams.
+watch(() => backgroundJobsStore.dataRefreshTick, async () => {
+  if (backgroundJobsStore.dataRefreshCollectionId !== collectionStore.currentCollectionId) return
+  try {
+    const response = await axios.get('/documents', { params: _docParams(0) })
+    documents.value = response.data.documents || []
+    docTotal.value = response.data.total_documents ?? documents.value.length
+    if (docTotal.value > 0) justIndexed.value = false
+  } catch {
+    // transient mid-job failure — the next throttled tick retries
+  }
+})
+
 // Watch for completed background uploads to reload documents
 watch(() => backgroundJobsStore.uploadJobs, (jobs) => {
   const completedJob = jobs.find(j => j.status === 'completed' && !j.reloaded)

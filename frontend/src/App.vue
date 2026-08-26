@@ -1274,14 +1274,16 @@ const updateThemeFromStorage = () => {
 const loadStats = async () => {
   try {
     const collectionId = collectionStore.currentCollectionId
-    const [docsResponse, healthResponse] = await Promise.all([
-      axios.get(`/documents?collection_id=${collectionId}`),
-      axios.get(`/health?collection_id=${collectionId}`)
+    // SQL-backed aggregates — never the unpaginated /documents list, which
+    // is a ~25MB response at 63k documents and times out through the proxy.
+    const [statsResponse, healthResponse] = await Promise.all([
+      axios.get(`/api/collections/${encodeURIComponent(collectionId)}/stats`),
+      axios.get(`/health?collection_id=${encodeURIComponent(collectionId)}`)
     ])
 
-    stats.value.documents = docsResponse.data.documents?.length || 0
-    stats.value.pages = docsResponse.data.documents?.reduce((sum, doc) => sum + (doc.total_pages || 0), 0) || 0
-    stats.value.chunks = healthResponse.data.indexed_chunks || 0
+    stats.value.documents = statsResponse.data.total_documents || 0
+    stats.value.pages = statsResponse.data.total_pages || 0
+    stats.value.chunks = statsResponse.data.total_chunks || 0
     stats.value.offline = !!healthResponse.data.offline_mode
   } catch (error) {
     console.error('Error loading stats:', error)
@@ -1440,6 +1442,15 @@ watch(() => backgroundJobsStore.allJobs.map(j => j.status), (newStatuses, oldSta
     loadStats()
   }
 }, { deep: true })
+
+// Live stats refresh while a job is still indexing into the current
+// collection (throttled inside the jobs store), so the footer counts and
+// chat gate update as documents land instead of only at job completion.
+watch(() => backgroundJobsStore.dataRefreshTick, () => {
+  if (backgroundJobsStore.dataRefreshCollectionId === collectionStore.currentCollectionId) {
+    loadStats()
+  }
+})
 
 // Clear completed jobs from the drawer
 const clearCompletedJobs = () => {
