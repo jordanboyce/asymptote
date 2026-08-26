@@ -81,11 +81,6 @@ _asymptote_mcp = FastMCP(
 )
 
 
-def _ensure_enabled() -> None:
-    if not settings.enable_mcp:
-        raise RuntimeError("Asymptote MCP is disabled in Settings.")
-
-
 def _tool_response(response: dict[str, Any], tool_name: str) -> dict[str, Any]:
     """Return an MCP tool response unchanged.
 
@@ -287,7 +282,6 @@ def health_check() -> dict[str, Any]:
       - mcp: key MCP settings (mode, top_k, default_collection)
       - collections: list of all available collection ids and names
     """
-    _ensure_enabled()
 
     try:
         collections = collection_service.get_all_collections()
@@ -351,7 +345,6 @@ def list_collections() -> dict[str, Any]:
     you omit `collection_id`, those tools fall back to the server's default
     collection, which may not be what the user asked about.
     """
-    _ensure_enabled()
 
     collections = collection_service.get_all_collections()
     default_id = (settings.mcp_default_collection or "").strip() or None
@@ -404,7 +397,6 @@ def get_collection_info(
     travelled inline in every `search_collection` response; `get_collection_info`
     returns the full guide.
     """
-    _ensure_enabled()
 
     resolved_collection = _resolve_collection_id(collection_id)
     collection = collection_service.get_collection(resolved_collection)
@@ -497,7 +489,6 @@ def get_collection_facets(collection_id: str | None = None) -> dict[str, Any]:
     precise `filters` argument for search_collection — e.g. restrict a query to
     a single PDF, to all spreadsheets, or to a date range.
     """
-    _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     indexer = indexer_manager.get_indexer(resolved_collection)
     facets = indexer.vector_store.metadata_store.get_filter_facets()
@@ -518,7 +509,6 @@ def search_all_collections_sync(
     Safe for in-process callers already running off the event loop; the MCP
     tool below wraps it in a worker thread.
     """
-    _ensure_enabled()
     normalized_query = query.strip()
     if not normalized_query:
         raise ValueError("query must not be empty")
@@ -648,7 +638,6 @@ def list_recent_documents(
     Useful for "what did I just add?", "what's new?", or orientation after
     a fresh indexing run.
     """
-    _ensure_enabled()
     capped = max(1, min(int(limit), 50))
 
     def _docs_for_collection(cid: str) -> list[dict[str, Any]]:
@@ -707,7 +696,6 @@ def search_collection_sync(
     tool below wraps it in a worker thread. Full parameter docs live on the
     MCP wrapper.
     """
-    _ensure_enabled()
 
     normalized_query = query.strip()
     if not normalized_query:
@@ -1016,7 +1004,6 @@ def get_document_context(
         `get_table_rows` or `query_table`; this tool returns chunk text
         which is truncated for tabular sources.
     """
-    _ensure_enabled()
 
     resolved_collection = _resolve_collection_id(collection_id)
     indexer = indexer_manager.get_indexer(resolved_collection)
@@ -1167,7 +1154,6 @@ def find_in_documents_sync(
     tool below wraps it in a worker thread. Full parameter docs live on the
     MCP wrapper.
     """
-    _ensure_enabled()
     if not pattern or not pattern.strip():
         raise ValueError("pattern must not be empty")
 
@@ -1404,7 +1390,6 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
       - Ad-hoc SQL aggregation → `query_table(sql)`.
       - Generic groupBy/aggregate → `aggregate_table(identifier, ...)`.
     """
-    _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
     raw_tables = store.list_tables()
@@ -1448,7 +1433,6 @@ def get_table_schema(
     writing SQL or choosing an `aggregate_table` column; when the field is
     absent, treat every column as plain typed data.
     """
-    _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
@@ -1492,7 +1476,6 @@ def get_table_rows(
     If the table is large and you need aggregates, use `aggregate_table` or
     write SQL via `query_table` instead of pulling every row.
     """
-    _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
     schema = store.get_schema(identifier, identifier_type=identifier_type)
@@ -1559,7 +1542,6 @@ def query_table(
     For simple group-by aggregations prefer `aggregate_table` — no SQL to
     write. For whole-table reads prefer `get_table_rows(identifier)`.
     """
-    _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     store = _get_structured_store(resolved_collection)
     capped_rows = max(1, min(int(max_rows), 2000))
@@ -1629,7 +1611,6 @@ def aggregate_table(
       - Top 10 products by quantity sold:
           aggregate_table("orders.csv", "quantity", "sum", group_by="product", sort_by="value_desc", limit=10)
     """
-    _ensure_enabled()
     if agg_fn not in _AGG_FN_SQL:
         raise ValueError(f"agg_fn must be one of: {sorted(_AGG_FN_SQL)}")
 
@@ -1704,7 +1685,6 @@ def get_document_metadata(
       - num_pages / num_chunks: document sizing
       - upload_timestamp: when it was indexed
     """
-    _ensure_enabled()
     resolved_collection = _resolve_collection_id(collection_id)
     indexer = indexer_manager.get_indexer(resolved_collection)
     metadata_store = indexer.vector_store.metadata_store
@@ -1781,7 +1761,6 @@ def resource_collection(id: str) -> dict[str, Any]:
     description, document list with chunk/page counts — without issuing a
     tool call. Useful for priming context at session start.
     """
-    _ensure_enabled()
     resolved = _resolve_collection_id(id)
     collection = collection_service.get_collection(resolved)
     stats = indexer_manager.get_collection_stats(resolved)
@@ -1827,7 +1806,6 @@ def resource_collection_schema(id: str) -> dict[str, Any]:
     understand all structured data in a collection without calling
     get_table_schema() for each table individually.
     """
-    _ensure_enabled()
     resolved = _resolve_collection_id(id)
     store = _get_structured_store(resolved)
     raw_tables = store.list_tables()
@@ -1854,7 +1832,6 @@ def resource_all_collections() -> dict[str, Any]:
     page counts. Eliminates the need for list_collections() + repeated
     get_collection_info() calls when getting oriented.
     """
-    _ensure_enabled()
     all_cols = collection_service.get_all_collections()
     default_id = (settings.mcp_default_collection or "").strip() or None
 
@@ -1920,7 +1897,6 @@ def resource_collection_guide(id: str) -> dict[str, Any]:
     meanings, known quirks. Read this at the start of any session that
     touches this collection — it's the most important orientation document.
     """
-    _ensure_enabled()
     resolved = _resolve_collection_id(id)
     collection = collection_service.get_collection(resolved)
     guide = (collection or {}).get("guide") or ""
@@ -1943,7 +1919,6 @@ def resource_collection_tables(id: str) -> dict[str, Any]:
     fast orientation resource before running list_tables() or writing SQL.
     For full column schemas load collection://{id}/schema instead.
     """
-    _ensure_enabled()
     resolved = _resolve_collection_id(id)
     store = _get_structured_store(resolved)
     raw_tables = store.list_tables()
@@ -1969,7 +1944,6 @@ def resource_document(id: str) -> dict[str, Any]:
     page/chunk counts, and upload timestamp. Searches every collection
     automatically so you don't need to know which collection owns the document.
     """
-    _ensure_enabled()
     found = _find_collection_for_document(id)
     if not found:
         raise ValueError(
@@ -2008,7 +1982,6 @@ def resource_table(id: str) -> dict[str, Any]:
     automatically so you don't need to know which collection owns the table.
     For the full row set use the get_table_rows() tool.
     """
-    _ensure_enabled()
     found = _find_collection_for_table(id)
     if not found:
         raise ValueError(
