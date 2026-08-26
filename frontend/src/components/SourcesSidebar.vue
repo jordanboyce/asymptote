@@ -164,7 +164,8 @@
           <!-- Success -->
           <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
             <CheckCircle :size="12" aria-hidden="true" />
-            <span>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
+            <span v-if="indexResult.background">{{ indexResult.count.toLocaleString() }} file(s) uploaded — indexing continues in the background</span>
+            <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
             <button
               class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0"
               @click="indexSuccess = false"
@@ -929,8 +930,12 @@ const indexFiles = async () => {
       }
       if (batch.length) batches.push(batch)
 
+      // Phase 1 — transfer: stage batches to the server (no indexing in the
+      // request, so each batch is just an upload and finishes fast). The tab
+      // must stay open only for this phase.
       uploading.value = true
       uploadingCount.value = browserItems.length
+      const stagedPaths = []
       let uploaded = 0
       try {
         for (const group of batches) {
@@ -940,11 +945,11 @@ const indexFiles = async () => {
           }
           formData.append('collection_id', collectionStore.currentCollectionId)
           try {
-            const response = await axios.post('/documents/upload', formData, {
+            const response = await axios.post('/documents/upload-staged', formData, {
               headers: { 'Content-Type': 'multipart/form-data' }
             })
-            successCount += response.data.documents_processed || 0
-            totalChunks += response.data.total_chunks || 0
+            for (const s of response.data.staged || []) stagedPaths.push(s.path)
+            for (const f of response.data.failed || []) errors.push(`${f.filename}: ${f.error}`)
           } catch (err) {
             const errorMsg = err.response?.data?.detail || err.message
             errors.push(`Upload batch (${group[0].name}…): ${errorMsg}`)
@@ -959,14 +964,31 @@ const indexFiles = async () => {
         uploading.value = false
         uploadingCount.value = 0
       }
-      if (filePaths.length === 0 && folders.length === 0 && successCount > 0) {
-        indexSuccess.value = true
-        indexResult.value = { count: successCount, chunks: totalChunks }
-        justIndexed.value = true
-        addSectionOpen.value = false
-        loadDocuments()
-        setTimeout(() => loadDocuments(), 1500)
-        emit('document-deleted')
+
+      // Phase 2 — hand off: one server-side background job indexes the staged
+      // files. It shows up in the background-jobs drawer with live progress,
+      // survives page refreshes, and keeps running if the tab closes.
+      if (stagedPaths.length > 0) {
+        try {
+          const jobResp = await axios.post('/documents/index-local-async', {
+            file_paths: stagedPaths,
+            collection_id: collectionStore.currentCollectionId,
+            copy_to_library: false,
+          })
+          backgroundJobsStore.addUploadJob(jobResp.data)
+          successCount += stagedPaths.length
+          if (filePaths.length === 0 && folders.length === 0) {
+            indexSuccess.value = true
+            indexResult.value = { count: stagedPaths.length, chunks: 0, background: true }
+            justIndexed.value = true
+            addSectionOpen.value = false
+          }
+        } catch (err) {
+          const detail = err.response?.data?.detail || err.message
+          errors.push(err.response?.status === 409
+            ? 'Another indexing job is running — wait for it to finish, then re-add this folder.'
+            : `Failed to start background indexing: ${detail}`)
+        }
       }
     }
 

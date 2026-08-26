@@ -176,6 +176,67 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
     )
 
 
+@router.post(
+    "/documents/upload-staged",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Stage uploads for background indexing (save only, no indexing)",
+    tags=["documents"],
+)
+def stage_uploads(  # sync: disk writes run in FastAPI's threadpool
+    files: List[UploadFile] = File(...),
+    collection_id: str = "default",
+) -> dict:
+    """
+    Save uploaded files into the collection's documents directory WITHOUT
+    indexing them, and return the stored paths.
+
+    This is the transfer half of background uploads: the browser streams
+    batches here (fast — no embedding in the request), then submits ONE
+    /documents/index-local-async job over the returned paths. The browser
+    only has to stay open for the transfer; indexing continues server-side.
+
+    Filename handling matches /documents/upload (folder paths flattened,
+    traversal neutralized); a re-staged filename overwrites the previous
+    staged copy, mirroring the sync endpoint.
+    """
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files provided",
+        )
+    try:
+        get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    document_dir = indexer_manager.get_documents_path(collection_id)
+    SUPPORTED_EXTENSIONS = DocumentExtractor.SUPPORTED_EXTENSIONS
+
+    staged = []
+    failed = []
+    for file in files:
+        if not file.filename:
+            failed.append({"filename": "", "error": "missing filename"})
+            continue
+        if Path(file.filename).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            failed.append({"filename": file.filename, "error": "unsupported type"})
+            continue
+        raw_filename = file.filename.replace('\\', '/').lstrip('/')
+        safe_filename = raw_filename.replace('/', '_') if '/' in raw_filename else raw_filename
+        if safe_filename in ("..", ".") or safe_filename.startswith(".."):
+            safe_filename = safe_filename.replace("..", "_")
+        file_path = document_dir / safe_filename
+        try:
+            with open(file_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            staged.append({"filename": safe_filename, "path": str(file_path)})
+        except Exception as e:
+            logger.error(f"Failed to stage {file.filename}: {e}")
+            failed.append({"filename": file.filename, "error": str(e)})
+
+    return {"staged": staged, "failed": failed, "collection_id": collection_id}
+
+
 @router.get(
     "/documents/upload/{job_id}/status",
     response_model=UploadJobResponse,
