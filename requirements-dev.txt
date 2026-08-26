@@ -1,0 +1,2 @@
+# Development / test tooling — not installed in the production image.
+pytest>=8.0.0

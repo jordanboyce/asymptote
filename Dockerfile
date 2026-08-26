@@ -41,11 +41,21 @@ ENV PATH="/opt/venv/bin:$PATH"
 # torch is installed first from the CPU-only wheel index: sentence-transformers
 # pulls torch, and without this pin pip downloads the CUDA build (~2GB of GPU
 # libraries that do nothing in this container).
-# (server image ships full-featured: OCR + audio transcription)
-COPY requirements.txt requirements-ocr.txt requirements-audio.txt ./
+#
+# The default hosted image ships core + tesseract OCR + audio transcription.
+# Docling (the heavyweight layout-model OCR: torch vision stack + opencv) is
+# opt-in:  docker compose build --build-arg WITH_DOCLING=1
+# It brings torchvision along, installed from the SAME CPU index as torch so
+# the compiled ops match (a PyPI torchvision against index torch segfaults).
+ARG WITH_DOCLING=0
+COPY requirements.txt requirements-ocr.txt requirements-audio.txt requirements-docling.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir "torch==2.11.0" torchvision --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements.txt -r requirements-ocr.txt -r requirements-audio.txt
+    && pip install --no-cache-dir "torch==2.11.0" --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt -r requirements-ocr.txt -r requirements-audio.txt \
+    && if [ "$WITH_DOCLING" = "1" ]; then \
+         pip install --no-cache-dir torchvision --index-url https://download.pytorch.org/whl/cpu \
+         && pip install --no-cache-dir -r requirements-docling.txt; \
+       fi
 
 # ── Stage 3: runtime ──
 FROM python:3.13-slim AS runtime
@@ -96,7 +106,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # rather than via docling/faster_whisper: they are the extensions that actually
 # dlopen the system libs above, and importing them is fast and side-effect-free
 # (importing docling itself would try to resolve model caches).
-RUN python -c "import torch, faiss, sentence_transformers, fastapi, uvicorn, cv2, ctranslate2, pytesseract; print('runtime deps ok')"
+ARG WITH_DOCLING=0
+RUN python -c "import torch, faiss, sentence_transformers, fastapi, uvicorn, ctranslate2, pytesseract; print('runtime deps ok')" \
+    && if [ "$WITH_DOCLING" = "1" ]; then python -c "import cv2; print('docling deps ok')"; fi
 
 # Bake the embedding model into the image. Cold starts stay fast on platforms
 # with ephemeral filesystems (Railway, Render, Fly), and the container never

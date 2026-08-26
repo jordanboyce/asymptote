@@ -10,6 +10,5 @@ Pillow>=10.0.0
 
 # VLM-based OCR engines (pick one):
 # Primary fallback: Docling (IBM, MIT licensed, CPU-friendly)
-docling>=2.0.0
 # Alternative: Marker (uses Surya, best accuracy/speed balance)
 # pip install marker-pdf
