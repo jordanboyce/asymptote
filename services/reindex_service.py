@@ -14,7 +14,7 @@ from typing import Optional, List, Callable, Dict, Any
 from services.app_database import app_db
 from services.document_extractor import DocumentExtractor
 from services.chunker import TextChunker
-from services.embedder import EmbeddingService
+from services.embedder import create_embedding_service
 from services.vector_store import VectorStore
 from services.metadata_store import MetadataStore
 from services.indexing.indexer import DocumentIndexer
@@ -123,7 +123,10 @@ class ReindexService:
             app_db.update_reindex_job(job_id, status="running")
 
             # Initialize services with new config
-            embedding_service = EmbeddingService(model_name=embedding_model)
+            # Route through the shared factory so a reindex re-embeds with the
+            # SAME provider queries use (a hardcoded local EmbeddingService here
+            # silently produced mismatched vectors under EMBEDDING_PROVIDER=ollama).
+            embedding_service = create_embedding_service(collection_model=embedding_model)
             text_chunker = TextChunker(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap
@@ -417,7 +420,10 @@ class ReindexService:
             app_db.update_reindex_job(job_id, status="running")
 
             # Initialize services with new config
-            embedding_service = EmbeddingService(model_name=embedding_model)
+            # Route through the shared factory so a reindex re-embeds with the
+            # SAME provider queries use (a hardcoded local EmbeddingService here
+            # silently produced mismatched vectors under EMBEDDING_PROVIDER=ollama).
+            embedding_service = create_embedding_service(collection_model=embedding_model)
             text_chunker = TextChunker(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap
