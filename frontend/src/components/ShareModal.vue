@@ -41,6 +41,28 @@
           <CheckCircle :size="16" />
           Share link copied to clipboard!
         </div>
+
+        <!-- Email an invitation (uses the permission/expiry selected above) -->
+        <div class="flex gap-2">
+          <input
+            v-model="inviteEmail"
+            type="email"
+            placeholder="Or email the invitation to..."
+            class="input input-bordered input-sm flex-1"
+            aria-label="Recipient email for share invitation"
+            @keyup.enter="emailInvite"
+          />
+          <button class="btn btn-sm btn-outline gap-1" @click="emailInvite" :disabled="!inviteEmail || sendingInvite">
+            <span v-if="sendingInvite" class="loading loading-spinner loading-xs"></span>
+            <Mail v-else :size="14" />
+            Send
+          </button>
+        </div>
+        <div v-if="inviteSent" class="alert alert-success py-2 text-sm">
+          <CheckCircle :size="16" />
+          Invitation emailed to {{ inviteSent }}
+        </div>
+        <div v-if="inviteError" class="alert alert-error py-2 text-sm">{{ inviteError }}</div>
       </div>
 
       <!-- Active shares list -->
@@ -123,13 +145,15 @@
 
 <script setup>
 import { ref, watch } from 'vue'
-import { Share2, Plus, Copy, Trash2, CheckCircle } from 'lucide-vue-next'
+import { Share2, Plus, Copy, Trash2, CheckCircle, Mail } from 'lucide-vue-next'
 import { createShare, listShares, revokeShare, acceptShare } from '../utils/sharingApi'
 
 const props = defineProps({
   visible: Boolean,
   collectionId: String,
   collectionName: String,
+  // Prefills the accept box — set by the ?share_token= deep link in emails.
+  initialToken: { type: String, default: '' },
 })
 
 const emit = defineEmits(['close', 'shared'])
@@ -146,11 +170,43 @@ const accepting = ref(false)
 const acceptResult = ref(null)
 const acceptError = ref('')
 
+const inviteEmail = ref('')
+const sendingInvite = ref(false)
+const inviteSent = ref('')
+const inviteError = ref('')
+
 watch(() => props.visible, async (v) => {
+  if (v && props.initialToken) {
+    acceptToken.value = props.initialToken
+  }
   if (v && props.collectionId) {
     await loadShareList()
   }
 })
+
+async function emailInvite() {
+  if (!inviteEmail.value.trim()) return
+  sendingInvite.value = true
+  inviteSent.value = ''
+  inviteError.value = ''
+  try {
+    const share = await createShare(
+      props.collectionId, newPermission.value, newExpiresDays.value, inviteEmail.value.trim()
+    )
+    if (share.email_sent) {
+      inviteSent.value = inviteEmail.value.trim()
+      inviteEmail.value = ''
+    } else {
+      inviteError.value = share.email_error || 'Email could not be sent'
+    }
+    await loadShareList()
+    emit('shared')
+  } catch (err) {
+    inviteError.value = err.response?.data?.detail || 'Failed to send invitation'
+  } finally {
+    sendingInvite.value = false
+  }
+}
 
 async function loadShareList() {
   loadingShares.value = true

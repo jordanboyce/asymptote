@@ -382,6 +382,52 @@ def test_contextvar_identity_reaches_nested_enforcement(private_client):
     assert r.status_code == 200
 
 
+def test_share_with_email_invitation(private_client, monkeypatch):
+    """notify_email sends the token via the share-email service, attributed
+    to the sharer's verified identity."""
+    import services.share_email as se
+
+    sent = {}
+
+    def fake_send(to, **kwargs):
+        sent["to"] = to
+        sent.update(kwargs)
+
+    monkeypatch.setattr(se, "send_share_email", fake_send)
+
+    cid = private_client.post(
+        "/api/collections", json={"name": "Mailed notes"}, headers=_as(ALICE)
+    ).json()["id"]
+    r = private_client.post(
+        f"/api/collections/{cid}/share",
+        json={"permission": "read", "notify_email": "bob@example.com"},
+        headers=_as(ALICE),
+    )
+    assert r.status_code == 201
+    assert r.json()["email_sent"] is True
+    assert sent["to"] == "bob@example.com"
+    assert sent["shared_by"] == ALICE
+    assert sent["share_token"] == r.json()["share_id"]
+    assert sent["collection_name"] == "Mailed notes"
+
+
+def test_share_email_unconfigured_reports_error_but_creates_share(private_client):
+    cid = private_client.post(
+        "/api/collections", json={"name": "No mail"}, headers=_as(ALICE)
+    ).json()["id"]
+    r = private_client.post(
+        f"/api/collections/{cid}/share",
+        json={"notify_email": "bob@example.com"},
+        headers=_as(ALICE),
+    )
+    assert r.status_code == 201
+    assert r.json()["email_sent"] is False
+    assert "RESEND_API_KEY" in r.json()["email_error"]
+    # The share itself still exists and is acceptable
+    token = r.json()["share_id"]
+    assert private_client.post(f"/api/shares/{token}/accept", headers=_as(BOB)).status_code == 200
+
+
 def test_readwrite_share_can_update_but_not_delete(private_client):
     cid = private_client.post(
         "/api/collections", json={"name": "Team drafts"}, headers=_as(ALICE)

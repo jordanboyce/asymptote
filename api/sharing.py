@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 
 from config import settings
 from services.sharing_service import sharing_service
@@ -39,13 +39,16 @@ async def get_current_user(user_id: str = Depends(get_current_user_id)):
     tags=["sharing"],
     status_code=status.HTTP_201_CREATED,
 )
-async def create_share(collection_id: str, body: dict, user_id: str = Depends(get_current_user_id)):
+async def create_share(collection_id: str, body: dict, request: Request, user_id: str = Depends(get_current_user_id)):
     """
     Generate a shareable link for a collection.
 
     Body:
         permission: 'read' or 'readwrite' (default: 'read')
         expires_days: Optional number of days until expiry (null = never)
+        notify_email: Optional recipient — email them the token and a join
+            link via Resend (requires RESEND_API_KEY). The share is created
+            either way; the response reports email_sent / email_error.
     """
     try:
         share = sharing_service.create_share(
@@ -54,11 +57,33 @@ async def create_share(collection_id: str, body: dict, user_id: str = Depends(ge
             permission=body.get("permission", "read"),
             expires_days=body.get("expires_days"),
         )
-        return share
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    notify_email = (body.get("notify_email") or "").strip()
+    if notify_email:
+        from services.collection_service import collection_service
+        from services.share_email import send_share_email
+
+        collection = collection_service.get_collection(collection_id) or {}
+        try:
+            send_share_email(
+                notify_email,
+                share_token=share["share_id"],
+                collection_name=collection.get("name", collection_id),
+                permission=share["permission"],
+                shared_by=user_id or "A teammate",
+                app_url=str(request.base_url),
+                expires_at=share.get("expires_at"),
+            )
+            share["email_sent"] = True
+        except Exception as e:
+            logger.warning(f"Share invitation email to {notify_email} failed: {e}")
+            share["email_sent"] = False
+            share["email_error"] = str(e)
+    return share
 
 
 @router.get(

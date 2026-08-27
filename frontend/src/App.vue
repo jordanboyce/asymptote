@@ -867,7 +867,8 @@
       :visible="showShareModal"
       :collection-id="shareCollectionId"
       :collection-name="shareCollectionName"
-      @close="showShareModal = false"
+      :initial-token="shareInitialToken"
+      @close="showShareModal = false; shareInitialToken = ''"
       @shared="handleShared"
     />
 
@@ -1254,6 +1255,7 @@ const deleteError = ref('')
 const showShareModal = ref(false)
 const shareCollectionId = ref('')
 const shareCollectionName = ref('')
+const shareInitialToken = ref('')
 
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
@@ -1563,6 +1565,16 @@ onMounted(async () => {
   // Check whether we need the first-run onboarding takeover. Done first so
   // the screen paints immediately — the rest of the boot continues behind it.
   checkOnboardingNeeded()
+
+  // Share-invitation deep link (?share_token=... from emailed invites):
+  // open the join dialog with the token prefilled, then clean the URL so a
+  // reload doesn't re-prompt.
+  const shareToken = new URLSearchParams(window.location.search).get('share_token')
+  if (shareToken) {
+    shareInitialToken.value = shareToken
+    openJoinSharedModal()
+    window.history.replaceState({}, '', window.location.pathname)
+  }
 
   // Keep the provider pill current when any surface changes provider config.
   window.addEventListener('asymptote:provider-changed', refreshProviderPill)

@@ -1,9 +1,10 @@
 import axios from 'axios'
 
-export async function createShare(collectionId, permission = 'read', expiresDays = null) {
+export async function createShare(collectionId, permission = 'read', expiresDays = null, notifyEmail = null) {
   const response = await axios.post(`/api/collections/${collectionId}/share`, {
     permission,
     expires_days: expiresDays,
+    notify_email: notifyEmail || undefined,
   })
   return response.data
 }

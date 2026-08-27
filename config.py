@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     answer_cache_threshold: float = 0.9   # cosine similarity to count as "same question"
     answer_cache_max_per_scope: int = 200  # LRU cap per collection/scope
 
+    # Share invitations by email via Resend (https://resend.com). When the
+    # key is set, a collection owner can email a share invitation directly
+    # from the share dialog: the recipient gets the share token and a join
+    # link. RESEND_FROM must be a sender your Resend account may use — an
+    # address on a domain you verified there (e.g. "Asymptote
+    # <asymptote@your-domain>"); the default onboarding sender only delivers
+    # to your own Resend account's email, so it's for testing. Disabled in
+    # OFFLINE_MODE like every outbound integration.
+    resend_api_key: str = ""
+    resend_from: str = "Asymptote <onboarding@resend.dev>"
+
     # Text chunking configuration
     chunk_size: int = 1000
     chunk_overlap: int = 200
