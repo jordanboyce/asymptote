@@ -227,6 +227,9 @@ async def create_collection(collection_data: dict, user_id: str = Depends(get_cu
         chunk_size: Text chunk size (default: 500)
         chunk_overlap: Chunk overlap (default: 50)
         embedding_model: Embedding model to use
+        visibility: "private" (default) or "team" — private-collections mode
+            only. Team collections belong to everyone; private ones belong to
+            the caller until shared.
     """
     name = collection_data.get("name")
     if not name:
@@ -242,8 +245,14 @@ async def create_collection(collection_data: dict, user_id: str = Depends(get_cu
         chunk_size=collection_data.get("chunk_size", 500),
         chunk_overlap=collection_data.get("chunk_overlap", 50),
         embedding_model=collection_data.get("embedding_model", "all-MiniLM-L6-v2"),
-        # Anonymous (password-auth) callers create team collections.
-        owner_id=user_id or settings.default_user_id,
+        # The creator chooses team (owner "default" — everyone's) or private
+        # (theirs until shared). Anonymous password-auth callers have no
+        # identity to own anything, so their collections are always team.
+        owner_id=(
+            settings.default_user_id
+            if collection_data.get("visibility") == "team" or not user_id
+            else user_id
+        ),
     )
 
     return collection

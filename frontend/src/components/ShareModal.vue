@@ -3,12 +3,15 @@
     <div class="modal-box max-w-lg">
       <h3 id="share-modal-title" class="font-bold text-lg flex items-center gap-2">
         <Share2 :size="18" class="text-primary" aria-hidden="true" />
-        Share Collection
+        {{ collectionId ? 'Share Collection' : 'Join a Shared Collection' }}
       </h3>
-      <p class="text-sm text-base-content/70 mt-1">{{ collectionName }}</p>
+      <p v-if="collectionId" class="text-sm text-base-content/70 mt-1">{{ collectionName }}</p>
+      <p v-else class="text-sm text-base-content/70 mt-1">
+        Paste a share token someone sent you to get access to their collection.
+      </p>
 
       <!-- Create new share -->
-      <div class="mt-4 space-y-3">
+      <div v-if="collectionId" class="mt-4 space-y-3">
         <div class="flex gap-2 items-end">
           <div class="form-control flex-1">
             <label class="label py-1" for="share-permission"><span class="label-text text-xs">Permission</span></label>
@@ -41,7 +44,7 @@
       </div>
 
       <!-- Active shares list -->
-      <div class="mt-4">
+      <div v-if="collectionId" class="mt-4">
         <div class="text-xs font-semibold text-base-content/60 mb-2">Active Share Links</div>
         <div v-if="loadingShares" class="flex justify-center py-4">
           <span class="loading loading-spinner loading-sm"></span>
@@ -88,7 +91,7 @@
       </div>
 
       <!-- Accept share section -->
-      <div class="mt-4 border-t border-base-300 pt-4">
+      <div class="mt-4" :class="collectionId ? 'border-t border-base-300 pt-4' : ''">
         <label for="accept-share-token" class="text-xs font-semibold text-base-content/60 mb-2 block">Accept a Share Link</label>
         <div class="flex gap-2">
           <input

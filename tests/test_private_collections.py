@@ -302,6 +302,24 @@ def test_identity_reported(private_client):
     assert r.json()["private_collections"] is True
 
 
+def test_create_with_team_visibility(private_client):
+    """The creator can opt a new collection into the team tier."""
+    r = private_client.post(
+        "/api/collections",
+        json={"name": "Shared docs", "visibility": "team"},
+        headers=_as(ALICE),
+    )
+    assert r.status_code == 201
+    assert r.json()["owner_id"] == "default"
+    cid = r.json()["id"]
+    # Team tier: visible to everyone, including a user who owns nothing
+    bob_ids = {
+        c["id"]
+        for c in private_client.get("/api/collections", headers=_as(BOB)).json()["collections"]
+    }
+    assert cid in bob_ids
+
+
 def test_collections_are_isolated_between_users(private_client):
     r = private_client.post(
         "/api/collections", json={"name": "Alice research"}, headers=_as(ALICE)
