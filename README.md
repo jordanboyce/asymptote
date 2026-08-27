@@ -2,7 +2,7 @@
 
 **Privacy-focused, self-hosted advanced search using hybrid semantic + keyword retrieval**
 
-Upload documents (PDF, TXT, DOCX, CSV), run advanced hybrid semantic + keyword retrieval, and get relevant passages with direct source links. Asymptote is privacy-focused by design: core search runs locally, and external AI is optional.
+Upload documents (PDF, TXT, DOCX, Markdown, CSV/XLSX, source code, audio, images), run advanced hybrid semantic + keyword retrieval, and get relevant passages with direct source links. Asymptote is privacy-focused by design: core search runs locally, and external AI is optional.
 
 > **Why "Asymptote"?** In mathematics, an asymptote is a line that a curve approaches but never quite reaches. Like semantic search continuously approaching perfect understanding of your documents - getting closer with every query, but always refining, always learning. We're forever approaching the answer, never claiming to have reached it completely.
 
@@ -103,13 +103,13 @@ API and MCP clients then authenticate with `Authorization: Bearer <AUTH_PASSWORD
 
 Asymptote lets you:
 
-1. **Upload Documents** - Drop in PDF, TXT, DOCX, or CSV files (books, papers, manuals, data)
+1. **Upload Documents** - Drop in PDFs, Office docs, spreadsheets, code, audio, or images (books, papers, manuals, data, photos of whiteboards)
 2. **Hybrid Search** - Combine semantic understanding with keyword precision in one retrieval workflow
 3. **Privacy-Aware AI Options** (Optional) - Use private/local or external providers for reranking and answer synthesis based on data sensitivity
 4. **Get Results** - Find relevant passages with page numbers and direct document links
 5. **Scale Up** - Handle hundreds to thousands of documents locally
 
-**Supported file types:** PDF, TXT, DOCX, CSV
+**Supported file types:** PDF, TXT, DOCX, CSV/XLSX, Markdown, HTML, JSON/JSONL, source code, audio (transcribed), images (PNG/JPG/WEBP/TIFF — described and transcribed by a vision model)
 
 **Example:**
 - Query: *"How do I optimize database queries?"*
@@ -138,7 +138,7 @@ Asymptote lets you:
 
 **Why two PDF libraries?** We try pdfplumber first (handles complex layouts better), then fall back to pypdf if needed.
 
-**Supported formats:** PDF, TXT, DOCX, CSV
+**Supported formats:** PDF, TXT, DOCX, CSV/XLSX, Markdown, HTML, JSON/JSONL, code, audio, images
 
 ### Search & Embeddings
 
@@ -824,11 +824,15 @@ type, share, or rotate — and you get per-person revocation and an access log
 without writing any code. Full walkthrough, including how to verify the bypass
 is closed: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
-There is no multi-user mode. `ENABLE_MULTI_USER` refuses to start: it filtered
-the collection list by owner but never checked ownership on search, document
-retrieval, chat, or MCP, so it looked like an isolation boundary without being
-one. Scope access to a group cleared for the whole corpus, and run a separate
-instance for material with a different audience.
+By default everyone who gets in sees the whole corpus. Deployments behind
+Cloudflare Access can set `PRIVATE_COLLECTIONS=true` for per-person
+collections: each collection is visible only to its owner until shared (read
+or readwrite share links), enforcement covers every entry point — search,
+documents, chat, and the `/mcp` tools — and everything created before the
+flag stays in a team tier everyone sees. The identity is the verified Access
+JWT, which is why the mode refuses to start without Access configured. (The
+old `ENABLE_MULTI_USER` flag also refuses to start: it filtered the collection
+list without enforcing anything.) Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 **Also worth setting:**
 

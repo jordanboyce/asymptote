@@ -9,7 +9,7 @@ export const useCollectionStore = defineStore('collection', () => {
   const currentCollectionId = ref('default')
   const loading = ref(false)
   const error = ref(null)
-  const multiUser = ref(false)
+  const privateCollections = ref(false)
   const userId = ref('')
 
   // Computed
@@ -49,7 +49,7 @@ export const useCollectionStore = defineStore('collection', () => {
     try {
       const response = await axios.get('/api/collections')
       collections.value = response.data.collections || []
-      multiUser.value = response.data.multi_user || false
+      privateCollections.value = response.data.private_collections || false
       userId.value = response.data.user_id || ''
 
       // Ensure current collection still exists
@@ -156,7 +156,7 @@ export const useCollectionStore = defineStore('collection', () => {
     currentCollectionId,
     loading,
     error,
-    multiUser,
+    privateCollections,
     userId,
     // Computed
     currentCollection,

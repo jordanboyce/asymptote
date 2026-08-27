@@ -65,13 +65,24 @@ def _check_security_posture() -> None:
     # Docker logs) where an em-dash renders as mojibake.
     if settings.enable_multi_user:
         raise RuntimeError(
-            "ENABLE_MULTI_USER is not supported. Asymptote is a shared team "
-            "appliance: everyone who can reach it sees the whole corpus. The "
-            "flag only filtered the collection LIST - search, document "
-            "retrieval, chat and the /mcp tools accept any collection_id "
-            "without an ownership check, so it never isolated anything. "
-            "Remove ENABLE_MULTI_USER and put an SSO proxy in front to control "
-            "who gets in - see docs/DEPLOYMENT.md."
+            "ENABLE_MULTI_USER is not supported. The flag only filtered the "
+            "collection LIST - search, document retrieval, chat and the /mcp "
+            "tools accept any collection_id without an ownership check, so it "
+            "never isolated anything. Remove ENABLE_MULTI_USER. For per-person "
+            "collections with enforced ownership, set PRIVATE_COLLECTIONS=true "
+            "behind Cloudflare Access - see docs/DEPLOYMENT.md."
+        )
+
+    if settings.private_collections and not (
+        settings.cf_access_team_domain and settings.cf_access_aud
+    ):
+        raise RuntimeError(
+            "PRIVATE_COLLECTIONS requires a verified identity source: set "
+            "CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD (Cloudflare Access) so "
+            "every request carries a signed identity. Without one, ownership "
+            "would be enforced against an identity anyone can forge, which is "
+            "the half-boundary this app refuses to ship. See "
+            "docs/DEPLOYMENT.md."
         )
 
     if settings.host not in _LOOPBACK_HOSTS and not settings.auth_password:
@@ -191,7 +202,7 @@ def _password_from_auth_header(header: str) -> str:
     return ""
 
 
-if settings.auth_password:
+if settings.auth_password or settings.private_collections:
     @app.middleware("http")
     async def require_auth(request, call_next):
         if request.url.path == "/health":
@@ -216,18 +227,35 @@ if settings.auth_password:
                 if claims is not None:
                     request.state.auth_identity = verifier.identity_from_claims(claims)
                     request.state.auth_via = "cloudflare-access"
-                    return await call_next(request)
+                    return await _call_with_user_context(request, call_next)
 
-        presented = _password_from_auth_header(request.headers.get("authorization", ""))
-        if presented and secrets.compare_digest(presented, settings.auth_password):
-            request.state.auth_identity = None
-            request.state.auth_via = "password"
-            return await call_next(request)
+        if settings.auth_password:
+            presented = _password_from_auth_header(request.headers.get("authorization", ""))
+            if presented and secrets.compare_digest(presented, settings.auth_password):
+                request.state.auth_identity = None
+                request.state.auth_via = "password"
+                return await _call_with_user_context(request, call_next)
         return JSONResponse(
             {"detail": "Not authenticated"},
             status_code=401,
             headers={"WWW-Authenticate": 'Basic realm="Asymptote"'},
         )
+
+    async def _call_with_user_context(request, call_next):
+        """Bind the verified identity to a contextvar for the request's scope.
+
+        Routers read identity from request.state; service-layer code that has
+        no Request in reach (deps.get_indexer, the chat tool loop) reads the
+        contextvar. Set before call_next so the downstream task inherits it.
+        """
+        if not settings.private_collections:
+            return await call_next(request)
+        from middleware.user_context import set_request_user, reset_request_user
+        token = set_request_user(getattr(request.state, "auth_identity", None))
+        try:
+            return await call_next(request)
+        finally:
+            reset_request_user(token)
 
 for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise):
     app.include_router(module.router)

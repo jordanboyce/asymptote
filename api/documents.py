@@ -35,11 +35,22 @@ from services.form_field_extractor import (
 from fastapi import APIRouter
 from api.deps import (
     get_indexer,
+    require_collection_access,
 )
+from middleware.user_context import get_request_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _require_write(collection_id: str) -> None:
+    """Reject callers whose access to the collection is read-only (or absent).
+
+    Read access is enforced by get_indexer for every endpoint; the mutating
+    endpoints (upload, index, delete) additionally require write access.
+    """
+    require_collection_access(collection_id, get_request_user(), write=True)
 
 
 @router.post(
@@ -71,6 +82,7 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
         )
 
     # Get indexer for the collection
+    _require_write(collection_id)
     try:
         indexer = get_indexer(collection_id)
     except ValueError as e:
@@ -94,7 +106,7 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
         if file_ext not in SUPPORTED_EXTENSIONS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File {file.filename} has unsupported type. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, and source code files",
+                detail=f"File {file.filename} has unsupported type. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, images (PNG/JPG/WEBP/TIFF), audio, and source code files",
             )
 
     indexed_docs = []
@@ -204,6 +216,7 @@ def stage_uploads(  # sync: disk writes run in FastAPI's threadpool
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files provided",
         )
+    _require_write(collection_id)
     try:
         get_indexer(collection_id)
     except ValueError as e:
@@ -556,7 +569,8 @@ def upload_repository(  # sync: extraction+embedding run in FastAPI's threadpool
             detail=f"Path is not a directory: {request.path}",
         )
 
-    # Verify collection exists
+    # Verify collection exists and the caller can write to it
+    _require_write(request.collection_id)
     try:
         get_indexer(request.collection_id)
     except ValueError as e:
@@ -661,10 +675,11 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
     if file_ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file type: {file_ext}. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, and code files",
+            detail=f"Unsupported file type: {file_ext}. Supported: PDF, TXT, DOCX, CSV, XLSX, XLS, MD, JSON, JSONL, images (PNG/JPG/WEBP/TIFF), audio, and code files",
         )
 
     # Get indexer for the collection
+    _require_write(request.collection_id)
     try:
         indexer = get_indexer(request.collection_id)
     except ValueError as e:
@@ -787,6 +802,7 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
             detail="No valid files to index",
         )
 
+    _require_write(request.collection_id)
     try:
         job_id = upload_service.start_local_index(
             file_paths=valid_paths,
@@ -1000,13 +1016,23 @@ async def get_pdf(
             '.mi': 'text/plain',
             '.asm': 'text/plain',
             '.s': 'text/plain',
+            # Images - browsers preview these natively
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.tif': 'image/tiff',
+            '.tiff': 'image/tiff',
         }
         media_type = media_types.get(file_ext, 'application/octet-stream')
 
         # Files that can be previewed inline in the browser
         inline_extensions = {'.pdf', '.txt', '.md', '.json', '.csv',
                             '.pas', '.dpr', '.dpk', '.pp', '.inc', '.dfm',
-                            '.mod', '.def', '.mi', '.asm', '.s'}
+                            '.mod', '.def', '.mi', '.asm', '.s',
+                            '.png', '.jpg', '.jpeg', '.webp', '.gif'}
         disposition = 'inline' if file_ext in inline_extensions else 'attachment'
         return FileResponse(
             path=doc_path,
@@ -1158,6 +1184,8 @@ def delete_document(  # sync: FAISS rebuild on delete runs in the threadpool
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=str(e),
             )
+
+        _require_write(collection_id)
 
         # Get document directory for this collection
         document_dir = indexer_manager.get_documents_path(collection_id)

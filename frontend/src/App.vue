@@ -65,8 +65,8 @@
       <!-- Spacer -->
       <div class="flex-1"></div>
 
-      <!-- User identity (multi-user mode) -->
-      <div v-if="userStore.isMultiUser" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50">
+      <!-- User identity (private-collections mode) -->
+      <div v-if="userStore.isPrivateMode" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50">
         <Users :size="12" />
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
@@ -358,7 +358,7 @@
 
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <button
-                        v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                        v-if="collectionStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Share collection"
@@ -436,7 +436,7 @@
                     </span>
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <button
-                        v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                        v-if="collectionStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Share collection"

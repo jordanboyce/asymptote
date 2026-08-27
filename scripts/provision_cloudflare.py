@@ -10,7 +10,10 @@ One idempotent run creates everything deployment shape B needs:
   6. an Access service token for headless MCP clients
 
 Secrets (TUNNEL_TOKEN, AUTH_PASSWORD, CF_ACCESS_CLIENT_ID/SECRET) are written
-into the repo-local .env — which is gitignored — and never printed.
+into the repo-local .env — which is gitignored — and never printed. The JWT
+trust settings (CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD — the Access apps' AUD
+tags) and MCP_ALLOWED_HOSTS are written too, so SSO logins skip the password
+prompt and PRIVATE_COLLECTIONS=true can be enabled without further lookup.
 
 Usage:
     CLOUDFLARE_API_TOKEN=... python scripts/provision_cloudflare.py
@@ -164,27 +167,42 @@ def main():
             print(f"access app on {domain}: exists, leaving as-is")
         return app
 
-    ensure_app(HOSTNAME, "Asymptote", {
+    ui_app = ensure_app(HOSTNAME, "Asymptote", {
         "name": "owner", "decision": "allow", "precedence": 1,
         "include": [{"email": {"email": ALLOW_EMAIL}}],
     })
-    ensure_app(f"{HOSTNAME}/mcp", "Asymptote MCP", {
+    mcp_app = ensure_app(f"{HOSTNAME}/mcp", "Asymptote MCP", {
         "name": "mcp-service-tokens", "decision": "non_identity", "precedence": 1,
         "include": [{"service_token": {"token_id": st_id}}],
     })
 
-    # 6. Secrets -> .env (gitignored) ---------------------------------------
+    # 6. JWT trust: team domain + both apps' AUD tags -----------------------
+    # With these set the app verifies the Cf-Access-Jwt-Assertion the edge
+    # attaches: SSO logins skip the Basic-auth prompt, MCP service tokens
+    # carry their name as identity, and PRIVATE_COLLECTIONS=true becomes
+    # possible (it refuses to start without them).
+    org = cf("GET", f"/accounts/{ACCOUNT_ID}/access/organizations")
+    auth_domain = org.get("auth_domain", "")
+    auds = ",".join(a for a in {ui_app.get("aud", ""), mcp_app.get("aud", "")} if a)
+    print(f"access jwt trust: team={auth_domain} auds={len(auds.split(','))} app(s)")
+
+    # 7. Secrets + trust settings -> .env (gitignored) ----------------------
     updates = {
         "TUNNEL_TOKEN": tunnel_token,
         "CF_ACCESS_CLIENT_ID": client_id,
         "CF_ACCESS_CLIENT_SECRET": client_secret,
+        "CF_ACCESS_TEAM_DOMAIN": auth_domain,
+        "CF_ACCESS_AUD": auds,
+        "MCP_ALLOWED_HOSTS": HOSTNAME,
     }
     if not env.get("AUTH_PASSWORD"):
         updates["AUTH_PASSWORD"] = secrets.token_urlsafe(33)
     set_env(updates)
-    print(f"\nsecrets written to {ENV_PATH} (TUNNEL_TOKEN, CF_ACCESS_CLIENT_ID/SECRET"
+    print(f"\nsecrets written to {ENV_PATH} (TUNNEL_TOKEN, CF_ACCESS_CLIENT_ID/SECRET, "
+          "CF_ACCESS_TEAM_DOMAIN/AUD, MCP_ALLOWED_HOSTS"
           + (", AUTH_PASSWORD generated)" if "AUTH_PASSWORD" in updates else ")"))
     print("\nnext: docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d --build")
+    print("optional: add PRIVATE_COLLECTIONS=true to .env for per-person collections")
 
 
 if __name__ == "__main__":

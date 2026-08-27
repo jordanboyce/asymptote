@@ -17,13 +17,18 @@ router = APIRouter()
 
 @router.get("/api/user/me", summary="Get current user info", tags=["users"])
 async def get_current_user(user_id: str = Depends(get_current_user_id)):
-    """Get the current user's identity and multi-user status."""
+    """Get the current user's identity and private-collections status.
+
+    In private-collections mode, user_id is the verified Cloudflare Access
+    identity; None means an anonymous (password-authenticated) caller who can
+    reach team collections only.
+    """
     from services.app_database import app_db
-    user = app_db.get_user(user_id)
+    user = app_db.get_user(user_id) if user_id else None
     return {
         "user_id": user_id,
-        "display_name": user["display_name"] if user else user_id,
-        "multi_user": settings.enable_multi_user,
+        "display_name": (user["display_name"] if user else user_id) or "anonymous",
+        "private_collections": settings.private_collections,
         "db_backend": settings.db_backend,
     }
 

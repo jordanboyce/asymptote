@@ -1,41 +1,86 @@
-"""User context extraction for multi-user isolation.
+"""Request-scoped user identity for private-collections mode.
 
-In multi-user mode, the user identity comes from the X-User-ID header,
-typically set by a company's auth proxy (e.g., OAuth2 proxy, Traefik forward auth).
+Identity is never taken from a client-controlled header. The auth middleware
+in main.py verifies the Cloudflare Access JWT (signature, issuer, audience,
+expiry) and records the result on ``request.state.auth_identity`` — a person's
+email for SSO logins, the service token's common_name for MCP clients, or
+``None`` for AUTH_PASSWORD callers, who are authenticated but anonymous.
 
-In single-user mode, all requests use the configured default_user_id.
+Two consumers need that identity:
+
+- FastAPI routers, via ``Depends(get_current_user_id)`` — they have the
+  Request object.
+- Service-layer code with no Request in reach (the chat tool loop, the
+  mounted /mcp app's tools, ``deps.get_indexer``) — they read the contextvar,
+  which the auth middleware (and the MCP ASGI wrapper) sets per request.
+
+With PRIVATE_COLLECTIONS off, both paths return ``default_user_id`` and
+nothing here has any effect — the shared-appliance behaviour is unchanged.
 """
 
 import logging
+from contextvars import ContextVar, Token
+from typing import Optional
 
 from fastapi import Request
 
 from config import settings
-from services.app_database import app_db
 
 logger = logging.getLogger(__name__)
 
+# None = anonymous (password-authenticated, or private mode off and unset).
+_request_user_id: ContextVar[Optional[str]] = ContextVar(
+    "asymptote_request_user_id", default=None
+)
 
-def get_current_user_id(request: Request) -> str:
-    """Extract the current user ID from the request.
+# Users already upserted by this process — avoids a DB write per request.
+_provisioned_users: set[str] = set()
 
-    In single-user mode: always returns settings.default_user_id.
-    In multi-user mode: reads X-User-ID header, falls back to default.
 
-    Also auto-provisions the user record on first sight.
+def set_request_user(user_id: Optional[str]) -> Token:
+    """Bind the verified identity to the current request context."""
+    return _request_user_id.set(user_id)
+
+
+def reset_request_user(token: Token) -> None:
+    _request_user_id.reset(token)
+
+
+def get_request_user() -> Optional[str]:
+    """The verified identity for the current request, or None if anonymous.
+
+    Only meaningful in private-collections mode; callers gate on
+    ``settings.private_collections`` before treating None as anonymous.
     """
-    if not settings.enable_multi_user:
+    if not settings.private_collections:
         return settings.default_user_id
+    return _request_user_id.get()
 
-    user_id = request.headers.get("X-User-ID", "").strip()
-    if not user_id:
-        return settings.default_user_id
 
-    # Auto-provision user on first sight
-    display_name = request.headers.get("X-User-Name", "").strip() or None
+def _provision(user_id: str) -> None:
+    if user_id in _provisioned_users:
+        return
     try:
-        app_db.upsert_user(user_id, display_name=display_name)
+        from services.app_database import app_db
+
+        app_db.upsert_user(user_id)
+        _provisioned_users.add(user_id)
     except Exception as e:
         logger.warning(f"Could not upsert user {user_id}: {e}")
 
-    return user_id
+
+def get_current_user_id(request: Request) -> Optional[str]:
+    """FastAPI dependency: the current user's verified identity.
+
+    Single-user mode: always ``settings.default_user_id``.
+    Private-collections mode: the Access JWT identity, or None for
+    password-authenticated (anonymous) callers.
+    """
+    if not settings.private_collections:
+        return settings.default_user_id
+
+    identity = getattr(request.state, "auth_identity", None)
+    if identity:
+        _provision(identity)
+        return identity
+    return None

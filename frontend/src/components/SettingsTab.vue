@@ -860,8 +860,8 @@
               <dd class="font-medium">{{ systemInfo.db_backend === 'postgresql' ? 'PostgreSQL' : 'SQLite' }}</dd>
             </div>
             <div class="flex items-center justify-between gap-8 py-3">
-              <dt class="text-base-content/55">Multi-user</dt>
-              <dd class="font-medium">{{ systemInfo.multi_user ? 'On' : 'Off' }}</dd>
+              <dt class="text-base-content/55">Private collections</dt>
+              <dd class="font-medium">{{ systemInfo.private_collections ? 'On' : 'Off' }}</dd>
             </div>
             <div class="flex items-center justify-between gap-8 py-3">
               <dt class="text-base-content/55">User</dt>
@@ -1293,7 +1293,7 @@ const startReindex = async () => {
 }
 
 // System info (read-only; offline flag comes from /health)
-const systemInfo = ref({ db_backend: 'sqlite', multi_user: false, user_id: 'default', offline_mode: false })
+const systemInfo = ref({ db_backend: 'sqlite', private_collections: false, user_id: 'default', offline_mode: false })
 
 // Air-gapped deployments: the backend rejects cloud providers, so don't
 // offer them. Only local Ollama and self-hosted endpoints remain.

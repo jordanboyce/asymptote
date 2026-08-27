@@ -9,7 +9,6 @@ from services.embedder import EmbeddingService
 from services.config_manager import config_manager
 from services.reindex_service import reindex_service
 from services.collection_service import collection_service
-from services.sharing_service import sharing_service
 from services.indexer_manager import indexer_manager
 from middleware.user_context import get_current_user_id
 
@@ -77,7 +76,7 @@ async def start_reindex():
     summary="Start re-indexing a collection",
     tags=["collections"],
 )
-async def start_collection_reindex(collection_id: str):
+async def start_collection_reindex(collection_id: str, user_id: str = Depends(get_current_user_id)):
     """
     Start a background re-indexing job for a specific collection.
 
@@ -96,6 +95,9 @@ async def start_collection_reindex(collection_id: str):
         - collection_id: Collection being reindexed
     """
     try:
+        from api.deps import require_collection_access
+        require_collection_access(collection_id, user_id, write=True)
+
         # Get collection settings
         collection = collection_service.get_collection(collection_id)
         if not collection:
@@ -201,7 +203,11 @@ async def get_reindex_status(job_id: int = None):
 async def list_collections(request: Request, user_id: str = Depends(get_current_user_id)):
     """Get all document collections visible to the current user."""
     collections = collection_service.get_all_collections(user_id=user_id)
-    return {"collections": collections, "user_id": user_id, "multi_user": settings.enable_multi_user}
+    return {
+        "collections": collections,
+        "user_id": user_id,
+        "private_collections": settings.private_collections,
+    }
 
 
 @router.post(
@@ -236,7 +242,8 @@ async def create_collection(collection_data: dict, user_id: str = Depends(get_cu
         chunk_size=collection_data.get("chunk_size", 500),
         chunk_overlap=collection_data.get("chunk_overlap", 50),
         embedding_model=collection_data.get("embedding_model", "all-MiniLM-L6-v2"),
-        owner_id=user_id,
+        # Anonymous (password-auth) callers create team collections.
+        owner_id=user_id or settings.default_user_id,
     )
 
     return collection
@@ -249,15 +256,14 @@ async def create_collection(collection_data: dict, user_id: str = Depends(get_cu
 )
 async def get_collection(collection_id: str, user_id: str = Depends(get_current_user_id)):
     """Get details for a specific collection."""
+    from api.deps import require_collection_access
+    access = require_collection_access(collection_id, user_id)
     collection = collection_service.get_collection(collection_id)
     if not collection:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Collection '{collection_id}' not found"
         )
-    access = sharing_service.check_collection_access(collection_id, user_id)
-    if not access:
-        raise HTTPException(status_code=403, detail="You do not have access to this collection")
     collection['permission'] = access
     return collection
 
@@ -315,9 +321,8 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
     Note: Changing chunk_size, chunk_overlap, or embedding_model
     requires re-indexing the collection's documents.
     """
-    access = sharing_service.check_collection_access(collection_id, user_id)
-    if access not in ("owner", "readwrite"):
-        raise HTTPException(status_code=403, detail="You need owner or write access to update this collection")
+    from api.deps import require_collection_access
+    require_collection_access(collection_id, user_id, write=True)
     collection = collection_service.update_collection(
         collection_id=collection_id,
         name=updates.get("name"),
@@ -349,7 +354,8 @@ def delete_collection(collection_id: str, user_id: str = Depends(get_current_use
 
     Note: The 'default' collection cannot be deleted.
     """
-    access = sharing_service.check_collection_access(collection_id, user_id)
+    from api.deps import require_collection_access
+    access = require_collection_access(collection_id, user_id)
     if access != "owner":
         raise HTTPException(status_code=403, detail="Only the collection owner can delete it")
     if collection_id == "default":
