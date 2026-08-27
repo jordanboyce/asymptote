@@ -290,6 +290,11 @@ class ChatRequest(BaseModel):
     scope: str = Field("current", description="Collection scope: 'current' (single collection) or 'all' (search across all collections)")
     rerank: bool = Field(False, description="Rerank retrieved context chunks using AI before generating a response")
     top_k: int = Field(5, description="Number of source chunks to consider", ge=1, le=20)
+    use_cache: bool = Field(
+        True,
+        description="Serve a semantically matching cached answer when one exists; "
+                    "false forces a fresh response (and replaces the cached one)",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -301,6 +306,10 @@ class ChatResponse(BaseModel):
     structured_results: Optional[List[Dict[str, Any]]] = Field(
         None,
         description="Structured query / metric tool-call results executed during this turn"
+    )
+    cached: bool = Field(False, description="True when this answer was served from the semantic answer cache")
+    cached_question: Optional[str] = Field(
+        None, description="The originally asked question the cached answer was generated for"
     )
 
 

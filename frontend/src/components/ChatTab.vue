@@ -396,7 +396,22 @@
                   v-if="!msg.streaming && (msg.aiUsage || msg.content)"
                   class="flex items-center gap-2 mt-2 flex-wrap"
                 >
-                  <template v-if="msg.aiUsage">
+                  <template v-if="msg.cached">
+                    <span
+                      class="badge badge-xs badge-outline"
+                      :title="msg.cachedQuestion ? `Cached answer originally generated for: ${msg.cachedQuestion}` : 'Served from the answer cache'"
+                    >cached · 0 tokens</span>
+                    <button
+                      class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 gap-1 text-base-content/50 hover:text-base-content"
+                      title="Bypass the cache and generate a fresh answer"
+                      :disabled="loading"
+                      @click="regenerateFresh(index)"
+                    >
+                      <RefreshCw :size="11" />
+                      <span class="text-xs">Fresh answer</span>
+                    </button>
+                  </template>
+                  <template v-else-if="msg.aiUsage">
                     <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
                       {{ providerDisplayName(msg.provider || selectedProvider) }}
                     </span>
@@ -555,7 +570,7 @@ const renderAssistantMarkdown = (text) => {
   const html = renderMarkdown(text)
   return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
 }
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check, RefreshCw } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
@@ -889,6 +904,30 @@ const runInlineSlashCommand = async (input) => {
   await scrollToBottom()
 }
 
+// Set by the "Fresh answer" button on a cached response: the next send
+// bypasses the semantic answer cache (and its result replaces the entry).
+const forceFresh = ref(false)
+
+const regenerateFresh = async (index) => {
+  if (loading.value) return
+  const msgs = messages.value
+  let userIdx = -1
+  for (let i = index - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') { userIdx = i; break }
+  }
+  if (userIdx === -1) return
+  const question = msgs[userIdx].content
+  // Drop the question + cached answer, then resend as a fresh exchange.
+  msgs.splice(userIdx, msgs.length - userIdx)
+  inputMessage.value = question
+  forceFresh.value = true
+  try {
+    await sendMessage()
+  } finally {
+    forceFresh.value = false
+  }
+}
+
 const sendMessage = async () => {
   if (!inputMessage.value.trim() || loading.value) return
 
@@ -942,6 +981,7 @@ const sendMessage = async () => {
           mode: searchMode.value,
           scope: scope.value,
           rerank: rerank.value,
+          use_cache: !forceFresh.value,
         }),
       }
     )
@@ -990,6 +1030,8 @@ const sendMessage = async () => {
             sources: event.sources || [],
             usage: event.usage || {},
             structuredResults: event.structured_results || [],
+            cached: event.cached || false,
+            cachedQuestion: event.cached_question || '',
           })
           // Stamp the last assistant message with provider/scope for the badge
           const msgs = messages.value
