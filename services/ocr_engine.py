@@ -495,6 +495,19 @@ class VisionOCREngine(OCREngine):
         "Output ONLY the extracted content with no commentary."
     )
 
+    IMAGE_PROMPT = (
+        "You are indexing an image for a document search system. Produce text that "
+        "makes this image findable by search.\n\n"
+        "1. Describe what the image shows: subject, setting, people/objects, actions, "
+        "and the kind of image (photo, diagram, chart, screenshot, whiteboard, scan...).\n"
+        "2. Transcribe ALL legible text exactly as written — labels, signs, captions, "
+        "code, table contents, axis labels and values.\n"
+        "3. For charts and diagrams: state what is being shown and summarize the key "
+        "data, trends, or relationships.\n\n"
+        "Be thorough but factual — do not speculate beyond what is visible. "
+        "Output only the description and transcription, no commentary."
+    )
+
     CLEANUP_PROMPT_TEMPLATE = (
         "You are an expert OCR post-processor. The text below was extracted by a vision model from a "
         "scanned document page and contains OCR noise mixed with real content.\n\n"
@@ -606,8 +619,48 @@ class VisionOCREngine(OCREngine):
             logger.warning(f"Ruled-line removal failed, using original image: {e}")
             return image
 
-    def extract_text(self, pdf_path: str) -> OCRResult:
-        """Extract text by sending each page image to a vision model."""
+    def describe_image(self, image_path: str) -> str:
+        """Describe a standalone image and transcribe its text for indexing.
+
+        Unlike the scanned-page path, the image is sent as-is (no contrast/
+        sharpness boost — that helps degraded scans but distorts photos),
+        downscaled only to keep the payload reasonable.
+        """
+        import base64
+        import io
+        from PIL import Image
+
+        img = Image.open(image_path)
+        img = img.convert("RGB")  # flattens alpha, takes frame 1 of animations
+        max_dim = 2000
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        logger.info(
+            f"Vision image description: {image_path} "
+            f"({len(image_b64) // 1024}KB, model={self._model})"
+        )
+        result = self._provider.complete_with_image(
+            prompt=self.IMAGE_PROMPT,
+            image_base64=image_b64,
+            media_type="image/png",
+            max_tokens=2048,
+            model=self._model,
+        )
+        return (result.get("text") or "").strip()
+
+    def extract_text(self, pdf_path: str, pages: Optional[List[int]] = None) -> OCRResult:
+        """Extract text by sending page images to a vision model.
+
+        Args:
+            pages: Optional 1-based page numbers to OCR. When given, only those
+                pages are rendered and sent — the selective path for documents
+                where native extraction covered everything except a few scanned
+                or figure-only pages. When None, every page is processed.
+        """
         import base64
         import io
         from pdf2image import convert_from_path
@@ -621,18 +674,29 @@ class VisionOCREngine(OCREngine):
             )
 
         poppler_path = _find_poppler_path()
-        images = convert_from_path(str(pdf_path), dpi=self._dpi, poppler_path=poppler_path)
+        if pages:
+            page_images = []
+            for p in sorted(set(pages)):
+                rendered = convert_from_path(
+                    str(pdf_path), dpi=self._dpi, poppler_path=poppler_path,
+                    first_page=p, last_page=p,
+                )
+                if rendered:
+                    page_images.append((p, rendered[0]))
+        else:
+            rendered = convert_from_path(str(pdf_path), dpi=self._dpi, poppler_path=poppler_path)
+            page_images = list(enumerate(rendered, start=1))
 
-        if self._max_pages and len(images) > self._max_pages:
-            logger.warning(f"Vision OCR: truncating {len(images)} pages to {self._max_pages}")
-            images = images[:self._max_pages]
+        if self._max_pages and len(page_images) > self._max_pages:
+            logger.warning(f"Vision OCR: truncating {len(page_images)} pages to {self._max_pages}")
+            page_images = page_images[:self._max_pages]
 
         ocr_prompt = self.FORM_OCR_PROMPT if self._form_mode else self.OCR_PROMPT
         if self._form_mode:
             logger.info("Vision OCR: using form-aware prompt with ruled-line removal")
 
-        pages = []
-        for page_num, image in enumerate(images, start=1):
+        pages_out = []
+        for page_num, image in page_images:
             # Preprocess image for better OCR on degraded/old scans
             if self._enhance_image:
                 from PIL import ImageEnhance
@@ -649,7 +713,7 @@ class VisionOCREngine(OCREngine):
             image.save(buf, format="PNG")
             image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-            logger.info(f"Vision OCR: page {page_num}/{len(images)} ({len(image_b64) // 1024}KB image)")
+            logger.info(f"Vision OCR: page {page_num} ({len(page_images)} page(s) queued, {len(image_b64) // 1024}KB image)")
 
             try:
                 result = self._provider.complete_with_image(
@@ -690,7 +754,7 @@ class VisionOCREngine(OCREngine):
                     logger.warning(f"Vision OCR cleanup pass failed on page {page_num}: {e}")
                     final_text = raw_text  # Fall back to raw
 
-            pages.append(OCRPage(
+            pages_out.append(OCRPage(
                 page_number=page_num,
                 text=final_text.strip(),
                 metadata={
@@ -700,10 +764,10 @@ class VisionOCREngine(OCREngine):
             ))
             logger.debug(f"Vision OCR page {page_num}: {len(final_text)} chars")
 
-        cleanup_pages = [p.page_number for p in pages if p.metadata.get("cleanup_applied")]
+        cleanup_pages = [p.page_number for p in pages_out if p.metadata.get("cleanup_applied")]
 
         return OCRResult(
-            pages=pages,
+            pages=pages_out,
             engine=self.name,
             metadata={
                 "model": self._model,

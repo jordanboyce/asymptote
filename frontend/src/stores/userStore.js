@@ -5,18 +5,18 @@ import axios from 'axios'
 export const useUserStore = defineStore('user', () => {
   const userId = ref('')
   const displayName = ref('')
-  const multiUser = ref(false)
+  const privateCollections = ref(false)
   const dbBackend = ref('sqlite')
   const loaded = ref(false)
 
-  const isMultiUser = computed(() => multiUser.value)
+  const isPrivateMode = computed(() => privateCollections.value)
 
   async function loadCurrentUser() {
     try {
       const response = await axios.get('/api/user/me')
       userId.value = response.data.user_id
       displayName.value = response.data.display_name
-      multiUser.value = response.data.multi_user
+      privateCollections.value = response.data.private_collections
       dbBackend.value = response.data.db_backend
       loaded.value = true
     } catch (err) {
@@ -24,7 +24,7 @@ export const useUserStore = defineStore('user', () => {
       // Fallback for single-user mode
       userId.value = 'default'
       displayName.value = 'Default User'
-      multiUser.value = false
+      privateCollections.value = false
       dbBackend.value = 'sqlite'
       loaded.value = true
     }
@@ -33,10 +33,10 @@ export const useUserStore = defineStore('user', () => {
   return {
     userId,
     displayName,
-    multiUser,
+    privateCollections,
     dbBackend,
     loaded,
-    isMultiUser,
+    isPrivateMode,
     loadCurrentUser,
   }
 })

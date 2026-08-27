@@ -73,6 +73,11 @@ class SharingService:
         Returns:
             Accepted share details
         """
+        if not user_id:
+            raise ValueError(
+                "Accepting a share needs an identity — sign in through "
+                "Cloudflare Access rather than the shared password."
+            )
         share = app_db.get_share(share_token)
         if not share:
             raise ValueError("Share link not found")
@@ -122,6 +127,8 @@ class SharingService:
         Returns:
             List of shared collection details
         """
+        if not user_id:
+            return []
         return app_db.get_shared_collections(user_id)
 
     def revoke_share(self, share_id: str, owner_id: str):
@@ -140,24 +147,38 @@ class SharingService:
         app_db.revoke_share(share_id)
         logger.info(f"Revoked share {share_id}")
 
-    def check_collection_access(self, collection_id: str, user_id: str) -> Optional[str]:
+    def check_collection_access(self, collection_id: str, user_id: Optional[str]) -> Optional[str]:
         """Check if a user has access to a collection.
 
         Returns the permission level: 'owner', 'readwrite', 'read', or None.
-        In single-user mode, always returns 'owner'.
+        With private collections off, always returns 'owner' (shared appliance:
+        everyone sees everything).
+
+        With private collections on:
+          - Team collections (owner_id empty or "default" — everything created
+            before the mode existed, plus anything created by anonymous
+            password callers) grant 'owner' to every authenticated caller.
+          - The recorded owner gets 'owner'.
+          - An accepted share grants its 'read'/'readwrite' permission.
+          - Anonymous callers (user_id None) reach team collections only.
         """
-        if not settings.enable_multi_user:
+        if not settings.private_collections:
             return "owner"
 
         collection = app_db.get_collection(collection_id)
         if not collection:
             return None
 
-        # Owner always has full access
-        if collection.get("owner_id") == user_id:
+        owner = (collection.get("owner_id") or "").strip()
+        if owner in ("", settings.default_user_id):
             return "owner"
 
-        # Check share access
+        if user_id is None:
+            return None
+
+        if owner == user_id:
+            return "owner"
+
         return app_db.check_share_access(collection_id, user_id)
 
 

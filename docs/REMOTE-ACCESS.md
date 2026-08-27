@@ -104,6 +104,32 @@ claude mcp add --transport http asymptote https://asymptote.<your-domain>/mcp/ \
 Rotate a leaked service token in the Zero Trust dashboard (per-client
 revocation is the reason to prefer tokens over sharing the password alone).
 
+## Optional: private collections
+
+With the JWT trust settings the script writes (`CF_ACCESS_TEAM_DOMAIN`,
+`CF_ACCESS_AUD`), you can add `PRIVATE_COLLECTIONS=true` to `.env` and
+restart: new collections become private to whoever created them (your Access
+SSO email), shareable via read/readwrite links, while everything that already
+existed stays in a team tier everyone sees. The MCP service token is an
+identity too (`asymptote-mcp`) — share a collection to that name to grant
+agents access; to accept on the token's behalf, call the accept endpoint with
+its credentials:
+
+```bash
+curl -sS -X POST https://asymptote.<your-domain>/api/shares/<share-token>/accept \
+  -H "CF-Access-Client-Id: <token-id>.access" \
+  -H "CF-Access-Client-Secret: <token-secret>"
+```
+
+Note the service token is admitted only by the `/mcp` Access app; the accept
+endpoint sits under the root app, so this call works only after you add a
+Service Auth policy for the token to the root application as well (Zero Trust
+→ Access → Applications → Asymptote → Policies). If you'd rather not widen
+the root app, skip sharing to agents and keep what they need in the team
+tier.
+
+Full semantics: [DEPLOYMENT.md](DEPLOYMENT.md#private-collections).
+
 ## Browser access
 
 Just open `https://asymptote.<your-domain>` — Access sends you through your

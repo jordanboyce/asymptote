@@ -190,12 +190,16 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults } = {}) => {
+  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults, cached, cachedQuestion } = {}) => {
     const msg = _lastAssistantMsg(collectionId)
     if (!msg) return
     msg.streaming = false
     if (sources) msg.sources = sources
     if (usage) msg.aiUsage = { synthesis: { ...usage }, total_input_tokens: usage.input_tokens || 0, total_output_tokens: usage.output_tokens || 0 }
+    if (cached) {
+      msg.cached = true
+      msg.cachedQuestion = cachedQuestion || ''
+    }
     // Replace structuredResults with the server's authoritative list if provided
     if (structuredResults && structuredResults.length > 0) msg.structuredResults = structuredResults
     const session = getActiveSession(collectionId)

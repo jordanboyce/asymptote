@@ -15,7 +15,9 @@ from models.schemas import (
 from fastapi import APIRouter
 from api.deps import (
     expertise_store,
+    require_collection_access,
 )
+from middleware.user_context import get_request_user
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,7 @@ async def delete_expertise_pack(pack_id: str):
 )
 async def get_collection_expertise(collection_id: str):
     """List all expertise packs attached to a collection."""
+    require_collection_access(collection_id, get_request_user())
     packs = expertise_store.get_packs_for_collection(collection_id)
     return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)
 
@@ -78,6 +81,7 @@ async def get_collection_expertise(collection_id: str):
 )
 async def set_collection_expertise(collection_id: str, data: SetCollectionExpertiseRequest):
     """Replace the full set of expertise packs attached to a collection."""
+    require_collection_access(collection_id, get_request_user(), write=True)
     expertise_store.set_packs_for_collection(collection_id, data.pack_ids)
     packs = expertise_store.get_packs_for_collection(collection_id)
     return CollectionExpertiseResponse(collection_id=collection_id, packs=packs)

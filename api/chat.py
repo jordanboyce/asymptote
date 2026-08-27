@@ -45,6 +45,151 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ── Semantic answer cache ───────────────────────────────────────────────────
+# Repeated single-turn questions skip the provider entirely when a previous
+# answer's question is close enough (local-embedding cosine similarity) and
+# every source document that answer cited is unchanged. See
+# services/answer_cache.py for the rules; these helpers own the pieces that
+# need chat-layer context (indexers, document metadata, source URLs).
+
+_FINGERPRINT_FIELDS = ("filename", "upload_timestamp", "num_chunks")
+
+
+def _cache_context(chat_request: ChatRequest, collection_id: str):
+    """Scope key + query embedding for this request, or None when the cache
+    doesn't apply (disabled, or a multi-turn conversation — follow-ups depend
+    on history a cached answer never saw)."""
+    from config import settings
+
+    if not settings.enable_answer_cache:
+        return None
+    if chat_request.messages[:-1]:
+        return None
+
+    try:
+        if chat_request.scope == "all":
+            # Visible collections define the scope: in private-collections
+            # mode two users with different visibility never share entries.
+            ids = sorted(c["id"] for c in collection_service.get_all_collections())
+            if not ids:
+                return None
+            scope_key = "all:" + ",".join(ids)
+            embed_cid = "default" if "default" in ids else ids[0]
+        else:
+            scope_key = f"col:{collection_id}"
+            embed_cid = collection_id
+
+        embedder = get_indexer(embed_cid).embedding_service
+        question = chat_request.messages[-1].content.strip()
+        return {
+            "scope_key": scope_key,
+            "embedding_model": embedder.model_name,
+            "vec": embedder.embed_query(question),
+            "question": question,
+        }
+    except Exception as e:
+        logger.debug(f"Answer cache unavailable for this request: {e}")
+        return None
+
+
+def _document_fingerprint(collection_id: str, document_id: str) -> dict | None:
+    from services.indexer_manager import indexer_manager
+
+    try:
+        info = indexer_manager.get_indexer(collection_id).vector_store.metadata_store.get_document_info(document_id)
+    except Exception:
+        return None
+    if not info:
+        return None
+    return {field: info.get(field) for field in _FINGERPRINT_FIELDS}
+
+
+def _cache_lookup(cache_ctx):
+    """Best fresh cached entry for this question, or None. Entries whose
+    source documents changed or vanished are discarded on sight."""
+    from config import settings
+    from services.answer_cache import answer_cache
+
+    entry = answer_cache.find_best(
+        cache_ctx["scope_key"], cache_ctx["embedding_model"],
+        cache_ctx["vec"], settings.answer_cache_threshold,
+    )
+    if entry is None:
+        return None
+    for fp in entry["fingerprints"]:
+        current = _document_fingerprint(fp["collection_id"], fp["document_id"])
+        if current != {field: fp.get(field) for field in _FINGERPRINT_FIELDS}:
+            answer_cache.delete(entry["id"])
+            logger.info(
+                f"Answer cache: entry for {entry['question']!r} stale "
+                f"(source {fp.get('filename') or fp['document_id']} changed) — discarded"
+            )
+            return None
+    answer_cache.mark_hit(entry["id"])
+    logger.info(
+        f"Answer cache HIT (similarity {entry['similarity']}): "
+        f"{cache_ctx['question']!r} ≈ {entry['question']!r}"
+    )
+    return entry
+
+
+def _cache_store(cache_ctx, answer_text: str, filtered_results, provider: str):
+    """Record a freshly generated answer. Answers without sources are never
+    cached — 'nothing found' should stay retryable, and there would be no
+    fingerprints to invalidate on."""
+    from services.answer_cache import answer_cache
+
+    if not answer_text or not filtered_results:
+        return
+    sources, fingerprints, seen = [], [], set()
+    for r, cid in filtered_results:
+        sources.append({
+            "filename": r.filename,
+            "page_number": r.page_number,
+            "text_snippet": r.text_snippet,
+            "similarity_score": r.similarity_score,
+            "document_id": r.document_id,
+            "collection_id": cid,
+        })
+        if (cid, r.document_id) not in seen:
+            seen.add((cid, r.document_id))
+            fp = _document_fingerprint(cid, r.document_id) or dict.fromkeys(_FINGERPRINT_FIELDS)
+            fingerprints.append({"collection_id": cid, "document_id": r.document_id, **fp})
+    try:
+        answer_cache.store(
+            cache_ctx["scope_key"], cache_ctx["embedding_model"],
+            cache_ctx["question"], cache_ctx["vec"],
+            answer_text, sources, fingerprints, provider,
+        )
+    except Exception as e:
+        logger.warning(f"Answer cache store failed: {e}")
+
+
+def _cached_sources(entry, base_url: str) -> list[dict]:
+    """Rebuild source payloads with URLs for the current host."""
+    return [
+        {
+            "filename": s["filename"],
+            "page_number": s["page_number"],
+            "text_snippet": s["text_snippet"],
+            "similarity_score": s["similarity_score"],
+            "document_id": s["document_id"],
+            "pdf_url": f"{base_url}/documents/{s['document_id']}/pdf?collection_id={s['collection_id']}",
+            "page_url": f"{base_url}/documents/{s['document_id']}/pdf?collection_id={s['collection_id']}#page={s['page_number']}",
+        }
+        for s in entry["sources"]
+    ]
+
+
+@router.delete("/api/chat/cache", tags=["chat"], summary="Clear the semantic answer cache")
+async def clear_answer_cache(collection_id: str = None):
+    """Drop cached answers — for one collection, or all of them."""
+    from services.answer_cache import answer_cache
+
+    removed = answer_cache.clear(f"col:{collection_id}" if collection_id else None)
+    return {"cleared": removed}
+
+
 @router.post("/api/chat", response_model=ChatResponse)
 def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAPI's threadpool
     chat_request: ChatRequest,
@@ -75,6 +220,23 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
             raise HTTPException(status_code=400, detail="No user messages in conversation")
 
         latest_query = user_messages[-1].content
+
+        # --- Semantic answer cache ---
+        # Checked before provider construction: a cache hit needs no provider
+        # (and no API key) at all. use_cache=false skips the lookup but still
+        # stores the fresh answer, replacing the near-duplicate entry.
+        cache_ctx = _cache_context(chat_request, collection_id)
+        if cache_ctx and chat_request.use_cache:
+            cache_entry = _cache_lookup(cache_ctx)
+            if cache_entry:
+                cached_base_url = str(request.base_url).rstrip("/")
+                return ChatResponse(
+                    message=ChatMessage(role="assistant", content=cache_entry["answer"]),
+                    sources=[ChatSource(**s) for s in _cached_sources(cache_entry, cached_base_url)],
+                    ai_usage=None,
+                    cached=True,
+                    cached_question=cache_entry["question"],
+                )
 
         # --- Build AI provider (needed before search for query reformulation) ---
         try:
@@ -544,6 +706,9 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
             for r, col_id in filtered_results
         ]
 
+        if cache_ctx:
+            _cache_store(cache_ctx, response_text, filtered_results, chat_request.provider)
+
         return ChatResponse(
             message=ChatMessage(role="assistant", content=response_text),
             sources=sources,
@@ -631,6 +796,21 @@ async def chat_stream_endpoint(
                 yield f"data: {_json.dumps({'type':'error','message':'No user messages in conversation'})}\n\n"
                 return
             latest_query = user_messages[-1].content
+
+            # ---------- semantic answer cache ------------------------------------
+            # Embedding + lookup are local-only and run off the event loop. On a
+            # hit the whole cached answer streams immediately and no provider
+            # tokens are spent.
+            cache_ctx = await asyncio.to_thread(_cache_context, chat_request, collection_id)
+            if cache_ctx and chat_request.use_cache:
+                cache_entry = await asyncio.to_thread(_cache_lookup, cache_ctx)
+                if cache_entry:
+                    cached_base = str(request.base_url).rstrip("/")
+                    cached_sources = _cached_sources(cache_entry, cached_base)
+                    yield f"data: {_json.dumps({'type':'text_delta','delta':cache_entry['answer']})}\n\n"
+                    yield f"data: {_json.dumps({'type':'sources','sources':cached_sources})}\n\n"
+                    yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':0,'output_tokens':0,'model':'answer-cache'},'structured_results':[],'sources':cached_sources,'cached':True,'cached_question':cache_entry['question']})}\n\n"
+                    return
 
             prior_messages = chat_request.messages[:-1]
             if prior_messages:
@@ -942,8 +1122,15 @@ async def chat_stream_endpoint(
             ]
             yield f"data: {_json.dumps({'type':'sources','sources':sources_data})}\n\n"
 
+            if cache_ctx:
+                await asyncio.to_thread(
+                    _cache_store, cache_ctx, response_text, filtered_results, chat_request.provider
+                )
+
             # ---------- done -----------------------------------------------------
-            yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':total_input_tokens,'output_tokens':total_output_tokens,'model':model_used},'structured_results':executed_results})}\n\n"
+            # sources ride the done event too: finalizeStreamingMessage commits
+            # them from here (the standalone sources event predates that).
+            yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':total_input_tokens,'output_tokens':total_output_tokens,'model':model_used},'structured_results':executed_results,'sources':sources_data,'cached':False})}\n\n"
 
         except Exception as e:
             logger.exception("Stream chat failed")

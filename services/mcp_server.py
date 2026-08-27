@@ -225,7 +225,9 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
         )
     if not collection_service.get_collection(candidate):
         # The model may have passed the collection's display name rather than its
-        # UUID — do a case-insensitive name lookup before giving up.
+        # UUID — do a case-insensitive name lookup before giving up. The lookup
+        # runs over the caller's visible collections only, so in private-
+        # collections mode it can't leak names.
         all_cols = collection_service.get_all_collections()
         name_match = next(
             (c for c in all_cols if c.get("name", "").strip().lower() == candidate.lower()),
@@ -234,6 +236,19 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
         if name_match:
             candidate = name_match["id"]
         else:
+            raise ValueError(
+                f"Collection '{candidate}' not found. Call list_collections() to "
+                f"see available collections."
+            )
+
+    if settings.private_collections:
+        # Access enforcement for every tool that funnels through here. An
+        # invisible collection answers exactly like a missing one, so ids
+        # can't be probed over MCP.
+        from middleware.user_context import get_request_user
+        from services.sharing_service import sharing_service
+
+        if not sharing_service.check_collection_access(candidate, get_request_user()):
             raise ValueError(
                 f"Collection '{candidate}' not found. Call list_collections() to "
                 f"see available collections."
@@ -2060,9 +2075,26 @@ class ToggleableMCPApp:
                 profile = _normalize_profile(raw_profile)
 
         token = _request_mcp_profile.set(profile)
+        # Bind the verified identity for private-collections scoping. The auth
+        # middleware in main.py verifies the Access JWT and records the result
+        # on the ASGI scope's state before this mount runs; MCP service tokens
+        # carry their common_name as identity, so collections can be shared to
+        # a client by that name. Password/bearer clients have no identity and
+        # see team collections only.
+        user_token = None
+        if settings.private_collections:
+            from middleware.user_context import set_request_user
+
+            user_token = set_request_user(
+                scope.get("state", {}).get("auth_identity") if scope["type"] == "http" else None
+            )
         try:
             await self.app(scope, receive, send)
         finally:
+            if user_token is not None:
+                from middleware.user_context import reset_request_user
+
+                reset_request_user(user_token)
             _request_mcp_profile.reset(token)
 
 

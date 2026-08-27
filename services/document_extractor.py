@@ -251,7 +251,8 @@ class ExtractionResult:
 class DocumentExtractor:
     """Extracts text from various document formats (PDF, TXT, DOCX, CSV, MD, JSON, JSONL) and code files."""
 
-    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.html', '.htm', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS | AUDIO_EXTENSIONS
+    IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff', '.gif'}
+    SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.html', '.htm', '.json', '.jsonl'} | SUPPORTED_CODE_EXTENSIONS | AUDIO_EXTENSIONS | IMAGE_EXTENSIONS
     TABULAR_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
     AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
 
@@ -411,6 +412,31 @@ class DocumentExtractor:
             logger.warning(f"Vision OCR 'auto': could not reach Ollama at {base}: {e}")
             return None
 
+    def _resolve_vision_api_key(self, provider_name: str) -> str:
+        """The key for the vision provider, with sensible fallbacks.
+
+        An explicit VISION_OCR_API_KEY always wins. For ollama_cloud the key
+        falls back to the Ollama Cloud key already configured for the rest of
+        the app (OLLAMA_CLOUD_API_KEY / OLLAMA_CLOUD_TOKEN in .env, then the
+        team key saved in Settings → AI Providers) — one key, not one per
+        feature.
+        """
+        if self.vision_ocr_api_key:
+            return self.vision_ocr_api_key
+        if provider_name == "ollama_cloud":
+            try:
+                from config import settings
+                if settings.ollama_cloud_api_key:
+                    return settings.ollama_cloud_api_key
+            except Exception:
+                pass
+            try:
+                from services.app_database import app_db
+                return app_db.get_agent_api_key("ollama_cloud") or ""
+            except Exception:
+                return ""
+        return ""
+
     def _get_vision_ocr_engine(self) -> Optional["OCREngine"]:
         """Get or create a VisionOCREngine if vision OCR is configured."""
         if self._vision_ocr_engine_instance is not None:
@@ -434,7 +460,8 @@ class DocumentExtractor:
             model = resolved
             logger.info(f"Vision OCR 'auto' resolved to Ollama model: {model}")
 
-        if _provider_needs_key(provider_name) and not self.vision_ocr_api_key:
+        api_key = self._resolve_vision_api_key(provider_name)
+        if _provider_needs_key(provider_name) and not api_key:
             logger.warning(f"Vision OCR provider '{provider_name}' requires an API key")
             return None
 
@@ -449,7 +476,7 @@ class DocumentExtractor:
 
             provider = create_provider(
                 provider_name=provider_name,
-                api_key=self.vision_ocr_api_key or "",
+                api_key=api_key,
                 **provider_kwargs,
             )
 
@@ -499,6 +526,17 @@ class DocumentExtractor:
         # through the normal indexing pipeline as a single-"page" document.
         if file_ext in AUDIO_EXTENSIONS:
             return self._extract_audio(file_path)
+
+        # Images become a single-"page" document holding the vision model's
+        # description + transcription (local OCR text as the fallback). The
+        # injection scan below still applies — text photographed into an image
+        # is no more trustworthy than text typed into a file.
+        if file_ext in self.IMAGE_EXTENSIONS:
+            result = self._extract_image(file_path)
+            result.injection_warnings = self._injection_detector.scan_pages(
+                result.page_texts, filename=file_path.name
+            )
+            return result
 
         # Code files are skipped for injection scanning (high false-positive rate)
         skip_injection_scan = is_code_file(str(file_path))
@@ -567,11 +605,15 @@ class DocumentExtractor:
         if self.enable_ocr:
             num_pages = len(page_texts) if page_texts else self._get_pdf_page_count(pdf_path)
 
-            if self.ocr_max_pages > 0 and num_pages > self.ocr_max_pages:
-                logger.info(f"Skipping OCR for {pdf_path.name}: {num_pages} pages exceeds limit of {self.ocr_max_pages}")
+            # Cost guards. The page-count cap applies only to FULL-document
+            # OCR — the selective path below already limits itself to the weak
+            # pages, so a long, mostly-texty document with a few scanned pages
+            # still gets those pages OCR'd.
+            ocr_page_budget_ok = not (self.ocr_max_pages > 0 and num_pages > self.ocr_max_pages)
+            if not ocr_page_budget_ok:
+                logger.info(f"Full-document OCR unavailable for {pdf_path.name}: {num_pages} pages exceeds limit of {self.ocr_max_pages}")
                 if not page_texts:
                     raise Exception(f"Failed to extract text from PDF {pdf_path.name}: text extraction failed and OCR skipped (too many pages)")
-                return ExtractionResult(page_texts, method="text")
 
             file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
             if self.ocr_max_file_mb > 0 and file_size_mb > self.ocr_max_file_mb:
@@ -580,18 +622,19 @@ class DocumentExtractor:
                     raise Exception(f"Failed to extract text from PDF {pdf_path.name}: text extraction failed and OCR skipped (file too large)")
                 return ExtractionResult(page_texts, method="text")
 
-            # Trigger OCR when native extraction is weak (avg < 50 chars/page) or forced
+            # Full-document OCR when native extraction failed or is weak overall
+            # (avg < 50 chars/page) or when forced. Otherwise, OCR just the
+            # individual pages native extraction left (nearly) empty — the
+            # scanned or figure-only pages inside an otherwise texty document,
+            # which the old whole-document threshold silently skipped.
             total_chars = sum(len((t or "").strip()) for t in page_texts.values())
             avg_chars = total_chars / max(len(page_texts), 1) if page_texts else 0
-            should_ocr = force_ocr or not page_texts or avg_chars < 50
-            if not force_ocr and page_texts and avg_chars >= 50:
-                logger.info(
-                    f"Skipping OCR for {pdf_path.name}: native extraction yielded "
-                    f"{avg_chars:.0f} avg chars/page (threshold: 50). "
-                    f"Use force_ocr=True if the native text is garbled."
-                )
+            full_ocr = force_ocr or not page_texts or avg_chars < 50
+            weak_pages = sorted(
+                p for p, t in page_texts.items() if len((t or "").strip()) < 50
+            )
 
-            if should_ocr:
+            if full_ocr and ocr_page_budget_ok:
                 try:
                     ocr_result = self._extract_pdf_with_ocr(pdf_path)
                     if ocr_result:
@@ -605,6 +648,34 @@ class DocumentExtractor:
                     logger.error(f"OCR out of memory for {pdf_path.name}")
                 except Exception as e:
                     logger.warning(f"OCR failed for {pdf_path.name}: {e}")
+            elif weak_pages:
+                targets = weak_pages
+                if self.ocr_max_pages > 0 and len(targets) > self.ocr_max_pages:
+                    logger.info(
+                        f"Selective OCR for {pdf_path.name}: {len(targets)} weak pages "
+                        f"exceeds limit, processing first {self.ocr_max_pages}"
+                    )
+                    targets = targets[: self.ocr_max_pages]
+                logger.info(
+                    f"Selective OCR for {pdf_path.name}: native extraction is good "
+                    f"({avg_chars:.0f} avg chars/page) but page(s) "
+                    f"{targets} are empty — running OCR on just those"
+                )
+                try:
+                    ocr_result = self._extract_pdf_with_ocr(pdf_path, pages=targets)
+                    if ocr_result:
+                        ocr_texts, _, cleanup_pages = ocr_result
+                        for p in targets:
+                            ocr_text = ocr_texts.get(p)
+                            if ocr_text and ocr_text.strip():
+                                page_texts[p] = ocr_text
+                                ocr_pages.append(p)
+                        if ocr_pages:
+                            method = "hybrid"
+                except MemoryError:
+                    logger.error(f"OCR out of memory for {pdf_path.name}")
+                except Exception as e:
+                    logger.warning(f"Selective OCR failed for {pdf_path.name}: {e}")
 
         if not page_texts:
             raise Exception(f"Failed to extract text from PDF {pdf_path.name}: all methods failed")
@@ -664,8 +735,16 @@ class DocumentExtractor:
     def _extract_pdf_with_ocr(
         self,
         pdf_path: Path,
+        pages: Optional[List[int]] = None,
     ) -> Optional[Tuple[Dict[int, str], List[int], List[int]]]:
         """Extract text from PDF using Vision AI OCR or Docling fallback.
+
+        Args:
+            pages: Optional 1-based page numbers to restrict OCR to (the
+                selective path). The vision engine renders only those pages;
+                the Docling fallback always processes the whole document, so
+                callers in selective mode must merge only the pages they asked
+                for.
 
         Returns:
             Tuple of (page_texts, ocr_pages, cleanup_pages) or None.
@@ -676,7 +755,7 @@ class DocumentExtractor:
         if engine:
             try:
                 logger.info(f"Running Vision AI OCR on {pdf_path.name}")
-                result = engine.extract_text(str(pdf_path))
+                result = engine.extract_text(str(pdf_path), pages=pages)
                 page_texts = {p: t for p, t in result.to_page_dict().items()}
                 ocr_pages = [p for p, t in page_texts.items() if t and t.strip()]
                 cleanup_pages = result.metadata.get("cleanup_pages", [])
@@ -711,10 +790,54 @@ class DocumentExtractor:
         logger.warning(f"No OCR engine available or all failed for {pdf_path.name}")
         return None
 
+    def _extract_image(self, image_path: Path) -> ExtractionResult:
+        """Index a standalone image as a one-page document.
+
+        Preferred: the vision model describes the picture and transcribes its
+        text, so photos, screenshots, diagrams, and whiteboards are findable
+        by content. Fallback (no vision model configured/reachable): local
+        Docling/Tesseract OCR recovers any printed text — no description, but
+        nothing to configure and no network egress.
+        """
+        engine = self._get_vision_ocr_engine()
+        if engine is not None:
+            try:
+                text = engine.describe_image(str(image_path))
+                if text:
+                    return ExtractionResult({1: text}, method="vision", ocr_pages=[1])
+                logger.warning(f"Vision model returned no text for image {image_path.name}")
+            except Exception as e:
+                logger.warning(f"Vision description failed for {image_path.name}: {e}")
+
+        if DOCLING_AVAILABLE:
+            try:
+                docling_engine = create_ocr_engine(engine_name="docling", fallback=False)
+                if docling_engine:
+                    logger.info(f"Running Docling OCR on image {image_path.name}")
+                    result = docling_engine.extract_text(str(image_path))
+                    text = "\n".join(
+                        t for t in result.to_page_dict().values() if t and t.strip()
+                    )
+                    if text.strip():
+                        return ExtractionResult(
+                            {1: self.normalize_ocr_text(text)}, method="ocr", ocr_pages=[1]
+                        )
+            except Exception as e:
+                logger.warning(f"Docling OCR failed for image {image_path.name}: {e}")
+
+        raise Exception(
+            f"Cannot index image {image_path.name}: no vision model produced a "
+            f"description and local OCR found no readable text. Configure a vision "
+            f"provider (Settings → OCR — a local Ollama vision model or a cloud "
+            f"one) to index pictures by their content."
+        )
+
     def is_ocr_available(self) -> bool:
         """Check if OCR is available with current configuration."""
         if self.vision_ocr_provider and self.vision_ocr_provider != "none":
-            return not _provider_needs_key(self.vision_ocr_provider) or bool(self.vision_ocr_api_key)
+            return not _provider_needs_key(self.vision_ocr_provider) or bool(
+                self._resolve_vision_api_key(self.vision_ocr_provider)
+            )
         return DOCLING_AVAILABLE
 
     def get_ocr_engine_name(self) -> Optional[str]:

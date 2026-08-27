@@ -1,11 +1,14 @@
 # Deploying Asymptote for a Team
 
-Asymptote is a **shared team appliance**. Everyone who can reach it sees the
-whole corpus — every collection, every document, every table, and the same
-`/mcp` tool surface. There are no per-user permissions inside the app.
+By default Asymptote is a **shared team appliance**. Everyone who can reach it
+sees the whole corpus — every collection, every document, every table, and the
+same `/mcp` tool surface. There are no per-user permissions inside the app,
+which makes deployment simple: the only question you have to answer is *who
+can reach it*. This guide answers it.
 
-That is a deliberate design choice, and it makes deployment simple: the only
-question you have to answer is *who can reach it*. This guide answers it.
+Deployments fronted by Cloudflare Access can additionally opt into
+[private collections](#private-collections) — per-person ownership and
+sharing, enforced at every entry point against the verified Access identity.
 
 ## The security model in one paragraph
 
@@ -22,7 +25,7 @@ password resets, no per-user configuration.
 
 The app warns at startup if it is bound to the network with no password, and
 refuses to start with `ENABLE_MULTI_USER=true` (see
-[Why there is no multi-user mode](#why-there-is-no-multi-user-mode)).
+[Private collections](#private-collections) for the supported replacement).
 
 ## Choose a deployment shape
 
@@ -112,27 +115,54 @@ wrinkle: **MCP clients authenticate as a token, not as a person.**
   in. Either use a proxy that issues service tokens (Cloudflare Access does), or
   reach the app over the private network from **C**.
 
-Whatever the client, it gets the same full-corpus access as everyone else.
+Whatever the client, it gets the same full-corpus access as everyone else —
+unless [private collections](#private-collections) are on, where a service
+token's `common_name` is an identity that collections can be shared to, and a
+password-authenticated client reaches team collections only.
 
-## Why there is no multi-user mode
+## Private collections
 
-There was an `ENABLE_MULTI_USER` flag. It filtered the collection *list* by
-owner, which looked like per-user isolation but was not one: search, document
-retrieval, chat, and every `/mcp` tool accept a `collection_id` and act on it
-without an ownership check. Anyone who knew or guessed an 8-character
-collection ID could read a collection that was hidden from their list.
+`PRIVATE_COLLECTIONS=true` turns per-person ownership on. It exists because
+its predecessor — an `ENABLE_MULTI_USER` flag that filtered only the
+collection *list* while search, documents, chat, and every `/mcp` tool acted
+on any `collection_id` unchecked — advertised an isolation boundary without
+being one. That flag still refuses to start; this mode is the real version of
+what it pretended to be.
 
-Rather than leave a boundary that holds in the UI and not in the API, the flag
-now refuses to start. Asymptote is honest about being a shared appliance:
-**everyone who gets in, sees everything.** Scope access to a group that is
-allowed to see the whole corpus, and run a second instance for material that
-needs a different audience — separate instances are a real boundary in a way
-that a half-enforced flag never was.
+**It requires Cloudflare Access** (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`,
+deployment shape **B**). Ownership enforced against an identity anyone can
+forge is worthless, so the app refuses to start with the flag on and no
+verified identity source configured. The Access JWT the edge attaches to every
+request is the identity: a person's email for SSO logins, a service token's
+name for MCP clients.
 
-Making it real would mean threading `user_id` through every entry point that
-takes a `collection_id` — search, documents, chat, and the MCP tool layer —
-with an access check at each, plus per-user tokens so MCP connections map to a
-person. That is a project, not a flag.
+What changes when it is on:
+
+- **Every collection has an owner** — the identity that created it. A
+  collection is visible only to its owner until shared: the collection list,
+  search, chat retrieval (including "search all collections"), document
+  serving, and every `/mcp` tool all enforce it. An inaccessible collection
+  id answers exactly like a missing one, so ids cannot be probed.
+- **Everything that existed before stays shared.** Collections owned by
+  `default` — all pre-existing data, including the default collection — form
+  a *team* tier that everyone can see and write. Flipping the flag on changes
+  nothing about existing data; new collections are simply private to their
+  creators.
+- **Sharing is built in.** An owner creates a share link (read or readwrite,
+  optional expiry) from the collection's ⋮ menu; the recipient pastes the
+  token in the same dialog to accept. Shares are revocable, and deletion
+  stays owner-only.
+- **MCP clients map to identities.** An Access service token authenticates
+  the client and its `common_name` is its identity — share a collection to
+  that name to grant an agent access. A client authenticating with
+  `AUTH_PASSWORD` instead has no identity and sees team collections only, as
+  does any password-authenticated browser session.
+
+Two deliberate limits, so the boundary stays honest: password callers cannot
+own or accept anything (no identity), and if you need a harder wall than
+application-level checks — different compliance regimes, different tenants —
+run a second instance. Separate instances remain a stronger boundary than any
+in-app flag.
 
 ## Backups
 
@@ -151,5 +181,6 @@ Stop the container first, or snapshot the volume, so SQLite is not mid-write.
 - [ ] `CORS_ALLOW_ORIGINS` empty, or an explicit origin list — never `*` on a
       deployment others can reach
 - [ ] The people who can log in are all cleared to see **every document** in
-      every collection
+      every collection — or `PRIVATE_COLLECTIONS=true` is on behind Cloudflare
+      Access and the team tier holds nothing sensitive
 - [ ] The data directory is backed up

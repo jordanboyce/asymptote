@@ -65,8 +65,8 @@
       <!-- Spacer -->
       <div class="flex-1"></div>
 
-      <!-- User identity (multi-user mode) -->
-      <div v-if="userStore.isMultiUser" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50">
+      <!-- User identity (private-collections mode) -->
+      <div v-if="userStore.isPrivateMode" class="hidden md:flex items-center gap-1.5 text-xs text-base-content/50">
         <Users :size="12" />
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
@@ -301,6 +301,15 @@
                     <Plus :size="14" />
                     New collection
                   </button>
+                  <button
+                    v-if="collectionStore.privateCollections"
+                    class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
+                    @click="openJoinSharedModal"
+                    title="Accept a share token someone sent you"
+                  >
+                    <Share2 :size="14" />
+                    Join shared
+                  </button>
                 </div>
               </header>
 
@@ -346,6 +355,14 @@
                         v-if="collection.shared"
                         class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                       >Shared</span>
+                      <span
+                        v-else-if="collectionStore.privateCollections && collection.team"
+                        class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                      >Team</span>
+                      <span
+                        v-else-if="collectionStore.privateCollections"
+                        class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                      >Private</span>
                     </div>
                     <p v-if="collection.description" class="mt-1.5 text-[13px] leading-relaxed text-base-content/55 truncate">{{ collection.description }}</p>
                   </div>
@@ -358,7 +375,7 @@
 
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <button
-                        v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                        v-if="collectionStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Share collection"
@@ -419,6 +436,14 @@
                           v-if="collection.shared"
                           class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                         >Shared</span>
+                        <span
+                          v-else-if="collectionStore.privateCollections && collection.team"
+                          class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                        >Team</span>
+                        <span
+                          v-else-if="collectionStore.privateCollections"
+                          class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                        >Private</span>
                       </div>
                     </div>
                   </div>
@@ -436,7 +461,7 @@
                     </span>
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <button
-                        v-if="collectionStore.multiUser && collection.permission === 'owner'"
+                        v-if="collectionStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Share collection"
@@ -598,6 +623,30 @@
             class="textarea textarea-bordered"
             placeholder="What kind of sources will this collection contain?"
           ></textarea>
+        </div>
+
+        <div v-if="collectionStore.privateCollections" class="form-control w-full mb-4">
+          <label class="label pb-1">
+            <span class="label-text">Visibility</span>
+          </label>
+          <div class="flex flex-col gap-2" role="radiogroup" aria-label="Collection visibility">
+            <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors"
+                   :class="newCollectionVisibility === 'private' ? 'border-primary bg-primary/5' : 'border-base-300'">
+              <input type="radio" value="private" v-model="newCollectionVisibility" class="radio radio-primary radio-sm mt-0.5" />
+              <span>
+                <span class="block text-sm font-medium">Private</span>
+                <span class="block text-xs text-base-content/55">Only you can see it. Share it later with read or read-write links.</span>
+              </span>
+            </label>
+            <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors"
+                   :class="newCollectionVisibility === 'team' ? 'border-primary bg-primary/5' : 'border-base-300'">
+              <input type="radio" value="team" v-model="newCollectionVisibility" class="radio radio-primary radio-sm mt-0.5" />
+              <span>
+                <span class="block text-sm font-medium">Team</span>
+                <span class="block text-xs text-base-content/55">Everyone on this deployment can see and edit it.</span>
+              </span>
+            </label>
+          </div>
         </div>
 
         <div class="form-control w-full mb-4">
@@ -1184,6 +1233,7 @@ const showCollectionModal = ref(false)
 const newCollectionName = ref('')
 const newCollectionDescription = ref('')
 const newCollectionColor = ref('#3b82f6')
+const newCollectionVisibility = ref('private')
 const creatingCollection = ref(false)
 
 // Edit collection modal state
@@ -1351,6 +1401,7 @@ const openCreateCollectionModal = () => {
   newCollectionName.value = ''
   newCollectionDescription.value = ''
   newCollectionColor.value = '#3b82f6'
+  newCollectionVisibility.value = 'private'
   showCollectionModal.value = true
 }
 
@@ -1362,7 +1413,8 @@ const createCollection = async () => {
     const collection = await collectionStore.createCollection({
       name: newCollectionName.value.trim(),
       description: newCollectionDescription.value.trim(),
-      color: newCollectionColor.value
+      color: newCollectionColor.value,
+      visibility: newCollectionVisibility.value
     })
     collectionStore.setCurrentCollection(collection.id)
     showCollectionModal.value = false
@@ -1404,6 +1456,14 @@ const updateCollection = async () => {
 const openShareModal = (collection) => {
   shareCollectionId.value = collection.id
   shareCollectionName.value = collection.name
+  showShareModal.value = true
+}
+
+// Accept-only mode: teammates who own nothing yet still need a way to paste
+// a share token — ShareModal hides the create/list sections without an id.
+const openJoinSharedModal = () => {
+  shareCollectionId.value = ''
+  shareCollectionName.value = ''
   showShareModal.value = true
 }
 

@@ -53,11 +53,45 @@ def resolve_ai_key(provider: str, header_key: str | None) -> str:
     return ""
 
 
+def require_collection_access(
+    collection_id: str, user_id: str | None, write: bool = False
+) -> str:
+    """Raise unless the user can access the collection; return the permission.
+
+    404 both for a missing collection and for one the user cannot see, so
+    collection ids can't be probed. 403 when a read-only share tries to write.
+    No-ops (returns 'owner') when private collections mode is off.
+    """
+    from services.sharing_service import sharing_service
+
+    access = sharing_service.check_collection_access(collection_id, user_id)
+    if access is None:
+        raise HTTPException(
+            status_code=404, detail=f"Collection '{collection_id}' not found"
+        )
+    if write and access == "read":
+        raise HTTPException(
+            status_code=403,
+            detail="This collection is shared with you read-only",
+        )
+    return access
+
+
 def get_indexer(collection_id: str = "default") -> DocumentIndexer:
-    """Get indexer for a collection."""
+    """Get indexer for a collection.
+
+    Every read path in the API — search, chat retrieval, document listing,
+    PDF/chunk serving — comes through here, so this is where private-
+    collections read access is enforced. Write endpoints additionally call
+    require_collection_access(write=True) themselves.
+    """
     if not _initialized:
         raise HTTPException(
             status_code=503,
             detail="Service is still initializing. Please wait a moment and try again."
         )
+    from config import settings
+    if settings.private_collections:
+        from middleware.user_context import get_request_user
+        require_collection_access(collection_id, get_request_user())
     return indexer_manager.get_indexer(collection_id)

@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from typing import Literal, Optional
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Cloud providers that authenticate with a simple API key, passed per-request
@@ -37,11 +38,29 @@ class Settings(BaseSettings):
     #   at all; note chunks are sent to ollama.com at index time and queries
     #   at search time, so pick this only when that egress is acceptable.
     embedding_provider: Literal["local", "ollama", "ollama_cloud"] = "local"
-    # Key for embedding_provider="ollama_cloud". Empty falls back to the team
-    # key saved on the Ollama Cloud provider card (Settings → AI Providers).
-    ollama_cloud_api_key: str = ""
+    # Ollama Cloud API key, used by embedding_provider="ollama_cloud" and as
+    # the automatic key for vision OCR when VISION_OCR_PROVIDER=ollama_cloud.
+    # Accepted under either env name (people reasonably write both). Empty
+    # falls back to the team key saved on the Ollama Cloud provider card
+    # (Settings → AI Providers).
+    ollama_cloud_api_key: str = Field(
+        "", validation_alias=AliasChoices("OLLAMA_CLOUD_API_KEY", "OLLAMA_CLOUD_TOKEN")
+    )
     ollama_base_url: str = "http://localhost:11434"   # used for embeddings and inference
     ollama_embedding_model: str = "nomic-embed-text"  # Ollama model when embedding_provider="ollama"
+
+    # Semantic answer cache: single-turn chat questions that closely match a
+    # previously answered one (cosine similarity of LOCAL embeddings — the
+    # lookup never calls an API) return the stored answer instead of spending
+    # provider tokens. Entries are invalidated when any source document the
+    # answer cited changes or disappears, and a request with use_cache=false
+    # (the Regenerate button) bypasses and replaces the entry. Note the
+    # deliberate scope of invalidation: NEW unrelated documents don't evict
+    # existing answers, so a cached answer reflects the corpus as of when it
+    # was generated until its sources change or it's regenerated.
+    enable_answer_cache: bool = True
+    answer_cache_threshold: float = 0.9   # cosine similarity to count as "same question"
+    answer_cache_max_per_scope: int = 200  # LRU cap per collection/scope
 
     # Text chunking configuration
     chunk_size: int = 1000
@@ -102,17 +121,32 @@ class Settings(BaseSettings):
     postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/asymptote
 
     # Multi-user mode is NOT supported and the app refuses to start with it on.
-    # Asymptote is a shared team appliance: everyone who can reach it sees the
-    # whole corpus, and access is controlled at the edge (see
-    # docs/DEPLOYMENT.md). The flag only ever filtered the collection list —
-    # search, document retrieval, chat and the /mcp tools take a collection_id
-    # and never check ownership — so it looked like an isolation boundary
-    # without being one. Turning it into a real one means threading user_id
-    # through every one of those entry points; the setting stays here (rather
-    # than being deleted) so existing .env files fail loudly instead of
-    # silently changing behaviour.
+    # The flag only ever filtered the collection list — search, document
+    # retrieval, chat and the /mcp tools take a collection_id and never checked
+    # ownership — so it looked like an isolation boundary without being one.
+    # The setting stays here (rather than being deleted) so existing .env files
+    # fail loudly instead of silently changing behaviour. The supported
+    # replacement is PRIVATE_COLLECTIONS below.
     enable_multi_user: bool = False
     default_user_id: str = "default"  # Owner recorded on every collection
+
+    # Private collections: per-person ownership and sharing, enforced at every
+    # entry point that takes a collection_id (search, documents, chat, /mcp).
+    # Requires Cloudflare Access (CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD below)
+    # so every request carries a cryptographically verified identity — the app
+    # refuses to start with this flag on and no identity source configured,
+    # because without one the boundary would be cosmetic.
+    #
+    # Semantics when on:
+    #   - Collections owned by a person are visible only to the owner and to
+    #     users who accepted a share link (read or readwrite).
+    #   - Collections owned by "default" (everything created before this mode,
+    #     and anything created by password-authenticated callers) are team
+    #     collections: visible and writable to everyone, unchanged behaviour.
+    #   - AUTH_PASSWORD callers have no identity: they see team collections
+    #     only. MCP clients get an identity via Access service tokens (the
+    #     token's common_name), so collections can be shared to them by name.
+    private_collections: bool = False
 
     # Shared-secret auth. When set, every request (except /health) must present
     # this password via HTTP Basic auth (any username) or

@@ -84,30 +84,44 @@ class CollectionService:
     def get_all_collections(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all collections visible to a user.
 
-        In single-user mode (user_id=None or multi_user disabled): returns all.
-        In multi-user mode: returns owned + shared collections.
+        With private collections off: returns all (shared appliance).
+
+        With private collections on, returns team collections (owner empty or
+        "default"), the user's own, and collections shared with them. When
+        user_id is omitted, the identity bound to the current request is used,
+        so callers with no user in reach — chat's scope=all fan-out, the /mcp
+        tools — are scoped automatically. Anonymous callers see team
+        collections only.
         """
-        if not settings.enable_multi_user or not user_id:
+        if not settings.private_collections:
             return app_db.get_all_collections()
 
-        # User's own collections
-        owned = app_db.get_all_collections(owner_id=user_id)
-        for c in owned:
-            c['permission'] = 'owner'
+        if user_id is None:
+            from middleware.user_context import get_request_user
+            user_id = get_request_user()
 
-        # Collections shared with user
-        shared = app_db.get_shared_collections(user_id)
-        for c in shared:
-            c['permission'] = c.get('permission', 'read')
+        visible: List[Dict[str, Any]] = []
+        seen: set = set()
+        for c in app_db.get_all_collections():
+            owner = (c.get('owner_id') or '').strip()
+            if owner in ('', settings.default_user_id):
+                c['permission'] = 'owner'
+                c['team'] = True
+            elif user_id and owner == user_id:
+                c['permission'] = 'owner'
+            else:
+                continue
+            visible.append(c)
+            seen.add(c['id'])
 
-        # Deduplicate (in case of multiple shares to same collection)
-        seen = {c['id'] for c in owned}
-        for c in shared:
-            if c['id'] not in seen:
-                owned.append(c)
-                seen.add(c['id'])
+        if user_id:
+            for c in app_db.get_shared_collections(user_id):
+                if c['id'] not in seen:
+                    c['permission'] = c.get('permission', 'read')
+                    visible.append(c)
+                    seen.add(c['id'])
 
-        return owned
+        return visible
 
     def update_collection(
         self,
