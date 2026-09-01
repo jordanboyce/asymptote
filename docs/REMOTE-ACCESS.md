@@ -139,6 +139,66 @@ in the Access application's settings, add an HTTP request header
 `Authorization: Bearer <AUTH_PASSWORD>`. Without that, browsers see one
 extra native password prompt (any username) after SSO.
 
+## Optional: inviting people without dashboard edits
+
+By default, adding someone is two steps in two places: you add their email to
+the Access policy in the Cloudflare dashboard, *then* share a collection to
+them in the app. Miss the first and the invitation dead-ends — they click the
+emailed link, hit the Access login, and are refused before Asymptote ever sees
+their share token.
+
+Set these four in `.env` and the app does the first step itself:
+
+```
+CF_API_TOKEN=<token with Account / Access: Apps and Policies / Edit>
+CF_ACCOUNT_ID=<written by scripts/provision_cloudflare.py>
+CF_ACCESS_POLICY_ID=<written by scripts/provision_cloudflare.py>
+ADMIN_EMAILS=you@your-domain
+```
+
+Now emailing an invitation from the share dialog also adds that address to the
+reusable `asymptote-invited` Access policy, so the link works on arrival. The
+provisioning script also enables the **one-time PIN** login method, which means
+an invited guest needs no account in your identity provider at all — Cloudflare
+emails them a code, they sign in, and the `?share_token=` deep link is applied
+for them.
+
+Revocation is symmetric: revoking someone's last share withdraws their edge
+admission too, so the allowlist does not grow forever.
+
+Once it is on, an **Access** section appears in Settings (admins only). It
+lists everyone on the policy with the number of shares each holds and when
+they last signed in, tracks seats used against the free 50, and lets you
+admit or withdraw an address directly. It also reconciles the two ways the
+list drifts out of step with reality:
+
+- **Shared with, but cannot sign in** — they hold a share and are not
+  admitted, so their invitation stops at the Cloudflare login. One click
+  admits them.
+- **Admitted with nothing shared** — they can sign in but hold no
+  collection, usually access that was never withdrawn. Each still occupies
+  a seat, so this is where reclaimable seats show up.
+
+You cannot withdraw your own access from inside the app; that would leave
+nobody able to undo it.
+
+Three things worth knowing before you turn it on:
+
+- **`CF_API_TOKEN` is write access to your front door.** Scope it to that one
+  permission and nothing else. It is not the same token as, and should not be
+  reused from, the one used for provisioning.
+- **Admission is deployment-wide, not per-collection.** Being on the Access
+  policy lets someone reach the app; it is `PRIVATE_COLLECTIONS=true` that
+  confines them to what was actually shared. Because of that, only
+  `ADMIN_EMAILS` can trigger an admission — any owner may still share, but a
+  non-admin's invitation assumes the recipient can already get in. An empty
+  `ADMIN_EMAILS` means nobody, so this fails closed.
+- **Watch the seat count.** Cloudflare Zero Trust is free up to 50 users and
+  every person who signs in consumes a seat; past that it bills per user
+  (about $3/user/month for standalone Access at time of writing). Cloudflare
+  also caps a policy rule at 1,000 email addresses — the app refuses at that
+  cap rather than silently dropping someone.
+
 ## Alternative: Tailscale
 
 If everything that needs Asymptote (laptops, phone, agent hosts) can join

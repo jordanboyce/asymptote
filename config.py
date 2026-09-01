@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     answer_cache_threshold: float = 0.9   # cosine similarity to count as "same question"
     answer_cache_max_per_scope: int = 200  # LRU cap per collection/scope
 
+    # Share invitations by email via Resend (https://resend.com). When the
+    # key is set, a collection owner can email a share invitation directly
+    # from the share dialog: the recipient gets the share token and a join
+    # link. RESEND_FROM must be a sender your Resend account may use — an
+    # address on a domain you verified there (e.g. "Asymptote
+    # <asymptote@your-domain>"); the default onboarding sender only delivers
+    # to your own Resend account's email, so it's for testing. Disabled in
+    # OFFLINE_MODE like every outbound integration.
+    resend_api_key: str = ""
+    resend_from: str = "Asymptote <onboarding@resend.dev>"
+
     # Text chunking configuration
     chunk_size: int = 1000
     chunk_overlap: int = 200
@@ -162,6 +173,30 @@ class Settings(BaseSettings):
     # still works as a fallback for direct/non-Access access paths.
     cf_access_team_domain: str = ""  # e.g. "yourteam.cloudflareaccess.com"
     cf_access_aud: str = ""  # comma-separated Access application AUD tags
+
+    # Automated edge admission for share invitations. Sharing by email
+    # delivers a share token, but the recipient is still stopped at the
+    # Cloudflare Access login until their address is on the Access policy —
+    # which otherwise means an admin editing the dashboard by hand for every
+    # new person. With these set, inviting someone also admits them at the
+    # edge, so the invitation is genuinely self-serve (pair it with the
+    # one-time PIN login method and guests need no account in your IdP).
+    #
+    # CF_API_TOKEN needs exactly one permission: Account / Access: Apps and
+    # Policies / Edit. That is write access to the deployment's front door,
+    # so do not reuse a broader token. CF_ACCESS_POLICY_ID is the reusable
+    # policy attached to the app; scripts/provision_cloudflare.py creates it
+    # and writes all three values.
+    #
+    # ADMIN_EMAILS gates the privileged half: an admission grants edge access
+    # to the whole deployment, not just the collection being shared (the
+    # private-collections layer is what confines the person to that). Any
+    # owner may still share; only an admin's invite admits a stranger. Empty
+    # means nobody, so this fails closed rather than open.
+    cf_api_token: str = ""
+    cf_account_id: str = ""
+    cf_access_policy_id: str = ""
+    admin_emails: str = ""  # comma-separated
 
     # Extra Host header values the embedded /mcp endpoint accepts, comma-
     # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding

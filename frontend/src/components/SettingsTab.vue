@@ -875,6 +875,12 @@
           </p>
         </section>
 
+        <!-- ═══ Access (admin only) ═══ -->
+        <section v-if="userStore.canInviteNewPeople" v-show="activeSection === 'access'" aria-labelledby="settings-access">
+          <h2 id="settings-access" class="sr-only">Access</h2>
+          <AccessAdmin />
+        </section>
+
       </div>
     </div>
 
@@ -909,6 +915,8 @@ import axios from 'axios'
 import { ChevronDown, Check, ShieldCheck } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
+import { useUserStore } from '../stores/userStore'
+import AccessAdmin from './AccessAdmin.vue'
 import {
   PROVIDER_DEFS,
   CUSTOM_ENDPOINT_PRESETS,
@@ -935,13 +943,21 @@ const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 
 // ── Settings shell: section rail + basic/advanced depth ──
-const SECTIONS = [
+const userStore = useUserStore()
+
+const ALL_SECTIONS = [
   { id: 'general', label: 'General' },
   { id: 'providers', label: 'AI Providers' },
   { id: 'indexing', label: 'Indexing' },
   { id: 'data', label: 'Data' },
   { id: 'system', label: 'System' },
+  // Only meaningful to an admin on a deployment wired for edge admission;
+  // for everyone else the section does not exist rather than 403-ing.
+  { id: 'access', label: 'Access', adminOnly: true },
 ]
+const SECTIONS = computed(() =>
+  ALL_SECTIONS.filter(s => !s.adminOnly || userStore.canInviteNewPeople)
+)
 
 const THEMES = [
   { id: 'light', label: 'Light' },
@@ -956,8 +972,14 @@ watch(settingsMode, v => localStorage.setItem('settings_mode', v))
 const advanced = computed(() => settingsMode.value === 'advanced')
 
 const savedSection = localStorage.getItem('settings_section')
-const activeSection = ref(SECTIONS.some(s => s.id === savedSection) ? savedSection : 'general')
+const activeSection = ref(ALL_SECTIONS.some(s => s.id === savedSection) ? savedSection : 'general')
 watch(activeSection, v => localStorage.setItem('settings_section', v))
+// The admin sections resolve after /api/user/me returns; if the stored
+// section is not available to this person, fall back rather than showing a
+// blank column.
+watch(SECTIONS, list => {
+  if (!list.some(s => s.id === activeSection.value)) activeSection.value = 'general'
+}, { immediate: true })
 
 // UI feature flags
 const chatTabEnabled = ref(true)

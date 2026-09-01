@@ -282,6 +282,15 @@ class SQLiteBackend(DatabaseBackend):
             except sqlite3.OperationalError:
                 pass
 
+            # v4.4: the address a share was emailed to. Recorded so that
+            # revoking a share can also withdraw that person's edge
+            # admission (services/access_provisioning.py) — without it the
+            # Access allowlist only ever grows.
+            try:
+                conn.execute("ALTER TABLE collection_shares ADD COLUMN invited_email TEXT")
+            except sqlite3.OperationalError:
+                pass
+
             # Add phase columns to upload_jobs if missing
             for col, default in [
                 ("phase", "TEXT"),
@@ -533,17 +542,68 @@ class SQLiteBackend(DatabaseBackend):
 
     # ── Collection Sharing ───────────────────────────────────
 
-    def create_share(self, collection_id: str, owner_id: str, permission: str = "read", expires_at: Optional[str] = None) -> str:
+    def create_share(self, collection_id: str, owner_id: str, permission: str = "read", expires_at: Optional[str] = None, invited_email: Optional[str] = None) -> str:
         share_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().isoformat()
         with sqlite_connect(self.db_path) as conn:
             conn.execute(
-                """INSERT INTO collection_shares (id, collection_id, owner_id, permission, created_at, expires_at, is_active)
-                   VALUES (?, ?, ?, ?, ?, ?, 1)""",
-                (share_id, collection_id, owner_id, permission, timestamp, expires_at)
+                """INSERT INTO collection_shares (id, collection_id, owner_id, permission, created_at, expires_at, is_active, invited_email)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+                (share_id, collection_id, owner_id, permission, timestamp, expires_at,
+                 (invited_email or "").strip().lower() or None)
             )
             conn.commit()
         return share_id
+
+    def list_share_contacts(self) -> Dict[str, int]:
+        """Every address with a live tie to the app, and how many shares.
+
+        Counts a share once whether the address was invited to it, accepted
+        it, or both. Used by the admin view to reconcile who is admitted at
+        the Cloudflare Access edge against who actually has a reason to be.
+        """
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT email, COUNT(DISTINCT share_id) AS n FROM (
+                    SELECT cs.id AS share_id, LOWER(TRIM(cs.invited_email)) AS email
+                      FROM collection_shares cs
+                     WHERE cs.is_active = 1
+                       AND cs.invited_email IS NOT NULL
+                       AND TRIM(cs.invited_email) != ''
+                    UNION
+                    SELECT cs.id AS share_id, LOWER(TRIM(csu.user_id)) AS email
+                      FROM collection_shares cs
+                      JOIN collection_share_users csu ON csu.share_id = cs.id
+                     WHERE cs.is_active = 1
+                )
+                GROUP BY email
+                """
+            ).fetchall()
+            return {r[0]: int(r[1]) for r in rows if r[0]}
+
+    def count_active_shares_for_email(self, email: str, exclude_share_id: Optional[str] = None) -> int:
+        """How many live shares still connect this address to the app.
+
+        Counts a share if the address was invited to it, or if someone signed
+        in with that address and accepted it. Used before withdrawing an edge
+        admission, so we only revoke when the person's last tie is gone.
+        """
+        target = (email or "").strip().lower()
+        if not target:
+            return 0
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT cs.id) FROM collection_shares cs
+                LEFT JOIN collection_share_users csu ON csu.share_id = cs.id
+                WHERE cs.is_active = 1
+                  AND cs.id != ?
+                  AND (LOWER(cs.invited_email) = ? OR LOWER(csu.user_id) = ?)
+                """,
+                (exclude_share_id or "", target, target)
+            ).fetchone()
+            return int(row[0]) if row else 0
 
     def get_share(self, share_id: str) -> Optional[Dict[str, Any]]:
         with sqlite_connect(self.db_path) as conn:
