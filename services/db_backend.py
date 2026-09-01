@@ -111,7 +111,18 @@ class DatabaseBackend(ABC):
         owner_id: str,
         permission: str = "read",
         expires_at: Optional[str] = None,
+        invited_email: Optional[str] = None,
     ) -> str:
+        ...
+
+    @abstractmethod
+    def list_share_contacts(self) -> Dict[str, int]:
+        ...
+
+    @abstractmethod
+    def count_active_shares_for_email(
+        self, email: str, exclude_share_id: Optional[str] = None
+    ) -> int:
         ...
 
     @abstractmethod

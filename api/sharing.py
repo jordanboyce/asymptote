@@ -23,6 +23,7 @@ async def get_current_user(user_id: str = Depends(get_current_user_id)):
     identity; None means an anonymous (password-authenticated) caller who can
     reach team collections only.
     """
+    from services.access_provisioning import access_provisioning_enabled, is_admin
     from services.app_database import app_db
     user = app_db.get_user(user_id) if user_id else None
     return {
@@ -30,7 +31,145 @@ async def get_current_user(user_id: str = Depends(get_current_user_id)):
         "display_name": (user["display_name"] if user else user_id) or "anonymous",
         "private_collections": settings.private_collections,
         "db_backend": settings.db_backend,
+        # Whether inviting someone by email can also admit them at the
+        # Cloudflare Access edge — the share dialog says so plainly rather
+        # than letting an owner send an invitation that dead-ends at login.
+        "edge_admission": access_provisioning_enabled(),
+        "is_admin": is_admin(user_id),
     }
+
+
+# ── Edge admission administration ────────────────────────────────────────
+# Who can reach the deployment at all is worth seeing in one place rather
+# than inferring it from the Cloudflare dashboard: these endpoints show the
+# Access policy's address list side by side with who actually holds a share,
+# so an admin can spot both kinds of drift (admitted with nothing shared to
+# them, or shared to but never admitted).
+
+# Cloudflare Zero Trust is free to this many users; every person who signs in
+# consumes a seat, so the admin view warns before the bill starts.
+FREE_SEAT_LIMIT = 50
+
+
+def _require_admin(user_id: str):
+    from services.access_provisioning import access_provisioning_enabled, is_admin
+
+    if not access_provisioning_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Edge admission is not configured: set CF_API_TOKEN, "
+                   "CF_ACCOUNT_ID and CF_ACCESS_POLICY_ID in .env.",
+        )
+    if not is_admin(user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only an admin (ADMIN_EMAILS) can manage edge admissions.",
+        )
+
+
+@router.get(
+    "/api/access/admissions",
+    summary="Who can reach this deployment, and why",
+    tags=["access"],
+)
+async def list_admissions(user_id: str = Depends(get_current_user_id)):
+    """The Access policy's address list, reconciled against live shares.
+
+    `orphans` are admitted but hold no share — usually someone whose access
+    was never withdrawn. `missing` hold a share but are not admitted, so
+    their invitation would stop at the Cloudflare login.
+    """
+    _require_admin(user_id)
+    from services.access_provisioning import MAX_EMAILS_PER_RULE, admitted_emails
+    from services.app_database import app_db
+
+    try:
+        admitted = admitted_emails()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    contacts = app_db.list_share_contacts()
+    admins = set(a.lower() for a in (settings.admin_emails or "").split(",") if a.strip())
+    admitted_set = set(admitted)
+
+    people = []
+    for email in sorted(admitted):
+        user = app_db.get_user(email)
+        people.append({
+            "email": email,
+            "shares": contacts.get(email, 0),
+            "is_admin": email in admins,
+            "last_seen_at": user["last_seen_at"] if user else None,
+            "has_signed_in": user is not None,
+        })
+
+    return {
+        "configured": True,
+        "policy_id": settings.cf_access_policy_id,
+        "people": people,
+        # Admitted but with nothing shared to them (admins excepted — they
+        # are meant to be there whether or not anyone shared with them).
+        "orphans": [p["email"] for p in people if p["shares"] == 0 and not p["is_admin"]],
+        # Holds a share but cannot get past the edge to use it.
+        "missing": sorted(e for e in contacts if e not in admitted_set),
+        "counts": {
+            "admitted": len(admitted),
+            "free_seat_limit": FREE_SEAT_LIMIT,
+            "rule_cap": MAX_EMAILS_PER_RULE,
+        },
+    }
+
+
+@router.post(
+    "/api/access/admissions",
+    summary="Admit an address at the edge",
+    tags=["access"],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_admission(body: dict, user_id: str = Depends(get_current_user_id)):
+    """Add an address to the Access policy directly, without sharing anything.
+
+    Body: {"email": "someone@example.com"}
+    """
+    _require_admin(user_id)
+    from services.access_provisioning import admit_email
+
+    email = (body.get("email") or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid email address is required.")
+    try:
+        added = admit_email(email)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    logger.info(f"{user_id} admitted {email} at the edge")
+    return {"email": email.lower(), "added": added}
+
+
+@router.delete(
+    "/api/access/admissions/{email}",
+    summary="Withdraw an address at the edge",
+    tags=["access"],
+)
+async def delete_admission(email: str, user_id: str = Depends(get_current_user_id)):
+    """Remove an address from the Access policy.
+
+    Their shares are left alone — revoking access at the door is deliberately
+    separate from taking away what was shared, so this is reversible.
+    """
+    _require_admin(user_id)
+    from services.access_provisioning import revoke_email
+
+    if email.strip().lower() == (user_id or "").strip().lower():
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot withdraw your own access from inside the app.",
+        )
+    try:
+        removed = revoke_email(email)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    logger.info(f"{user_id} withdrew edge access for {email}")
+    return {"email": email.strip().lower(), "removed": removed}
 
 
 @router.post(
@@ -49,23 +188,52 @@ async def create_share(collection_id: str, body: dict, request: Request, user_id
         notify_email: Optional recipient — email them the token and a join
             link via Resend (requires RESEND_API_KEY). The share is created
             either way; the response reports email_sent / email_error.
+
+    When edge admission is configured (CF_API_TOKEN + CF_ACCESS_POLICY_ID)
+    and the caller is an admin, notify_email is also added to the Cloudflare
+    Access policy first, so the emailed link actually opens instead of
+    stopping at the login. The response reports edge_admitted / edge_error.
     """
+    notify_email = (body.get("notify_email") or "").strip()
     try:
         share = sharing_service.create_share(
             collection_id=collection_id,
             owner_id=user_id,
             permission=body.get("permission", "read"),
             expires_days=body.get("expires_days"),
+            invited_email=notify_email or None,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    notify_email = (body.get("notify_email") or "").strip()
     if notify_email:
+        from services.access_provisioning import (
+            access_provisioning_enabled,
+            admit_email,
+            is_admin,
+        )
         from services.collection_service import collection_service
         from services.share_email import send_share_email
+
+        # Admit at the edge BEFORE sending, so the link works on arrival
+        # rather than bouncing the recipient off the Access login.
+        if access_provisioning_enabled():
+            if is_admin(user_id):
+                try:
+                    share["edge_admitted"] = admit_email(notify_email)
+                except Exception as e:
+                    logger.warning(f"Edge admission for {notify_email} failed: {e}")
+                    share["edge_admitted"] = False
+                    share["edge_error"] = str(e)
+            else:
+                share["edge_admitted"] = False
+                share["edge_note"] = (
+                    "Admitting a new person at the Cloudflare Access edge is an "
+                    "admin action. This invitation only works if the recipient "
+                    "can already reach the app."
+                )
 
         collection = collection_service.get_collection(collection_id) or {}
         try:
@@ -131,11 +299,35 @@ async def list_shared_with_me(user_id: str = Depends(get_current_user_id)):
     tags=["sharing"],
 )
 async def revoke_share(share_id: str, user_id: str = Depends(get_current_user_id)):
-    """Revoke a share link you created."""
+    """Revoke a share link you created.
+
+    If the share was created by emailing an invitation and that address has
+    no other live share, the recipient's Cloudflare Access admission is
+    withdrawn too — otherwise the edge allowlist only ever grows, and someone
+    with no collections keeps a way in.
+    """
     try:
-        sharing_service.revoke_share(share_id, user_id)
-        return {"message": "Share revoked", "success": True}
+        share = sharing_service.revoke_share(share_id, user_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    result = {"message": "Share revoked", "success": True}
+    invited = (share or {}).get("invited_email")
+    if invited:
+        from services.access_provisioning import (
+            access_provisioning_enabled,
+            is_admin,
+            revoke_email,
+        )
+        from services.app_database import app_db
+
+        if access_provisioning_enabled() and is_admin(user_id):
+            if app_db.count_active_shares_for_email(invited, exclude_share_id=share_id) == 0:
+                try:
+                    result["edge_revoked"] = revoke_email(invited)
+                except Exception as e:
+                    logger.warning(f"Withdrawing edge admission for {invited} failed: {e}")
+                    result["edge_error"] = str(e)
+    return result

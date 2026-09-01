@@ -161,9 +161,12 @@ class PostgresBackend(DatabaseBackend):
                         permission TEXT NOT NULL DEFAULT 'read',
                         created_at TEXT NOT NULL,
                         expires_at TEXT,
-                        is_active INTEGER DEFAULT 1
+                        is_active INTEGER DEFAULT 1,
+                        invited_email TEXT
                     )
                 """)
+                # For deployments created before invited_email existed.
+                cur.execute("ALTER TABLE collection_shares ADD COLUMN IF NOT EXISTS invited_email TEXT")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_shares_collection ON collection_shares(collection_id)")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS collection_share_users (
@@ -438,19 +441,73 @@ class PostgresBackend(DatabaseBackend):
 
     # ── Collection Sharing ───────────────────────────────────
 
-    def create_share(self, collection_id: str, owner_id: str, permission: str = "read", expires_at: Optional[str] = None) -> str:
+    def create_share(self, collection_id: str, owner_id: str, permission: str = "read", expires_at: Optional[str] = None, invited_email: Optional[str] = None) -> str:
         sid = str(uuid.uuid4())
         ts = datetime.utcnow().isoformat()
         conn = self._conn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO collection_shares (id, collection_id, owner_id, permission, created_at, expires_at, is_active)
-                       VALUES (%s, %s, %s, %s, %s, %s, 1)""",
-                    (sid, collection_id, owner_id, permission, ts, expires_at)
+                    """INSERT INTO collection_shares (id, collection_id, owner_id, permission, created_at, expires_at, is_active, invited_email)
+                       VALUES (%s, %s, %s, %s, %s, %s, 1, %s)""",
+                    (sid, collection_id, owner_id, permission, ts, expires_at,
+                     (invited_email or "").strip().lower() or None)
                 )
             conn.commit()
             return sid
+        finally:
+            self._put(conn)
+
+    def list_share_contacts(self) -> Dict[str, int]:
+        """Every address with a live tie to the app, and how many shares.
+
+        Mirrors the SQLite backend: counts a share once whether the address
+        was invited to it, accepted it, or both.
+        """
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT email, COUNT(DISTINCT share_id) AS n FROM (
+                        SELECT cs.id AS share_id, LOWER(TRIM(cs.invited_email)) AS email
+                          FROM collection_shares cs
+                         WHERE cs.is_active = 1
+                           AND cs.invited_email IS NOT NULL
+                           AND TRIM(cs.invited_email) != ''
+                        UNION
+                        SELECT cs.id AS share_id, LOWER(TRIM(csu.user_id)) AS email
+                          FROM collection_shares cs
+                          JOIN collection_share_users csu ON csu.share_id = cs.id
+                         WHERE cs.is_active = 1
+                    ) contacts
+                    GROUP BY email
+                    """
+                )
+                return {r[0]: int(r[1]) for r in cur.fetchall() if r[0]}
+        finally:
+            self._put(conn)
+
+    def count_active_shares_for_email(self, email: str, exclude_share_id: Optional[str] = None) -> int:
+        """How many live shares still connect this address to the app."""
+        target = (email or "").strip().lower()
+        if not target:
+            return 0
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT cs.id) FROM collection_shares cs
+                    LEFT JOIN collection_share_users csu ON csu.share_id = cs.id
+                    WHERE cs.is_active = 1
+                      AND cs.id != %s
+                      AND (LOWER(cs.invited_email) = %s OR LOWER(csu.user_id) = %s)
+                    """,
+                    (exclude_share_id or "", target, target)
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
         finally:
             self._put(conn)
 

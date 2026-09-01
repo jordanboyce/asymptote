@@ -174,6 +174,30 @@ class Settings(BaseSettings):
     cf_access_team_domain: str = ""  # e.g. "yourteam.cloudflareaccess.com"
     cf_access_aud: str = ""  # comma-separated Access application AUD tags
 
+    # Automated edge admission for share invitations. Sharing by email
+    # delivers a share token, but the recipient is still stopped at the
+    # Cloudflare Access login until their address is on the Access policy —
+    # which otherwise means an admin editing the dashboard by hand for every
+    # new person. With these set, inviting someone also admits them at the
+    # edge, so the invitation is genuinely self-serve (pair it with the
+    # one-time PIN login method and guests need no account in your IdP).
+    #
+    # CF_API_TOKEN needs exactly one permission: Account / Access: Apps and
+    # Policies / Edit. That is write access to the deployment's front door,
+    # so do not reuse a broader token. CF_ACCESS_POLICY_ID is the reusable
+    # policy attached to the app; scripts/provision_cloudflare.py creates it
+    # and writes all three values.
+    #
+    # ADMIN_EMAILS gates the privileged half: an admission grants edge access
+    # to the whole deployment, not just the collection being shared (the
+    # private-collections layer is what confines the person to that). Any
+    # owner may still share; only an admin's invite admits a stranger. Empty
+    # means nobody, so this fails closed rather than open.
+    cf_api_token: str = ""
+    cf_account_id: str = ""
+    cf_access_policy_id: str = ""
+    admin_emails: str = ""  # comma-separated
+
     # Extra Host header values the embedded /mcp endpoint accepts, comma-
     # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding
     # protection that only trusts localhost Hosts by default; when the app is

@@ -411,7 +411,10 @@ def test_share_with_email_invitation(private_client, monkeypatch):
     assert sent["collection_name"] == "Mailed notes"
 
 
-def test_share_email_unconfigured_reports_error_but_creates_share(private_client):
+def test_share_email_unconfigured_reports_error_but_creates_share(private_client, monkeypatch):
+    # Pin the key empty: a real RESEND_API_KEY in the developer's .env would
+    # otherwise send this test down the live-API path (and actually call out).
+    monkeypatch.setattr(config.settings, "resend_api_key", "")
     cid = private_client.post(
         "/api/collections", json={"name": "No mail"}, headers=_as(ALICE)
     ).json()["id"]
@@ -444,3 +447,205 @@ def test_readwrite_share_can_update_but_not_delete(private_client):
         == 200
     )
     assert private_client.delete(f"/api/collections/{cid}", headers=_as(BOB)).status_code == 403
+
+
+# ── Edge admission (Cloudflare Access) ───────────────────────────────────
+
+def _stub_edge(monkeypatch, admin):
+    """Wire the edge-admission service to an in-memory allowlist."""
+    import services.access_provisioning as ap
+    import services.share_email as se
+
+    monkeypatch.setattr(se, "send_share_email", lambda to, **kw: None)
+    monkeypatch.setattr(ap, "access_provisioning_enabled", lambda: True)
+    monkeypatch.setattr(ap, "is_admin", lambda uid: uid == admin)
+
+    admitted = set()
+
+    def fake_admit(email):
+        email = email.lower()
+        new = email not in admitted
+        admitted.add(email)
+        return new
+
+    def fake_revoke(email):
+        email = email.lower()
+        was = email in admitted
+        admitted.discard(email)
+        return was
+
+    monkeypatch.setattr(ap, "admit_email", fake_admit)
+    monkeypatch.setattr(ap, "revoke_email", fake_revoke)
+    return admitted
+
+
+def test_admin_invite_admits_at_the_edge(private_client, monkeypatch):
+    admitted = _stub_edge(monkeypatch, admin=ALICE)
+
+    cid = private_client.post(
+        "/api/collections", json={"name": "Admin notes"}, headers=_as(ALICE)
+    ).json()["id"]
+    r = private_client.post(
+        f"/api/collections/{cid}/share",
+        json={"notify_email": "guest@outside.org"}, headers=_as(ALICE),
+    )
+    assert r.status_code == 201
+    assert r.json()["edge_admitted"] is True
+    assert "guest@outside.org" in admitted
+
+
+def test_non_admin_invite_does_not_admit(private_client, monkeypatch):
+    """A non-admin owner may still share; they just cannot open the front
+    door for a stranger."""
+    admitted = _stub_edge(monkeypatch, admin="someone-else@example.com")
+
+    cid = private_client.post(
+        "/api/collections", json={"name": "Bob notes"}, headers=_as(BOB)
+    ).json()["id"]
+    r = private_client.post(
+        f"/api/collections/{cid}/share",
+        json={"notify_email": "guest@outside.org"}, headers=_as(BOB),
+    )
+    assert r.status_code == 201
+    assert r.json()["edge_admitted"] is False
+    assert "edge_note" in r.json()
+    assert admitted == set()
+
+
+def test_revoking_last_share_withdraws_admission(private_client, monkeypatch):
+    admitted = _stub_edge(monkeypatch, admin=ALICE)
+
+    cid = private_client.post(
+        "/api/collections", json={"name": "Temp"}, headers=_as(ALICE)
+    ).json()["id"]
+    share_id = private_client.post(
+        f"/api/collections/{cid}/share",
+        json={"notify_email": "guest@outside.org"}, headers=_as(ALICE),
+    ).json()["share_id"]
+    assert "guest@outside.org" in admitted
+
+    r = private_client.delete(f"/api/shares/{share_id}", headers=_as(ALICE))
+    assert r.status_code == 200
+    assert r.json()["edge_revoked"] is True
+    assert admitted == set()
+
+
+def test_revoking_one_of_two_shares_keeps_admission(private_client, monkeypatch):
+    """Otherwise revoking any one share would lock the guest out of the
+    others they still legitimately hold."""
+    admitted = _stub_edge(monkeypatch, admin=ALICE)
+
+    ids = []
+    for name in ("First", "Second"):
+        cid = private_client.post(
+            "/api/collections", json={"name": name}, headers=_as(ALICE)
+        ).json()["id"]
+        ids.append(private_client.post(
+            f"/api/collections/{cid}/share",
+            json={"notify_email": "guest@outside.org"}, headers=_as(ALICE),
+        ).json()["share_id"])
+
+    r = private_client.delete(f"/api/shares/{ids[0]}", headers=_as(ALICE))
+    assert r.status_code == 200
+    assert "edge_revoked" not in r.json()
+    assert "guest@outside.org" in admitted
+
+    r = private_client.delete(f"/api/shares/{ids[1]}", headers=_as(ALICE))
+    assert r.json()["edge_revoked"] is True
+    assert admitted == set()
+
+
+# ── Admin admission management ───────────────────────────────────────────
+
+def test_admissions_require_admin(private_client, monkeypatch):
+    _stub_edge(monkeypatch, admin=ALICE)
+    import services.access_provisioning as ap
+    monkeypatch.setattr(ap, "admitted_emails", lambda: [ALICE])
+
+    assert private_client.get("/api/access/admissions", headers=_as(BOB)).status_code == 403
+    assert private_client.post(
+        "/api/access/admissions", json={"email": "x@y.z"}, headers=_as(BOB)
+    ).status_code == 403
+    assert private_client.get("/api/access/admissions", headers=_as(ALICE)).status_code == 200
+
+
+def test_admissions_503_when_unconfigured(private_client, monkeypatch):
+    import services.access_provisioning as ap
+    monkeypatch.setattr(ap, "access_provisioning_enabled", lambda: False)
+    r = private_client.get("/api/access/admissions", headers=_as(ALICE))
+    assert r.status_code == 503
+    assert "CF_API_TOKEN" in r.json()["detail"]
+
+
+def test_admissions_reconciles_both_kinds_of_drift(private_client, monkeypatch):
+    """Admitted-with-nothing-shared and shared-with-but-not-admitted are the
+    two ways the edge list stops matching reality."""
+    _stub_edge(monkeypatch, admin=ALICE)
+    import services.access_provisioning as ap
+    monkeypatch.setattr(config.settings, "admin_emails", ALICE)
+
+    cid = private_client.post(
+        "/api/collections", json={"name": "Drifty"}, headers=_as(ALICE)
+    ).json()["id"]
+    private_client.post(
+        f"/api/collections/{cid}/share",
+        json={"notify_email": "shared-and-admitted@x.com"}, headers=_as(ALICE),
+    )
+    private_client.post(
+        f"/api/collections/{cid}/share",
+        json={"notify_email": "missing@x.com"}, headers=_as(ALICE),
+    )
+
+    # orphan: admitted, nothing shared. missing: shared with, never admitted.
+    monkeypatch.setattr(ap, "admitted_emails",
+                        lambda: [ALICE, "shared-and-admitted@x.com", "orphan@x.com"])
+
+    body = private_client.get("/api/access/admissions", headers=_as(ALICE)).json()
+    assert body["orphans"] == ["orphan@x.com"]
+    assert "missing@x.com" in body["missing"]
+    assert body["counts"]["admitted"] == 3
+    assert body["counts"]["free_seat_limit"] == 50
+
+    by_email = {p["email"]: p for p in body["people"]}
+    assert by_email["shared-and-admitted@x.com"]["shares"] == 1
+    assert by_email["orphan@x.com"]["shares"] == 0
+    # The admin is on the list but is never reported as dead weight.
+    assert by_email[ALICE]["is_admin"] is True
+    assert ALICE not in body["orphans"]
+
+
+def test_admin_cannot_withdraw_own_access(private_client, monkeypatch):
+    """Locking yourself out from inside the app leaves nobody able to fix it."""
+    _stub_edge(monkeypatch, admin=ALICE)
+    import services.access_provisioning as ap
+    monkeypatch.setattr(ap, "admitted_emails", lambda: [ALICE])
+
+    r = private_client.delete(f"/api/access/admissions/{ALICE}", headers=_as(ALICE))
+    assert r.status_code == 400
+    assert "your own access" in r.json()["detail"]
+
+
+def test_admit_and_withdraw_roundtrip(private_client, monkeypatch):
+    admitted = _stub_edge(monkeypatch, admin=ALICE)
+    import services.access_provisioning as ap
+    monkeypatch.setattr(ap, "admitted_emails", lambda: sorted(admitted))
+
+    r = private_client.post(
+        "/api/access/admissions", json={"email": "Newcomer@X.com"}, headers=_as(ALICE)
+    )
+    assert r.status_code == 201
+    assert r.json()["added"] is True
+    assert "newcomer@x.com" in admitted
+
+    r = private_client.delete("/api/access/admissions/newcomer@x.com", headers=_as(ALICE))
+    assert r.status_code == 200
+    assert r.json()["removed"] is True
+    assert admitted == set()
+
+
+def test_admit_rejects_junk(private_client, monkeypatch):
+    _stub_edge(monkeypatch, admin=ALICE)
+    r = private_client.post(
+        "/api/access/admissions", json={"email": "not-an-email"}, headers=_as(ALICE)
+    )
+    assert r.status_code == 400

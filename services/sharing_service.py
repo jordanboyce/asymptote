@@ -24,6 +24,7 @@ class SharingService:
         owner_id: str,
         permission: str = "read",
         expires_days: Optional[int] = None,
+        invited_email: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a share link for a collection.
 
@@ -32,6 +33,8 @@ class SharingService:
             owner_id: User creating the share (must own the collection)
             permission: 'read' or 'readwrite'
             expires_days: Optional expiry in days (None = never expires)
+            invited_email: Address this share was emailed to, recorded so
+                revoking it can also withdraw the recipient's edge admission
 
         Returns:
             Share details including the share token
@@ -52,6 +55,7 @@ class SharingService:
             owner_id=owner_id,
             permission=permission,
             expires_at=expires_at,
+            invited_email=invited_email,
         )
 
         logger.info(f"Created share {share_id} for collection {collection_id} (permission={permission})")
@@ -61,6 +65,7 @@ class SharingService:
             "collection_id": collection_id,
             "permission": permission,
             "expires_at": expires_at,
+            "invited_email": invited_email,
         }
 
     def accept_share(self, share_token: str, user_id: str) -> Dict[str, Any]:
@@ -131,12 +136,16 @@ class SharingService:
             return []
         return app_db.get_shared_collections(user_id)
 
-    def revoke_share(self, share_id: str, owner_id: str):
+    def revoke_share(self, share_id: str, owner_id: str) -> Dict[str, Any]:
         """Revoke a share link.
 
         Args:
             share_id: Share to revoke
             owner_id: Must be the share owner
+
+        Returns:
+            The revoked share, so the caller can withdraw any edge admission
+            that was granted for its invited address.
         """
         share = app_db.get_share(share_id)
         if not share:
@@ -146,6 +155,7 @@ class SharingService:
 
         app_db.revoke_share(share_id)
         logger.info(f"Revoked share {share_id}")
+        return share
 
     def check_collection_access(self, collection_id: str, user_id: Optional[str]) -> Optional[str]:
         """Check if a user has access to a collection.

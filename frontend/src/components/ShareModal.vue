@@ -60,9 +60,20 @@
         </div>
         <div v-if="inviteSent" class="alert alert-success py-2 text-sm">
           <CheckCircle :size="16" />
-          Invitation emailed to {{ inviteSent }}
+          <span>
+            Invitation emailed to {{ inviteSent }}<span v-if="inviteAdmitted">, and they can now sign in</span>.
+          </span>
+        </div>
+        <!-- Says plainly when the invitation will dead-end at the login, so
+             nobody sends one expecting it to work. -->
+        <div v-if="inviteNote" class="alert alert-warning py-2 text-sm">
+          <AlertTriangle :size="16" />
+          <span>{{ inviteNote }}</span>
         </div>
         <div v-if="inviteError" class="alert alert-error py-2 text-sm">{{ inviteError }}</div>
+        <p v-else-if="!userStore.canInviteNewPeople" class="text-xs text-base-content/50">
+          Invitations reach people who can already sign in to this deployment.
+        </p>
       </div>
 
       <!-- Active shares list -->
@@ -145,8 +156,11 @@
 
 <script setup>
 import { ref, watch } from 'vue'
-import { Share2, Plus, Copy, Trash2, CheckCircle, Mail } from 'lucide-vue-next'
+import { Share2, Plus, Copy, Trash2, CheckCircle, Mail, AlertTriangle } from 'lucide-vue-next'
 import { createShare, listShares, revokeShare, acceptShare } from '../utils/sharingApi'
+import { useUserStore } from '../stores/userStore'
+
+const userStore = useUserStore()
 
 const props = defineProps({
   visible: Boolean,
@@ -174,6 +188,8 @@ const inviteEmail = ref('')
 const sendingInvite = ref(false)
 const inviteSent = ref('')
 const inviteError = ref('')
+const inviteNote = ref('')
+const inviteAdmitted = ref(false)
 
 watch(() => props.visible, async (v) => {
   if (v && props.initialToken) {
@@ -189,10 +205,15 @@ async function emailInvite() {
   sendingInvite.value = true
   inviteSent.value = ''
   inviteError.value = ''
+  inviteNote.value = ''
+  inviteAdmitted.value = false
   try {
     const share = await createShare(
       props.collectionId, newPermission.value, newExpiresDays.value, inviteEmail.value.trim()
     )
+    inviteAdmitted.value = share.edge_admitted === true
+    if (share.edge_note) inviteNote.value = share.edge_note
+    if (share.edge_error) inviteNote.value = `Could not admit them at the login: ${share.edge_error}`
     if (share.email_sent) {
       inviteSent.value = inviteEmail.value.trim()
       inviteEmail.value = ''
