@@ -25,6 +25,7 @@ from services.reindex_service import reindex_service
 from services.mcp_server import embedded_mcp_app, mcp_server_lifespan
 from api import deps
 from api import (
+    admin,
     artifacts,
     chat,
     collections,
@@ -140,6 +141,12 @@ async def lifespan(app: FastAPI):
 
         deps.mark_initialized()
 
+        # Retention sweeps for the unbounded log tables (search_history
+        # stores result snippets; chat_usage grows per turn). First run is
+        # delayed past startup, then daily.
+        from services.retention import retention_loop
+        retention_task = asyncio.create_task(retention_loop())
+
         logger.info("Asymptote API ready")
         logger.info(f"Data directory: {settings.data_dir}")
         logger.info(f"Embedded MCP server: {'enabled' if settings.enable_mcp else 'disabled'}")
@@ -148,6 +155,7 @@ async def lifespan(app: FastAPI):
 
         # Cleanup on shutdown
         logger.info("Shutting down Asymptote API...")
+        retention_task.cancel()
         indexer_manager.save_all()
         logger.info("Shutdown complete")
 
@@ -179,6 +187,17 @@ if _cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+# ── Rate limiting ───────────────────────────────────────────────────────────
+# Registered BEFORE the auth block on purpose: Starlette runs the last-added
+# middleware first, so auth ends up outermost and resolves
+# request.state.auth_identity before the limiter reads it. Deliberately
+# always-on (unlike auth, which only exists when a password or private
+# collections is configured) — an open deployment still deserves limits.
+from middleware.rate_limit import enforce_rate_limit as _enforce_rate_limit
+
+app.middleware("http")(_enforce_rate_limit)
 
 
 # ── Shared-secret auth (AUTH_PASSWORD) ──────────────────────────────────────
@@ -257,8 +276,17 @@ if settings.auth_password or settings.private_collections:
         finally:
             reset_request_user(token)
 
-for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise):
+for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise, admin):
     app.include_router(module.router)
+
+
+# ── Request metadata (ids, access log, in-flight counters) ─────────────────
+# Added last, which makes it the OUTERMOST middleware: it times auth and rate
+# limiting too, and reads the identity auth left on request.state for its
+# access line. /api/admin/stats reads its counters.
+from middleware.request_meta import track_request as _track_request
+
+app.middleware("http")(_track_request)
 
 
 # ── Frontend serving ────────────────────────────────────────────────────────

@@ -111,6 +111,8 @@
                 class="toggle toggle-primary toggle-sm flex-shrink-0 mt-0.5"
                 v-model="chatTabEnabled"
                 @change="saveChatTabSetting"
+                :disabled="serverConfigLocked"
+                :title="serverConfigLocked ? 'Deployment-wide setting — admin only' : undefined"
                 aria-label="Enable chat tab"
               />
             </div>
@@ -513,6 +515,15 @@
             are processed and indexed.
           </p>
 
+          <!-- These settings apply to the whole deployment; the backend
+               rejects non-admin writes under private collections, so the
+               controls disable here instead of 403-ing on save. -->
+          <div v-if="serverConfigLocked" class="alert py-2 mb-5 text-sm" role="note">
+            <ShieldAlert :size="16" aria-hidden="true" />
+            <span>Deployment settings are managed by an admin. You can view them, but changes are admin-only.</span>
+          </div>
+          <fieldset :disabled="serverConfigLocked" class="contents">
+
           <!-- OCR toggle -->
           <div class="flex items-start justify-between gap-8 pb-6">
             <div class="min-w-0">
@@ -815,6 +826,7 @@
               </div>
             </div>
           </div>
+          </fieldset>
         </section>
 
         <!-- ═══ Data ═══ -->
@@ -832,7 +844,12 @@
               <p v-if="clearSuccess" class="text-success text-xs mt-1.5" role="status">All data cleared</p>
               <p v-if="clearError" class="text-error text-xs mt-1.5" role="alert">{{ clearError }}</p>
             </div>
-            <button class="btn btn-sm btn-outline btn-error flex-shrink-0" @click="confirmClearAll" :disabled="clearing">
+            <button
+              class="btn btn-sm btn-outline btn-error flex-shrink-0"
+              @click="confirmClearAll"
+              :disabled="clearing || !collectionStore.canEditCurrent"
+              :title="collectionStore.canEditCurrent ? undefined : 'This collection is shared with you read-only'"
+            >
               <span v-if="clearing" class="loading loading-spinner loading-xs"></span>
               {{ clearing ? 'Clearing…' : 'Clear data' }}
             </button>
@@ -875,11 +892,7 @@
           </p>
         </section>
 
-        <!-- ═══ Access (admin only) ═══ -->
-        <section v-if="userStore.canInviteNewPeople" v-show="activeSection === 'access'" aria-labelledby="settings-access">
-          <h2 id="settings-access" class="sr-only">Access</h2>
-          <AccessAdmin />
-        </section>
+        <!-- (The Access section moved to the Admin tab, next to usage.) -->
 
       </div>
     </div>
@@ -911,12 +924,11 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import axios from 'axios'
-import { ChevronDown, Check, ShieldCheck } from 'lucide-vue-next'
+import http from '../utils/http'
+import { ChevronDown, Check, ShieldCheck, ShieldAlert } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useUserStore } from '../stores/userStore'
-import AccessAdmin from './AccessAdmin.vue'
 import {
   PROVIDER_DEFS,
   CUSTOM_ENDPOINT_PRESETS,
@@ -951,13 +963,9 @@ const ALL_SECTIONS = [
   { id: 'indexing', label: 'Indexing' },
   { id: 'data', label: 'Data' },
   { id: 'system', label: 'System' },
-  // Only meaningful to an admin on a deployment wired for edge admission;
-  // for everyone else the section does not exist rather than 403-ing.
-  { id: 'access', label: 'Access', adminOnly: true },
 ]
-const SECTIONS = computed(() =>
-  ALL_SECTIONS.filter(s => !s.adminOnly || userStore.canInviteNewPeople)
-)
+// (Edge-admission administration lives on the Admin tab now.)
+const SECTIONS = computed(() => ALL_SECTIONS)
 
 const THEMES = [
   { id: 'light', label: 'Light' },
@@ -966,6 +974,10 @@ const THEMES = [
   { id: 'nord', label: 'Nord' },
   { id: 'dracula', label: 'Dracula' },
 ]
+
+// Under private collections, deployment-wide settings are ADMIN_EMAILS-only
+// (the backend gates POST /api/config); mirror that in the UI.
+const serverConfigLocked = computed(() => userStore.privateCollections && !userStore.isAdmin)
 
 const settingsMode = ref(localStorage.getItem('settings_mode') || 'basic')
 watch(settingsMode, v => localStorage.setItem('settings_mode', v))
@@ -1069,7 +1081,7 @@ const onOcrProviderChange = () => {
 const refreshOcrOllamaVisionModels = async () => {
   ocrOllamaVisionLoading.value = true
   try {
-    const response = await axios.get('/api/ollama/vision-models')
+    const response = await http.get('/api/ollama/vision-models')
     ocrOllamaVisionModels.value = response.data.models || []
     ocrOllamaVisionTotal.value = response.data.total_models || 0
     if (ocrOllamaVisionModels.value.length > 0 && !ocrOllamaVisionModels.value.find(m => m.name === visionModel.value)) {
@@ -1089,7 +1101,7 @@ const saveOllamaNumCtx = async () => {
   v = Math.round(v)
   ollamaNumCtx.value = v
   try {
-    await axios.post('/api/config', { ollama_num_ctx: v })
+    await http.post('/api/config', { ollama_num_ctx: v })
   } catch {
     // non-fatal; keep the entered value
   }
@@ -1097,7 +1109,7 @@ const saveOllamaNumCtx = async () => {
 
 const saveChatTabSetting = async () => {
   try {
-    await axios.post('/api/config', { enable_chat_tab: chatTabEnabled.value })
+    await http.post('/api/config', { enable_chat_tab: chatTabEnabled.value })
     emit('chat-tab-toggled', chatTabEnabled.value)
   } catch {
     // revert on failure
@@ -1116,7 +1128,7 @@ const loadEmbeddingSettings = (data) => {
 
 const saveEmbeddingSettings = async () => {
   try {
-    const result = await axios.post('/api/config', {
+    const result = await http.post('/api/config', {
       embedding_provider: embeddingProvider.value,
       embedding_model: embeddingModel.value,
       ollama_embedding_model: ollamaEmbeddingModel.value,
@@ -1135,7 +1147,7 @@ const detectEmbeddingOllama = async () => {
   embeddingOllamaStatus.value = 'checking'
   embeddingOllamaModels.value = []
   try {
-    const resp = await axios.get('/api/ollama/status')
+    const resp = await http.get('/api/ollama/status')
     if (resp.data.available) {
       embeddingOllamaModels.value = resp.data.models || []
       embeddingOllamaStatus.value = 'ok'
@@ -1174,7 +1186,7 @@ const loadOCRSettings = (data) => {
 
 const saveOCRSettings = async () => {
   try {
-    await axios.post('/api/config', {
+    await http.post('/api/config', {
       enable_ocr: ocrEnabled.value,
       vision_ocr_provider: visionProvider.value,
       vision_ocr_model: visionModel.value,
@@ -1200,7 +1212,7 @@ const loadInferenceSettings = (data) => {
 
 const saveInferenceSettings = async () => {
   try {
-    await axios.post('/api/config', {
+    await http.post('/api/config', {
       enable_llm_schema_inference: Boolean(llmSchemaInferenceEnabled.value),
     })
     inferenceSettingsSaved.value = true
@@ -1213,7 +1225,7 @@ const saveInferenceSettings = async () => {
 // Single /api/config fetch on mount, fanned out to the per-domain loaders.
 const loadServerConfig = async () => {
   try {
-    const response = await axios.get('/api/config')
+    const response = await http.get('/api/config')
     const data = response.data || {}
     loadEmbeddingSettings(data)
     loadOCRSettings(data)
@@ -1293,7 +1305,7 @@ const startReindex = async () => {
   reindexError.value = ''
   reindexSuccess.value = false
   try {
-    const response = await axios.post(`/api/collections/${collectionId}/reindex`)
+    const response = await http.post(`/api/collections/${collectionId}/reindex`)
     backgroundJobsStore.setReindexJob({
       id: response.data.job_id,
       collection_id: collectionId,
@@ -1335,13 +1347,13 @@ const availableEndpointPresets = computed(() => {
 
 async function loadSystemInfo() {
   try {
-    const response = await axios.get('/api/user/me')
+    const response = await http.get('/api/user/me')
     systemInfo.value = { ...systemInfo.value, ...response.data }
   } catch (err) {
     console.error('Failed to load system info:', err)
   }
   try {
-    const health = await axios.get('/health')
+    const health = await http.get('/health')
     systemInfo.value.offline_mode = !!health.data.offline_mode
   } catch {
     // leave default
@@ -1539,7 +1551,7 @@ const connectProvider = async (id) => {
   // Best-effort: also store the key server-side so background features
   // (OCR, indexing) can use it. Failure is non-fatal — browser key still works.
   try {
-    await axios.post(`/api/agent/config?provider=${encodeURIComponent(id)}&api_key=${encodeURIComponent(key)}`)
+    await http.post(`/api/agent/config?provider=${encodeURIComponent(id)}&api_key=${encodeURIComponent(key)}`)
   } catch (err) {
     console.warn('Could not store key server-side (browser key still works):', err?.message || err)
   }
@@ -1669,11 +1681,11 @@ const clearAllData = async () => {
 
   try {
     const collectionId = collectionStore.currentCollectionId
-    const docsResponse = await axios.get(`/documents?collection_id=${collectionId}`)
+    const docsResponse = await http.get(`/documents?collection_id=${collectionId}`)
     const documents = docsResponse.data.documents || []
 
     for (const doc of documents) {
-      await axios.delete(`/documents/${doc.document_id}?collection_id=${collectionId}`)
+      await http.delete(`/documents/${doc.document_id}?collection_id=${collectionId}`)
     }
 
     clearSuccess.value = true

@@ -262,6 +262,35 @@ class SQLiteBackend(DatabaseBackend):
                 ON collection_expertise(collection_id)
             """)
 
+            # ── v4.5: Chat usage accounting ──────────────────
+            # One row per chat turn. This is what makes the shared team key
+            # safe with many users: the daily budget check counts against it,
+            # and the admin usage view reads from it. user_id NULL = an
+            # anonymous password caller (they share one budget row).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    user_id TEXT,
+                    collection_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    tool_calls INTEGER NOT NULL DEFAULT 0,
+                    cache_hit INTEGER NOT NULL DEFAULT 0,
+                    duration_ms INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_usage_user_ts
+                ON chat_usage(user_id, timestamp DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_usage_ts
+                ON chat_usage(timestamp DESC)
+            """)
+
             # ── Migrations for existing databases ────────────
             # Add owner_id to collections if missing
             try:
@@ -290,6 +319,15 @@ class SQLiteBackend(DatabaseBackend):
                 conn.execute("ALTER TABLE collection_shares ADD COLUMN invited_email TEXT")
             except sqlite3.OperationalError:
                 pass
+
+            # v4.5: who searched, and where. Before this, search_history was
+            # a pooled log with no identity — useless as an audit trail and a
+            # retention liability (it stores result snippets).
+            for col in ["user_id TEXT", "collection_id TEXT"]:
+                try:
+                    conn.execute(f"ALTER TABLE search_history ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
 
             # Add phase columns to upload_jobs if missing
             for col, default in [
@@ -906,11 +944,12 @@ class SQLiteBackend(DatabaseBackend):
         timestamp = datetime.utcnow().isoformat()
         with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute(
-                """INSERT INTO search_history (query, timestamp, top_k, results_count, ai_provider, ai_used, results_json, execution_time_ms)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO search_history (query, timestamp, top_k, results_count, ai_provider, ai_used, results_json, execution_time_ms, user_id, collection_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (query, timestamp, top_k, results_count,
                  kwargs.get("ai_provider"), 1 if kwargs.get("ai_used") else 0,
-                 kwargs.get("results_json"), kwargs.get("execution_time_ms"))
+                 kwargs.get("results_json"), kwargs.get("execution_time_ms"),
+                 kwargs.get("user_id"), kwargs.get("collection_id"))
             )
             conn.commit()
             return cursor.lastrowid
@@ -919,7 +958,7 @@ class SQLiteBackend(DatabaseBackend):
         with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             return [dict(r) for r in conn.execute(
-                """SELECT id, query, timestamp, top_k, results_count, ai_provider, ai_used, execution_time_ms
+                """SELECT id, query, timestamp, top_k, results_count, ai_provider, ai_used, execution_time_ms, user_id, collection_id
                    FROM search_history ORDER BY timestamp DESC LIMIT ?""", (limit,)
             ).fetchall()]
 
@@ -941,6 +980,72 @@ class SQLiteBackend(DatabaseBackend):
         cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
         with sqlite_connect(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM search_history WHERE timestamp < ?", (cutoff,))
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+
+    # ── Chat Usage ───────────────────────────────────────────
+
+    def add_chat_usage(
+        self,
+        user_id: Optional[str],
+        collection_id: str,
+        provider: str,
+        model: Optional[str],
+        input_tokens: int,
+        output_tokens: int,
+        tool_calls: int = 0,
+        cache_hit: bool = False,
+        duration_ms: Optional[int] = None,
+    ) -> int:
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """INSERT INTO chat_usage (timestamp, user_id, collection_id, provider, model,
+                                           input_tokens, output_tokens, tool_calls, cache_hit, duration_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (timestamp, user_id, collection_id, provider, model,
+                 int(input_tokens or 0), int(output_tokens or 0), int(tool_calls or 0),
+                 1 if cache_hit else 0, duration_ms)
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_usage_summary(self, since_iso: str, group_by: str = "user") -> List[Dict[str, Any]]:
+        # COALESCE folds anonymous callers into one visible row rather than
+        # dropping them from the rollup.
+        key = ("COALESCE(user_id, 'anonymous')" if group_by == "user"
+               else "substr(timestamp, 1, 10)")
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(
+                f"""SELECT {key} AS grouped_by,
+                           COUNT(*) AS turns,
+                           SUM(input_tokens) AS input_tokens,
+                           SUM(output_tokens) AS output_tokens,
+                           SUM(tool_calls) AS tool_calls,
+                           SUM(cache_hit) AS cache_hits,
+                           MAX(timestamp) AS last_active
+                    FROM chat_usage WHERE timestamp >= ?
+                    GROUP BY grouped_by ORDER BY grouped_by""",
+                (since_iso,)
+            ).fetchall()]
+
+    def get_user_usage_since(self, user_id: Optional[str], since_iso: str) -> Dict[str, Any]:
+        # NULL user_id (anonymous password callers) shares one budget row —
+        # "user_id IS ?" matches NULL where "=" would not.
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                """SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
+                   FROM chat_usage WHERE user_id IS ? AND timestamp >= ?""",
+                (user_id, since_iso)
+            ).fetchone()
+            return {"turns": row[0], "input_tokens": row[1], "output_tokens": row[2]}
+
+    def delete_old_chat_usage(self, days: int = 180) -> int:
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM chat_usage WHERE timestamp < ?", (cutoff,))
             deleted = cursor.rowcount
             conn.commit()
             return deleted

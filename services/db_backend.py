@@ -55,6 +55,8 @@ class DatabaseBackend(ABC):
         chunk_overlap: int = 50,
         embedding_model: str = None,
         owner_id: str = "default",
+        mcp_display_name: str = None,
+        mcp_display_description: str = None,
     ) -> str:
         ...
 
@@ -76,6 +78,8 @@ class DatabaseBackend(ABC):
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         embedding_model: Optional[str] = None,
+        mcp_display_name: Optional[str] = None,
+        mcp_display_description: Optional[str] = None,
         guide: Optional[str] = None,
     ):
         ...
@@ -224,6 +228,40 @@ class DatabaseBackend(ABC):
 
     @abstractmethod
     def delete_old_search_history(self, days: int = 30):
+        ...
+
+    # ── Chat Usage ───────────────────────────────────────────
+    # Per-turn token accounting. This is what makes a shared team key safe
+    # to expose to many users: without it, nobody can see who spent what,
+    # and the daily budget check has nothing to count.
+
+    @abstractmethod
+    def add_chat_usage(
+        self,
+        user_id: Optional[str],
+        collection_id: str,
+        provider: str,
+        model: Optional[str],
+        input_tokens: int,
+        output_tokens: int,
+        tool_calls: int = 0,
+        cache_hit: bool = False,
+        duration_ms: Optional[int] = None,
+    ) -> int:
+        ...
+
+    @abstractmethod
+    def get_usage_summary(self, since_iso: str, group_by: str = "user") -> List[Dict[str, Any]]:
+        """Rollups since `since_iso`, grouped by 'user' or 'day'."""
+        ...
+
+    @abstractmethod
+    def get_user_usage_since(self, user_id: Optional[str], since_iso: str) -> Dict[str, Any]:
+        """One cheap aggregate row for the quota check: turns + token sums."""
+        ...
+
+    @abstractmethod
+    def delete_old_chat_usage(self, days: int = 180) -> int:
         ...
 
     # ── User Preferences ─────────────────────────────────────

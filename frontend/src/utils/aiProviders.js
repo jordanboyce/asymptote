@@ -258,11 +258,22 @@ export function resolveProvider(surface = null) {
 
 /**
  * Broadcast that provider config/selection changed so long-lived surfaces
- * (top-bar pill, open tabs) re-resolve. localStorage isn't reactive, hence
- * an explicit event rather than watchers.
+ * re-resolve. localStorage isn't reactive, hence an explicit signal.
+ *
+ * The signal is a plain listener list (not a window CustomEvent, which is
+ * what this used to be): stores/providerStore.js subscribes once and turns
+ * it into Vue reactivity for every consumer.
  */
+const _changeListeners = []
+
+export function onProviderChange(fn) {
+  _changeListeners.push(fn)
+}
+
 export function notifyProviderChange() {
-  window.dispatchEvent(new CustomEvent('asymptote:provider-changed'))
+  for (const fn of _changeListeners) {
+    try { fn() } catch { /* one bad listener must not mute the rest */ }
+  }
 }
 
 /**

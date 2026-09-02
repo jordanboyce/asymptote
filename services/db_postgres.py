@@ -88,6 +88,28 @@ class PostgresBackend(DatabaseBackend):
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_search_timestamp ON search_history(timestamp DESC)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_search_query ON search_history(query)")
+                # v4.5: who searched, and where (audit columns)
+                cur.execute("ALTER TABLE search_history ADD COLUMN IF NOT EXISTS user_id TEXT")
+                cur.execute("ALTER TABLE search_history ADD COLUMN IF NOT EXISTS collection_id TEXT")
+                # v4.5: per-turn chat token accounting — mirrors the SQLite
+                # backend; the daily budget check and admin usage view read it.
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS chat_usage (
+                        id SERIAL PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        user_id TEXT,
+                        collection_id TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT,
+                        input_tokens INTEGER NOT NULL DEFAULT 0,
+                        output_tokens INTEGER NOT NULL DEFAULT 0,
+                        tool_calls INTEGER NOT NULL DEFAULT 0,
+                        cache_hit INTEGER NOT NULL DEFAULT 0,
+                        duration_ms INTEGER
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_usage_user_ts ON chat_usage(user_id, timestamp DESC)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_usage_ts ON chat_usage(timestamp DESC)")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS user_preferences (
                         key TEXT PRIMARY KEY,
@@ -124,6 +146,11 @@ class PostgresBackend(DatabaseBackend):
                     cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS guide TEXT")
                 except Exception:
                     pass
+                # Optional MCP display aliases — the SQLite backend has had
+                # these since v4; their absence here made create_collection
+                # a TypeError under Postgres (caught by test_backend_parity).
+                cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS mcp_display_name TEXT")
+                cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS mcp_display_description TEXT")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS collection_documents (
                         collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
@@ -313,7 +340,8 @@ class PostgresBackend(DatabaseBackend):
 
     def create_collection(self, name: str, description: str = "", color: str = "#3b82f6",
                           chunk_size: int = 500, chunk_overlap: int = 50,
-                          embedding_model: str = None, owner_id: str = "default") -> str:
+                          embedding_model: str = None, owner_id: str = "default",
+                          mcp_display_name: str = None, mcp_display_description: str = None) -> str:
         if embedding_model is None:
             embedding_model = settings.embedding_model
         cid = str(uuid.uuid4())[:8]
@@ -322,9 +350,9 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO collections (id, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (cid, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, ts, ts)
+                    """INSERT INTO collections (id, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, mcp_display_name, mcp_display_description, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (cid, name, description, color, chunk_size, chunk_overlap, embedding_model, owner_id, mcp_display_name, mcp_display_description, ts, ts)
                 )
             conn.commit()
             return cid
@@ -360,11 +388,14 @@ class PostgresBackend(DatabaseBackend):
 
     def update_collection(self, collection_id: str, name=None, description=None, color=None,
                           chunk_size=None, chunk_overlap=None, embedding_model=None,
+                          mcp_display_name=None, mcp_display_description=None,
                           guide=None):
         updates, params = [], []
         for field, val in [("name", name), ("description", description), ("color", color),
                            ("chunk_size", chunk_size), ("chunk_overlap", chunk_overlap),
                            ("embedding_model", embedding_model),
+                           ("mcp_display_name", mcp_display_name),
+                           ("mcp_display_description", mcp_display_description),
                            ("guide", guide)]:
             if val is not None:
                 updates.append(f"{field} = %s")
@@ -812,11 +843,12 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO search_history (query, timestamp, top_k, results_count, ai_provider, ai_used, results_json, execution_time_ms)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    """INSERT INTO search_history (query, timestamp, top_k, results_count, ai_provider, ai_used, results_json, execution_time_ms, user_id, collection_id)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                     (query, ts, top_k, results_count,
                      kwargs.get("ai_provider"), 1 if kwargs.get("ai_used") else 0,
-                     kwargs.get("results_json"), kwargs.get("execution_time_ms"))
+                     kwargs.get("results_json"), kwargs.get("execution_time_ms"),
+                     kwargs.get("user_id"), kwargs.get("collection_id"))
                 )
                 sid = cur.fetchone()[0]
             conn.commit()
@@ -829,7 +861,7 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT id, query, timestamp, top_k, results_count, ai_provider, ai_used, execution_time_ms
+                    """SELECT id, query, timestamp, top_k, results_count, ai_provider, ai_used, execution_time_ms, user_id, collection_id
                        FROM search_history ORDER BY timestamp DESC LIMIT %s""", (limit,))
                 return self._fetchall_dict(cur)
         finally:
@@ -856,6 +888,88 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM search_history WHERE timestamp < %s", (cutoff,))
+                deleted = cur.rowcount
+            conn.commit()
+            return deleted
+        finally:
+            self._put(conn)
+
+    # ── Chat Usage ───────────────────────────────────────────
+
+    def add_chat_usage(
+        self,
+        user_id: Optional[str],
+        collection_id: str,
+        provider: str,
+        model: Optional[str],
+        input_tokens: int,
+        output_tokens: int,
+        tool_calls: int = 0,
+        cache_hit: bool = False,
+        duration_ms: Optional[int] = None,
+    ) -> int:
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO chat_usage (timestamp, user_id, collection_id, provider, model,
+                                               input_tokens, output_tokens, tool_calls, cache_hit, duration_ms)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (ts, user_id, collection_id, provider, model,
+                     int(input_tokens or 0), int(output_tokens or 0), int(tool_calls or 0),
+                     1 if cache_hit else 0, duration_ms)
+                )
+                uid = cur.fetchone()[0]
+            conn.commit()
+            return uid
+        finally:
+            self._put(conn)
+
+    def get_usage_summary(self, since_iso: str, group_by: str = "user") -> List[Dict[str, Any]]:
+        key = ("COALESCE(user_id, 'anonymous')" if group_by == "user"
+               else "substr(timestamp, 1, 10)")
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT {key} AS grouped_by,
+                               COUNT(*) AS turns,
+                               SUM(input_tokens) AS input_tokens,
+                               SUM(output_tokens) AS output_tokens,
+                               SUM(tool_calls) AS tool_calls,
+                               SUM(cache_hit) AS cache_hits,
+                               MAX(timestamp) AS last_active
+                        FROM chat_usage WHERE timestamp >= %s
+                        GROUP BY grouped_by ORDER BY grouped_by""",
+                    (since_iso,)
+                )
+                return self._fetchall_dict(cur)
+        finally:
+            self._put(conn)
+
+    def get_user_usage_since(self, user_id: Optional[str], since_iso: str) -> Dict[str, Any]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                # "IS NOT DISTINCT FROM" matches NULL where "=" would not, so
+                # anonymous callers (user_id NULL) share one budget row.
+                cur.execute(
+                    """SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
+                       FROM chat_usage WHERE user_id IS NOT DISTINCT FROM %s AND timestamp >= %s""",
+                    (user_id, since_iso)
+                )
+                row = cur.fetchone()
+                return {"turns": row[0], "input_tokens": row[1], "output_tokens": row[2]}
+        finally:
+            self._put(conn)
+
+    def delete_old_chat_usage(self, days: int = 180) -> int:
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM chat_usage WHERE timestamp < %s", (cutoff,))
                 deleted = cur.rowcount
             conn.commit()
             return deleted

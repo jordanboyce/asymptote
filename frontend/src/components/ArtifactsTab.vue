@@ -91,16 +91,15 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useCollectionStore } from '../stores/collectionStore'
+import { useProviderStore } from '../stores/providerStore'
 import {
   getAPIProviderName,
   buildProviderHeaders,
   getProviderDisplayName,
-  fetchServerProviderIds,
-  resolveProvider,
 } from '../utils/aiProviders.js'
 
 marked.setOptions({ gfm: true, breaks: true })
@@ -117,9 +116,10 @@ const result = ref(null)
 const copied = ref(false)
 
 // Generate has no per-surface override: it follows the app-wide default via
-// the shared resolution chain and just displays "Using X".
-const providerId = ref(resolveProvider())
-const refreshProvider = () => { providerId.value = resolveProvider() }
+// the shared resolution chain and just displays "Using X". Reactivity comes
+// from providerStore.version (bumped on every provider config write).
+const providerStore = useProviderStore()
+const providerId = computed(() => providerStore.resolveFor())
 
 const providerDisplayName = (id) => getProviderDisplayName(id)
 
@@ -129,15 +129,11 @@ const renderedContent = computed(() => {
 })
 
 onMounted(async () => {
-  // Track global default switches made while this tab is open (top-bar pill,
-  // Settings "Use as default").
-  window.addEventListener('asymptote:provider-changed', refreshProvider)
-
-  // Server-stored team keys count as configured — re-resolve once known.
+  // Server-stored team keys count as configured — providerStore bumps its
+  // version once they're known, which re-resolves providerId.
   try {
-    await fetchServerProviderIds()
+    await providerStore.loadServerProviders()
   } catch { /* offline from server config is fine — local configs still count */ }
-  refreshProvider()
 
   try {
     const resp = await fetch('/api/artifacts/types')
@@ -154,9 +150,7 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(() => {
-  window.removeEventListener('asymptote:provider-changed', refreshProvider)
-})
+
 
 const generate = async () => {
   if (!selectedType.value || !providerId.value) return

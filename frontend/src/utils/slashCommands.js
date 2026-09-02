@@ -1,4 +1,4 @@
-import axios from 'axios'
+import http from './http'
 
 // Shared slash commands used by both Chat and Search. Each command reads
 // collection metadata directly and returns a plain-text block — zero tokens,
@@ -185,7 +185,7 @@ export const runSlashCommand = async (input, { collectionId, collection }) => {
       return { cmd, content: formatTools() }
     }
 
-    const response = await axios.get(`/documents?collection_id=${collectionId}`)
+    const response = await http.get(`/documents?collection_id=${collectionId}`)
     const documents = response.data.documents || []
 
     if (cmd === '/stats') {

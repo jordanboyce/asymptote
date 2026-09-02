@@ -29,13 +29,26 @@
 
       <!-- Add Sources section (collapsible) -->
       <div class="border-b border-base-300">
-        <button class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left" @click="addSectionOpen = !addSectionOpen">
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
+          :class="{ 'animate-pulse bg-primary/10': ui.highlightAddSources }"
+          @click="addSectionOpen = !addSectionOpen; ui.highlightAddSources = false"
+        >
           <Plus :size="13" class="text-primary flex-shrink-0" />
           <span class="text-xs font-semibold text-primary flex-1">Add Sources</span>
           <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="addSectionOpen ? 'rotate-180' : ''" />
         </button>
 
-        <div v-show="addSectionOpen" class="px-3 pb-3 space-y-2">
+        <!-- Read-only share: say so instead of offering controls that 403 -->
+        <div
+          v-if="addSectionOpen && !collectionStore.canEditCurrent"
+          class="px-3 pb-3 text-xs text-base-content/55 flex items-start gap-2"
+        >
+          <Eye :size="12" class="mt-0.5 flex-shrink-0" aria-hidden="true" />
+          <span>This collection is shared with you read-only. Its owner manages the sources.</span>
+        </div>
+
+        <div v-show="addSectionOpen && collectionStore.canEditCurrent" class="px-3 pb-3 space-y-2">
           <!-- File/folder/record buttons -->
           <div class="flex gap-1.5">
             <template v-if="capabilities.native_file_picker === false">
@@ -372,8 +385,8 @@
             <button
               class="btn btn-ghost btn-xs btn-circle text-error"
               @click="confirmDelete(doc)"
-              :disabled="deleting"
-              title="Delete source"
+              :disabled="deleting || !collectionStore.canEditCurrent"
+              :title="collectionStore.canEditCurrent ? 'Delete source' : 'This collection is shared with you read-only'"
               :aria-label="`Delete source ${doc.filename}`"
             >
               <Trash2 :size="12" />
@@ -520,15 +533,17 @@
 
 <script setup>
 import { ref, computed, markRaw, onMounted, onBeforeUnmount, watch } from 'vue'
-import axios from 'axios'
+import http from '../utils/http'
 import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
+import { useUiStore } from '../stores/uiStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useExpertiseStore } from '../stores/expertiseStore'
 
 const emit = defineEmits(['document-deleted', 'close'])
 
 const collectionStore = useCollectionStore()
+const ui = useUiStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const expertiseStore = useExpertiseStore()
 
@@ -717,9 +732,10 @@ async function uploadRecording(blob) {
     form.append('files', file)
 
     transcribeStatus.value = 'Transcribing with Whisper (may take a minute)…'
-    const response = await axios.post('/documents/upload', form, {
+    const response = await http.post('/documents/upload', form, {
       params: { collection_id: collectionStore.currentCollectionId },
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0, // extraction + Whisper can far exceed the default timeout
     })
 
     indexSuccess.value = true
@@ -812,7 +828,8 @@ const handleBrowserFolder = (event) => {
 const openFilePicker = async () => {
   try {
     indexError.value = ''
-    const response = await axios.post('/api/file-picker', null, {
+    const response = await http.post('/api/file-picker', null, {
+      timeout: 0, // native dialog stays open until the user acts
       params: { multiple: true, include_sizes: true }
     })
 
@@ -839,13 +856,13 @@ const openFilePicker = async () => {
 const openFolderPicker = async () => {
   try {
     indexError.value = ''
-    const response = await axios.post('/api/folder-picker')
+    const response = await http.post('/api/folder-picker', null, { timeout: 0 })
 
     if (response.data.path) {
       const folderPath = response.data.path
 
       // Scan folder for supported document types, add individual files
-      const scanResponse = await axios.post('/api/scan-folder', {
+      const scanResponse = await http.post('/api/scan-folder', {
         path: folderPath,
         recursive: true,
         file_extensions: ['.pdf', '.txt', '.docx', '.csv', '.xlsx', '.xls', '.md', '.json', '.jsonl']
@@ -945,8 +962,9 @@ const indexFiles = async () => {
           }
           formData.append('collection_id', collectionStore.currentCollectionId)
           try {
-            const response = await axios.post('/documents/upload-staged', formData, {
-              headers: { 'Content-Type': 'multipart/form-data' }
+            const response = await http.post('/documents/upload-staged', formData, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+              timeout: 0, // large batches stream for as long as they need
             })
             for (const s of response.data.staged || []) stagedPaths.push(s.path)
             for (const f of response.data.failed || []) errors.push(`${f.filename}: ${f.error}`)
@@ -970,7 +988,7 @@ const indexFiles = async () => {
       // survives page refreshes, and keeps running if the tab closes.
       if (stagedPaths.length > 0) {
         try {
-          const jobResp = await axios.post('/documents/index-local-async', {
+          const jobResp = await http.post('/documents/index-local-async', {
             file_paths: stagedPaths,
             collection_id: collectionStore.currentCollectionId,
             copy_to_library: false,
@@ -1000,10 +1018,10 @@ const indexFiles = async () => {
         indexProgressPercent.value = ((i) / filePaths.length) * 100
 
         try {
-          const response = await axios.post('/documents/index-local', {
+          const response = await http.post('/documents/index-local', {
             file_path: filePaths[i],
             collection_id: collectionStore.currentCollectionId
-          })
+          }, { timeout: 0 }) // synchronous extract+embed of one file
           successCount++
           totalChunks += response.data.total_chunks || 0
           // Update progress after successful index
@@ -1033,11 +1051,11 @@ const indexFiles = async () => {
       currentIndexingFile.value = folder.name
 
       try {
-        const response = await axios.post('/documents/upload-repo', {
+        const response = await http.post('/documents/upload-repo', {
           path: folder.path,
           collection_id: collectionStore.currentCollectionId,
           recursive: true
-        })
+        }, { timeout: 0 }) // synchronous whole-folder indexing
         successCount += response.data.files_indexed || 0
         totalChunks += response.data.total_chunks || 0
       } catch (err) {
@@ -1123,7 +1141,7 @@ const loadDocuments = async () => {
   error.value = ''
 
   try {
-    const response = await axios.get('/documents', { params: _docParams(0) })
+    const response = await http.get('/documents', { params: _docParams(0) })
     documents.value = response.data.documents || []
     docTotal.value = response.data.total_documents ?? documents.value.length
     if (docTotal.value > 0) justIndexed.value = false
@@ -1137,7 +1155,7 @@ const loadDocuments = async () => {
 const loadMoreDocuments = async () => {
   loadingMore.value = true
   try {
-    const response = await axios.get('/documents', { params: _docParams(documents.value.length) })
+    const response = await http.get('/documents', { params: _docParams(documents.value.length) })
     documents.value = documents.value.concat(response.data.documents || [])
     docTotal.value = response.data.total_documents ?? docTotal.value
   } catch (err) {
@@ -1171,7 +1189,7 @@ const openChunks = async (doc) => {
 
   try {
     const collectionId = collectionStore.currentCollectionId
-    const response = await axios.get(
+    const response = await http.get(
       `/documents/${doc.document_id}/chunks`,
       {
         params: {
@@ -1236,7 +1254,7 @@ const deleteDocument = async () => {
 
   try {
     const collectionId = collectionStore.currentCollectionId
-    await axios.delete(`/documents/${documentToDelete.value.document_id}?collection_id=${collectionId}`)
+    await http.delete(`/documents/${documentToDelete.value.document_id}?collection_id=${collectionId}`)
 
     documents.value = documents.value.filter(
       doc => doc.document_id !== documentToDelete.value.document_id
@@ -1270,7 +1288,7 @@ const deleteBulk = async () => {
   try {
     const collectionId = collectionStore.currentCollectionId
     for (const docId of selectedDocuments.value) {
-      await axios.delete(`/documents/${docId}?collection_id=${collectionId}`)
+      await http.delete(`/documents/${docId}?collection_id=${collectionId}`)
     }
 
     documents.value = documents.value.filter(
@@ -1347,7 +1365,7 @@ async function removeExpertisePack(packId) {
 watch(() => backgroundJobsStore.dataRefreshTick, async () => {
   if (backgroundJobsStore.dataRefreshCollectionId !== collectionStore.currentCollectionId) return
   try {
-    const response = await axios.get('/documents', { params: _docParams(0) })
+    const response = await http.get('/documents', { params: _docParams(0) })
     documents.value = response.data.documents || []
     docTotal.value = response.data.total_documents ?? documents.value.length
     if (docTotal.value > 0) justIndexed.value = false
@@ -1390,7 +1408,7 @@ onMounted(async () => {
   loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
   try {
-    const resp = await axios.get('/api/capabilities')
+    const resp = await http.get('/api/capabilities')
     capabilities.value = resp.data
   } catch {
     // leave capabilities empty; native picker stays as default

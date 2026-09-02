@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import axios from 'axios'
+import http from '../utils/http'
 
 export const useUserStore = defineStore('user', () => {
   const userId = ref('')
@@ -18,7 +18,7 @@ export const useUserStore = defineStore('user', () => {
 
   async function loadCurrentUser() {
     try {
-      const response = await axios.get('/api/user/me')
+      const response = await http.get('/api/user/me')
       userId.value = response.data.user_id
       displayName.value = response.data.display_name
       privateCollections.value = response.data.private_collections

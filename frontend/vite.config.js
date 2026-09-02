@@ -9,12 +9,13 @@ import tailwindcss from '@tailwindcss/vite'
 const apiTarget = process.env.VITE_API_URL || 'http://localhost:8473'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [
     vue(),
-    vueDevTools(),
+    // Dev-only: the devtools overlay must never ship in production builds.
+    command === 'serve' && vueDevTools(),
     tailwindcss(),
-  ],
+  ].filter(Boolean),
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
@@ -48,4 +49,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

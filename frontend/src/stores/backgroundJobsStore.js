@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import axios from 'axios'
+import http from '../utils/http'
 
 export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
   // State
@@ -285,7 +285,7 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
 
   async function cancelUploadJob(jobId) {
     try {
-      const response = await axios.post(`/documents/upload/${jobId}/cancel`)
+      const response = await http.post(`/documents/upload/${jobId}/cancel`)
       // If force-cancelled (status === 'cancelled'), update local state immediately
       // Otherwise SSE will handle the update
       if (response.data.status === 'cancelled') {
@@ -324,7 +324,7 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
         // Only poll if no SSE connection
         if (!eventSources.value[job.jobId]) {
           try {
-            const response = await axios.get(`/documents/upload/${job.jobId}/status`)
+            const response = await http.get(`/documents/upload/${job.jobId}/status`)
             updateUploadJob(response.data)
           } catch (err) {
             console.error(`Failed to poll upload job ${job.jobId}:`, err)
@@ -336,7 +336,7 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
     // Poll reindex job
     if (reindexJob.value && (reindexJob.value.status === 'pending' || reindexJob.value.status === 'running')) {
       try {
-        const response = await axios.get('/api/reindex/status')
+        const response = await http.get('/api/reindex/status')
         reindexJob.value = response.data
         if (reindexJob.value) {
           maybeSignalDataRefresh(
@@ -376,7 +376,7 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
   async function checkActiveJobs() {
     try {
       // Check for active reindex job
-      const reindexResponse = await axios.get('/api/reindex/status')
+      const reindexResponse = await http.get('/api/reindex/status')
       if (reindexResponse.data && (reindexResponse.data.status === 'pending' || reindexResponse.data.status === 'running')) {
         setReindexJob(reindexResponse.data)
       }
@@ -386,7 +386,7 @@ export const useBackgroundJobsStore = defineStore('backgroundJobs', () => {
 
     // Restore active upload jobs (survives page refresh since backend uses threads)
     try {
-      const uploadResponse = await axios.get('/documents/upload/active')
+      const uploadResponse = await http.get('/documents/upload/active')
       if (uploadResponse.data && uploadResponse.data.length > 0) {
         for (const job of uploadResponse.data) {
           // Only add if not already tracked

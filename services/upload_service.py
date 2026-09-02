@@ -101,6 +101,31 @@ class UploadService:
         # Cancellation flags
         self._cancel_flags: Dict[int, bool] = {}
 
+    def active_job_count(self) -> int:
+        with self._lock:
+            return len(self._active_threads)
+
+    def _check_global_job_cap(self) -> None:
+        """Refuse a new job when the process-wide cap is reached.
+
+        The per-collection guard alone lets N users start N jobs — but every
+        job funnels through one embedding lock, so extra parallel jobs just
+        shuffle the queue while starving live search. Raises RuntimeError,
+        which the routers already translate to an HTTP conflict.
+        (Reindex jobs run outside this service and are not counted —
+        they're admin-initiated and rare.)
+        """
+        cap = settings.max_concurrent_index_jobs
+        if cap <= 0:
+            return
+        with self._lock:
+            running = len(self._active_threads)
+        if running >= cap:
+            raise RuntimeError(
+                f"{running} indexing job(s) already running (limit {cap}). "
+                "Wait for one to finish before starting another."
+            )
+
     def subscribe_to_events(self, job_id: int) -> queue.Queue:
         """Subscribe to real-time progress events for a job.
 
@@ -245,6 +270,7 @@ class UploadService:
             raise RuntimeError(
                 f"Upload job {active_job['id']} is already running for collection '{collection_id}'"
             )
+        self._check_global_job_cap()
 
         # Create job record with job_type='index' for local file indexing
         job_id = app_db.create_upload_job(collection_id, len(file_paths), job_type="index")
@@ -386,6 +412,7 @@ class UploadService:
             raise RuntimeError(
                 f"Job {active_job['id']} is already running for collection '{collection_id}'"
             )
+        self._check_global_job_cap()
 
         # Create job record
         job_id = app_db.create_upload_job(collection_id, len(files_to_index), job_type="index")

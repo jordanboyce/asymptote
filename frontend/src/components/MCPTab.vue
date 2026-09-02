@@ -193,7 +193,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import axios from 'axios'
+import http from '../utils/http'
 
 // MCP state
 const mcpLoading = ref(false)
@@ -256,7 +256,7 @@ const activeTabMeta = computed(() => {
 
 const loadMcpCollections = async () => {
   try {
-    const response = await axios.get('/api/collections')
+    const response = await http.get('/api/collections')
     mcpCollections.value = response.data.collections || []
     if (mcpCollections.value.length > 0 && !mcpCollections.value.find(c => c.id === exportCollectionId.value)) {
       exportCollectionId.value = mcpCollections.value[0].id
@@ -270,7 +270,7 @@ const loadMcpSettings = async () => {
   mcpLoading.value = true
   mcpError.value = ''
   try {
-    const response = await axios.get('/api/mcp/config')
+    const response = await http.get('/api/mcp/config')
     mcpSettings.value = { ...mcpSettings.value, ...response.data }
   } catch (error) {
     mcpError.value = error.response?.data?.detail || 'Failed to load MCP settings'
@@ -306,7 +306,7 @@ const saveMcpToggle = async () => {
   mcpError.value = ''
   mcpStatus.value = ''
   try {
-    await axios.post('/api/mcp/config', { enable_mcp: mcpSettings.value.enable_mcp })
+    await http.post('/api/mcp/config', { enable_mcp: mcpSettings.value.enable_mcp })
   } catch (error) {
     mcpError.value = error.response?.data?.detail || 'Failed to update MCP status'
     mcpSettings.value.enable_mcp = !mcpSettings.value.enable_mcp
@@ -326,7 +326,7 @@ const saveMcpSettings = async () => {
       mcp_max_source_length: Number(mcpSettings.value.mcp_max_source_length) || 500,
     }
 
-    const response = await axios.post('/api/mcp/config', payload)
+    const response = await http.post('/api/mcp/config', payload)
     if (!response.data.success) {
       mcpError.value = response.data.errors?.join(', ') || 'Failed to save MCP settings'
       return

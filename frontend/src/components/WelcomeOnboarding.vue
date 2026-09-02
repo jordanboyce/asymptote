@@ -199,7 +199,7 @@
 
 <script setup>
 import { ref, computed, nextTick, watch, onMounted } from 'vue'
-import axios from 'axios'
+import http from '../utils/http'
 import {
   PROVIDER_DEFS,
   CUSTOM_ENDPOINT_PRESETS,
@@ -228,7 +228,7 @@ const CARDS = [
 const offline = ref(false)
 onMounted(async () => {
   try {
-    const h = await axios.get('/health')
+    const h = await http.get('/health')
     offline.value = !!h.data.offline_mode
   } catch { /* assume standard */ }
 })
@@ -318,7 +318,7 @@ const connectKey = async () => {
   upsertProviderConfig(id, { apiKey: key, model: selectedDef.value?.models?.[0]?.id || '' })
   try {
     // Best-effort server-side store so the MCP chat path can use it too.
-    await axios.post('/api/agent/config', null, { params: { provider: id, api_key: key } })
+    await http.post('/api/agent/config', null, { params: { provider: id, api_key: key } })
   } catch (e) {
     console.warn('Could not store key server-side:', e?.message || e)
   }

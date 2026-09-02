@@ -201,6 +201,7 @@ async def search_documents(
                 "page_url": r.page_url
             } for r in results])
 
+            from middleware.user_context import get_request_user
             app_db.add_search_history(
                 query=search_request.query,
                 top_k=search_request.top_k,
@@ -208,7 +209,9 @@ async def search_documents(
                 ai_provider=ai_provider_used,
                 ai_used=ai_service is not None,
                 results_json=results_json,
-                execution_time_ms=execution_time_ms
+                execution_time_ms=execution_time_ms,
+                user_id=get_request_user(),
+                collection_id=collection_id,
             )
         except Exception as e:
             logger.warning(f"Failed to save search history: {e}")

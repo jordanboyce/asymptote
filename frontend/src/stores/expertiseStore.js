@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import axios from 'axios'
+import http from '../utils/http'
 
 export const useExpertiseStore = defineStore('expertise', () => {
   // ── State ────────────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ export const useExpertiseStore = defineStore('expertise', () => {
     loading.value = true
     error.value = null
     try {
-      const res = await axios.get('/api/expertise/packs')
+      const res = await http.get('/api/expertise/packs')
       packs.value = res.data
     } catch (err) {
       error.value = err.response?.data?.detail || err.message
@@ -28,14 +28,14 @@ export const useExpertiseStore = defineStore('expertise', () => {
 
   async function createPack(data) {
     // data: { name, description, body }
-    const res = await axios.post('/api/expertise/packs', data)
+    const res = await http.post('/api/expertise/packs', data)
     packs.value.push(res.data)
     packs.value.sort((a, b) => a.name.localeCompare(b.name))
     return res.data
   }
 
   async function updatePack(packId, data) {
-    const res = await axios.put(`/api/expertise/packs/${packId}`, data)
+    const res = await http.put(`/api/expertise/packs/${packId}`, data)
     const idx = packs.value.findIndex(p => p.id === packId)
     if (idx !== -1) packs.value[idx] = res.data
     packs.value.sort((a, b) => a.name.localeCompare(b.name))
@@ -43,7 +43,7 @@ export const useExpertiseStore = defineStore('expertise', () => {
   }
 
   async function deletePack(packId) {
-    await axios.delete(`/api/expertise/packs/${packId}`)
+    await http.delete(`/api/expertise/packs/${packId}`)
     packs.value = packs.value.filter(p => p.id !== packId)
     // Remove from all cached attachment lists
     for (const collId in attachedPackIds.value) {
@@ -54,13 +54,13 @@ export const useExpertiseStore = defineStore('expertise', () => {
   // ── Collection attachment actions ────────────────────────────────────────
 
   async function fetchAttached(collectionId) {
-    const res = await axios.get(`/api/collections/${collectionId}/expertise`)
+    const res = await http.get(`/api/collections/${collectionId}/expertise`)
     attachedPackIds.value[collectionId] = res.data.packs.map(p => p.id)
     return attachedPackIds.value[collectionId]
   }
 
   async function setAttached(collectionId, packIds) {
-    const res = await axios.put(`/api/collections/${collectionId}/expertise`, { pack_ids: packIds })
+    const res = await http.put(`/api/collections/${collectionId}/expertise`, { pack_ids: packIds })
     attachedPackIds.value[collectionId] = res.data.packs.map(p => p.id)
     return attachedPackIds.value[collectionId]
   }
