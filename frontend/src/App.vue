@@ -117,6 +117,27 @@
         </ul>
       </div>
 
+      <!-- Help menu -->
+      <div class="dropdown dropdown-end">
+        <button tabindex="0" class="btn btn-ghost btn-circle btn-sm" title="Help" aria-label="Help menu" aria-haspopup="menu">
+          <HelpCircle :size="16" />
+        </button>
+        <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-50 w-56 p-2 shadow border border-base-300">
+          <li>
+            <a href="https://github.com/jordanboyce/asymptote#readme" target="_blank" rel="noopener">
+              <BookOpen :size="14" />
+              Documentation
+            </a>
+          </li>
+          <li>
+            <button @click="showOnboarding = true">
+              <Sparkles :size="14" />
+              Run setup again
+            </button>
+          </li>
+        </ul>
+      </div>
+
       <!-- Settings button -->
       <button
         class="btn btn-ghost btn-circle btn-sm"
@@ -206,7 +227,7 @@
         >
           <!-- Chat gets full height, no padding wrapper -->
           <div v-if="activeTab === 'chat'" class="h-full p-4">
-            <ChatTab :chunk-count="stats.chunks" :document-count="stats.documents" @switch-tab="switchTab" />
+            <ChatTab @switch-tab="switchTab" />
           </div>
 
           <!-- All other tabs: padded scroll container -->
@@ -302,7 +323,7 @@
                     New collection
                   </button>
                   <button
-                    v-if="collectionStore.privateCollections"
+                    v-if="userStore.privateCollections"
                     class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
                     @click="openJoinSharedModal"
                     title="Accept a share token someone sent you"
@@ -327,12 +348,22 @@
                 v-else-if="collectionsView === 'list'"
                 class="divide-y divide-base-300/50"
               >
+                <template v-for="(collection, index) in filteredCollections" :key="collection.id">
                 <li
-                  v-for="collection in filteredCollections"
-                  :key="collection.id"
-                  class="group flex items-start gap-5 py-5 cursor-pointer transition-colors"
+                  v-if="index === firstSharedIndex"
+                  class="pt-6 pb-1 !border-t-0 list-none"
+                  aria-hidden="true"
+                >
+                  <span class="text-[10px] uppercase tracking-[0.14em] font-semibold text-base-content/40">Shared with me</span>
+                </li>
+                <li
+                  class="group flex items-start gap-5 py-5 cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary rounded-sm"
                   @click="selectCollectionAndNavigate(collection.id)"
                   :aria-current="collection.id === collectionStore.currentCollectionId ? 'true' : undefined"
+                  role="button"
+                  tabindex="0"
+                  @keydown.enter="selectCollectionAndNavigate(collection.id)"
+                  @keydown.space.prevent="selectCollectionAndNavigate(collection.id)"
                 >
                   <span
                     class="mt-[0.55rem] w-2 h-2 rounded-full flex-shrink-0 ring-4 ring-transparent transition-all"
@@ -356,11 +387,11 @@
                         class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                       >Shared</span>
                       <span
-                        v-else-if="collectionStore.privateCollections && collection.team"
+                        v-else-if="userStore.privateCollections && collection.team"
                         class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                       >Team</span>
                       <span
-                        v-else-if="collectionStore.privateCollections"
+                        v-else-if="userStore.privateCollections"
                         class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                       >Private</span>
                     </div>
@@ -375,7 +406,7 @@
 
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <button
-                        v-if="collectionStore.privateCollections && collection.permission === 'owner' && !collection.team"
+                        v-if="userStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Share collection"
@@ -395,6 +426,7 @@
                     </div>
                   </div>
                 </li>
+                </template>
               </ul>
 
               <!-- Card view -->
@@ -437,11 +469,11 @@
                           class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                         >Shared</span>
                         <span
-                          v-else-if="collectionStore.privateCollections && collection.team"
+                          v-else-if="userStore.privateCollections && collection.team"
                           class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                         >Team</span>
                         <span
-                          v-else-if="collectionStore.privateCollections"
+                          v-else-if="userStore.privateCollections"
                           class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                         >Private</span>
                       </div>
@@ -461,7 +493,7 @@
                     </span>
                     <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                       <button
-                        v-if="collectionStore.privateCollections && collection.permission === 'owner' && !collection.team"
+                        v-if="userStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Share collection"
@@ -484,11 +516,12 @@
               </div>
             </div>
 
-            <SearchTab v-if="activeTab === 'search'" :chunk-count="stats.chunks" @stats-updated="loadStats" @switch-tab="switchTab" />
+            <SearchTab v-if="activeTab === 'search'" @switch-tab="switchTab" />
             <ArtifactsTab v-if="activeTab === 'generate'" />
             <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
-            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="loadStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
+            <AdminTab v-if="activeTab === 'admin'" />
+            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="statsStore.fetchStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
           </div>
         </div>
 
@@ -575,27 +608,30 @@
 
       <!-- Air-gapped deployment indicator (OFFLINE_MODE=1 on the server) -->
       <span
-        v-if="stats.offline"
+        v-if="statsStore.offline"
         class="hidden sm:flex items-center gap-1 text-base-content/60"
         title="Offline mode: cloud AI disabled — no external connections beyond your configured endpoints"
       >
         <ShieldCheck :size="11" aria-hidden="true" />
         Air-gapped
       </span>
-      <span v-if="stats.offline" class="hidden sm:inline w-px h-3 bg-base-300" aria-hidden="true"></span>
+      <span v-if="statsStore.offline" class="hidden sm:inline w-px h-3 bg-base-300" aria-hidden="true"></span>
 
       <!-- Stats moved here from the header for breathing room -->
       <span class="hidden md:inline tabular-nums">
-        {{ stats.documents }} {{ stats.documents === 1 ? 'source' : 'sources' }}
+        {{ statsStore.documents }} {{ statsStore.documents === 1 ? 'source' : 'sources' }}
       </span>
       <span class="hidden md:inline w-px h-3 bg-base-300" aria-hidden="true"></span>
       <span class="hidden md:inline tabular-nums">
-        {{ stats.pages }} {{ stats.pages === 1 ? 'page' : 'pages' }}
+        {{ statsStore.pages }} {{ statsStore.pages === 1 ? 'page' : 'pages' }}
       </span>
     </footer>
 
-    <!-- Create Collection Modal -->
-    <dialog class="modal" :class="{ 'modal-open': showCollectionModal }" aria-labelledby="create-collection-title">
+    <!-- Global toast stack + backend-unreachable banner -->
+    <Toaster />
+
+    <!-- Create Collection Modal (native showModal: focus trap, Escape, inert background) -->
+    <dialog :ref="createModal.dialogRef" class="modal" @close="createModal.onClosed" aria-labelledby="create-collection-title">
       <div class="modal-box">
         <h3 id="create-collection-title" class="font-bold text-lg mb-4">Create New Collection</h3>
 
@@ -625,7 +661,7 @@
           ></textarea>
         </div>
 
-        <div v-if="collectionStore.privateCollections" class="form-control w-full mb-4">
+        <div v-if="userStore.privateCollections" class="form-control w-full mb-4">
           <label class="label pb-1">
             <span class="label-text">Visibility</span>
           </label>
@@ -679,7 +715,7 @@
         </div>
 
         <div class="modal-action">
-          <button class="btn btn-ghost" @click="showCollectionModal = false" :disabled="creatingCollection">
+          <button class="btn btn-ghost" @click="createModal.close()" :disabled="creatingCollection">
             Cancel
           </button>
           <button
@@ -693,12 +729,12 @@
         </div>
       </div>
       <form method="dialog" class="modal-backdrop">
-        <button @click="showCollectionModal = false">close</button>
+        <button>close</button>
       </form>
     </dialog>
 
     <!-- Edit Collection Modal -->
-    <dialog class="modal" :class="{ 'modal-open': showEditModal }" aria-labelledby="edit-collection-title">
+    <dialog :ref="editModal.dialogRef" class="modal" @close="editModal.onClosed" aria-labelledby="edit-collection-title">
       <div class="modal-box">
         <h3 id="edit-collection-title" class="font-bold text-lg mb-4">Edit Collection</h3>
 
@@ -790,7 +826,7 @@
           </button>
           <div v-else></div>
           <div class="flex gap-2">
-            <button class="btn btn-ghost" @click="showEditModal = false" :disabled="updatingCollection">
+            <button class="btn btn-ghost" @click="editModal.close()" :disabled="updatingCollection">
               Cancel
             </button>
             <button
@@ -805,14 +841,15 @@
         </div>
       </div>
       <form method="dialog" class="modal-backdrop">
-        <button @click="showEditModal = false">close</button>
+        <button>close</button>
       </form>
     </dialog>
 
     <!-- Delete Collection Confirmation Modal -->
     <dialog
+      :ref="deleteModal.dialogRef"
       class="modal"
-      :class="{ 'modal-open': showDeleteConfirmModal }"
+      @close="deleteModal.onClosed"
       aria-labelledby="delete-collection-title"
       aria-describedby="delete-collection-desc"
     >
@@ -858,7 +895,7 @@
         </div>
       </div>
       <form method="dialog" class="modal-backdrop">
-        <button @click="closeDeleteModal">close</button>
+        <button>close</button>
       </form>
     </dialog>
 
@@ -1008,8 +1045,9 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
-import axios from 'axios'
-import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut } from 'lucide-vue-next'
+import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, Gauge, HelpCircle } from 'lucide-vue-next'
+import http from './utils/http'
+import { useModal } from './composables/useModal'
 
 const chatTabEnabled = ref(true)
 
@@ -1020,6 +1058,9 @@ const tabs = computed(() => {
   t.push({ id: 'generate', label: 'Generate', icon: Sparkles })
   t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   t.push({ id: 'mcp', label: 'MCP', icon: Plug })
+  // Operator console: usage, admissions, live stats. Admin-only — the
+  // backend enforces it too; hiding the tab just avoids a 403 surprise.
+  if (userStore.isAdmin) t.push({ id: 'admin', label: 'Admin', icon: Gauge })
   return t
 })
 
@@ -1036,11 +1077,11 @@ const MCPTab = defineAsyncComponent(() => import('./components/MCPTab.vue'))
 const ShareModal = defineAsyncComponent(() => import('./components/ShareModal.vue'))
 const ExpertiseLibrary = defineAsyncComponent(() => import('./components/ExpertiseLibrary.vue'))
 const WelcomeOnboarding = defineAsyncComponent(() => import('./components/WelcomeOnboarding.vue'))
+const AdminTab = defineAsyncComponent(() => import('./components/AdminTab.vue'))
+import Toaster from './components/Toaster.vue'
 import {
   getConfiguredProviderIds,
   getServerProviderIds,
-  fetchServerProviderIds,
-  resolveProvider,
   setActiveProviderLS,
   getProviderDisplayName,
   getProviderConfig,
@@ -1050,6 +1091,9 @@ import { useCollectionStore } from './stores/collectionStore'
 import { useUserStore } from './stores/userStore'
 import { useSearchStore } from './stores/searchStore'
 import { useBackgroundJobsStore } from './stores/backgroundJobsStore'
+import { useProviderStore } from './stores/providerStore'
+import { useStatsStore } from './stores/statsStore'
+import { useUiStore } from './stores/uiStore'
 
 // Fold legacy provider keys (chat_provider, ai_api_key_*) into the unified
 // config before any tab mounts and reads it.
@@ -1059,19 +1103,19 @@ const collectionStore = useCollectionStore()
 const searchStore = useSearchStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const userStore = useUserStore()
+const providerStore = useProviderStore()
+const statsStore = useStatsStore()
+const ui = useUiStore()
 
 // ── Global provider pill (top bar) ──
 // Shows the app-wide default provider resolved by the shared chain in
 // aiProviders.js; the dropdown switches ai_settings.provider directly.
-// localStorage isn't reactive, so a version counter bumps on the
-// 'asymptote:provider-changed' event every write path dispatches.
-const providerPillVersion = ref(0)
-const refreshProviderPill = () => { providerPillVersion.value++ }
-
+// Reactivity comes from providerStore's version — every provider config
+// write bumps it, so this recomputes without any event listeners here.
 const providerPill = computed(() => {
-  providerPillVersion.value // reactivity hook
+  providerStore.version // reactivity hook
   const configured = getConfiguredProviderIds()
-  const id = resolveProvider()
+  const id = providerStore.resolveFor()
   return {
     id,
     configured,
@@ -1089,7 +1133,7 @@ const setGlobalProvider = (pid) => {
 }
 
 // Restore the last active tab so a refresh doesn't dump the user back in Chat
-const VALID_TABS = ['chat', 'search', 'generate', 'expertise', 'mcp', 'settings', 'collections']
+const VALID_TABS = ['chat', 'search', 'generate', 'expertise', 'mcp', 'admin', 'settings', 'collections']
 const savedTab = localStorage.getItem('active_tab')
 const activeTab = ref(VALID_TABS.includes(savedTab) ? savedTab : 'chat')
 watch(activeTab, (tab) => localStorage.setItem('active_tab', tab))
@@ -1125,17 +1169,10 @@ const startResize = (e) => {
 const me = ref({ authenticated_via: null, identity: null, logout_url: null })
 const loadMe = async () => {
   try {
-    const resp = await axios.get('/api/me')
+    const resp = await http.get('/api/me')
     me.value = resp.data
   } catch { /* open or password deployments simply show no account menu */ }
 }
-
-const stats = ref({
-  documents: 0,
-  pages: 0,
-  chunks: 0,
-  offline: false
-})
 
 // Compact (sidebar/companion) mode: when the window is pinned narrow next to
 // other apps, the side panels overlay the main surface instead of squeezing
@@ -1229,16 +1266,17 @@ const handleSendToChat = (prompt) => {
   }, 50)
 }
 
-// Create collection modal state
-const showCollectionModal = ref(false)
+// Create collection modal (native <dialog> via useModal: focus trap,
+// Escape, focus restore)
+const createModal = useModal()
 const newCollectionName = ref('')
 const newCollectionDescription = ref('')
 const newCollectionColor = ref('#3b82f6')
 const newCollectionVisibility = ref('private')
 const creatingCollection = ref(false)
 
-// Edit collection modal state
-const showEditModal = ref(false)
+// Edit collection modal
+const editModal = useModal()
 const editingCollectionId = ref('')
 const editCollectionName = ref('')
 const editCollectionDescription = ref('')
@@ -1246,8 +1284,8 @@ const editCollectionColor = ref('#3b82f6')
 const editCollectionGuide = ref('')
 const updatingCollection = ref(false)
 
-// Delete confirmation modal state
-const showDeleteConfirmModal = ref(false)
+// Delete confirmation modal
+const deleteModal = useModal()
 const deletingCollection = ref(false)
 const deleteError = ref('')
 
@@ -1276,6 +1314,13 @@ const checkOnboardingNeeded = () => {
 
 const handleOnboardingComplete = () => {
   showOnboarding.value = false
+  // Provider connected — the actual next blocker is having zero sources.
+  // Point at the sidebar instead of dropping the user on an empty chat.
+  if (statsStore.documents === 0) {
+    sourcesSidebarOpen.value = true
+    ui.highlightAddSources = true
+    ui.notify('AI connected. Next: add your first sources in the left panel.', 'success', { duration: 8000 })
+  }
 }
 
 const handleOnboardingSkip = () => {
@@ -1335,7 +1380,16 @@ const filteredCollections = computed(() => {
     if (i > 0) list.unshift(list.splice(i, 1)[0])
   }
 
-  return list
+  // Stable partition: your collections first, then ones shared with you —
+  // each group keeps the chosen sort order. The divider renders between.
+  return [...list.filter(c => !c.shared), ...list.filter(c => c.shared)]
+})
+
+// Where the "Shared with me" divider goes in the overview (-1 = no divider:
+// nothing shared, or everything shared).
+const firstSharedIndex = computed(() => {
+  const i = filteredCollections.value.findIndex(c => c.shared)
+  return i > 0 ? i : -1
 })
 
 const updateThemeFromStorage = () => {
@@ -1348,29 +1402,10 @@ const updateThemeFromStorage = () => {
   }
 }
 
-const loadStats = async () => {
-  try {
-    const collectionId = collectionStore.currentCollectionId
-    // SQL-backed aggregates — never the unpaginated /documents list, which
-    // is a ~25MB response at 63k documents and times out through the proxy.
-    const [statsResponse, healthResponse] = await Promise.all([
-      axios.get(`/api/collections/${encodeURIComponent(collectionId)}/stats`),
-      axios.get(`/health?collection_id=${encodeURIComponent(collectionId)}`)
-    ])
-
-    stats.value.documents = statsResponse.data.total_documents || 0
-    stats.value.pages = statsResponse.data.total_pages || 0
-    stats.value.chunks = statsResponse.data.total_chunks || 0
-    stats.value.offline = !!healthResponse.data.offline_mode
-  } catch (error) {
-    console.error('Error loading stats:', error)
-  }
-}
-
 const handleDocumentDeleted = async () => {
   // Reload both stats and collections list (for document_count in dropdown)
   await Promise.all([
-    loadStats(),
+    statsStore.fetchStats(),
     collectionStore.loadCollections()
   ])
 }
@@ -1378,7 +1413,7 @@ const handleDocumentDeleted = async () => {
 const handleDataCleared = async () => {
   // Reload both stats and collections list (for document_count in dropdown)
   await Promise.all([
-    loadStats(),
+    statsStore.fetchStats(),
     collectionStore.loadCollections()
   ])
 }
@@ -1404,7 +1439,7 @@ const openCreateCollectionModal = () => {
   newCollectionDescription.value = ''
   newCollectionColor.value = '#3b82f6'
   newCollectionVisibility.value = 'private'
-  showCollectionModal.value = true
+  createModal.open()
 }
 
 const createCollection = async () => {
@@ -1419,9 +1454,9 @@ const createCollection = async () => {
       visibility: newCollectionVisibility.value
     })
     collectionStore.setCurrentCollection(collection.id)
-    showCollectionModal.value = false
+    createModal.close()
   } catch (err) {
-    console.error('Failed to create collection:', err)
+    ui.toastError(err, 'Failed to create collection')
   } finally {
     creatingCollection.value = false
   }
@@ -1433,7 +1468,7 @@ const openEditCollectionModal = (collection) => {
   editCollectionDescription.value = collection.description || ''
   editCollectionColor.value = collection.color || '#3b82f6'
   editCollectionGuide.value = collection.guide || ''
-  showEditModal.value = true
+  editModal.open()
 }
 
 const updateCollection = async () => {
@@ -1447,9 +1482,9 @@ const updateCollection = async () => {
       color: editCollectionColor.value,
       guide: editCollectionGuide.value
     })
-    showEditModal.value = false
+    editModal.close()
   } catch (err) {
-    console.error('Failed to update collection:', err)
+    ui.toastError(err, 'Failed to update collection')
   } finally {
     updatingCollection.value = false
   }
@@ -1475,12 +1510,12 @@ const handleShared = () => {
 
 const confirmDeleteCollection = () => {
   deleteError.value = ''
-  showDeleteConfirmModal.value = true
+  deleteModal.open()
 }
 
 const closeDeleteModal = () => {
   if (!deletingCollection.value) {
-    showDeleteConfirmModal.value = false
+    deleteModal.close()
     deleteError.value = ''
   }
 }
@@ -1497,8 +1532,8 @@ const deleteCollection = async () => {
     searchStore.clearCollectionCache(deletedCollectionId)
 
     // Close modals
-    showDeleteConfirmModal.value = false
-    showEditModal.value = false
+    deleteModal.close()
+    editModal.close()
     deleteError.value = ''
 
     // Switch to default collection if we deleted the current one
@@ -1507,10 +1542,9 @@ const deleteCollection = async () => {
     }
 
     // Reload stats for the new current collection
-    await loadStats()
+    await statsStore.fetchStats()
   } catch (err) {
-    console.error('Failed to delete collection:', err)
-    deleteError.value = err.response?.data?.detail || err.message || 'Failed to delete collection. Please try again.'
+    deleteError.value = err.message || 'Failed to delete collection. Please try again.'
   } finally {
     deletingCollection.value = false
   }
@@ -1518,7 +1552,7 @@ const deleteCollection = async () => {
 
 // Watch for collection changes to reload stats
 watch(() => collectionStore.currentCollectionId, () => {
-  loadStats()
+  statsStore.fetchStats()
 })
 
 // Watch for background jobs completing to refresh collection counts and stats
@@ -1526,7 +1560,7 @@ watch(() => backgroundJobsStore.allJobs.map(j => j.status), (newStatuses, oldSta
   // Check if any job just transitioned to completed
   if (oldStatuses && newStatuses.some((s, i) => s === 'completed' && oldStatuses[i] !== 'completed')) {
     collectionStore.loadCollections()
-    loadStats()
+    statsStore.fetchStats()
   }
 }, { deep: true })
 
@@ -1535,7 +1569,7 @@ watch(() => backgroundJobsStore.allJobs.map(j => j.status), (newStatuses, oldSta
 // chat gate update as documents land instead of only at job completion.
 watch(() => backgroundJobsStore.dataRefreshTick, () => {
   if (backgroundJobsStore.dataRefreshCollectionId === collectionStore.currentCollectionId) {
-    loadStats()
+    statsStore.fetchStatsDebounced()
   }
 })
 
@@ -1557,7 +1591,7 @@ const cancelJob = async (jobId) => {
   try {
     await backgroundJobsStore.cancelUploadJob(jobId)
   } catch (err) {
-    console.error('Failed to cancel job:', err)
+    ui.toastError(err, 'Failed to cancel the job')
   }
 }
 
@@ -1576,19 +1610,17 @@ onMounted(async () => {
     window.history.replaceState({}, '', window.location.pathname)
   }
 
-  // Keep the provider pill current when any surface changes provider config.
-  window.addEventListener('asymptote:provider-changed', refreshProviderPill)
-
   // Who's signed in (Access deployments) — drives the account/sign-out menu.
   loadMe()
 
   // Server-stored team keys count as configured providers — the pill may
-  // appear (or change) once they're known.
-  fetchServerProviderIds().then(refreshProviderPill)
+  // appear (or change) once they're known. providerStore reactivity takes
+  // care of the refresh; no listeners needed.
+  providerStore.loadServerProviders()
 
   // Load UI feature flags from server config
   try {
-    const cfgResp = await axios.get('/api/config')
+    const cfgResp = await http.get('/api/config')
     chatTabEnabled.value = cfgResp.data.enable_chat_tab ?? true
     if (!chatTabEnabled.value && activeTab.value === 'chat') {
       activeTab.value = 'search'
@@ -1602,7 +1634,7 @@ onMounted(async () => {
   await collectionStore.loadCollections()
 
   // Then load stats for current collection
-  loadStats()
+  statsStore.fetchStats()
 
   // Check for any active background jobs
   backgroundJobsStore.checkActiveJobs()
@@ -1632,6 +1664,5 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   backgroundJobsStore.cleanup()
-  window.removeEventListener('asymptote:provider-changed', refreshProviderPill)
 })
 </script>

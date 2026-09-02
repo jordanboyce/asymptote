@@ -1,5 +1,5 @@
 <template>
-  <dialog ref="modal" class="modal" :class="{ 'modal-open': visible }" aria-labelledby="share-modal-title">
+  <dialog :ref="modal.dialogRef" class="modal" @close="modal.onClosed" aria-labelledby="share-modal-title">
     <div class="modal-box max-w-lg">
       <h3 id="share-modal-title" class="font-bold text-lg flex items-center gap-2">
         <Share2 :size="18" class="text-primary" aria-hidden="true" />
@@ -37,9 +37,28 @@
         </div>
 
         <!-- Copied link notification -->
-        <div v-if="copiedLink" class="alert alert-success py-2 text-sm">
+        <div v-if="copiedLink" class="alert alert-success py-2 text-sm" role="status">
           <CheckCircle :size="16" />
-          Share link copied to clipboard!
+          Share link copied — anyone opening it lands on the join dialog.
+        </div>
+
+        <!-- Clipboard-unavailable fallback (non-HTTPS): manual copy field -->
+        <div v-if="manualCopyUrl" class="flex gap-2 items-center">
+          <input
+            type="text"
+            readonly
+            class="input input-bordered input-sm flex-1 font-mono text-xs"
+            :value="manualCopyUrl"
+            aria-label="Share link — copy manually"
+            @focus="$event.target.select()"
+          />
+          <button class="btn btn-ghost btn-xs" @click="manualCopyUrl = ''" aria-label="Dismiss">✕</button>
+        </div>
+
+        <!-- Inline error for share operations in this modal -->
+        <div v-if="shareError" class="alert alert-error py-2 text-sm" role="alert">
+          <span class="flex-1">{{ shareError }}</span>
+          <button class="btn btn-xs btn-ghost" @click="shareError = ''" aria-label="Dismiss error">✕</button>
         </div>
 
         <!-- Email an invitation (uses the permission/expiry selected above) -->
@@ -92,32 +111,43 @@
             class="flex items-center gap-2 p-2 rounded bg-base-200 text-xs"
           >
             <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-1.5">
+              <div class="flex items-center gap-1.5 flex-wrap">
                 <span class="badge badge-xs" :class="share.permission === 'readwrite' ? 'badge-warning' : 'badge-info'">
                   {{ share.permission === 'readwrite' ? 'R/W' : 'Read' }}
                 </span>
-                <span class="text-base-content/50">{{ share.accepted_users?.length || 0 }} user(s)</span>
+                <span class="font-medium truncate max-w-[18ch]" :title="share.invited_email || 'Link share'">
+                  {{ share.invited_email || 'Link share' }}
+                </span>
+                <span class="text-base-content/50">
+                  · {{ share.accepted_users?.length || 0 }} joined
+                </span>
                 <span v-if="share.expires_at" class="text-base-content/40">
-                  exp {{ formatDate(share.expires_at) }}
+                  · expires {{ formatDate(share.expires_at) }}
                 </span>
               </div>
-              <div class="font-mono text-base-content/40 mt-0.5 truncate" :title="share.id">{{ share.id }}</div>
+              <div class="text-base-content/40 mt-0.5">
+                created {{ formatDate(share.created_at) }}
+              </div>
             </div>
             <button
               class="btn btn-ghost btn-xs"
               @click="copyShareLink(share.id)"
-              title="Copy link"
-              aria-label="Copy share link to clipboard"
+              title="Copy invite link"
+              aria-label="Copy invite link to clipboard"
             >
               <Copy :size="12" aria-hidden="true" />
             </button>
+            <!-- Two-step revoke: one click arms it, a second within 3s fires.
+                 Revoking cuts off everyone who joined through this share. -->
             <button
-              class="btn btn-ghost btn-xs text-error"
+              class="btn btn-xs"
+              :class="confirmingRevokeId === share.id ? 'btn-error' : 'btn-ghost text-error'"
               @click="revokeShareLink(share.id)"
-              title="Revoke share"
-              aria-label="Revoke share link"
+              :title="confirmingRevokeId === share.id ? 'Click again to revoke for everyone who joined' : 'Revoke share'"
+              :aria-label="confirmingRevokeId === share.id ? 'Confirm revoke share link' : 'Revoke share link'"
             >
-              <Trash2 :size="12" aria-hidden="true" />
+              <template v-if="confirmingRevokeId === share.id">Revoke?</template>
+              <Trash2 v-else :size="12" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -150,7 +180,7 @@
         <button class="btn" @click="close">Close</button>
       </div>
     </div>
-    <form method="dialog" class="modal-backdrop"><button @click="close">close</button></form>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
   </dialog>
 </template>
 
@@ -159,6 +189,7 @@ import { ref, watch } from 'vue'
 import { Share2, Plus, Copy, Trash2, CheckCircle, Mail, AlertTriangle } from 'lucide-vue-next'
 import { createShare, listShares, revokeShare, acceptShare } from '../utils/sharingApi'
 import { useUserStore } from '../stores/userStore'
+import { useModal } from '../composables/useModal'
 
 const userStore = useUserStore()
 
@@ -172,10 +203,18 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'shared'])
 
+// Native <dialog> driven by the `visible` prop: open/close follow the prop,
+// and a native close (Escape, backdrop) emits 'close' back to the parent.
+const modal = useModal({ onClose: () => emit('close') })
+
 const shares = ref([])
 const loadingShares = ref(false)
 const creating = ref(false)
 const copiedLink = ref(false)
+const manualCopyUrl = ref('')
+const shareError = ref('')
+const confirmingRevokeId = ref('')
+let confirmingRevokeTimer = null
 const newPermission = ref('read')
 const newExpiresDays = ref(null)
 
@@ -192,13 +231,23 @@ const inviteNote = ref('')
 const inviteAdmitted = ref(false)
 
 watch(() => props.visible, async (v) => {
-  if (v && props.initialToken) {
-    acceptToken.value = props.initialToken
-  }
-  if (v && props.collectionId) {
-    await loadShareList()
+  if (v) {
+    modal.open()
+    shareError.value = ''
+    manualCopyUrl.value = ''
+    if (props.initialToken) acceptToken.value = props.initialToken
+    if (props.collectionId) await loadShareList()
+  } else {
+    modal.close()
   }
 })
+
+function shareUrl(shareId) {
+  // The full deep link: opening it lands on the join dialog with the token
+  // prefilled (App.vue handles ?share_token=). A bare token used to be
+  // copied here, despite the button saying "Copy link".
+  return `${window.location.origin}/?share_token=${shareId}`
+}
 
 async function emailInvite() {
   if (!inviteEmail.value.trim()) return
@@ -223,7 +272,7 @@ async function emailInvite() {
     await loadShareList()
     emit('shared')
   } catch (err) {
-    inviteError.value = err.response?.data?.detail || 'Failed to send invitation'
+    inviteError.value = err.message || 'Failed to send invitation'
   } finally {
     sendingInvite.value = false
   }
@@ -234,7 +283,7 @@ async function loadShareList() {
   try {
     shares.value = await listShares(props.collectionId)
   } catch (err) {
-    console.error('Failed to load shares:', err)
+    shareError.value = err.message || 'Could not load existing shares'
   } finally {
     loadingShares.value = false
   }
@@ -242,35 +291,48 @@ async function loadShareList() {
 
 async function createNewShare() {
   creating.value = true
+  shareError.value = ''
   try {
     const share = await createShare(props.collectionId, newPermission.value, newExpiresDays.value)
     await copyShareLink(share.share_id)
     await loadShareList()
     emit('shared')
   } catch (err) {
-    console.error('Failed to create share:', err)
+    shareError.value = err.message || 'Failed to create the share'
   } finally {
     creating.value = false
   }
 }
 
 async function copyShareLink(shareId) {
+  const url = shareUrl(shareId)
   try {
-    await navigator.clipboard.writeText(shareId)
+    await navigator.clipboard.writeText(url)
     copiedLink.value = true
+    manualCopyUrl.value = ''
     setTimeout(() => { copiedLink.value = false }, 3000)
   } catch {
-    // Fallback for non-HTTPS
-    prompt('Copy this share token:', shareId)
+    // Clipboard API unavailable (non-HTTPS): show the link for manual copy.
+    manualCopyUrl.value = url
   }
 }
 
 async function revokeShareLink(shareId) {
+  // First click arms; second click within 3s actually revokes.
+  if (confirmingRevokeId.value !== shareId) {
+    confirmingRevokeId.value = shareId
+    clearTimeout(confirmingRevokeTimer)
+    confirmingRevokeTimer = setTimeout(() => { confirmingRevokeId.value = '' }, 3000)
+    return
+  }
+  clearTimeout(confirmingRevokeTimer)
+  confirmingRevokeId.value = ''
+  shareError.value = ''
   try {
     await revokeShare(shareId)
     await loadShareList()
   } catch (err) {
-    console.error('Failed to revoke share:', err)
+    shareError.value = err.message || 'Failed to revoke the share'
   }
 }
 
@@ -283,7 +345,7 @@ async function acceptShareLink() {
     acceptToken.value = ''
     emit('shared')
   } catch (err) {
-    acceptError.value = err.response?.data?.detail || 'Failed to accept share'
+    acceptError.value = err.message || 'Failed to accept share'
   } finally {
     accepting.value = false
   }
@@ -298,6 +360,6 @@ function formatDate(iso) {
 }
 
 function close() {
-  emit('close')
+  modal.close()
 }
 </script>

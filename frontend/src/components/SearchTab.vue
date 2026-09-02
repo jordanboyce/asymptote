@@ -8,7 +8,7 @@
           <Plus :size="14" />
           New
         </button>
-        <button v-if="cacheStats.count > 0" class="btn btn-sm btn-ghost gap-1" @click="showHistoryModal = true">
+        <button v-if="cacheStats.count > 0" class="btn btn-sm btn-ghost gap-1" @click="historyModal.open()">
           <History :size="14" />
           History ({{ cacheStats.count }})
         </button>
@@ -387,7 +387,7 @@
     </div><!-- end scrollable results area -->
 
     <!-- Search History Modal -->
-    <dialog ref="historyModal" class="modal" :class="{ 'modal-open': showHistoryModal }" aria-labelledby="search-history-title">
+    <dialog :ref="historyModal.dialogRef" class="modal" @close="historyModal.onClosed" aria-labelledby="search-history-title">
       <div class="modal-box max-w-3xl">
         <h3 id="search-history-title" class="font-bold text-lg mb-4">Search History</h3>
 
@@ -433,11 +433,11 @@
           <button class="btn btn-sm btn-error" @click="clearAllHistory" :disabled="historyEntries.length === 0">
             Clear All
           </button>
-          <button class="btn btn-sm" @click="showHistoryModal = false">Close</button>
+          <button class="btn btn-sm" @click="historyModal.close()">Close</button>
         </div>
       </div>
       <form method="dialog" class="modal-backdrop">
-        <button @click="showHistoryModal = false">close</button>
+        <button>close</button>
       </form>
     </dialog>
   </div>
@@ -445,16 +445,18 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import axios from 'axios'
+import http from '../utils/http'
 import { Plus, History, SlidersHorizontal, Sparkles, X, Search as SearchIcon } from 'lucide-vue-next'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
 import AISettingsDrawer from './AISettingsDrawer.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
+import { useModal } from '../composables/useModal'
+import { useProviderStore } from '../stores/providerStore'
+import { useStatsStore } from '../stores/statsStore'
 import {
   getConfiguredProviderIds,
-  fetchServerProviderIds,
   buildProviderHeaders,
   getAPIProviderName,
   getProviderDisplayName,
@@ -463,17 +465,14 @@ import {
   resolveProvider,
 } from '../utils/aiProviders.js'
 
-const props = defineProps({
-  chunkCount: {
-    type: Number,
-    default: 0
-  }
-})
-
 const emit = defineEmits(['stats-updated', 'switch-tab'])
 
-// Computed to check if search is available
-const searchDisabled = computed(() => props.chunkCount === 0)
+const providerStore = useProviderStore()
+const statsStore = useStatsStore()
+
+// Computed to check if search is available (chunk count previously
+// prop-drilled from App; now read from statsStore)
+const searchDisabled = computed(() => statsStore.chunks === 0)
 
 const searchButtonDisabled = computed(() => {
   if (!searchStore.query.trim()) return true
@@ -576,7 +575,8 @@ let abortController = null
 const servedFromCache = ref(null)
 
 // History modal state
-const showHistoryModal = ref(false)
+// Native <dialog> (focus trap, Escape, focus restore)
+const historyModal = useModal()
 
 // Settings drawer state
 const searchSettingsOpen = ref(false)
@@ -643,22 +643,22 @@ const onSelectedProvidersUpdate = (list) => {
   localStorage.setItem(PROVIDER_SELECTION_KEY, JSON.stringify(list))
 }
 
+// Re-init when the global default (or provider config) changes elsewhere —
+// a saved selection here is respected, only the un-overridden default moves.
+// providerStore.version bumps on every config write.
+watch(() => providerStore.version, initializeProviders)
+
 onMounted(async () => {
   initializeProviders()
 
-  // Re-init when the global default (or provider config) changes elsewhere —
-  // a saved selection here is respected, only the un-overridden default moves.
-  window.addEventListener('asymptote:provider-changed', initializeProviders)
-
   // Server-stored team keys (hosted deployments) count as configured —
   // re-run provider init once we know which providers the server covers.
-  await fetchServerProviderIds()
+  await providerStore.loadServerProviders()
   initializeProviders()
 })
 
 onBeforeUnmount(() => {
   stopLoadingPhaseAnimation()
-  window.removeEventListener('asymptote:provider-changed', initializeProviders)
 })
 
 // Get configured AI settings from Settings tab (features only - rerank/synthesize)
@@ -790,7 +790,7 @@ const serveCachedResult = (entry) => {
     aiResponses: entry.aiResponses
   }, { cache: false })
   servedFromCache.value = { timestamp: entry.timestamp }
-  emit('stats-updated')
+  statsStore.fetchStatsDebounced()
 }
 
 // Re-run the current query, bypassing the cache.
@@ -805,7 +805,7 @@ const loadHistoryEntry = (entry) => {
   searchStore.setQuery(entry.query)
   searchStore.setTopK(entry.topK)
 
-  showHistoryModal.value = false
+  historyModal.close()
 }
 
 const deleteHistoryEntry = (entry) => {
@@ -815,7 +815,7 @@ const deleteHistoryEntry = (entry) => {
 const clearAllHistory = () => {
   if (confirm('Clear all search history? This cannot be undone.')) {
     searchStore.clearSearchCache()
-    showHistoryModal.value = false
+    historyModal.close()
   }
 }
 
@@ -896,7 +896,7 @@ const executeSearch = async () => {
 
         try {
           const collectionId = collectionStore.currentCollectionId
-          const response = await axios.post(`/search?collection_id=${collectionId}`, body, { headers, signal })
+          const response = await http.post(`/search?collection_id=${collectionId}`, body, { headers, signal, timeout: 0 }) // AI synthesis can run long; cancel is explicit
           return {
             provider,
             results: response.data.results,
@@ -939,14 +939,14 @@ const executeSearch = async () => {
         semantic_weight: semanticWeight.value
       }
       const collectionId = collectionStore.currentCollectionId
-      const response = await axios.post(`/search?collection_id=${collectionId}`, body, { signal })
+      const response = await http.post(`/search?collection_id=${collectionId}`, body, { signal, timeout: 0 })
       searchStore.setSearchResults({
         query: searchStore.query,
         results: response.data.results
       })
     }
 
-    emit('stats-updated')
+    statsStore.fetchStatsDebounced()
   } catch (err) {
     // Check if this was a cancellation - don't show as error
     if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {

@@ -554,7 +554,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import axios from 'axios'
+import http from '../utils/http'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -574,12 +574,13 @@ import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, Chevro
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
+import { useProviderStore } from '../stores/providerStore'
+import { useStatsStore } from '../stores/statsStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
 import AISettingsDrawer from './AISettingsDrawer.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
 import {
   getConfiguredProviderIds,
-  fetchServerProviderIds,
   buildProviderHeaders,
   getAPIProviderName,
   getProviderDisplayName,
@@ -588,18 +589,20 @@ import {
   setProviderOverride,
 } from '../utils/aiProviders.js'
 
-const props = defineProps({
-  // documentCount is the real "is there anything indexed" signal — CSV/XLSX
-  // files live entirely in the structured SQL store and produce zero chunks,
-  // so a chunk count alone would falsely trigger the "no data" banner for
-  // users whose only sources are tabular.
-  documentCount: { type: Number, default: 0 },
-})
 const emit = defineEmits(['switch-tab'])
 
 const chatStore = useChatStore()
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
+const providerStore = useProviderStore()
+const statsStore = useStatsStore()
+
+// documentCount is the real "is there anything indexed" signal — CSV/XLSX
+// files live entirely in the structured SQL store and produce zero chunks,
+// so a chunk count alone would falsely trigger the "no data" banner for
+// users whose only sources are tabular. Read from statsStore (previously
+// prop-drilled from App).
+const documentCount = computed(() => statsStore.documents)
 
 // A job is actively indexing into the current collection. With zero documents
 // this softens the "no data" warning into an info banner; with documents it
@@ -663,7 +666,7 @@ const sendDisabled = computed(() => {
   // Slash commands don't need a provider or indexed content —
   // they read collection metadata directly.
   if (isSlashCommand(inputMessage.value)) return false
-  return !hasAnyProvider.value || props.documentCount === 0
+  return !hasAnyProvider.value || documentCount.value === 0
 })
 
 // True while an SSE streaming message is in-flight (has been added to store but not finalized)
@@ -988,6 +991,16 @@ const sendMessage = async () => {
 
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}))
+      // 429 = rate limit or daily token budget (shared backend contract:
+      // {"detail", "retry_after_seconds"}). This is a raw fetch, so the
+      // axios interceptor never sees it — handle it here, in the thread.
+      if (response.status === 429) {
+        const secs = errBody.retry_after_seconds
+        throw new Error(
+          errBody.detail ||
+          `Rate limit reached — try again in ${secs ? `${secs}s` : 'a moment'}.`
+        )
+      }
       throw new Error(errBody.detail || `HTTP ${response.status}`)
     }
 
@@ -1080,20 +1093,23 @@ const handlePrefill = (e) => {
   })
 }
 
+// Re-resolve providers whenever any surface changes provider config —
+// providerStore.version bumps on every write (replaces the old window
+// 'asymptote:provider-changed' event).
+watch(() => providerStore.version, refreshProviders)
+
 onMounted(async () => {
   scrollToBottom()
   window.addEventListener('asymptote:prefill-chat', handlePrefill)
-  window.addEventListener('asymptote:provider-changed', refreshProviders)
 
   // Pick up providers whose key lives on the server (team deployments):
   // they become selectable without the user ever entering a key.
-  await fetchServerProviderIds()
+  await providerStore.loadServerProviders()
   refreshProviders()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('asymptote:prefill-chat', handlePrefill)
-  window.removeEventListener('asymptote:provider-changed', refreshProviders)
   if (autoScrollTimer) {
     clearTimeout(autoScrollTimer)
     autoScrollTimer = null

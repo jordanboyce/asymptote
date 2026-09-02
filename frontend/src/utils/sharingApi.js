@@ -1,7 +1,7 @@
-import axios from 'axios'
+import http from './http'
 
 export async function createShare(collectionId, permission = 'read', expiresDays = null, notifyEmail = null) {
-  const response = await axios.post(`/api/collections/${collectionId}/share`, {
+  const response = await http.post(`/api/collections/${collectionId}/share`, {
     permission,
     expires_days: expiresDays,
     notify_email: notifyEmail || undefined,
@@ -10,38 +10,33 @@ export async function createShare(collectionId, permission = 'read', expiresDays
 }
 
 export async function listShares(collectionId) {
-  const response = await axios.get(`/api/collections/${collectionId}/shares`)
+  const response = await http.get(`/api/collections/${collectionId}/shares`)
   return response.data.shares || []
 }
 
 export async function acceptShare(shareToken) {
-  const response = await axios.post(`/api/shares/${shareToken}/accept`)
+  const response = await http.post(`/api/shares/${shareToken}/accept`)
   return response.data
 }
 
 export async function revokeShare(shareId) {
-  const response = await axios.delete(`/api/shares/${shareId}`)
+  const response = await http.delete(`/api/shares/${shareId}`)
   return response.data
-}
-
-export async function getSharedWithMe() {
-  const response = await axios.get('/api/shared-with-me')
-  return response.data.collections || []
 }
 
 // ── Edge admissions (admin only) ─────────────────────────────────────────
 
 export async function listAdmissions() {
-  const response = await axios.get('/api/access/admissions')
+  const response = await http.get('/api/access/admissions')
   return response.data
 }
 
 export async function admitEmail(email) {
-  const response = await axios.post('/api/access/admissions', { email })
+  const response = await http.post('/api/access/admissions', { email })
   return response.data
 }
 
 export async function withdrawEmail(email) {
-  const response = await axios.delete(`/api/access/admissions/${encodeURIComponent(email)}`)
+  const response = await http.delete(`/api/access/admissions/${encodeURIComponent(email)}`)
   return response.data
 }

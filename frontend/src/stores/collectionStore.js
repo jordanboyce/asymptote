@@ -1,16 +1,16 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import axios from 'axios'
+import http from '../utils/http'
 import { useSearchStore } from './searchStore'
+import { useUiStore } from './uiStore'
 
 export const useCollectionStore = defineStore('collection', () => {
-  // State
+  // State. Identity (userId) and the private-collections flag deliberately
+  // live in userStore only — they used to be duplicated here, populated
+  // from a different endpoint, and the two copies could disagree.
   const collections = ref([])
   const currentCollectionId = ref('default')
   const loading = ref(false)
-  const error = ref(null)
-  const privateCollections = ref(false)
-  const userId = ref('')
 
   // Computed
   const currentCollection = computed(() => {
@@ -42,15 +42,14 @@ export const useCollectionStore = defineStore('collection', () => {
     return currentPermission.value === 'owner' || currentPermission.value === 'readwrite'
   })
 
-  // Actions
+  // Actions. CRUD failures throw the http client's normalized error —
+  // callers decide how to present them. loadCollections is fire-and-forget
+  // from several places, so it reports its own failure.
   async function loadCollections() {
     loading.value = true
-    error.value = null
     try {
-      const response = await axios.get('/api/collections')
+      const response = await http.get('/api/collections')
       collections.value = response.data.collections || []
-      privateCollections.value = response.data.private_collections || false
-      userId.value = response.data.user_id || ''
 
       // Ensure current collection still exists
       const exists = collections.value.some(c => c.id === currentCollectionId.value)
@@ -58,8 +57,7 @@ export const useCollectionStore = defineStore('collection', () => {
         currentCollectionId.value = 'default'
       }
     } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to load collections'
-      console.error('Failed to load collections:', err)
+      useUiStore().toastError(err, 'Failed to load collections')
     } finally {
       loading.value = false
     }
@@ -67,14 +65,10 @@ export const useCollectionStore = defineStore('collection', () => {
 
   async function createCollection(data) {
     loading.value = true
-    error.value = null
     try {
-      const response = await axios.post('/api/collections', data)
+      const response = await http.post('/api/collections', data)
       collections.value.push(response.data)
       return response.data
-    } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to create collection'
-      throw err
     } finally {
       loading.value = false
     }
@@ -82,32 +76,24 @@ export const useCollectionStore = defineStore('collection', () => {
 
   async function updateCollection(collectionId, updates) {
     loading.value = true
-    error.value = null
     try {
-      const response = await axios.put(`/api/collections/${collectionId}`, updates)
+      const response = await http.put(`/api/collections/${collectionId}`, updates)
       const index = collections.value.findIndex(c => c.id === collectionId)
       if (index !== -1) {
         collections.value[index] = response.data
       }
       return response.data
-    } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to update collection'
-      throw err
     } finally {
       loading.value = false
     }
   }
 
   async function deleteCollection(collectionId) {
-    if (collectionId === 'default') {
-      error.value = 'Cannot delete the default collection'
-      return false
-    }
+    if (collectionId === 'default') return false
 
     loading.value = true
-    error.value = null
     try {
-      await axios.delete(`/api/collections/${collectionId}`)
+      await http.delete(`/api/collections/${collectionId}`)
       collections.value = collections.value.filter(c => c.id !== collectionId)
 
       // If we deleted the current collection, switch to default
@@ -115,9 +101,6 @@ export const useCollectionStore = defineStore('collection', () => {
         currentCollectionId.value = 'default'
       }
       return true
-    } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to delete collection'
-      throw err
     } finally {
       loading.value = false
     }
@@ -155,9 +138,6 @@ export const useCollectionStore = defineStore('collection', () => {
     collections,
     currentCollectionId,
     loading,
-    error,
-    privateCollections,
-    userId,
     // Computed
     currentCollection,
     sortedCollections,

@@ -1392,8 +1392,12 @@ async def set_agent_config(
         api_key: The API key to store
 
     Note: Keys are stored server-side. For security, ensure your
-    Asymptote instance is properly secured.
+    Asymptote instance is properly secured. A stored key becomes shared
+    deployment state (everyone's chat can spend it), so under private
+    collections this is admin-only — same trust rule as POST /api/config.
     """
+    from api.deps import require_admin
+    require_admin("store a team API key")
     from services.app_database import app_db
 
     if provider not in CLOUD_AI_PROVIDERS:
@@ -1428,11 +1432,14 @@ async def set_agent_config(
 )
 async def delete_agent_config(provider: str):
     """
-    Remove a stored API key.
+    Remove a stored API key. Admin-only under private collections —
+    removing the team key breaks chat for everyone relying on it.
 
     Args:
         provider: AI provider name (anthropic, openai)
     """
+    from api.deps import require_admin
+    require_admin("remove the team API key")
     from services.app_database import app_db
 
     if provider not in CLOUD_AI_PROVIDERS:
