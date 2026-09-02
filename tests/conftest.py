@@ -11,3 +11,9 @@ explicitly (fixture or monkeypatch.setenv), which still wins.
 import os
 
 os.environ["PRIVATE_COLLECTIONS"] = "false"
+os.environ["AUTH_PASSWORD"] = ""
+
+# The rate limiter is always-on middleware with process-wide buckets; left
+# enabled, hundreds of suite requests from one TestClient host would trip
+# 429s in unrelated tests. Rate-limit tests re-enable it explicitly.
+os.environ["RATE_LIMIT_ENABLED"] = "false"

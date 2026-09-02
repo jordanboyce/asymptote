@@ -2,9 +2,13 @@
 
 import logging
 import asyncio
+import time
 
 from fastapi import Header, HTTPException, status, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from middleware.user_context import get_request_user
+from services.usage_service import check_daily_budget, record_chat_usage
 
 from services.ai_service import AIService, AnthropicProvider, create_provider
 from services.agent_tools import anthropic_tools, openai_tools
@@ -213,6 +217,9 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
     - scope='all': search all collections and merge results by relevance
     - rerank=True: use AI to rerank retrieved context before generating response
     """
+    turn_started = time.time()
+    turn_user = get_request_user()
+    usage_collection = "all" if chat_request.scope == "all" else collection_id
     try:
         # Extract the latest user message for context retrieval
         user_messages = [m for m in chat_request.messages if m.role == "user"]
@@ -229,6 +236,11 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         if cache_ctx and chat_request.use_cache:
             cache_entry = _cache_lookup(cache_ctx)
             if cache_entry:
+                record_chat_usage(
+                    turn_user, usage_collection, chat_request.provider, "answer-cache",
+                    input_tokens=0, output_tokens=0, cache_hit=True,
+                    duration_ms=int((time.time() - turn_started) * 1000),
+                )
                 cached_base_url = str(request.base_url).rstrip("/")
                 return ChatResponse(
                     message=ChatMessage(role="assistant", content=cache_entry["answer"]),
@@ -237,6 +249,17 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                     cached=True,
                     cached_question=cache_entry["question"],
                 )
+
+        # --- Daily token budget ---
+        # Checked only after the cache: a cache hit spends nothing, so it
+        # stays available to a capped user.
+        over_budget = check_daily_budget(turn_user)
+        if over_budget:
+            return JSONResponse(
+                status_code=429,
+                content=over_budget,
+                headers={"Retry-After": str(over_budget["retry_after_seconds"])},
+            )
 
         # --- Build AI provider (needed before search for query reformulation) ---
         try:
@@ -709,6 +732,14 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         if cache_ctx:
             _cache_store(cache_ctx, response_text, filtered_results, chat_request.provider)
 
+        record_chat_usage(
+            turn_user, usage_collection, chat_request.provider, model_used,
+            input_tokens=ai_usage.total_input_tokens,
+            output_tokens=ai_usage.total_output_tokens,
+            tool_calls=sum(1 for r in executed_results if r.get("tool") != "_thinking"),
+            duration_ms=int((time.time() - turn_started) * 1000),
+        )
+
         return ChatResponse(
             message=ChatMessage(role="assistant", content=response_text),
             sources=sources,
@@ -760,8 +791,54 @@ async def chat_stream_endpoint(
     """
     import json as _json
 
+    turn_started = time.time()
+    turn_user = get_request_user()
+    usage_collection = "all" if chat_request.scope == "all" else collection_id
+
+    # ---------- cache lookup + budget, before the stream starts ----------
+    # The lookup runs out here for two reasons. It puts the cache before
+    # provider construction, matching /api/chat (a cache hit needs no
+    # provider or API key at all). And it lets the daily budget return a
+    # real HTTP 429 — impossible once the SSE stream has begun — while a
+    # budget-capped user keeps receiving cached answers, which cost nothing.
+    cache_ctx = None
+    cache_entry = None
+    if any(m.role == "user" for m in chat_request.messages):
+        try:
+            cache_ctx = await asyncio.to_thread(_cache_context, chat_request, collection_id)
+            if cache_ctx and chat_request.use_cache:
+                cache_entry = await asyncio.to_thread(_cache_lookup, cache_ctx)
+        except Exception as e:
+            logger.warning(f"Answer cache lookup failed: {e}")
+            cache_ctx = None
+            cache_entry = None
+
+    if cache_entry is None:
+        over_budget = check_daily_budget(turn_user)
+        if over_budget:
+            return JSONResponse(
+                status_code=429,
+                content=over_budget,
+                headers={"Retry-After": str(over_budget["retry_after_seconds"])},
+            )
+
     async def generate():  # noqa: C901 (complexity fine for one function)
         try:
+            # ---------- cached answer --------------------------------------------
+            # Looked up before the stream began; no provider tokens spent.
+            if cache_entry:
+                record_chat_usage(
+                    turn_user, usage_collection, chat_request.provider, "answer-cache",
+                    input_tokens=0, output_tokens=0, cache_hit=True,
+                    duration_ms=int((time.time() - turn_started) * 1000),
+                )
+                cached_base = str(request.base_url).rstrip("/")
+                cached_sources = _cached_sources(cache_entry, cached_base)
+                yield f"data: {_json.dumps({'type':'text_delta','delta':cache_entry['answer']})}\n\n"
+                yield f"data: {_json.dumps({'type':'sources','sources':cached_sources})}\n\n"
+                yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':0,'output_tokens':0,'model':'answer-cache'},'structured_results':[],'sources':cached_sources,'cached':True,'cached_question':cache_entry['question']})}\n\n"
+                return
+
             # ---------- provider -------------------------------------------------
             try:
                 if chat_request.provider == "ollama":
@@ -797,20 +874,8 @@ async def chat_stream_endpoint(
                 return
             latest_query = user_messages[-1].content
 
-            # ---------- semantic answer cache ------------------------------------
-            # Embedding + lookup are local-only and run off the event loop. On a
-            # hit the whole cached answer streams immediately and no provider
-            # tokens are spent.
-            cache_ctx = await asyncio.to_thread(_cache_context, chat_request, collection_id)
-            if cache_ctx and chat_request.use_cache:
-                cache_entry = await asyncio.to_thread(_cache_lookup, cache_ctx)
-                if cache_entry:
-                    cached_base = str(request.base_url).rstrip("/")
-                    cached_sources = _cached_sources(cache_entry, cached_base)
-                    yield f"data: {_json.dumps({'type':'text_delta','delta':cache_entry['answer']})}\n\n"
-                    yield f"data: {_json.dumps({'type':'sources','sources':cached_sources})}\n\n"
-                    yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':0,'output_tokens':0,'model':'answer-cache'},'structured_results':[],'sources':cached_sources,'cached':True,'cached_question':cache_entry['question']})}\n\n"
-                    return
+            # (semantic answer cache: looked up before the stream started —
+            # see the cached-answer branch at the top of this generator)
 
             prior_messages = chat_request.messages[:-1]
             if prior_messages:
@@ -1130,6 +1195,12 @@ async def chat_stream_endpoint(
             # ---------- done -----------------------------------------------------
             # sources ride the done event too: finalizeStreamingMessage commits
             # them from here (the standalone sources event predates that).
+            record_chat_usage(
+                turn_user, usage_collection, chat_request.provider, model_used,
+                input_tokens=total_input_tokens, output_tokens=total_output_tokens,
+                tool_calls=sum(1 for r in executed_results if r.get("tool") != "_thinking"),
+                duration_ms=int((time.time() - turn_started) * 1000),
+            )
             yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':total_input_tokens,'output_tokens':total_output_tokens,'model':model_used},'structured_results':executed_results,'sources':sources_data,'cached':False})}\n\n"
 
         except Exception as e:

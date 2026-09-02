@@ -198,6 +198,35 @@ class Settings(BaseSettings):
     cf_access_policy_id: str = ""
     admin_emails: str = ""  # comma-separated
 
+    # ── Load protection ──────────────────────────────────────────────────
+    # These exist so one person can't starve everyone else on a shared
+    # deployment — the shared free-tier LLM key and the single embedding
+    # model are common resources. All limits are per identity (Cloudflare
+    # Access email when present, else client IP), 0 disables that limit.
+
+    # Requests per minute, by expense class. Chat turns can cost up to ~11
+    # provider round-trips each; search is a local embed + FAISS scan;
+    # everything else is cheap metadata traffic.
+    rate_limit_enabled: bool = True
+    rate_limit_chat_per_minute: int = 6
+    rate_limit_search_per_minute: int = 30
+    rate_limit_default_per_minute: int = 120
+
+    # Provider tokens (input+output) one identity may spend on chat per UTC
+    # day. 0 = unlimited. Cached answers are free and still served once the
+    # budget is spent. Anonymous password callers share a single budget.
+    chat_daily_token_budget: int = 0
+
+    # Indexing jobs that may run concurrently across all collections. Every
+    # job funnels through one process-wide embedding lock anyway, so more
+    # parallel jobs mostly shuffle the queue while starving live search.
+    max_concurrent_index_jobs: int = 2
+
+    # Retention (days). search_history stores result snippets, so it is a
+    # privacy liability with no expiry; chat_usage is small but unbounded.
+    search_history_retention_days: int = 30
+    usage_retention_days: int = 180
+
     # Extra Host header values the embedded /mcp endpoint accepts, comma-
     # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding
     # protection that only trusts localhost Hosts by default; when the app is

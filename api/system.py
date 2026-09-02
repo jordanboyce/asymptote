@@ -65,6 +65,9 @@ def open_file_picker(multiple: bool = True, include_sizes: bool = False):
     Returns:
         {"paths": ["C:/path/to/file1.pdf", ...], "sizes": {"C:/path/to/file1.pdf": 12345, ...}}
     """
+    # The dialog opens on the server's own display and reveals server paths;
+    # under private collections that is an operator action, not a user one.
+    require_admin("browse the server filesystem")
     from services.file_picker import open_file_dialog
     import os
 
@@ -104,6 +107,7 @@ def open_folder_picker_endpoint():  # sync: see open_file_picker
     Returns:
         {"path": "C:/path/to/folder"} or {"path": null} if cancelled
     """
+    require_admin("browse the server filesystem")
     from services.file_picker import open_folder_dialog
 
     try:
@@ -164,6 +168,9 @@ def scan_folder(request: ScanFolderRequest):  # sync: filesystem walk runs in th
     This is a lightweight operation that just lists files - no indexing.
     Use this to preview what files will be indexed before starting.
     """
+    # Takes an arbitrary server path and reports what exists there — a
+    # path-probing oracle under private collections, so operator-only.
+    require_admin("browse the server filesystem")
     import os
 
     folder_path = Path(request.path)
