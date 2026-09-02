@@ -12,6 +12,7 @@ from services.document_extractor import DocumentExtractor
 from services.ai_service import detect_ollama
 from services.config_manager import config_manager
 from services.indexer_manager import indexer_manager
+from api.deps import require_admin
 
 from fastapi import APIRouter
 
@@ -249,7 +250,13 @@ async def get_config():
 )
 async def update_config(updates: dict):
     """
-    Update configuration settings.
+    Update configuration settings. Admin only under private collections.
+
+    These settings apply to the whole deployment — the embedding model here
+    decides whether every existing index still matches, and the provider
+    keys are shared by everyone. Under private collections the app admits
+    people who are only meant to read one shared collection, so this is
+    gated on ADMIN_EMAILS rather than merely being signed in.
 
     Args:
         updates: Dictionary of configuration key-value pairs
@@ -261,6 +268,7 @@ async def update_config(updates: dict):
     Note: Some changes (like embedding model) require server restart
     and re-indexing all documents.
     """
+    require_admin("change deployment settings")
     result = config_manager.update_config(updates)
     return result
 

@@ -53,6 +53,44 @@ def resolve_ai_key(provider: str, header_key: str | None) -> str:
     return ""
 
 
+def require_admin(action: str = "change deployment settings") -> str | None:
+    """Gate an operator-only endpoint. Returns the admin's identity.
+
+    No-op when private collections are off. That is the shared-appliance
+    model: everyone who reaches the app is a trusted teammate and access is
+    controlled at the edge, so an operator gate would only get in the way.
+
+    With private collections on, the deployment deliberately admits people
+    who are not operators — anyone an invitation let through the Access
+    edge. "Is signed in" is then far too wide a gate for settings that apply
+    to the whole deployment, so require ADMIN_EMAILS. Empty means nobody,
+    so this fails closed rather than open.
+    """
+    from config import settings
+
+    if not settings.private_collections:
+        return None
+
+    from middleware.user_context import get_request_user
+    from services.access_provisioning import admin_emails, is_admin
+
+    user_id = get_request_user()
+    if not is_admin(user_id):
+        if not admin_emails():
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"No admin is configured, so nobody may {action}. Set "
+                    "ADMIN_EMAILS in .env to the operator's address."
+                ),
+            )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only an admin (ADMIN_EMAILS) may {action}.",
+        )
+    return user_id
+
+
 def require_collection_access(
     collection_id: str, user_id: str | None, write: bool = False
 ) -> str:

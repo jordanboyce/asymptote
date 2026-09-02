@@ -649,3 +649,109 @@ def test_admit_rejects_junk(private_client, monkeypatch):
         "/api/access/admissions", json={"email": "not-an-email"}, headers=_as(ALICE)
     )
     assert r.status_code == 400
+
+
+# ── Operator-only settings ──────────────────────────────────────────────────
+# POST /api/config changes the whole deployment — the embedding model decides
+# whether every existing index still matches, and provider keys are shared by
+# everyone. Private-collections mode admits people who are only meant to read
+# one shared collection, so "is signed in" is not a wide enough gate.
+
+
+def _set_admins(value):
+    """Point ADMIN_EMAILS at `value` on every live Settings object."""
+    saved = [(s, s.admin_emails) for s in _settings_objects()]
+    for s in _settings_objects():
+        s.admin_emails = value
+    return saved
+
+
+def _restore_admins(saved):
+    for s, old in saved:
+        s.admin_emails = old
+
+
+def test_require_admin_noop_when_mode_off(fresh_db):
+    """Shared appliance: everyone who reaches the app is a trusted teammate."""
+    from api.deps import require_admin
+
+    token = set_request_user(BOB)
+    try:
+        assert require_admin() is None
+    finally:
+        reset_request_user(token)
+
+
+def test_require_admin_fails_closed_with_no_admins(private_mode):
+    """Empty ADMIN_EMAILS means nobody — never everybody."""
+    from api.deps import require_admin
+
+    saved = _set_admins("")
+    token = set_request_user(ALICE)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            require_admin()
+        assert exc.value.status_code == 403
+        assert "No admin is configured" in exc.value.detail
+    finally:
+        reset_request_user(token)
+        _restore_admins(saved)
+
+
+def test_require_admin_rejects_non_admin(private_mode):
+    from api.deps import require_admin
+
+    saved = _set_admins(ALICE)
+    token = set_request_user(BOB)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            require_admin()
+        assert exc.value.status_code == 403
+    finally:
+        reset_request_user(token)
+        _restore_admins(saved)
+
+
+def test_require_admin_accepts_admin(private_mode):
+    """Match is case-insensitive and tolerates spacing in the list."""
+    from api.deps import require_admin
+
+    saved = _set_admins(f" {ALICE.upper()} , someone@else.test ")
+    token = set_request_user(ALICE)
+    try:
+        assert require_admin() == ALICE
+    finally:
+        reset_request_user(token)
+        _restore_admins(saved)
+
+
+def test_config_write_is_admin_only_over_http(private_client, monkeypatch):
+    """The gate runs before config_manager, which is stubbed so the test
+    never writes to the real .env."""
+    from services import config_manager as cm_module
+
+    calls = []
+    monkeypatch.setattr(
+        cm_module.config_manager,
+        "update_config",
+        lambda updates: calls.append(updates) or {"success": True},
+    )
+
+    saved = _set_admins(ALICE)
+    try:
+        body = {"chunk_size": 999}
+        assert private_client.post("/api/config", json=body, headers=_as(BOB)).status_code == 403
+        assert calls == []  # rejected before reaching the config writer
+
+        assert private_client.post("/api/config", json=body, headers=_as(ALICE)).status_code == 200
+        assert calls == [body]
+    finally:
+        _restore_admins(saved)
+
+
+def test_config_read_stays_open(private_client):
+    """Reading is left open so the settings UI still renders for everyone;
+    the two credential fields are masked by config_manager."""
+    r = private_client.get("/api/config", headers=_as(BOB))
+    assert r.status_code == 200
+    assert r.json()["ollama_cloud_api_key"] in ("", "********")
