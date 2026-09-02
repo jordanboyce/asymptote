@@ -61,17 +61,20 @@
           <button class="btn btn-xs btn-ghost" @click="shareError = ''" aria-label="Dismiss error">✕</button>
         </div>
 
-        <!-- Email an invitation (uses the permission/expiry selected above) -->
-        <div class="flex gap-2">
-          <input
+        <!-- Email invitations (uses the permission/expiry selected above).
+             Accepts several addresses at once — comma, space, or newline
+             separated; the backend admits the whole batch in one policy
+             write and reports per address. -->
+        <div class="flex gap-2 items-start">
+          <textarea
             v-model="inviteEmail"
-            type="email"
-            placeholder="Or email the invitation to..."
-            class="input input-bordered input-sm flex-1"
-            aria-label="Recipient email for share invitation"
-            @keyup.enter="emailInvite"
-          />
-          <button class="btn btn-sm btn-outline gap-1" @click="emailInvite" :disabled="!inviteEmail || sendingInvite">
+            rows="1"
+            placeholder="Or email invitations to... (separate multiple with commas)"
+            class="textarea textarea-bordered textarea-sm flex-1 min-h-8 leading-snug"
+            aria-label="Recipient emails for share invitations"
+            @keydown.enter.exact.prevent="emailInvite"
+          ></textarea>
+          <button class="btn btn-sm btn-outline gap-1" @click="emailInvite" :disabled="!inviteEmail.trim() || sendingInvite">
             <span v-if="sendingInvite" class="loading loading-spinner loading-xs"></span>
             <Mail v-else :size="14" />
             Send
@@ -83,6 +86,18 @@
             Invitation emailed to {{ inviteSent }}<span v-if="inviteAdmitted">, and they can now sign in</span>.
           </span>
         </div>
+        <!-- Per-address results for a batch invite -->
+        <ul v-if="bulkResults.length" class="space-y-1 text-xs rounded border border-base-300 bg-base-200 p-2">
+          <li v-for="r in bulkResults" :key="r.email" class="flex items-center gap-1.5">
+            <CheckCircle v-if="r.email_sent && (r.edge_admitted !== false || !r.edge_error)" :size="12" class="text-success flex-shrink-0" />
+            <AlertTriangle v-else :size="12" class="text-warning flex-shrink-0" />
+            <span class="font-medium truncate max-w-[18ch]">{{ r.email }}</span>
+            <span class="text-base-content/55 truncate">
+              {{ r.error || r.email_error || (r.edge_error ? `invited, but: ${r.edge_error}`
+                 : r.email_sent ? (r.edge_admitted ? 'invited + admitted' : 'invited') : 'failed') }}
+            </span>
+          </li>
+        </ul>
         <!-- Says plainly when the invitation will dead-end at the login, so
              nobody sends one expecting it to work. -->
         <div v-if="inviteNote" class="alert alert-warning py-2 text-sm">
@@ -187,7 +202,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { Share2, Plus, Copy, Trash2, CheckCircle, Mail, AlertTriangle } from 'lucide-vue-next'
-import { createShare, listShares, revokeShare, acceptShare } from '../utils/sharingApi'
+import { createShare, createSharesBulk, listShares, revokeShare, acceptShare } from '../utils/sharingApi'
 import { useUserStore } from '../stores/userStore'
 import { useModal } from '../composables/useModal'
 
@@ -229,6 +244,7 @@ const inviteSent = ref('')
 const inviteError = ref('')
 const inviteNote = ref('')
 const inviteAdmitted = ref(false)
+const bulkResults = ref([])
 
 watch(() => props.visible, async (v) => {
   if (v) {
@@ -249,30 +265,47 @@ function shareUrl(shareId) {
   return `${window.location.origin}/?share_token=${shareId}`
 }
 
+function parseAddresses(text) {
+  return [...new Set(
+    text.split(/[\s,;]+/).map((a) => a.trim().toLowerCase()).filter((a) => a.includes('@'))
+  )]
+}
+
 async function emailInvite() {
-  if (!inviteEmail.value.trim()) return
+  const addresses = parseAddresses(inviteEmail.value)
+  if (!addresses.length) return
   sendingInvite.value = true
   inviteSent.value = ''
   inviteError.value = ''
   inviteNote.value = ''
   inviteAdmitted.value = false
+  bulkResults.value = []
   try {
-    const share = await createShare(
-      props.collectionId, newPermission.value, newExpiresDays.value, inviteEmail.value.trim()
-    )
-    inviteAdmitted.value = share.edge_admitted === true
-    if (share.edge_note) inviteNote.value = share.edge_note
-    if (share.edge_error) inviteNote.value = `Could not admit them at the login: ${share.edge_error}`
-    if (share.email_sent) {
-      inviteSent.value = inviteEmail.value.trim()
-      inviteEmail.value = ''
+    if (addresses.length === 1) {
+      const share = await createShare(
+        props.collectionId, newPermission.value, newExpiresDays.value, addresses[0]
+      )
+      inviteAdmitted.value = share.edge_admitted === true
+      if (share.edge_note) inviteNote.value = share.edge_note
+      if (share.edge_error) inviteNote.value = `Could not admit them at the login: ${share.edge_error}`
+      if (share.email_sent) {
+        inviteSent.value = addresses[0]
+        inviteEmail.value = ''
+      } else {
+        inviteError.value = share.email_error || 'Email could not be sent'
+      }
     } else {
-      inviteError.value = share.email_error || 'Email could not be sent'
+      const data = await createSharesBulk(
+        props.collectionId, addresses, newPermission.value, newExpiresDays.value
+      )
+      bulkResults.value = data.results || []
+      if (data.edge_note) inviteNote.value = data.edge_note
+      if (bulkResults.value.every((r) => r.email_sent)) inviteEmail.value = ''
     }
     await loadShareList()
     emit('shared')
   } catch (err) {
-    inviteError.value = err.message || 'Failed to send invitation'
+    inviteError.value = err.message || 'Failed to send invitations'
   } finally {
     sendingInvite.value = false
   }

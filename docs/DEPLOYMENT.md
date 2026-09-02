@@ -164,6 +164,44 @@ application-level checks — different compliance regimes, different tenants —
 run a second instance. Separate instances remain a stronger boundary than any
 in-app flag.
 
+## Capacity & scaling
+
+Asymptote is **one process by design**: the FAISS indexes, background-job
+registry, and SSE progress queues all live in the process's memory, so
+`uvicorn --workers N` or multiple replicas would silently diverge. Scale
+**vertically** (more CPU/RAM on one host), and run a **second independent
+instance** when you need a harder wall — different tenants, different
+compliance regimes. `DB_BACKEND=postgresql` moves only the app metadata
+database; vectors and per-collection stores stay on local disk, so it is
+neither HA nor a path to replicas.
+
+The comfortable envelope is an org appliance: **roughly 10–50 people** on
+an always-on host. Two shared chokepoints define it — the request
+threadpool (~40 slots; a chat turn holds one for its whole agent loop, up
+to ~11 provider round-trips) and a single embedding lock every query and
+indexing batch passes through. The identity layer agrees: Cloudflare Zero
+Trust is free to 50 seats.
+
+What protects the deployment when many people share it:
+
+| Knob | Default | What it does |
+|---|---|---|
+| `RATE_LIMIT_CHAT_PER_MINUTE` | 6 | Per-identity chat requests/min |
+| `RATE_LIMIT_SEARCH_PER_MINUTE` | 30 | Per-identity searches/min |
+| `RATE_LIMIT_DEFAULT_PER_MINUTE` | 120 | Everything else under `/api` |
+| `CHAT_DAILY_TOKEN_BUDGET` | 0 (off) | Provider tokens one identity may spend on chat per UTC day. Cached answers stay free once capped. |
+| `MAX_CONCURRENT_INDEX_JOBS` | 2 | Indexing jobs across all collections |
+| `SEARCH_HISTORY_RETENTION_DAYS` | 30 | Search log (stores result snippets) |
+| `USAGE_RETENTION_DAYS` | 180 | Per-turn chat usage rows |
+
+Identity for the limits is the verified Cloudflare Access email when
+present, else the client IP (`CF-Connecting-IP` behind the tunnel). A
+**429 response** means "you, specifically, are over a limit — wait the
+`Retry-After` seconds," not that the server is down; the UI says so. With
+`ADMIN_EMAILS` set, the Admin tab shows per-person spend, live process
+stats, and the rate-limit counters; the same data is at
+`/api/admin/usage` and `/api/admin/stats`.
+
 ## Backups
 
 Everything lives in the data directory (`./data` by default, `/app/data` in

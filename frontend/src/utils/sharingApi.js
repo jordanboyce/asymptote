@@ -9,6 +9,15 @@ export async function createShare(collectionId, permission = 'read', expiresDays
   return response.data
 }
 
+export async function createSharesBulk(collectionId, emails, permission = 'read', expiresDays = null) {
+  const response = await http.post(`/api/collections/${collectionId}/shares/bulk`, {
+    emails,
+    permission,
+    expires_days: expiresDays,
+  })
+  return response.data
+}
+
 export async function listShares(collectionId) {
   const response = await http.get(`/api/collections/${collectionId}/shares`)
   return response.data.shares || []

@@ -179,3 +179,93 @@ def test_api_error_is_readable(monkeypatch):
 
     with pytest.raises(RuntimeError, match="nope"):
         ap.admit_email("a@b.c")
+
+
+# ── Batch admission ─────────────────────────────────────────────────────
+
+def _fake_cf_counting(monkeypatch, policy, captured):
+    """Like _fake_cf, but counts round-trips per method."""
+    captured.setdefault("gets", 0)
+    captured.setdefault("puts", 0)
+
+    def fake_urlopen(req, timeout=15):
+        if req.get_method() == "GET":
+            captured["gets"] += 1
+            return _FakeResp({"success": True, "result": policy})
+        captured["puts"] += 1
+        captured["body"] = json.loads(req.data.decode())
+        return _FakeResp({"success": True, "result": {}})
+    monkeypatch.setattr(ap.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_batch_is_one_get_one_put(monkeypatch):
+    """The whole point: N invitations must not be N read-modify-writes."""
+    _configure(monkeypatch)
+    policy = {"name": "p", "decision": "allow",
+              "include": [{"email": {"email": "existing@x.com"}}]}
+    captured = {}
+    _fake_cf_counting(monkeypatch, policy, captured)
+
+    results = ap.admit_emails(["a@x.com", "b@x.com", "existing@x.com", "c@x.com"])
+
+    assert captured["gets"] == 1
+    assert captured["puts"] == 1
+    assert results == {
+        "a@x.com": "added", "b@x.com": "added",
+        "existing@x.com": "already", "c@x.com": "added",
+    }
+    written = [r["email"]["email"] for r in captured["body"]["include"]]
+    assert written == ["existing@x.com", "a@x.com", "b@x.com", "c@x.com"]
+
+
+def test_batch_dedupes_and_normalizes(monkeypatch):
+    _configure(monkeypatch)
+    policy = {"name": "p", "decision": "allow", "include": []}
+    captured = {}
+    _fake_cf_counting(monkeypatch, policy, captured)
+
+    results = ap.admit_emails(["  A@X.com ", "a@x.com", "not-an-email", ""])
+    assert results["a@x.com"] == "added"
+    assert results["not-an-email"].startswith("rejected:")
+    assert captured["puts"] == 1
+    assert [r["email"]["email"] for r in captured["body"]["include"]] == ["a@x.com"]
+
+
+def test_batch_partial_success_at_the_cap(monkeypatch):
+    """Addresses under the cap land; the overflow is refused per-address,
+    and the ones that fit are still written."""
+    _configure(monkeypatch)
+    existing = [{"email": {"email": f"u{i}@x.com"}} for i in range(ap.MAX_EMAILS_PER_RULE - 1)]
+    policy = {"name": "p", "decision": "allow", "include": existing}
+    captured = {}
+    _fake_cf_counting(monkeypatch, policy, captured)
+
+    results = ap.admit_emails(["fits@x.com", "overflow@x.com"])
+    assert results["fits@x.com"] == "added"
+    assert results["overflow@x.com"].startswith("rejected:")
+    assert captured["puts"] == 1
+    written = [r["email"]["email"] for r in captured["body"]["include"]]
+    assert "fits@x.com" in written and "overflow@x.com" not in written
+
+
+def test_batch_no_write_when_nothing_new(monkeypatch):
+    _configure(monkeypatch)
+    policy = {"name": "p", "decision": "allow",
+              "include": [{"email": {"email": "a@x.com"}}]}
+    captured = {}
+    _fake_cf_counting(monkeypatch, policy, captured)
+
+    results = ap.admit_emails(["a@x.com"])
+    assert results == {"a@x.com": "already"}
+    assert captured["puts"] == 0  # nothing changed → no PUT
+
+
+def test_single_admit_still_works_through_batch(monkeypatch):
+    """admit_email is now a thin wrapper over admit_emails."""
+    _configure(monkeypatch)
+    policy = {"name": "p", "decision": "allow", "include": []}
+    captured = {}
+    _fake_cf_counting(monkeypatch, policy, captured)
+    assert ap.admit_email("new@x.com") is True
+    with pytest.raises(RuntimeError, match="No email address"):
+        ap.admit_email("")

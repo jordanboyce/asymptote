@@ -254,6 +254,118 @@ async def create_share(collection_id: str, body: dict, request: Request, user_id
     return share
 
 
+@router.post(
+    "/api/collections/{collection_id}/shares/bulk",
+    summary="Invite several people to a collection at once",
+    tags=["sharing"],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_shares_bulk(collection_id: str, body: dict, request: Request, user_id: str = Depends(get_current_user_id)):
+    """
+    One share + emailed invitation per address, with per-address results.
+
+    Body:
+        emails: List of recipient addresses (deduplicated, max 100 per call)
+        permission: 'read' or 'readwrite' (default 'read')
+        expires_days: Optional expiry applied to every share
+
+    Edge admission happens in ONE Cloudflare policy write for the whole
+    batch (services.access_provisioning.admit_emails) — the per-address
+    loop would be N round-trips with a lost-update race. As with single
+    invites, only an admin's batch admits strangers; a non-admin's batch
+    reports edge_admitted=false per address so nobody mails a hundred
+    links that dead-end at the login.
+    """
+    from services.access_provisioning import (
+        access_provisioning_enabled,
+        admit_emails,
+        is_admin,
+    )
+    from services.app_database import app_db
+    from services.share_email import send_share_email
+
+    raw = body.get("emails") or []
+    emails, seen = [], set()
+    for e in raw:
+        addr = (e or "").strip().lower()
+        if addr and "@" in addr and addr not in seen:
+            seen.add(addr)
+            emails.append(addr)
+    if not emails:
+        raise HTTPException(status_code=400, detail="No valid email addresses given")
+    if len(emails) > 100:
+        raise HTTPException(status_code=400, detail="At most 100 invitations per call")
+
+    permission = body.get("permission", "read")
+    expires_days = body.get("expires_days")
+
+    # Verify ownership once up front (create_share would also catch it, but
+    # failing before any policy write keeps the batch all-or-nothing on auth).
+    collection = app_db.get_collection(collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail=f"Collection {collection_id} not found")
+    if collection.get("owner_id") != user_id:
+        raise HTTPException(status_code=403, detail="Only the collection owner can create shares")
+
+    # One policy write for the whole batch.
+    admissions = {}
+    if access_provisioning_enabled() and is_admin(user_id):
+        try:
+            admissions = admit_emails(emails)
+        except Exception as e:
+            logger.warning(f"Bulk edge admission failed: {e}")
+            admissions = {addr: f"rejected: {e}" for addr in emails}
+
+    results = []
+    collection_name = collection.get("name", collection_id)
+    for addr in emails:
+        entry = {"email": addr}
+        try:
+            share = sharing_service.create_share(
+                collection_id=collection_id,
+                owner_id=user_id,
+                permission=permission,
+                expires_days=expires_days,
+                invited_email=addr,
+            )
+            entry["share_id"] = share["share_id"]
+        except Exception as e:
+            entry["error"] = str(e)
+            results.append(entry)
+            continue
+
+        admission = admissions.get(addr, "")
+        entry["edge_admitted"] = admission in ("added", "already")
+        if admission.startswith("rejected:"):
+            entry["edge_error"] = admission.partition(":")[2].strip()
+
+        try:
+            send_share_email(
+                addr,
+                share_token=share["share_id"],
+                collection_name=collection_name,
+                permission=permission,
+                shared_by=user_id or "A teammate",
+                app_url=str(request.base_url),
+                expires_at=share.get("expires_at"),
+            )
+            entry["email_sent"] = True
+        except Exception as e:
+            entry["email_sent"] = False
+            entry["email_error"] = str(e)
+        results.append(entry)
+
+    if access_provisioning_enabled() and not is_admin(user_id):
+        note = (
+            "Admitting new people at the Cloudflare Access edge is an admin "
+            "action; these invitations only work for recipients who can "
+            "already reach the app."
+        )
+    else:
+        note = None
+    return {"results": results, "edge_note": note}
+
+
 @router.get(
     "/api/collections/{collection_id}/shares",
     summary="List shares for a collection",

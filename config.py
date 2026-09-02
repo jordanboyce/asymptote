@@ -127,7 +127,11 @@ class Settings(BaseSettings):
     mcp_ai_provider: str = "none"   # AI provider for MCP synthesis: "none" | "anthropic" | "openai" | "ollama"
     mcp_ollama_model: str = ""      # Ollama model to use when mcp_ai_provider = "ollama"
 
-    # Database backend: "sqlite" for single-user/simple, "postgresql" for multi-user/enterprise
+    # Database backend for app metadata (collections, shares, jobs, usage).
+    # "postgresql" moves ONLY app.db — per-collection vector/BM25/metadata
+    # stores, structured tables, the answer cache, and faiss.index all stay
+    # as local files, so this is not HA and does not enable multi-replica.
+    # See docs/DEPLOYMENT.md "Capacity & scaling".
     db_backend: Literal["sqlite", "postgresql"] = "sqlite"
     postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/asymptote
 

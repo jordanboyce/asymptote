@@ -755,3 +755,68 @@ def test_config_read_stays_open(private_client):
     r = private_client.get("/api/config", headers=_as(BOB))
     assert r.status_code == 200
     assert r.json()["ollama_cloud_api_key"] in ("", "********")
+
+
+# ── Bulk invitations ────────────────────────────────────────────────────────
+
+
+def test_bulk_invite_per_address_results(private_client, monkeypatch):
+    """One share per address, everyone emailed, results reported per address."""
+    import services.share_email as se
+
+    sent = []
+    monkeypatch.setattr(se, "send_share_email", lambda to, **kw: sent.append(to))
+
+    cid = private_client.post(
+        "/api/collections", json={"name": "Bulk notes"}, headers=_as(ALICE)
+    ).json()["id"]
+    r = private_client.post(
+        f"/api/collections/{cid}/shares/bulk",
+        json={"emails": ["bob@example.com", " CAROL@example.com ", "bob@example.com", "junk"]},
+        headers=_as(ALICE),
+    )
+    assert r.status_code == 201
+    results = r.json()["results"]
+    # Deduplicated + normalized + junk dropped → two invitations
+    assert [x["email"] for x in results] == ["bob@example.com", "carol@example.com"]
+    assert all(x["email_sent"] for x in results)
+    assert sorted(sent) == ["bob@example.com", "carol@example.com"]
+
+    # Each address got its own share, revocable independently
+    shares = private_client.get(
+        f"/api/collections/{cid}/shares", headers=_as(ALICE)
+    ).json()["shares"]
+    assert sorted(s["invited_email"] for s in shares) == ["bob@example.com", "carol@example.com"]
+
+    # And each recipient can accept their own token
+    bob_share = next(x for x in results if x["email"] == "bob@example.com")
+    accept = private_client.post(f"/api/shares/{bob_share['share_id']}/accept", headers=_as(BOB))
+    assert accept.status_code == 200
+
+
+def test_bulk_invite_owner_only(private_client, monkeypatch):
+    import services.share_email as se
+    monkeypatch.setattr(se, "send_share_email", lambda to, **kw: None)
+
+    cid = private_client.post(
+        "/api/collections", json={"name": "Not yours"}, headers=_as(ALICE)
+    ).json()["id"]
+    r = private_client.post(
+        f"/api/collections/{cid}/shares/bulk",
+        json={"emails": ["x@example.com"]},
+        headers=_as(BOB),
+    )
+    assert r.status_code == 403
+
+
+def test_bulk_invite_rejects_empty_and_oversized(private_client):
+    cid = private_client.post(
+        "/api/collections", json={"name": "Limits"}, headers=_as(ALICE)
+    ).json()["id"]
+    assert private_client.post(
+        f"/api/collections/{cid}/shares/bulk", json={"emails": []}, headers=_as(ALICE)
+    ).status_code == 400
+    too_many = [f"u{i}@example.com" for i in range(101)]
+    assert private_client.post(
+        f"/api/collections/{cid}/shares/bulk", json={"emails": too_many}, headers=_as(ALICE)
+    ).status_code == 400

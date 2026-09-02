@@ -28,9 +28,10 @@ Deliberately narrow, because an admission is a privileged act:
 
 import json
 import logging
+import threading
 import urllib.error
 import urllib.request
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from config import settings
 
@@ -40,6 +41,11 @@ _API = "https://api.cloudflare.com/client/v4"
 
 # Cloudflare account limit: "Email addresses per rule: 1,000".
 MAX_EMAILS_PER_RULE = 1000
+
+# Every edit of the policy is a read-modify-write of its whole include list;
+# two concurrent edits would silently drop each other's rule. One process,
+# so one lock fixes it.
+_policy_write_lock = threading.Lock()
 
 
 def access_provisioning_enabled() -> bool:
@@ -152,29 +158,72 @@ def admit_email(email: str) -> bool:
 
     Idempotent: an address already present is left alone and returns False.
     """
+    results = admit_emails([email])
+    status = next(iter(results.values()), "rejected: no email address to admit")
+    if status.startswith("rejected:"):
+        raise RuntimeError(status.partition(":")[2].strip())
+    return status == "added"
+
+
+def admit_emails(emails: List[str]) -> Dict[str, str]:
+    """Add many addresses in ONE read-modify-write of the Access policy.
+
+    The per-address loop this replaces made N GET+PUT round-trips with a
+    lost-update race between them; a roster invite would have been both slow
+    and unsafe. Returns {email: "added" | "already" | "rejected: <why>"} —
+    partial success is deliberate: addresses under the cap are admitted even
+    when later ones are refused, and the caller reports per address.
+    """
     _require_enabled()
-    target = (email or "").strip().lower()
-    if not target:
+
+    results: Dict[str, str] = {}
+    targets: List[str] = []
+    seen = set()
+    for raw in emails:
+        target = (raw or "").strip().lower()
+        if not target:
+            continue
+        if "@" not in target:
+            results[target or raw] = "rejected: not an email address"
+            continue
+        if target not in seen:
+            seen.add(target)
+            targets.append(target)
+    if not targets and not results:
         raise RuntimeError("No email address to admit.")
 
-    policy = _get_policy()
-    include = list(policy.get("include") or [])
+    with _policy_write_lock:
+        policy = _get_policy()
+        include = list(policy.get("include") or [])
+        present = {e for e in (_email_of(r) for r in include) if e}
+        email_rule_count = len(present)
 
-    if any(_email_of(rule) == target for rule in include):
-        logger.info(f"Edge admission for {target}: already on the Access policy")
-        return False
+        added_any = False
+        for target in targets:
+            if target in present:
+                results[target] = "already"
+                continue
+            if email_rule_count >= MAX_EMAILS_PER_RULE:
+                results[target] = (
+                    f"rejected: the Access policy already holds {MAX_EMAILS_PER_RULE} "
+                    "email addresses (Cloudflare's per-rule cap). Remove some, or "
+                    "move to an email-domain or IdP-group rule."
+                )
+                continue
+            include.append({"email": {"email": target}})
+            present.add(target)
+            email_rule_count += 1
+            results[target] = "added"
+            added_any = True
 
-    if sum(1 for rule in include if _email_of(rule)) >= MAX_EMAILS_PER_RULE:
-        raise RuntimeError(
-            f"The Access policy already holds {MAX_EMAILS_PER_RULE} email addresses, "
-            f"which is Cloudflare's per-rule cap. Remove some, or move to an "
-            f"email-domain or IdP-group rule."
-        )
-
-    include.append({"email": {"email": target}})
-    _put_policy(policy, include)
-    logger.info(f"Edge admission: added {target} to Access policy {settings.cf_access_policy_id}")
-    return True
+        if added_any:
+            _put_policy(policy, include)
+            added = [e for e, r in results.items() if r == "added"]
+            logger.info(
+                f"Edge admission: added {len(added)} address(es) to Access policy "
+                f"{settings.cf_access_policy_id}: {', '.join(added)}"
+            )
+    return results
 
 
 def revoke_email(email: str) -> bool:
@@ -189,20 +238,21 @@ def revoke_email(email: str) -> bool:
     if not target:
         return False
 
-    policy = _get_policy()
-    include = list(policy.get("include") or [])
-    remaining = [rule for rule in include if _email_of(rule) != target]
+    with _policy_write_lock:
+        policy = _get_policy()
+        include = list(policy.get("include") or [])
+        remaining = [rule for rule in include if _email_of(rule) != target]
 
-    if len(remaining) == len(include):
-        return False
-    if not remaining:
-        # Access requires at least one Include rule; emptying it would lock
-        # everyone out, including whoever is trying to fix it.
-        raise RuntimeError(
-            f"Refusing to remove {target}: it is the only Include rule on the "
-            f"Access policy, and a policy with none locks the deployment out."
-        )
+        if len(remaining) == len(include):
+            return False
+        if not remaining:
+            # Access requires at least one Include rule; emptying it would lock
+            # everyone out, including whoever is trying to fix it.
+            raise RuntimeError(
+                f"Refusing to remove {target}: it is the only Include rule on the "
+                f"Access policy, and a policy with none locks the deployment out."
+            )
 
-    _put_policy(policy, remaining)
+        _put_policy(policy, remaining)
     logger.info(f"Edge admission: removed {target} from Access policy {settings.cf_access_policy_id}")
     return True
