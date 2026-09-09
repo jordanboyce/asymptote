@@ -6,7 +6,8 @@ One idempotent run creates everything deployment shape B needs:
   2. tunnel ingress:  <hostname> -> http://asymptote:8473
   3. a proxied CNAME  <hostname> -> <tunnel-id>.cfargotunnel.com
   4. Access app on the root hostname   (Allow: the reusable policy below)
-  5. Access app on <hostname>/mcp      (Service Auth: the token below)
+  5. Access app on <hostname>/mcp      (Service Auth: the token below,
+                                        plus Bypass so personal tokens reach the app)
   6. an Access service token for headless MCP clients
   7. a reusable Access policy `asymptote-invited` holding the admitted
      addresses, plus the one-time PIN login method so invited guests need
@@ -44,6 +45,7 @@ HOSTNAME = os.environ.get("ASYMPTOTE_HOSTNAME", "asymptote.cyberlion.dev")
 ALLOW_EMAIL = os.environ.get("ASYMPTOTE_ALLOW_EMAIL", "jordan.boyce@cyberlion.dev")
 TUNNEL_NAME = "asymptote"
 SERVICE_TOKEN_NAME = "asymptote-mcp"
+MCP_BYPASS_POLICY_NAME = "mcp-app-token-gate"
 INVITE_POLICY_NAME = "asymptote-invited"
 API = "https://api.cloudflare.com/client/v4"
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
@@ -231,6 +233,27 @@ def main():
         "name": "mcp-service-tokens", "decision": "non_identity", "precedence": 1,
         "include": [{"service_token": {"token_id": st_id}}],
     })
+
+    # 5c. Let personal access tokens (Settings -> MCP) through the edge.
+    # Access has no way to check an app-minted bearer token, so a Service
+    # Auth-only app rejects every personal-token client with a 403 before
+    # the request reaches Asymptote. A Bypass policy *below* the Service
+    # Auth one fixes that: Cloudflare evaluates Service Auth and Bypass
+    # top-down, so a client presenting the service token still gets its
+    # JWT, and everything else falls through to the app's own gate, which
+    # answers 401 without a valid token or AUTH_PASSWORD (see require_auth
+    # in main.py). Only /mcp is affected; the UI app stays SSO-gated.
+    # Applied to pre-existing apps too, since ensure_app leaves those alone.
+    mcp_policies = cf("GET", f"/accounts/{ACCOUNT_ID}/access/apps/{mcp_app['id']}/policies") or []
+    if not any(p.get("decision") == "bypass" for p in mcp_policies):
+        cf("POST", f"/accounts/{ACCOUNT_ID}/access/apps/{mcp_app['id']}/policies", {
+            "name": MCP_BYPASS_POLICY_NAME, "decision": "bypass",
+            "precedence": max([p.get("precedence", 0) for p in mcp_policies] + [0]) + 1,
+            "include": [{"everyone": {}}],
+        })
+        print(f"access app '{HOSTNAME}/mcp': bypass policy '{MCP_BYPASS_POLICY_NAME}' added (personal tokens reach the app)")
+    else:
+        print(f"access app '{HOSTNAME}/mcp': bypass policy present")
 
     # 6. JWT trust: team domain + both apps' AUD tags -----------------------
     # With these set the app verifies the Cf-Access-Jwt-Assertion the edge

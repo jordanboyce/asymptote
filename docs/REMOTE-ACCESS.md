@@ -40,6 +40,18 @@ free tier covers up to 50 users).
    - **MCP/agent policy** (Service Auth): create a service token under
      *Access → Service Auth → Service Tokens*, then add a policy with action
      **Service Auth** that includes that token.
+   - **Personal-token policy** (Bypass), on the `/mcp` application only and
+     placed *below* the Service Auth policy: action **Bypass**, include
+     *Everyone*. Access cannot verify a token the app minted, so without this
+     every personal-token client is refused at the edge with a 403 before
+     Asymptote sees the request. Cloudflare evaluates Service Auth and Bypass
+     top-down, so service-token clients still get their signed identity, and
+     everyone else falls through to the app, which answers 401 unless the
+     request carries a valid personal token or `AUTH_PASSWORD`. The browser
+     application keeps its Allow policies and stays SSO-gated. Trade-off:
+     `/mcp` is reachable from the internet (the app's rate limits apply) and
+     Access does not log bypassed requests. `scripts/provision_cloudflare.py`
+     adds this policy for you.
 
 ## Deploy (on the Docker host)
 
@@ -86,8 +98,10 @@ above), log in through the browser and open Settings → MCP → Personal access
 tokens. Generate one and copy the ready-made Claude Code / Codex / Copilot
 snippet it produces — the token and URL are already filled in, and it works
 whether or not `PRIVATE_COLLECTIONS` is on. This skips everything below
-entirely: no Zero Trust dashboard, no service token, no editing `.env` on
-every machine that wants a connection. Revoke a token from the same screen
+entirely: no service token, no editing `.env` on every machine that wants a
+connection. The one edge prerequisite is the Bypass policy on the `/mcp`
+Access application from step 3 (the provisioning script creates it); without
+it Cloudflare returns 403 to every bearer token it did not issue. Revoke a token from the same screen
 when a laptop is retired.
 
 The rest of this section covers the alternative — a Cloudflare Access
