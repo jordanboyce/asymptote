@@ -248,12 +248,28 @@ if settings.auth_password or settings.private_collections:
                     request.state.auth_via = "cloudflare-access"
                     return await _call_with_user_context(request, call_next)
 
+        presented = _password_from_auth_header(request.headers.get("authorization", ""))
+
         if settings.auth_password:
-            presented = _password_from_auth_header(request.headers.get("authorization", ""))
             if presented and secrets.compare_digest(presented, settings.auth_password):
                 request.state.auth_identity = None
                 request.state.auth_via = "password"
                 return await _call_with_user_context(request, call_next)
+
+        # Personal MCP access tokens: self-serve alternative to a Cloudflare
+        # Access service token, minted from the app itself (Settings → MCP)
+        # by anyone who can already reach it. Deliberately scoped to /mcp —
+        # a leaked token cannot touch the rest of the API or the UI. Under
+        # private collections it resolves to the identity that created it,
+        # so an MCP client sees exactly that person's collections.
+        if request.url.path.startswith("/mcp") and presented and presented.startswith("asy_mcp_"):
+            from services.mcp_tokens import verify_token
+            token_record = await asyncio.to_thread(verify_token, presented)
+            if token_record is not None:
+                request.state.auth_identity = token_record.get("user_id")
+                request.state.auth_via = "mcp_token"
+                return await _call_with_user_context(request, call_next)
+
         return JSONResponse(
             {"detail": "Not authenticated"},
             status_code=401,

@@ -158,6 +158,34 @@ class DatabaseBackend(ABC):
         """
         ...
 
+    # ── Personal MCP access tokens ───────────────────────────
+    # Self-serve bearer credentials for headless MCP clients (Claude Code,
+    # Codex, ...): a user mints one from the app instead of a Cloudflare
+    # Access service token. Scoped to /mcp only by the auth middleware.
+
+    @abstractmethod
+    def create_mcp_token(
+        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str
+    ) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def list_mcp_tokens(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def get_mcp_token_by_hash(self, token_hash: str) -> Optional[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def touch_mcp_token(self, token_id: str) -> None:
+        ...
+
+    @abstractmethod
+    def revoke_mcp_token(self, token_id: str, user_id: Optional[str]) -> bool:
+        """Revoke a token owned by user_id. Returns False if not found/not owned."""
+        ...
+
     # ── Upload Jobs ──────────────────────────────────────────
 
     @abstractmethod

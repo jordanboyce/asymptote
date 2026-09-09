@@ -81,6 +81,19 @@ curl -sS -X POST https://asymptote.<your-domain>/mcp/ \
 
 ## Pointing MCP clients at it
 
+**Easiest: a personal access token.** Once the app is reachable (the setup
+above), log in through the browser and open Settings → MCP → Personal access
+tokens. Generate one and copy the ready-made Claude Code / Codex / Copilot
+snippet it produces — the token and URL are already filled in, and it works
+whether or not `PRIVATE_COLLECTIONS` is on. This skips everything below
+entirely: no Zero Trust dashboard, no service token, no editing `.env` on
+every machine that wants a connection. Revoke a token from the same screen
+when a laptop is retired.
+
+The rest of this section covers the alternative — a Cloudflare Access
+service token — for cases with no browser to log in from at all (a CI runner,
+a fully headless box provisioning its own credentials).
+
 Headless clients authenticate with the service token **and** the app
 password. For clients that support custom headers (Claude Code, most MCP
 SDKs), configure the `/mcp` endpoint with:
