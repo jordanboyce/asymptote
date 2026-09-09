@@ -31,8 +31,10 @@ services:
       - DATA_DIR=/app/data
       - HOST=0.0.0.0
       - PORT=8473
-      # Embeddings always run locally in the container (sentence-transformers);
-      # external AI providers are configured in the app's Settings tab.
+      # Starting point for embeddings: the built-in model inside the container.
+      # Settings → Indexing → Embedding can switch to a hosted provider
+      # (Google Gemini, Mistral, Voyage, Jina, OpenAI, …) at runtime; that
+      # choice is stored in the app database under ./data and wins over these.
       - EMBEDDING_PROVIDER=local
       - EMBEDDING_MODEL=all-MiniLM-L6-v2
       # Reach an Ollama instance on the docker host, if you run one

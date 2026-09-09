@@ -30,14 +30,34 @@ class Settings(BaseSettings):
     # Data storage
     data_dir: Path = Path("./data")
 
-    # Embedding configuration
+    # Embedding configuration — where document chunks and queries become
+    # vectors. The full catalog (labels, costs, models, endpoints) lives in
+    # services/embedding_providers.py; ids as of writing:
+    #   local              sentence-transformers in-process (default)
+    #   google | mistral | voyage | jina | openai
+    #                      hosted APIs speaking the OpenAI embeddings shape;
+    #                      chunks are sent out at index time and queries at
+    #                      search time, so pick these only when that egress
+    #                      is acceptable (OFFLINE_MODE refuses them)
+    #   ollama             a self-hosted Ollama daemon at OLLAMA_BASE_URL
+    #   openai_compatible  any OpenAI-style endpoint at EMBEDDING_BASE_URL
+    #   ollama_cloud       kept for old configs; ollama.com serves no
+    #                      embedding models today
+    embedding_provider: str = "local"
+    # Model for the "local" provider (a sentence-transformers name).
     embedding_model: str = "all-MiniLM-L6-v2"
-    # "local" = sentence-transformers (downloaded from HuggingFace)
-    # "ollama" = Ollama /api/embed (fully local, no HF dependency)
-    # "ollama_cloud" = ollama.com /api/embed with an API key — no local model
-    #   at all; note chunks are sent to ollama.com at index time and queries
-    #   at search time, so pick this only when that egress is acceptable.
-    embedding_provider: Literal["local", "ollama", "ollama_cloud"] = "local"
+    # Model for every non-local provider; empty = the provider's default.
+    # OLLAMA_EMBEDDING_MODEL is the pre-2026-09 name and still works.
+    remote_embedding_model: str = Field(
+        "", validation_alias=AliasChoices("REMOTE_EMBEDDING_MODEL", "OLLAMA_EMBEDDING_MODEL")
+    )
+    # Base URL for embedding_provider="openai_compatible" (…/v1).
+    embedding_base_url: str = ""
+    # Key for the selected embedding provider. Empty falls back to the team
+    # key saved on the matching AI Providers card (Google, OpenAI, …), so a
+    # key added for chat is reused. Providers without a chat card (Mistral,
+    # Voyage, Jina) need this set.
+    embedding_api_key: str = ""
     # Ollama Cloud API key, used by embedding_provider="ollama_cloud" and as
     # the automatic key for vision OCR when VISION_OCR_PROVIDER=ollama_cloud.
     # Accepted under either env name (people reasonably write both). Empty
@@ -47,7 +67,6 @@ class Settings(BaseSettings):
         "", validation_alias=AliasChoices("OLLAMA_CLOUD_API_KEY", "OLLAMA_CLOUD_TOKEN")
     )
     ollama_base_url: str = "http://localhost:11434"   # used for embeddings and inference
-    ollama_embedding_model: str = "nomic-embed-text"  # Ollama model when embedding_provider="ollama"
 
     # Semantic answer cache: single-turn chat questions that closely match a
     # previously answered one (cosine similarity of LOCAL embeddings — the
@@ -303,6 +322,14 @@ class Settings(BaseSettings):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        # Fail at startup, not on the first upload, when EMBEDDING_PROVIDER
+        # names something the catalog doesn't know.
+        from services.embedding_providers import PROVIDER_IDS
+        if self.embedding_provider not in PROVIDER_IDS:
+            raise ValueError(
+                f"EMBEDDING_PROVIDER={self.embedding_provider!r} is not one of "
+                f"{', '.join(PROVIDER_IDS)}"
+            )
         # Ensure data directories exist
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "documents").mkdir(exist_ok=True)

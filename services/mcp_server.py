@@ -313,14 +313,20 @@ def health_check() -> dict[str, Any]:
         col_summary = []
         logger.warning(f"health_check: could not list collections: {e}")
 
+    from services.embedding_providers import get_provider, default_model_for
+
     embedding_info: dict[str, Any] = {
         "provider": settings.embedding_provider,
+        "provider_label": (get_provider(settings.embedding_provider) or {}).get("label"),
     }
-    if settings.embedding_provider == "ollama":
-        embedding_info["model"] = settings.ollama_embedding_model
-        embedding_info["base_url"] = settings.ollama_base_url
-    else:
+    if settings.embedding_provider == "local":
         embedding_info["model"] = settings.embedding_model
+    else:
+        embedding_info["model"] = (
+            settings.remote_embedding_model or default_model_for(settings.embedding_provider)
+        )
+        if settings.embedding_provider == "ollama":
+            embedding_info["base_url"] = settings.ollama_base_url
 
     return _tool_response({
         "status": "ok",

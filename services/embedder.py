@@ -290,10 +290,185 @@ class EmbeddingService:
         )
 
 
-OLLAMA_CLOUD_BASE_URL = "https://ollama.com"
+class OpenAICompatibleEmbeddingService:
+    """Generates embeddings via the OpenAI-style `POST {base_url}/embeddings`.
+
+    This one request shape — `{"model": ..., "input": [...]}` in, a `data`
+    list of `{"index", "embedding"}` out — is what OpenAI, Google Gemini's
+    compatibility layer, Mistral, Voyage, Jina, Together, LM Studio, vLLM
+    and most other embedding APIs speak, so one class covers all of them.
+    `label` is only used in error messages so a non-engineer reads
+    "Google Gemini rejected the key", not a URL.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        base_url: str,
+        api_key: str = "",
+        label: str = "",
+        batch_size: int = 64,
+    ):
+        if not base_url:
+            raise RuntimeError(
+                f"{label or 'The custom embedding endpoint'} needs a base URL "
+                f"(for example https://api.example.com/v1)."
+            )
+        if not model_name:
+            raise RuntimeError(f"{label or 'The embedding provider'} needs a model name.")
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.label = label or self.base_url
+        self.batch_size = batch_size
+        logger.info(f"Initialising OpenAI-compatible embedding: model={model_name} url={self.base_url}")
+        try:
+            sample = self._call_api(["dimension probe"])
+        except Exception as e:
+            raise RuntimeError(self._explain(e)) from e
+        self.embedding_dim = len(sample[0])
+        logger.info(f"{self.label} embedding ready: dim={self.embedding_dim}")
+
+    def _explain(self, e: Exception) -> str:
+        """Turn transport errors into one sentence a person can act on."""
+        import urllib.error
+
+        if isinstance(e, urllib.error.HTTPError):
+            body = ""
+            try:
+                body = e.read().decode(errors="replace")[:300]
+            except Exception:
+                pass
+            # Google answers a bad key with 400 + "Please pass a valid API key".
+            if e.code in (401, 403) or (e.code == 400 and "api key" in body.lower()):
+                return f"{self.label} rejected the API key (HTTP {e.code}). Check the key and try again."
+            if e.code == 404:
+                return (
+                    f"{self.label} has no model called '{self.model_name}' or the base URL "
+                    f"{self.base_url} is wrong (HTTP 404). {body}"
+                )
+            if e.code == 429:
+                return f"{self.label} is rate-limiting this key (HTTP 429). Wait a moment or check your plan."
+            return f"{self.label} returned HTTP {e.code} for model '{self.model_name}'. {body}"
+        if isinstance(e, urllib.error.URLError):
+            return f"Could not reach {self.label} at {self.base_url}: {e.reason}"
+        return f"{self.label} embedding call failed: {e}"
+
+    def _call_api(self, texts: List[str]) -> List[List[float]]:
+        payload = json.dumps({"model": self.model_name, "input": texts}).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        req = urllib.request.Request(
+            f"{self.base_url}/embeddings",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode())
+        items = data.get("data")
+        if not items:
+            raise ValueError(f"{self.label} returned no embeddings: {str(data)[:300]}")
+        # Providers may return rows out of order; `index` is authoritative.
+        ordered = sorted(items, key=lambda item: item.get("index", 0))
+        vectors = [item["embedding"] for item in ordered]
+        if len(vectors) != len(texts):
+            raise ValueError(
+                f"{self.label} returned {len(vectors)} embeddings for {len(texts)} inputs"
+            )
+        return vectors
+
+    def embed_texts(
+        self,
+        texts: List[str],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> np.ndarray:
+        if not texts:
+            return np.array([]).reshape(0, self.embedding_dim)
+        logger.debug(f"{self.label} embed_texts: {len(texts)} texts")
+        results: List[List[float]] = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
+            try:
+                results.extend(self._call_api(batch))
+            except Exception as e:
+                raise RuntimeError(self._explain(e)) from e
+            if progress_callback:
+                progress_callback(min(i + len(batch), len(texts)), len(texts))
+        return np.array(results, dtype=np.float32)
+
+    def embed_query(self, query: str) -> np.ndarray:
+        logger.debug(f"{self.label} embed_query: {query[:60]}…")
+        try:
+            return np.array(self._call_api([query])[0], dtype=np.float32)
+        except Exception as e:
+            raise RuntimeError(self._explain(e)) from e
 
 
-def create_embedding_service(collection_model: Optional[str] = None):
+# Re-exported for older imports; the catalog is the source of truth now.
+from services.embedding_providers import (  # noqa: E402
+    CLOUD_EMBEDDING_PROVIDERS,
+    OLLAMA_CLOUD_BASE_URL,
+    get_provider,
+)
+
+
+def resolve_embedding_api_key(provider_id: str, explicit: Optional[str] = None) -> str:
+    """The key an embedding provider should use, following one chain:
+
+    1. an explicit value (the Settings form's own key field, or a test probe)
+    2. the embedding-specific key saved in config (EMBEDDING_API_KEY)
+    3. for Ollama Cloud, the legacy OLLAMA_CLOUD_API_KEY / _TOKEN
+    4. the team key saved on the matching AI Providers card, so a key added
+       for chat is reused without pasting it twice
+    """
+    from config import settings
+
+    if explicit:
+        return explicit
+    if settings.embedding_api_key:
+        return settings.embedding_api_key
+    if provider_id == "ollama_cloud" and settings.ollama_cloud_api_key:
+        return settings.ollama_cloud_api_key
+    entry = get_provider(provider_id) or {}
+    card = entry.get("key_provider")
+    if card:
+        try:
+            from services.app_database import app_db
+            return app_db.get_agent_api_key(card) or ""
+        except Exception:
+            return ""
+    return ""
+
+
+def embedding_signature(overrides: Optional[dict] = None) -> str:
+    """Stable string naming the (provider, endpoint, model) triple in effect.
+
+    The indexer manager keys its service cache on this, so any settings
+    change that would produce different vectors yields a different key.
+    """
+    from config import settings
+
+    o = overrides or {}
+    provider = o.get("embedding_provider", settings.embedding_provider)
+    if provider == "local":
+        return f"local::{o.get('embedding_model', settings.embedding_model)}"
+    entry = get_provider(provider) or {}
+    if provider == "ollama":
+        base = o.get("ollama_base_url", settings.ollama_base_url)
+    elif provider == "openai_compatible":
+        base = o.get("embedding_base_url", settings.embedding_base_url)
+    else:
+        base = entry.get("base_url") or ""
+    model = o.get("remote_embedding_model", settings.remote_embedding_model) or entry.get("default_model", "")
+    return f"{provider}::{base}::{model}"
+
+
+def create_embedding_service(
+    collection_model: Optional[str] = None,
+    overrides: Optional[dict] = None,
+):
     """Build the embedding service the current settings call for.
 
     This is the ONE place provider selection happens — the indexer manager and
@@ -303,32 +478,69 @@ def create_embedding_service(collection_model: Optional[str] = None):
     - "local": sentence-transformers; `collection_model` (a per-collection
       override) wins over the global EMBEDDING_MODEL.
     - "ollama": self-hosted daemon at OLLAMA_BASE_URL, no key.
-    - "ollama_cloud": ollama.com with a bearer key — OLLAMA_CLOUD_API_KEY from
-      .env, falling back to the team key saved on the Ollama Cloud provider
-      card in Settings.
+    - "ollama_cloud": ollama.com with a bearer key.
+    - any other catalog entry: the OpenAI-style embeddings endpoint the
+      catalog names (or EMBEDDING_BASE_URL for "openai_compatible"), with
+      the key from resolve_embedding_api_key.
+
+    `overrides` lets the Settings "Test connection" probe build a service
+    from values that have not been saved yet; keys are the config field
+    names.
     """
     from config import settings
 
-    provider = settings.embedding_provider
+    o = overrides or {}
+    provider = o.get("embedding_provider", settings.embedding_provider)
+    entry = get_provider(provider)
+    if entry is None:
+        raise RuntimeError(
+            f"Unknown embedding provider '{provider}'. Choose one of: "
+            + ", ".join(p["id"] for p in _visible_providers())
+        )
+    if settings.offline_mode and provider in CLOUD_EMBEDDING_PROVIDERS:
+        raise RuntimeError(
+            f"Embedding provider '{provider}' sends text to an external service, "
+            f"which this deployment forbids (OFFLINE_MODE). Use 'local', "
+            f"'ollama', or a self-hosted 'openai_compatible' endpoint."
+        )
+
+    if provider == "local":
+        model = collection_model or o.get("embedding_model", settings.embedding_model)
+        return EmbeddingService(model_name=model)
+
+    model = o.get("remote_embedding_model", settings.remote_embedding_model) or entry["default_model"]
+    explicit_key = o.get("embedding_api_key")
+    api_key = resolve_embedding_api_key(provider, explicit_key)
+    if entry["needs_key"] and not api_key:
+        where = (
+            f"add a {entry['label']} key under Settings → AI Providers, or enter one "
+            f"in the Embedding section"
+            if entry.get("key_provider")
+            else "enter one in the Embedding section of Settings"
+        )
+        raise RuntimeError(f"{entry['label']} embeddings need an API key: {where}.")
+
     if provider == "ollama":
         return OllamaEmbeddingService(
-            model_name=settings.ollama_embedding_model,
-            base_url=settings.ollama_base_url,
+            model_name=model,
+            base_url=o.get("ollama_base_url", settings.ollama_base_url),
         )
     if provider == "ollama_cloud":
-        api_key = settings.ollama_cloud_api_key
-        if not api_key:
-            from services.app_database import app_db
-            api_key = app_db.get_agent_api_key("ollama_cloud") or ""
-        if not api_key:
-            raise RuntimeError(
-                "EMBEDDING_PROVIDER=ollama_cloud needs an API key: set "
-                "OLLAMA_CLOUD_API_KEY in .env, or save an Ollama Cloud team key "
-                "under Settings → AI Providers."
-            )
         return OllamaEmbeddingService(
-            model_name=settings.ollama_embedding_model,
+            model_name=model,
             base_url=OLLAMA_CLOUD_BASE_URL,
             api_key=api_key,
         )
-    return EmbeddingService(model_name=collection_model or settings.embedding_model)
+
+    base_url = entry["base_url"] or o.get("embedding_base_url", settings.embedding_base_url)
+    return OpenAICompatibleEmbeddingService(
+        model_name=model,
+        base_url=base_url,
+        api_key=api_key,
+        label=entry["label"],
+    )
+
+
+def _visible_providers():
+    from services.embedding_providers import EMBEDDING_PROVIDERS
+    return [p for p in EMBEDDING_PROVIDERS if not p.get("hidden")]

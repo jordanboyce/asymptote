@@ -14,7 +14,7 @@ from typing import Dict, Optional
 from services.collection_service import collection_service
 from services.document_extractor import DocumentExtractor
 from services.chunker import TextChunker
-from services.embedder import create_embedding_service
+from services.embedder import create_embedding_service, embedding_signature
 from services.vector_store import VectorStore
 from services.indexing import DocumentIndexer
 from config import settings
@@ -57,8 +57,8 @@ class IndexerManager:
         """
         try:
             from services.app_database import app_db
-            from services.config_manager import VALID_CONFIG_FIELDS
-            db_config = app_db.get_all_config()
+            from services.config_manager import VALID_CONFIG_FIELDS, normalize_config_keys
+            db_config = normalize_config_keys(app_db.get_all_config())
             for key in VALID_CONFIG_FIELDS:
                 if key in db_config:
                     try:
@@ -125,21 +125,51 @@ class IndexerManager:
         """Return the appropriate embedding service based on config.
 
         Provider selection lives in embedder.create_embedding_service — shared
-        with the reindex service so both always agree. Ollama providers use the
-        single globally-configured model regardless of the per-collection
+        with the reindex service so both always agree. Remote providers use
+        the single globally-configured model regardless of the per-collection
         embedding_model override; the local path honors the override.
         """
-        if settings.embedding_provider in ("ollama", "ollama_cloud"):
-            key = f"{settings.embedding_provider}::{settings.ollama_base_url}::{settings.ollama_embedding_model}"
+        if settings.embedding_provider != "local":
+            key = embedding_signature()
             if key not in self._embedding_services:
                 self._embedding_services[key] = create_embedding_service()
             return self._embedding_services[key]
 
         # Local sentence-transformers path
         model = collection_embedding_model
-        if model not in self._embedding_services:
-            self._embedding_services[model] = create_embedding_service(collection_model=model)
-        return self._embedding_services[model]
+        key = f"local::{model}"
+        if key not in self._embedding_services:
+            self._embedding_services[key] = create_embedding_service(collection_model=model)
+        return self._embedding_services[key]
+
+    def reset_embedding_services(self):
+        """Forget cached embedding services after the embedding settings change.
+
+        Indexers already open keep the service they were built with — their
+        on-disk index only matches those vectors — so search keeps working.
+        The new settings take effect for collections opened from now on and
+        for every re-index, after which rebuild_indexer() swaps the new
+        index in.
+        """
+        with self._creation_lock:
+            self._embedding_services = {}
+        logger.info("Embedding services reset; new settings apply to re-indexes and newly opened collections")
+
+    def rebuild_indexer(self, collection_id: str = "default") -> DocumentIndexer:
+        """Close a cached indexer and construct it again from current settings.
+
+        Used after a re-index completes: unlike reload_indexer(), this copes
+        with the index having been rebuilt under a different embedding
+        provider (different vector dimension).
+        """
+        with self._creation_lock:
+            old = self._indexers.pop(collection_id, None)
+            if old is not None and hasattr(old.vector_store, "close"):
+                try:
+                    old.vector_store.close()
+                except Exception as e:
+                    logger.debug(f"Closing old vector store for '{collection_id}': {e}")
+        return self.get_indexer(collection_id)
 
     def _create_indexer(self, collection: dict) -> DocumentIndexer:
         """Create a DocumentIndexer for a collection.

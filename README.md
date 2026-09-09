@@ -340,8 +340,11 @@ Create a `.env` file to customize settings:
 # Data storage
 DATA_DIR=./data                          # Where documents and indexes are stored
 
-# Embedding model
-EMBEDDING_MODEL=all-MiniLM-L6-v2        # Default: fast, 384 dimensions
+# Embeddings — see "Choosing where embeddings run" below
+EMBEDDING_PROVIDER=local                # local | google | mistral | voyage | jina | openai | ollama | openai_compatible
+EMBEDDING_MODEL=all-MiniLM-L6-v2        # model for the local provider
+REMOTE_EMBEDDING_MODEL=                 # model for any other provider (blank = its recommended one)
+EMBEDDING_API_KEY=                      # blank = reuse the matching AI Providers key
 
 # Text chunking
 CHUNK_SIZE=600                          # Characters per chunk
@@ -790,19 +793,41 @@ echo "CHUNK_SIZE=1000" >> .env
 echo "CHUNK_OVERLAP=150" >> .env
 ```
 
-### Custom Embedding Models
+### Choosing where embeddings run
 
-**Better quality (slower, more memory):**
+Every document chunk and every search query is turned into a vector by an
+embedding model. By default that model runs inside the app on the server's
+CPU — free and private, but slow on small hosting plans, where it is also
+what makes the container heavy. **Settings → Indexing → Embedding** lets you
+move that work to a hosted API instead:
+
+| Option | Cost | Key | Notes |
+|---|---|---|---|
+| Built in (`local`) | Free | none | Runs on this server. Model downloads once (~90 MB default). |
+| Google Gemini (`google`) | Free tier | AI Studio key, reused from AI Providers | Good multilingual quality. |
+| Mistral (`mistral`) | Free tier | own key | EU-hosted. |
+| Voyage AI (`voyage`) | Free tier | own key | Retrieval-focused models. |
+| Jina AI (`jina`) | Free tier | own key | Free credits without a card. |
+| OpenAI (`openai`) | Paid, low cost | reused from AI Providers | Cents per thousand pages. |
+| Ollama on your own server (`ollama`) | Self-hosted | none | Point `OLLAMA_BASE_URL` at a machine that has pulled an embedding model. |
+| Custom endpoint (`openai_compatible`) | Depends | optional | Any OpenAI-style `/embeddings` API: LM Studio, vLLM, LiteLLM, Together, … |
+
+Hosted options send document text to that vendor at index time and query
+text at search time; `OFFLINE_MODE=true` refuses them. Ollama Cloud is not
+offered: as of September 2026 its API serves chat models only and rejects
+embedding calls.
+
+Use **Test connection** in Settings before saving — it embeds one short
+string with the unsaved values and reports the vector size or the exact
+error. Changing the provider or model takes effect for re-indexes and newly
+opened collections immediately (no restart), while collections already open
+keep searching their existing index until you re-index them.
+
+**Picking a local model** (any [sentence-transformers](https://www.sbert.net/docs/pretrained_models.html) name works):
 ```bash
-echo "EMBEDDING_MODEL=all-mpnet-base-v2" >> .env
+echo "EMBEDDING_MODEL=all-mpnet-base-v2" >> .env        # better quality, slower
+echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env  # faster, less accurate
 ```
-
-**Faster (less accurate):**
-```bash
-echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env
-```
-
-**See all models:** https://www.sbert.net/docs/pretrained_models.html
 
 ### Security Considerations
 
