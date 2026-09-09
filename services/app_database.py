@@ -291,6 +291,35 @@ class SQLiteBackend(DatabaseBackend):
                 ON chat_usage(timestamp DESC)
             """)
 
+            # ── Personal MCP access tokens ────────────────────
+            # Self-serve alternative to a Cloudflare Access service token:
+            # anyone who can already reach the app mints a bearer credential
+            # for headless MCP clients. Only the sha256 hash is stored; the
+            # plaintext is returned once, at creation. user_id NULL = minted
+            # by an anonymous (password-authenticated) caller — it verifies
+            # to the same "authenticated but anonymous" identity password
+            # auth already produces, so team-tier access still works.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS mcp_tokens (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    name TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    token_prefix TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    revoked_at TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_mcp_tokens_hash
+                ON mcp_tokens(token_hash)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user
+                ON mcp_tokens(user_id)
+            """)
+
             # ── Migrations for existing databases ────────────
             # Add owner_id to collections if missing
             try:
@@ -1049,6 +1078,66 @@ class SQLiteBackend(DatabaseBackend):
             deleted = cursor.rowcount
             conn.commit()
             return deleted
+
+    # ── Personal MCP access tokens ────────────────────────────
+
+    def create_mcp_token(
+        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str
+    ) -> Dict[str, Any]:
+        token_id = str(uuid.uuid4())
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            conn.execute(
+                """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (token_id, user_id, name, token_hash, token_prefix, timestamp),
+            )
+            conn.commit()
+        return {
+            "id": token_id,
+            "user_id": user_id,
+            "name": name,
+            "token_prefix": token_prefix,
+            "created_at": timestamp,
+            "last_used_at": None,
+            "revoked_at": None,
+        }
+
+    def list_mcp_tokens(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at
+                   FROM mcp_tokens WHERE user_id IS ? ORDER BY created_at DESC""",
+                (user_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_mcp_token_by_hash(self, token_hash: str) -> Optional[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM mcp_tokens WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def touch_mcp_token(self, token_id: str) -> None:
+        with sqlite_connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?",
+                (datetime.utcnow().isoformat(), token_id),
+            )
+            conn.commit()
+
+    def revoke_mcp_token(self, token_id: str, user_id: Optional[str]) -> bool:
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """UPDATE mcp_tokens SET revoked_at = ?
+                   WHERE id = ? AND user_id IS ? AND revoked_at IS NULL""",
+                (datetime.utcnow().isoformat(), token_id, user_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     # ── User Preferences ─────────────────────────────────────
 

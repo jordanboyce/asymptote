@@ -53,15 +53,95 @@
 
     <template v-else>
 
+      <!-- Personal access tokens -->
+      <div class="card bg-base-200">
+        <div class="card-body space-y-4">
+          <div>
+            <h3 class="card-title text-base">Personal access tokens</h3>
+            <p class="mt-1 text-sm text-base-content/60">
+              Mint a token here instead of setting up a Cloudflare Access service token by hand.
+              It only ever works against <code class="font-mono text-xs">/mcp</code> — it can't reach
+              the rest of the app or the UI — and it's baked into the config snippets below automatically.
+            </p>
+          </div>
+
+          <div v-if="newTokenPlaintext" class="alert alert-warning py-3">
+            <div class="space-y-2 w-full">
+              <p class="text-sm font-medium">Copy this now — it won't be shown again.</p>
+              <div class="flex items-center gap-2">
+                <code class="font-mono text-xs bg-base-100 rounded px-2 py-1 flex-1 overflow-x-auto whitespace-nowrap">{{ newTokenPlaintext }}</code>
+                <button class="btn btn-xs" @click="copyText(newTokenPlaintext, 'Token')">Copy</button>
+                <button class="btn btn-xs btn-ghost" @click="newTokenPlaintext = ''">Dismiss</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-end gap-2 max-w-md">
+            <div class="form-control flex-1">
+              <label class="label p-0 pb-1" for="mcp-token-name"><span class="label-text font-medium">Name this connection</span></label>
+              <input
+                id="mcp-token-name"
+                v-model="newTokenName"
+                type="text"
+                placeholder="e.g. Work laptop — Claude Code"
+                class="input input-bordered input-sm w-full"
+                @keyup.enter="createToken"
+              />
+            </div>
+            <button class="btn btn-sm btn-primary" :disabled="tokenCreating" @click="createToken">
+              <span v-if="tokenCreating" class="loading loading-spinner loading-xs"></span>
+              Generate token
+            </button>
+          </div>
+
+          <div v-if="tokens.length" class="overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Token</th>
+                  <th>Created</th>
+                  <th>Last used</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in tokens" :key="t.id" :class="{ 'opacity-50': t.revoked_at }">
+                  <td>{{ t.name }}</td>
+                  <td class="font-mono text-xs text-base-content/60">{{ t.token_prefix }}…</td>
+                  <td class="text-xs text-base-content/60">{{ formatDate(t.created_at) }}</td>
+                  <td class="text-xs text-base-content/60">{{ t.last_used_at ? formatDate(t.last_used_at) : 'Never' }}</td>
+                  <td class="text-right">
+                    <span v-if="t.revoked_at" class="badge badge-ghost badge-sm">Revoked</span>
+                    <button v-else class="btn btn-xs btn-ghost text-error" @click="revokeToken(t)">Revoke</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="text-xs text-base-content/40">No tokens yet — generate one above to connect an MCP client.</p>
+        </div>
+      </div>
+
       <!-- Connect a client -->
       <div class="card bg-base-200">
         <div class="card-body space-y-4">
           <div>
             <h3 class="card-title text-base">Connect a client</h3>
             <p class="mt-1 text-sm text-base-content/60">
-              Pick a collection and copy the config for your agent. The URL bakes in a
+              Pick a collection and a token, then copy the config for your agent. The URL bakes in a
               <code class="font-mono text-xs">?collection_id=</code> so the agent searches that collection by default.
             </p>
+          </div>
+
+          <div v-if="activeTokens.length" class="form-control max-w-xs">
+            <label class="label p-0 pb-1" for="mcp-export-token"><span class="label-text font-medium">Token</span></label>
+            <select id="mcp-export-token" v-model="exportTokenId" class="select select-bordered select-sm w-full">
+              <option v-for="t in activeTokens" :key="t.id" :value="t.id">{{ t.name }}</option>
+            </select>
+          </div>
+          <div v-else class="alert py-2">
+            <span class="text-sm">Generate a token above first — the snippets below need one to authenticate.</span>
           </div>
 
           <div class="form-control max-w-xs">
@@ -203,6 +283,13 @@ const mcpStatus = ref('')
 const mcpCollections = ref([])
 const exportCollectionId = ref('default')
 const activeTab = ref('claude')
+
+// Personal access tokens
+const tokens = ref([])
+const newTokenName = ref('')
+const newTokenPlaintext = ref('')
+const tokenCreating = ref(false)
+const exportTokenId = ref('')
 const mcpSettings = ref({
   enable_mcp: true,
   mcp_default_collection: 'default',
@@ -224,13 +311,31 @@ const configTabs = [
 const sanitizeServerId = (value) =>
   (value.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^[-_]+|[-_]+$/g, '')) || 'asymptote'
 
+const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at))
+
 const serverId = computed(() => sanitizeServerId(`asymptote-${exportCollectionId.value}`))
 const serverUrl = computed(() =>
   `${window.location.origin}/mcp/?collection_id=${encodeURIComponent(exportCollectionId.value)}`
 )
 
+// The selected token's plaintext is only ever known right after creation.
+// Once a page reload happens the server has only the hash, so snippets for
+// an older token fall back to a placeholder the user fills in by hand.
+const lastCreatedTokenId = ref('')
+const selectedTokenPlaintext = computed(() => {
+  if (newTokenPlaintext.value && exportTokenId.value === lastCreatedTokenId.value) {
+    return newTokenPlaintext.value
+  }
+  return ''
+})
+
+const authHeaderValue = computed(() =>
+  selectedTokenPlaintext.value || '<PASTE_YOUR_TOKEN — shown once, right after you generate it>'
+)
+
 const activeTabMeta = computed(() => {
-  const httpEntry = { type: 'http', url: serverUrl.value }
+  const headers = { 'Authorization': `Bearer ${authHeaderValue.value}` }
+  const httpEntry = { type: 'http', url: serverUrl.value, headers }
   const tabs = {
     claude: {
       label: 'Claude Code config',
@@ -240,7 +345,7 @@ const activeTabMeta = computed(() => {
     },
     codex: {
       label: 'Codex config',
-      content: `[mcp_servers.${serverId.value}]\nurl = "${serverUrl.value}"\n`,
+      content: `[mcp_servers.${serverId.value}]\nurl = "${serverUrl.value}"\nhttp_headers = { "Authorization" = "Bearer ${authHeaderValue.value}" }\n`,
       filename: `config-${exportCollectionId.value}.toml`,
       hint: 'Merge this into your Codex config.toml.',
     },
@@ -276,6 +381,59 @@ const loadMcpSettings = async () => {
     mcpError.value = error.response?.data?.detail || 'Failed to load MCP settings'
   } finally {
     mcpLoading.value = false
+  }
+}
+
+const formatDate = (iso) => {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
+}
+
+const loadTokens = async () => {
+  try {
+    const response = await http.get('/api/mcp/tokens')
+    tokens.value = response.data.tokens || []
+    if (!activeTokens.value.find((t) => t.id === exportTokenId.value)) {
+      exportTokenId.value = activeTokens.value[0]?.id || ''
+    }
+  } catch (error) {
+    mcpError.value = error.response?.data?.detail || 'Failed to load MCP tokens'
+  }
+}
+
+const createToken = async () => {
+  tokenCreating.value = true
+  mcpError.value = ''
+  try {
+    const response = await http.post('/api/mcp/tokens', { name: newTokenName.value })
+    newTokenPlaintext.value = response.data.token
+    lastCreatedTokenId.value = response.data.id
+    newTokenName.value = ''
+    await loadTokens()
+    exportTokenId.value = response.data.id
+  } catch (error) {
+    mcpError.value = error.response?.data?.detail || 'Failed to create MCP token'
+  } finally {
+    tokenCreating.value = false
+  }
+}
+
+const revokeToken = async (token) => {
+  mcpError.value = ''
+  try {
+    await http.delete(`/api/mcp/tokens/${token.id}`)
+    if (lastCreatedTokenId.value === token.id) {
+      newTokenPlaintext.value = ''
+      lastCreatedTokenId.value = ''
+    }
+    await loadTokens()
+    mcpStatus.value = `${token.name} revoked`
+  } catch (error) {
+    mcpError.value = error.response?.data?.detail || 'Failed to revoke token'
   }
 }
 
@@ -344,5 +502,6 @@ const saveMcpSettings = async () => {
 onMounted(() => {
   loadMcpCollections()
   loadMcpSettings()
+  loadTokens()
 })
 </script>

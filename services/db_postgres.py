@@ -205,6 +205,22 @@ class PostgresBackend(DatabaseBackend):
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_share_users_user ON collection_share_users(user_id)")
 
+                # Personal MCP access tokens — mirrors the SQLite backend.
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS mcp_tokens (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT,
+                        name TEXT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE,
+                        token_prefix TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        last_used_at TEXT,
+                        revoked_at TEXT
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tokens_hash ON mcp_tokens(token_hash)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user ON mcp_tokens(user_id)")
+
                 # Ensure default user
                 cur.execute("SELECT id FROM users WHERE id = 'default'")
                 if not cur.fetchone():
@@ -1020,6 +1036,85 @@ class PostgresBackend(DatabaseBackend):
                     except json.JSONDecodeError:
                         prefs[key] = value
                 return prefs
+        finally:
+            self._put(conn)
+
+    # ── Personal MCP access tokens ────────────────────────────
+
+    def create_mcp_token(
+        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str
+    ) -> Dict[str, Any]:
+        token_id = str(uuid.uuid4())
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (token_id, user_id, name, token_hash, token_prefix, ts),
+                )
+            conn.commit()
+            return {
+                "id": token_id,
+                "user_id": user_id,
+                "name": name,
+                "token_prefix": token_prefix,
+                "created_at": ts,
+                "last_used_at": None,
+                "revoked_at": None,
+            }
+        finally:
+            self._put(conn)
+
+    def list_mcp_tokens(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute(
+                    """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at
+                       FROM mcp_tokens WHERE user_id IS NOT DISTINCT FROM %s
+                       ORDER BY created_at DESC""",
+                    (user_id,),
+                )
+                return [dict(r) for r in cur.fetchall()]
+        finally:
+            self._put(conn)
+
+    def get_mcp_token_by_hash(self, token_hash: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute("SELECT * FROM mcp_tokens WHERE token_hash = %s", (token_hash,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def touch_mcp_token(self, token_id: str) -> None:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE mcp_tokens SET last_used_at = %s WHERE id = %s",
+                    (datetime.utcnow().isoformat(), token_id),
+                )
+            conn.commit()
+        finally:
+            self._put(conn)
+
+    def revoke_mcp_token(self, token_id: str, user_id: Optional[str]) -> bool:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE mcp_tokens SET revoked_at = %s
+                       WHERE id = %s AND user_id IS NOT DISTINCT FROM %s AND revoked_at IS NULL""",
+                    (datetime.utcnow().isoformat(), token_id, user_id),
+                )
+                affected = cur.rowcount
+            conn.commit()
+            return affected > 0
         finally:
             self._put(conn)
 

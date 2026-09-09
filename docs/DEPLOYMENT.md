@@ -109,16 +109,29 @@ of who did what. Prefer **B**.
 `/mcp` is part of the same app, so it sits behind the same door — with one
 wrinkle: **MCP clients authenticate as a token, not as a person.**
 
-- With `AUTH_PASSWORD`, clients send `Authorization: Bearer <password>` and
-  work normally.
-- With an SSO proxy, a headless MCP client has no browser to complete the login
-  in. Either use a proxy that issues service tokens (Cloudflare Access does), or
-  reach the app over the private network from **C**.
+- **Personal access tokens (recommended for people).** Settings → MCP →
+  Personal access tokens lets anyone who can already reach the app — a
+  browser session, SSO or `AUTH_PASSWORD` — mint their own bearer token for
+  Claude Code, Codex, or GitHub Copilot without touching Cloudflare's
+  dashboard or the server's `.env`. The tab hands back ready-to-paste config
+  for each client with the token already filled in. A token only ever works
+  against `/mcp`; it cannot reach the rest of the API or the UI, and it's
+  revocable per-token from the same screen. Under
+  [private collections](#private-collections) it carries the identity of
+  whoever created it, so it sees exactly that person's collections.
+- With `AUTH_PASSWORD` alone (no personal token), clients send
+  `Authorization: Bearer <password>` and work normally, but anonymously —
+  see below.
+- With an SSO proxy and no personal token, a headless MCP client has no
+  browser to complete the login in. Either use a proxy that issues service
+  tokens (Cloudflare Access does — see `docs/REMOTE-ACCESS.md` for a script
+  that provisions one), or reach the app over the private network from **C**.
 
 Whatever the client, it gets the same full-corpus access as everyone else —
-unless [private collections](#private-collections) are on, where a service
-token's `common_name` is an identity that collections can be shared to, and a
-password-authenticated client reaches team collections only.
+unless [private collections](#private-collections) are on, where a personal
+token or a service token's `common_name` is an identity that collections can
+be shared to, and a password-authenticated client reaches team collections
+only.
 
 ## Private collections
 
@@ -152,11 +165,13 @@ What changes when it is on:
   optional expiry) from the collection's ⋮ menu; the recipient pastes the
   token in the same dialog to accept. Shares are revocable, and deletion
   stays owner-only.
-- **MCP clients map to identities.** An Access service token authenticates
-  the client and its `common_name` is its identity — share a collection to
-  that name to grant an agent access. A client authenticating with
-  `AUTH_PASSWORD` instead has no identity and sees team collections only, as
-  does any password-authenticated browser session.
+- **MCP clients map to identities.** A personal access token (see
+  [MCP clients](#mcp-clients)) carries the identity of whoever generated it —
+  no separate name to share collections to. An Access service token instead
+  authenticates as itself, and its `common_name` is the identity to share a
+  collection to. A client authenticating with `AUTH_PASSWORD` alone has no
+  identity and sees team collections only, as does any password-authenticated
+  browser session.
 
 Two deliberate limits, so the boundary stays honest: password callers cannot
 own or accept anything (no identity), and if you need a harder wall than

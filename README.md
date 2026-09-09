@@ -259,12 +259,16 @@ unauthenticated until you set `AUTH_PASSWORD`.
 
 Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
 
-Use the **Settings** tab in the UI to:
+Use the **Settings → MCP** tab in the UI to:
 - Enable or disable the MCP server without restarting
 - Choose the default collection and retrieval settings used by MCP
 - Keep MCP in search-only mode (recommended) to avoid duplicate model usage
 - Optionally enable Ollama-backed synthesis for MCP when you explicitly want server-side answering
-- Copy or download ready-to-paste Claude Code `.mcp.json` and Codex `config.toml` snippets
+- **Generate a personal access token** — a self-serve bearer credential scoped to `/mcp` only, so
+  connecting a client never requires editing `.env` or provisioning anything in Cloudflare. Revoke
+  it from the same screen when a machine is retired.
+- Copy or download ready-to-paste Claude Code `.mcp.json`, Codex `config.toml`, and GitHub Copilot
+  `.vscode/mcp.json` snippets — the token above is already filled in
 
 ### Step 4: Verify Setup
 
