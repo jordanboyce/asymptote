@@ -389,3 +389,109 @@ async def whoami(request: Request):
         "identity": identity,
         "logout_url": "/cdn-cgi/access/logout" if via == "cloudflare-access" else None,
     }
+
+
+# ── Embedding provider picker ───────────────────────────────────────────────
+
+
+class EmbeddingTestRequest(BaseModel):
+    """Unsaved embedding settings to probe. Field names match /api/config."""
+
+    embedding_provider: str
+    embedding_model: Optional[str] = None
+    remote_embedding_model: Optional[str] = None
+    embedding_base_url: Optional[str] = None
+    embedding_api_key: Optional[str] = None
+    ollama_base_url: Optional[str] = None
+
+
+@router.get(
+    "/api/embedding/providers",
+    summary="Embedding providers the picker can offer",
+    tags=["config"],
+)
+async def list_embedding_providers():
+    """
+    The embedding catalog with, per provider, whether a usable key is already
+    on file (`key_configured`) and where it would come from (`key_source`:
+    "embedding" for the embedding-specific key, "provider_card" for the team
+    key saved under AI Providers, or null). Hidden entries are included only
+    when they are the current selection, so an old config still renders.
+    Keys themselves are never returned.
+    """
+    from services.embedding_providers import EMBEDDING_PROVIDERS, CLOUD_EMBEDDING_PROVIDERS
+    from services.embedder import embedding_signature
+
+    current = settings.embedding_provider
+    out = []
+    for p in EMBEDDING_PROVIDERS:
+        if p.get("hidden") and p["id"] != current:
+            continue
+        key_source = None
+        if p["needs_key"] or p["id"] == "openai_compatible":
+            if settings.embedding_api_key and p["id"] == current:
+                key_source = "embedding"
+            elif p["id"] == "ollama_cloud" and settings.ollama_cloud_api_key:
+                key_source = "embedding"
+            elif p.get("key_provider"):
+                try:
+                    from services.app_database import app_db
+                    if app_db.get_agent_api_key(p["key_provider"]):
+                        key_source = "provider_card"
+                except Exception:
+                    pass
+        entry = {k: v for k, v in p.items()}
+        entry["key_configured"] = key_source is not None
+        entry["key_source"] = key_source
+        entry["blocked_offline"] = bool(settings.offline_mode and p["id"] in CLOUD_EMBEDDING_PROVIDERS)
+        out.append(entry)
+
+    return {
+        "providers": out,
+        "current": {
+            "provider": current,
+            "signature": embedding_signature(),
+            "offline_mode": settings.offline_mode,
+        },
+    }
+
+
+@router.post(
+    "/api/embedding/test",
+    summary="Try an embedding configuration before saving it",
+    tags=["config"],
+)
+async def test_embedding_settings(req: EmbeddingTestRequest):
+    """
+    Builds an embedding service from the submitted (unsaved) values and embeds
+    one short probe string. Returns the vector dimension and round-trip time on
+    success, or a plain-language reason on failure — the same message indexing
+    would fail with later. Admin-only under private collections, like saving.
+    """
+    import asyncio
+    import time
+
+    from services.config_manager import MASKED_SECRET
+    from services.embedder import create_embedding_service
+
+    require_admin("test embedding settings")
+
+    overrides = {k: v for k, v in req.model_dump().items() if v is not None}
+    # The form echoes the mask for a stored key; that means "use what is saved".
+    if overrides.get("embedding_api_key") == MASKED_SECRET:
+        overrides.pop("embedding_api_key")
+
+    def probe():
+        t0 = time.perf_counter()
+        svc = create_embedding_service(overrides=overrides)
+        return {
+            "ok": True,
+            "model": svc.model_name,
+            "dimensions": int(svc.embedding_dim),
+            "seconds": round(time.perf_counter() - t0, 2),
+        }
+
+    try:
+        return await asyncio.to_thread(probe)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

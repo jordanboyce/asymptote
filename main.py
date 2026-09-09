@@ -122,13 +122,18 @@ async def lifespan(app: FastAPI):
 
         # Set up reload callback for re-indexing service (collection-aware)
         def reload_indexer(collection_id: str = "default"):
-            """Reload an indexer's vector store from disk after re-indexing."""
+            """Rebuild an indexer after re-indexing.
+
+            A rebuild (not a reload) so that a re-index run under a newly
+            chosen embedding provider — different vector dimension — swaps
+            in cleanly instead of failing the old store's dimension check.
+            """
             try:
                 logger.info("=" * 60)
                 logger.info(f"RELOAD CALLBACK TRIGGERED for collection: {collection_id}")
                 logger.info("=" * 60)
 
-                indexer_manager.reload_indexer(collection_id)
+                indexer_manager.rebuild_indexer(collection_id)
 
                 stats = indexer_manager.get_collection_stats(collection_id)
                 logger.info(f"Reload complete. Collection {collection_id} indexed chunks: {stats['total_chunks']}")

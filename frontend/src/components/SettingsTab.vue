@@ -565,6 +565,203 @@
             </button>
           </div>
 
+          <!-- Embedding -->
+          <div class="py-6 border-t border-base-300/50">
+            <div class="text-sm font-medium">Embedding</div>
+            <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[56ch]">
+              Search works by turning your documents into vectors. Choose where that work runs.
+              Hosted options with a free tier are much faster than the built-in model on a small server.
+            </p>
+
+            <div v-if="embeddingCatalogError" class="alert alert-warning py-2 text-xs mt-3" role="alert">
+              {{ embeddingCatalogError }}
+            </div>
+
+            <div class="mt-3 grid gap-2" role="radiogroup" aria-label="Embedding provider">
+              <label
+                v-for="p in embeddingProviderOptions"
+                :key="p.id"
+                class="flex items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors"
+                :class="[
+                  embeddingProvider === p.id ? 'border-primary bg-primary/5' : 'border-base-300/60 hover:border-base-content/25',
+                  p.blocked_offline ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer',
+                ]"
+              >
+                <input
+                  type="radio"
+                  class="radio radio-primary radio-sm mt-0.5 flex-shrink-0"
+                  :value="p.id"
+                  v-model="embeddingProvider"
+                  :disabled="p.blocked_offline"
+                  @change="onEmbeddingProviderChange"
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-sm font-medium">{{ p.label }}</span>
+                    <span class="badge badge-sm" :class="embeddingCostBadgeClass(p.cost)">{{ p.cost_label }}</span>
+                    <span v-if="p.blocked_offline" class="text-[11px] text-warning">Not allowed in offline mode</span>
+                    <span v-else-if="p.needs_key && p.key_configured" class="text-[11px] text-success">Key on file</span>
+                    <span v-else-if="p.needs_key" class="text-[11px] text-base-content/50">Needs a key</span>
+                  </div>
+                  <p class="text-xs text-base-content/55 mt-0.5 leading-relaxed">{{ p.blurb }}</p>
+                </div>
+              </label>
+            </div>
+
+            <!-- Details for the chosen provider -->
+            <div v-if="selectedEmbeddingProvider" class="mt-4 space-y-3 max-w-md">
+              <p class="text-xs text-base-content/50">{{ selectedEmbeddingProvider.privacy }}</p>
+
+              <!-- Ollama: base URL + detect -->
+              <div v-if="embeddingProvider === 'ollama'" class="form-control">
+                <label class="label p-0 pb-1" for="embedding-ollama-url"><span class="label-text text-xs font-medium">Ollama address</span></label>
+                <div class="flex gap-2 items-start">
+                  <input
+                    id="embedding-ollama-url"
+                    v-model="ollamaBaseUrl"
+                    type="url"
+                    placeholder="http://localhost:11434"
+                    class="input input-bordered input-sm w-full"
+                    @change="embeddingTestResult = null"
+                  />
+                  <button class="btn btn-sm btn-ghost flex-shrink-0" @click="detectEmbeddingOllama" :disabled="embeddingOllamaStatus === 'checking'">
+                    <span v-if="embeddingOllamaStatus === 'checking'" class="loading loading-spinner loading-xs"></span>
+                    <span v-else>Detect</span>
+                  </button>
+                </div>
+                <p v-if="embeddingOllamaStatus === 'error'" class="text-xs text-warning mt-1">
+                  Ollama not reachable at <code>{{ ollamaBaseUrl }}</code>. Check that it is running.
+                  <span v-if="ollamaBaseUrl.includes('localhost') || ollamaBaseUrl.includes('127.0.0.1')">
+                    Running in Docker? Use <code>http://host.docker.internal:11434</code> instead.
+                  </span>
+                </p>
+                <p v-else-if="embeddingOllamaStatus === 'ok' && !embeddingOllamaModels.length" class="text-xs text-warning mt-1">
+                  Ollama is running but has no embedding model. Run <code>ollama pull nomic-embed-text</code> there first.
+                </p>
+              </div>
+
+              <!-- Custom endpoint: base URL -->
+              <div v-if="embeddingProvider === 'openai_compatible'" class="form-control">
+                <label class="label p-0 pb-1" for="embedding-base-url"><span class="label-text text-xs font-medium">Endpoint address</span></label>
+                <input
+                  id="embedding-base-url"
+                  v-model="embeddingBaseUrl"
+                  type="url"
+                  placeholder="https://api.example.com/v1"
+                  class="input input-bordered input-sm w-full"
+                  @change="embeddingTestResult = null"
+                />
+                <p class="text-xs text-base-content/50 mt-1">The part of the address before <code>/embeddings</code>.</p>
+              </div>
+
+              <!-- Model -->
+              <div class="form-control">
+                <label class="label p-0 pb-1" for="embedding-model"><span class="label-text text-xs font-medium">Model</span></label>
+                <select
+                  v-if="embeddingModelChoices.length"
+                  id="embedding-model"
+                  v-model="embeddingModelChoice"
+                  class="select select-bordered select-sm w-full"
+                  @change="embeddingTestResult = null"
+                >
+                  <option v-for="m in embeddingModelChoices" :key="m.id" :value="m.id">{{ m.label }}</option>
+                  <option value="__other__">Other model…</option>
+                </select>
+                <input
+                  v-if="embeddingModelChoice === '__other__' || !embeddingModelChoices.length"
+                  :id="embeddingModelChoices.length ? 'embedding-model-custom' : 'embedding-model'"
+                  v-model="embeddingCustomModel"
+                  type="text"
+                  :placeholder="embeddingProvider === 'local' ? 'e.g. all-mpnet-base-v2' : 'model name as the provider spells it'"
+                  class="input input-bordered input-sm w-full mt-2"
+                  :aria-label="embeddingModelChoices.length ? 'Custom model name' : 'Model'"
+                  @input="embeddingTestResult = null"
+                />
+                <p class="text-xs text-base-content/50 mt-1">
+                  <template v-if="embeddingProvider === 'local'">
+                    Any <a href="https://www.sbert.net/docs/pretrained_models.html" target="_blank" rel="noopener" class="link link-primary">sentence-transformers</a> model; it downloads on first use.
+                  </template>
+                  <template v-else-if="embeddingProvider === 'ollama'">
+                    Must already be pulled on that Ollama server.
+                  </template>
+                  <template v-else-if="selectedEmbeddingModelInfo?.dimensions">
+                    {{ selectedEmbeddingModelInfo.dimensions }}-number vectors<span v-if="selectedEmbeddingModelInfo.language"> · {{ selectedEmbeddingModelInfo.language }}</span>.
+                  </template>
+                </p>
+              </div>
+
+              <!-- API key -->
+              <div v-if="selectedEmbeddingProvider.needs_key || embeddingProvider === 'openai_compatible'" class="form-control">
+                <label class="label p-0 pb-1" for="embedding-api-key">
+                  <span class="label-text text-xs font-medium">
+                    API key
+                    <span v-if="!selectedEmbeddingProvider.needs_key || embeddingKeyOnFile" class="font-normal text-base-content/50">(optional)</span>
+                  </span>
+                </label>
+                <input
+                  id="embedding-api-key"
+                  v-model="embeddingApiKey"
+                  type="password"
+                  :placeholder="embeddingKeyPlaceholder"
+                  class="input input-bordered input-sm w-full"
+                  autocomplete="off"
+                  @input="embeddingTestResult = null"
+                />
+                <p class="text-xs text-base-content/50 mt-1">
+                  <template v-if="embeddingApiKeyClear">
+                    The saved key will be removed when you save.
+                    <button class="link" @click="embeddingApiKeyClear = false">Keep it</button>
+                  </template>
+                  <template v-else-if="selectedEmbeddingProvider.key_source === 'provider_card'">
+                    Using the {{ selectedEmbeddingProvider.label }} key saved under
+                    <button class="link link-primary" @click="activeSection = 'providers'">AI Providers</button>.
+                    Enter a key here only to use a different one for embeddings.
+                  </template>
+                  <template v-else-if="selectedEmbeddingProvider.key_source === 'embedding'">
+                    A key is saved for embeddings. Leave blank to keep it, or
+                    <button class="link" @click="embeddingApiKeyClear = true">remove it</button>.
+                  </template>
+                  <template v-else-if="selectedEmbeddingProvider.key_link">
+                    Get a key at
+                    <a :href="selectedEmbeddingProvider.key_link" target="_blank" rel="noopener" class="link link-primary">{{ embeddingKeyHost(selectedEmbeddingProvider.key_link) }}</a>.
+                    <template v-if="selectedEmbeddingProvider.pricing_link">
+                      Limits and prices: <a :href="selectedEmbeddingProvider.pricing_link" target="_blank" rel="noopener" class="link">pricing page</a>.
+                    </template>
+                  </template>
+                  <template v-else>
+                    Leave blank if the endpoint does not require one.
+                  </template>
+                </p>
+              </div>
+
+              <!-- Test + Save -->
+              <div class="flex items-center gap-3 flex-wrap pt-1">
+                <button class="btn btn-sm btn-outline" @click="testEmbeddingSettings" :disabled="embeddingTesting || embeddingSaving">
+                  <span v-if="embeddingTesting" class="loading loading-spinner loading-xs"></span>
+                  {{ embeddingTesting ? 'Testing…' : 'Test connection' }}
+                </button>
+                <button class="btn btn-sm btn-primary" @click="saveEmbeddingSettings" :disabled="embeddingSaving || embeddingTesting">
+                  <span v-if="embeddingSaving" class="loading loading-spinner loading-xs"></span>
+                  {{ embeddingSaving ? 'Saving…' : 'Save' }}
+                </button>
+                <span v-if="embeddingSettingsSaved && !embeddingNeedsReindex" class="text-success text-sm" role="status">Saved</span>
+              </div>
+              <p v-if="embeddingTestResult && embeddingTestResult.ok" class="text-xs text-success" role="status">
+                Works — {{ embeddingTestResult.model }} returned {{ embeddingTestResult.dimensions }}-number vectors in {{ embeddingTestResult.seconds }}s.
+              </p>
+              <p v-else-if="embeddingTestResult" class="text-xs text-error" role="alert">
+                {{ embeddingTestResult.error }}
+              </p>
+              <p v-if="embeddingSaveError" class="text-xs text-error" role="alert">{{ embeddingSaveError }}</p>
+              <div v-if="embeddingSettingsSaved && embeddingNeedsReindex" class="alert py-2 text-xs" role="status">
+                <span>
+                  Saved. Each collection keeps searching with its current index until you re-index it
+                  (the Re-index button above). New uploads to a collection use whatever its index was built with.
+                </span>
+              </div>
+            </div>
+          </div>
+
           <!-- Advanced indexing -->
           <div v-if="advanced" class="pt-6 border-t border-base-300/60 space-y-8">
             <p class="text-[10px] uppercase tracking-[0.18em] font-semibold text-base-content/35">Advanced</p>
@@ -616,140 +813,6 @@
                     <span v-else>Ollama not running or no models installed. <code>ollama pull qwen2.5-vl</code></span>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            <!-- Embedding -->
-            <div class="pt-6 border-t border-base-300/50">
-              <div class="text-sm font-medium">Embedding</div>
-              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[56ch]">
-                How document chunks and search queries are converted into vectors.
-                Changing the provider or model requires re-indexing all collections.
-              </p>
-
-              <div class="form-control mt-3">
-                <div class="flex gap-4 flex-wrap">
-                  <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" class="radio radio-primary radio-sm" value="local" v-model="embeddingProvider" />
-                    <span class="text-sm">Local <span class="text-xs text-base-content/50">(sentence-transformers)</span></span>
-                  </label>
-                  <label v-if="!isRemoteDeployment() || embeddingProvider === 'ollama'" class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" class="radio radio-primary radio-sm" value="ollama" v-model="embeddingProvider" @change="detectEmbeddingOllama" />
-                    <span class="text-sm">Ollama <span class="text-xs text-base-content/50">(server-side Ollama instance)</span></span>
-                  </label>
-                  <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" class="radio radio-primary radio-sm" value="ollama_cloud" v-model="embeddingProvider" />
-                    <span class="text-sm">Ollama Cloud <span class="text-xs text-base-content/50">(hosted API, needs key)</span></span>
-                  </label>
-                </div>
-              </div>
-
-              <!-- Local: model name -->
-              <div v-if="embeddingProvider === 'local'" class="form-control mt-3">
-                <label class="label p-0 pb-1" for="embedding-model-local"><span class="label-text text-xs font-medium">Model</span></label>
-                <input
-                  id="embedding-model-local"
-                  v-model="embeddingModel"
-                  type="text"
-                  placeholder="all-MiniLM-L6-v2"
-                  class="input input-bordered input-sm w-full max-w-sm"
-                />
-                <p class="text-xs text-base-content/50 mt-1">
-                  Any <a href="https://www.sbert.net/docs/pretrained_models.html" target="_blank" class="link link-primary">sentence-transformers</a> model.
-                  Downloaded from HuggingFace on first use.
-                </p>
-              </div>
-
-              <!-- Ollama: base URL + model -->
-              <div v-if="embeddingProvider === 'ollama'" class="space-y-3 mt-3">
-                <div class="form-control">
-                  <label class="label p-0 pb-1" for="embedding-ollama-url"><span class="label-text text-xs font-medium">Ollama URL</span></label>
-                  <input
-                    id="embedding-ollama-url"
-                    v-model="ollamaBaseUrl"
-                    type="url"
-                    placeholder="http://localhost:11434"
-                    class="input input-bordered input-sm w-full max-w-sm"
-                  />
-                </div>
-
-                <div class="form-control">
-                  <label class="label p-0 pb-1" for="embedding-ollama-model"><span class="label-text text-xs font-medium">Embedding model</span></label>
-                  <div class="flex gap-2 items-start flex-wrap">
-                    <div class="flex-1 min-w-[180px] max-w-xs">
-                      <select
-                        v-if="embeddingOllamaModels.length"
-                        id="embedding-ollama-model"
-                        v-model="ollamaEmbeddingModel"
-                        class="select select-bordered select-sm w-full"
-                      >
-                        <option v-for="m in embeddingOllamaModels" :key="m.name" :value="m.name">{{ m.name }}</option>
-                      </select>
-                      <input
-                        v-else
-                        id="embedding-ollama-model"
-                        v-model="ollamaEmbeddingModel"
-                        type="text"
-                        placeholder="nomic-embed-text"
-                        class="input input-bordered input-sm w-full"
-                      />
-                    </div>
-                    <button class="btn btn-sm btn-ghost flex-shrink-0" @click="detectEmbeddingOllama" :disabled="embeddingOllamaStatus === 'checking'">
-                      <span v-if="embeddingOllamaStatus === 'checking'" class="loading loading-spinner loading-xs"></span>
-                      <span v-else>Detect</span>
-                    </button>
-                  </div>
-                  <p v-if="embeddingOllamaStatus === 'error'" class="text-xs text-warning mt-1">
-                    Ollama not reachable at <code>{{ ollamaBaseUrl }}</code>. Check that Ollama is running.
-                    <span v-if="ollamaBaseUrl.includes('localhost') || ollamaBaseUrl.includes('127.0.0.1')">
-                      Running in Docker? Use <code>http://host.docker.internal:11434</code> instead.
-                    </span>
-                  </p>
-                  <p v-else class="text-xs text-base-content/50 mt-1">
-                    Recommended: <code>nomic-embed-text</code> or <code>mxbai-embed-large</code>.
-                    Pull first: <code>ollama pull nomic-embed-text</code>
-                  </p>
-                </div>
-              </div>
-
-              <!-- Ollama Cloud: model + API key -->
-              <div v-if="embeddingProvider === 'ollama_cloud'" class="space-y-3 mt-3">
-                <div class="form-control">
-                  <label class="label p-0 pb-1" for="embedding-cloud-model"><span class="label-text text-xs font-medium">Embedding model</span></label>
-                  <input
-                    id="embedding-cloud-model"
-                    v-model="ollamaEmbeddingModel"
-                    type="text"
-                    placeholder="nomic-embed-text"
-                    class="input input-bordered input-sm w-full max-w-sm"
-                  />
-                  <p class="text-xs text-base-content/50 mt-1">
-                    An embedding model served by <a href="https://ollama.com/search?c=embedding" target="_blank" class="link link-primary">ollama.com</a>.
-                  </p>
-                </div>
-                <div class="form-control">
-                  <label class="label p-0 pb-1" for="embedding-cloud-key"><span class="label-text text-xs font-medium">API key <span class="font-normal text-base-content/50">(optional)</span></span></label>
-                  <input
-                    id="embedding-cloud-key"
-                    v-model="ollamaCloudApiKey"
-                    type="password"
-                    placeholder="blank = use your Ollama Cloud provider key"
-                    class="input input-bordered input-sm w-full max-w-sm"
-                    autocomplete="off"
-                  />
-                  <p class="text-xs text-base-content/50 mt-1">
-                    Falls back to the key saved on the Ollama Cloud card under AI Providers.
-                    Note: document chunks are sent to ollama.com at index time and queries at search time.
-                  </p>
-                </div>
-              </div>
-
-              <div class="flex items-center gap-3 flex-wrap mt-3">
-                <button class="btn btn-sm btn-primary" @click="saveEmbeddingSettings">Save</button>
-                <span v-if="embeddingSettingsSaved && !embeddingNeedsReindex" class="text-success text-sm" role="status">Saved</span>
-                <span v-if="embeddingSettingsSaved && embeddingNeedsReindex" class="text-warning text-sm font-medium" role="status">
-                  Saved — restart the server and re-index all collections to apply changes.
-                </span>
               </div>
             </div>
 
@@ -1015,16 +1078,125 @@ const ocrOllamaVisionTotal = ref(0)
 // Local Ollama context window (server-side setting; applies to all Ollama calls)
 const ollamaNumCtx = ref(8192)
 
-// Embedding settings
-const embeddingProvider = ref('local')  // 'local' | 'ollama' | 'ollama_cloud'
-const ollamaCloudApiKey = ref('')  // masked round-trip: '********' means leave unchanged
-const embeddingModel = ref('all-MiniLM-L6-v2')  // local sentence-transformers model
-const ollamaEmbeddingModel = ref('nomic-embed-text')  // ollama model for embeddings
+// Embedding settings. The provider catalog (labels, costs, models, whether a
+// key is on file) comes from GET /api/embedding/providers so the picker and
+// the backend never disagree about what is offered.
+const MASKED_SECRET = '********'
+const embeddingCatalog = ref([])
+const embeddingCatalogError = ref('')
+const embeddingProvider = ref('local')
+const loadedEmbeddingProvider = ref('local')
+const embeddingModel = ref('all-MiniLM-L6-v2')      // saved local model
+const remoteEmbeddingModel = ref('')                // saved model for any other provider
+const embeddingModelChoice = ref('')                // select value; '__other__' = free text
+const embeddingCustomModel = ref('')
+const embeddingBaseUrl = ref('')
+const embeddingApiKey = ref('')                     // only what the user types this session
+const embeddingApiKeySet = ref(false)               // a key is stored server-side
+const embeddingApiKeyClear = ref(false)
 const ollamaBaseUrl = ref('http://localhost:11434')
 const embeddingSettingsSaved = ref(false)
 const embeddingNeedsReindex = ref(false)
+const embeddingSaving = ref(false)
+const embeddingSaveError = ref('')
+const embeddingTesting = ref(false)
+const embeddingTestResult = ref(null)               // { ok, model, dimensions, seconds } | { ok:false, error }
 const embeddingOllamaModels = ref([])
-const embeddingOllamaStatus = ref(null)  // null | 'checking' | 'ok' | 'error'
+const embeddingOllamaStatus = ref(null)             // null | 'checking' | 'ok' | 'error'
+
+const embeddingProviderOptions = computed(() =>
+  embeddingCatalog.value.filter((p) => {
+    // "Ollama on your own server" defaults to localhost, which on a hosted
+    // deployment is the server, not the reader's machine — hide it there
+    // unless it is already the choice.
+    if (p.id === 'ollama' && isRemoteDeployment() && embeddingProvider.value !== 'ollama') return false
+    return true
+  })
+)
+
+const selectedEmbeddingProvider = computed(() =>
+  embeddingCatalog.value.find((p) => p.id === embeddingProvider.value) || null
+)
+
+const embeddingModelChoices = computed(() => {
+  if (embeddingProvider.value === 'ollama' && embeddingOllamaModels.value.length) {
+    return embeddingOllamaModels.value.map((m) => ({ id: m.name, label: m.name }))
+  }
+  return selectedEmbeddingProvider.value?.models || []
+})
+
+const selectedEmbeddingModelInfo = computed(() =>
+  embeddingModelChoices.value.find((m) => m.id === embeddingModelChoice.value) || null
+)
+
+const effectiveEmbeddingModel = computed(() =>
+  embeddingModelChoice.value === '__other__' || !embeddingModelChoices.value.length
+    ? embeddingCustomModel.value.trim()
+    : embeddingModelChoice.value
+)
+
+// A key is usable without typing one: either saved for embeddings under this
+// same provider, or reused from the matching AI Providers card.
+const embeddingKeyOnFile = computed(() => {
+  const p = selectedEmbeddingProvider.value
+  if (!p) return false
+  if (p.key_source === 'provider_card') return true
+  return p.key_source === 'embedding' && embeddingProvider.value === loadedEmbeddingProvider.value && !embeddingApiKeyClear.value
+})
+
+const embeddingKeyPlaceholder = computed(() => {
+  const p = selectedEmbeddingProvider.value
+  if (!p) return ''
+  if (p.key_source === 'provider_card') return `blank = use the ${p.label} key from AI Providers`
+  if (embeddingKeyOnFile.value) return 'blank = keep the saved key'
+  return p.needs_key ? 'paste your key' : 'blank if not required'
+})
+
+const embeddingCostBadgeClass = (cost) => ({
+  free: 'badge-success badge-outline',
+  free_tier: 'badge-success',
+  paid: 'badge-warning badge-outline',
+  self_hosted: 'badge-ghost',
+}[cost] || 'badge-ghost')
+
+const embeddingKeyHost = (url) => {
+  try { return new URL(url).host } catch { return url }
+}
+
+const setEmbeddingModelFromValue = (value) => {
+  const choices = embeddingModelChoices.value
+  if (!choices.length) {
+    embeddingModelChoice.value = ''
+    embeddingCustomModel.value = value || ''
+  } else if (choices.some((m) => m.id === value)) {
+    embeddingModelChoice.value = value
+    embeddingCustomModel.value = ''
+  } else if (value) {
+    embeddingModelChoice.value = '__other__'
+    embeddingCustomModel.value = value
+  } else {
+    embeddingModelChoice.value = selectedEmbeddingProvider.value?.default_model || choices[0].id
+    embeddingCustomModel.value = ''
+  }
+}
+
+const onEmbeddingProviderChange = () => {
+  embeddingTestResult.value = null
+  embeddingSaveError.value = ''
+  embeddingApiKeyClear.value = false
+  embeddingApiKey.value = ''   // a key typed for one provider is not for another
+  const p = selectedEmbeddingProvider.value
+  if (!p) return
+  if (p.id === 'local') {
+    setEmbeddingModelFromValue(embeddingModel.value)
+  } else if (p.id === loadedEmbeddingProvider.value) {
+    setEmbeddingModelFromValue(remoteEmbeddingModel.value)
+  } else {
+    // A model name saved for another provider means nothing here.
+    setEmbeddingModelFromValue(p.default_model)
+  }
+  if (p.id === 'ollama') detectEmbeddingOllama()
+}
 
 // Preferred *vision-capable* model per provider for OCR. OCR needs image input,
 // so we default to a known multimodal model rather than blindly reusing the
@@ -1117,39 +1289,127 @@ const saveChatTabSetting = async () => {
   }
 }
 
-const loadEmbeddingSettings = (data) => {
+const loadEmbeddingCatalog = async () => {
+  try {
+    const resp = await http.get('/api/embedding/providers')
+    embeddingCatalog.value = resp.data?.providers || []
+    embeddingCatalogError.value = ''
+  } catch (error) {
+    embeddingCatalog.value = []
+    embeddingCatalogError.value = 'Could not load the list of embedding providers. Reload the page to try again.'
+    console.error('Failed to load embedding providers:', error.response?.data?.detail || error)
+  }
+}
+
+const loadEmbeddingSettings = async (data) => {
   embeddingProvider.value = data.embedding_provider || 'local'
+  loadedEmbeddingProvider.value = embeddingProvider.value
   embeddingModel.value = data.embedding_model || 'all-MiniLM-L6-v2'
-  ollamaEmbeddingModel.value = data.ollama_embedding_model || 'nomic-embed-text'
+  remoteEmbeddingModel.value = data.remote_embedding_model || ''
+  embeddingBaseUrl.value = data.embedding_base_url || ''
   ollamaBaseUrl.value = data.ollama_base_url || 'http://localhost:11434'
-  // Secrets round-trip masked: '********' shown when set, sent back unchanged.
-  ollamaCloudApiKey.value = data.ollama_cloud_api_key || ''
+  // Secrets never round-trip: the server sends a mask plus a "set" flag.
+  embeddingApiKey.value = ''
+  embeddingApiKeyClear.value = false
+  embeddingApiKeySet.value = Boolean(data.embedding_api_key_set)
+  embeddingTestResult.value = null
+  await loadEmbeddingCatalog()
+  if (embeddingProvider.value === 'local') {
+    setEmbeddingModelFromValue(embeddingModel.value)
+  } else {
+    setEmbeddingModelFromValue(remoteEmbeddingModel.value)
+  }
+}
+
+// The payload /api/config and /api/embedding/test both accept.
+const embeddingPayload = () => {
+  const payload = {
+    embedding_provider: embeddingProvider.value,
+    ollama_base_url: ollamaBaseUrl.value,
+    embedding_base_url: embeddingBaseUrl.value,
+  }
+  if (embeddingProvider.value === 'local') {
+    payload.embedding_model = effectiveEmbeddingModel.value || 'all-MiniLM-L6-v2'
+  } else {
+    payload.remote_embedding_model = effectiveEmbeddingModel.value
+  }
+  const typed = embeddingApiKey.value.trim()
+  if (typed) {
+    payload.embedding_api_key = typed
+  } else if (embeddingApiKeyClear.value || embeddingProvider.value !== loadedEmbeddingProvider.value) {
+    // A stored key belongs to the provider it was saved for; switching
+    // providers without a new key drops it rather than sending a Google
+    // key to Mistral.
+    payload.embedding_api_key = ''
+  } else if (embeddingApiKeySet.value) {
+    payload.embedding_api_key = MASKED_SECRET // leave unchanged
+  }
+  return payload
+}
+
+const testEmbeddingSettings = async () => {
+  embeddingTesting.value = true
+  embeddingTestResult.value = null
+  try {
+    const resp = await http.post('/api/embedding/test', embeddingPayload())
+    embeddingTestResult.value = resp.data
+  } catch (error) {
+    embeddingTestResult.value = {
+      ok: false,
+      error: error.response?.data?.detail || 'The test could not be run. Check the server log.',
+    }
+  } finally {
+    embeddingTesting.value = false
+  }
 }
 
 const saveEmbeddingSettings = async () => {
+  embeddingSaving.value = true
+  embeddingSaveError.value = ''
   try {
-    const result = await http.post('/api/config', {
-      embedding_provider: embeddingProvider.value,
-      embedding_model: embeddingModel.value,
-      ollama_embedding_model: ollamaEmbeddingModel.value,
-      ollama_base_url: ollamaBaseUrl.value,
-      ollama_cloud_api_key: ollamaCloudApiKey.value,
-    })
+    // Never persist a configuration that cannot embed: run the same probe
+    // as "Test connection" first, so a bad key or model fails here with a
+    // readable reason instead of at the next upload.
+    const payload = embeddingPayload()
+    const probe = await http.post('/api/embedding/test', payload)
+    embeddingTestResult.value = probe.data
+    if (!probe.data?.ok) {
+      embeddingSaveError.value = 'Not saved — fix the problem above and try again.'
+      return
+    }
+    const result = await http.post('/api/config', payload)
+    if (result.data?.success === false) {
+      embeddingSaveError.value = (result.data.errors || []).join(' ') || 'Could not save.'
+      return
+    }
     embeddingSettingsSaved.value = true
     embeddingNeedsReindex.value = result.data.requires_reindex || false
-    setTimeout(() => { embeddingSettingsSaved.value = false }, 5000)
+    setTimeout(() => { embeddingSettingsSaved.value = false }, 12000)
+    // Re-read so "key on file" and the stored model reflect what was saved,
+    // keeping the probe result visible as confirmation of what was saved.
+    const response = await http.get('/api/config')
+    await loadEmbeddingSettings(response.data || {})
+    embeddingTestResult.value = probe.data
   } catch (error) {
+    embeddingSaveError.value = error.response?.data?.detail || 'Could not save embedding settings.'
     console.error('Failed to save embedding settings:', error.response?.data?.detail || error)
+  } finally {
+    embeddingSaving.value = false
   }
 }
 
 const detectEmbeddingOllama = async () => {
   embeddingOllamaStatus.value = 'checking'
   embeddingOllamaModels.value = []
+  const current = effectiveEmbeddingModel.value
   try {
     const resp = await http.get('/api/ollama/status')
     if (resp.data.available) {
-      embeddingOllamaModels.value = resp.data.models || []
+      // Only embedding-capable models are useful here; fall back to the
+      // full list when the daemon reports nothing recognisable.
+      const all = resp.data.models || []
+      const embedLike = all.filter((m) => /embed|minilm|bge|arctic|e5|gte/i.test(m.name))
+      embeddingOllamaModels.value = embedLike.length ? embedLike : all
       embeddingOllamaStatus.value = 'ok'
     } else {
       embeddingOllamaStatus.value = 'error'
@@ -1157,6 +1417,7 @@ const detectEmbeddingOllama = async () => {
   } catch {
     embeddingOllamaStatus.value = 'error'
   }
+  setEmbeddingModelFromValue(current)
 }
 
 const loadOCRSettings = (data) => {

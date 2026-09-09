@@ -5,7 +5,6 @@ import logging
 from fastapi import Depends, HTTPException, status, Request
 
 from config import settings
-from services.embedder import EmbeddingService
 from services.config_manager import config_manager
 from services.reindex_service import reindex_service
 from services.collection_service import collection_service
@@ -39,17 +38,15 @@ async def start_reindex():
         # Get current config (from database with .env fallback)
         current_config = config_manager.get_current_config()
 
-        # Get embedding dimensions
-        embedding_service = EmbeddingService(model_name=current_config["embedding_model"])
-        embedding_dim = embedding_service.embedding_dim
-
-        # Start re-indexing
+        # The job builds its own embedding service through the shared
+        # factory and reads the dimension from it, so no model is loaded
+        # here (a local model instantiated on the request thread doubled
+        # memory and ignored the configured provider).
         job_id = await reindex_service.start_reindex(
             documents_dir=settings.data_dir / "documents",
             embedding_model=current_config["embedding_model"],
             chunk_size=current_config["chunk_size"],
             chunk_overlap=current_config["chunk_overlap"],
-            embedding_dim=embedding_dim,
         )
 
         return {
@@ -110,11 +107,7 @@ async def start_collection_reindex(collection_id: str, user_id: str = Depends(ge
         documents_dir = indexer_manager.get_documents_path(collection_id)
         indexes_dir = indexer_manager.get_indexes_path(collection_id)
 
-        # Get embedding dimensions for the collection's model
-        embedding_service = EmbeddingService(model_name=collection["embedding_model"])
-        embedding_dim = embedding_service.embedding_dim
-
-        # Start re-indexing
+        # Start re-indexing (the job resolves provider + dimension itself)
         job_id = await reindex_service.start_collection_reindex(
             collection_id=collection_id,
             documents_dir=documents_dir,
@@ -122,7 +115,6 @@ async def start_collection_reindex(collection_id: str, user_id: str = Depends(ge
             embedding_model=collection["embedding_model"],
             chunk_size=collection["chunk_size"],
             chunk_overlap=collection["chunk_overlap"],
-            embedding_dim=embedding_dim,
         )
 
         return {

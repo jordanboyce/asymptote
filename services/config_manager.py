@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # write-back below is best-effort persistence only (in containers it lands on
 # an ephemeral filesystem), so the DB must be able to restore every field.
 VALID_CONFIG_FIELDS = {
-    "embedding_model", "embedding_provider", "ollama_base_url", "ollama_embedding_model",
-    "ollama_cloud_api_key",
+    "embedding_model", "embedding_provider", "ollama_base_url", "remote_embedding_model",
+    "embedding_base_url", "embedding_api_key", "ollama_cloud_api_key",
     "chunk_size", "chunk_overlap",
     "default_top_k", "max_top_k",
     "enable_ocr",
@@ -41,8 +41,23 @@ VALID_CONFIG_FIELDS = {
 # place of the stored value, and an update carrying MASKED_SECRET back is
 # treated as "leave unchanged" — so a client can round-trip the config without
 # either seeing the secret or wiping it.
-SECRET_CONFIG_FIELDS = {"vision_ocr_api_key", "ollama_cloud_api_key"}
+SECRET_CONFIG_FIELDS = {"vision_ocr_api_key", "ollama_cloud_api_key", "embedding_api_key"}
 MASKED_SECRET = "********"
+
+# Field names that older builds persisted; read and written as their current
+# name so a deployment upgraded in place keeps its embedding choice.
+LEGACY_CONFIG_ALIASES = {"ollama_embedding_model": "remote_embedding_model"}
+
+
+def normalize_config_keys(values: Dict[str, Any]) -> Dict[str, Any]:
+    """Map legacy field names onto current ones (current name wins on clash)."""
+    out: Dict[str, Any] = {}
+    for key, value in values.items():
+        target = LEGACY_CONFIG_ALIASES.get(key, key)
+        if target in out and key != target:
+            continue
+        out[target] = value
+    return out
 
 
 class ConfigManager:
@@ -62,7 +77,9 @@ class ConfigManager:
             "embedding_model": settings.embedding_model,
             "embedding_provider": settings.embedding_provider,
             "ollama_base_url": settings.ollama_base_url,
-            "ollama_embedding_model": settings.ollama_embedding_model,
+            "remote_embedding_model": settings.remote_embedding_model,
+            "embedding_base_url": settings.embedding_base_url,
+            "embedding_api_key": settings.embedding_api_key,
             "ollama_cloud_api_key": settings.ollama_cloud_api_key,
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
@@ -97,6 +114,7 @@ class ConfigManager:
 
         # Override with database values if present
         db_config = app_db.get_all_config()
+        db_config = normalize_config_keys(db_config)
         for key in config.keys():
             if key in db_config:
                 config[key] = db_config[key]
@@ -133,9 +151,17 @@ class ConfigManager:
         }
 
         # Fields that require restart
-        restart_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "ollama_cloud_api_key", "host", "port"}
+        restart_fields = {"host", "port"}
         # Fields that require re-indexing
-        reindex_fields = {"embedding_model", "embedding_provider", "ollama_embedding_model", "chunk_size", "chunk_overlap"}
+        reindex_fields = {"embedding_model", "embedding_provider", "remote_embedding_model",
+                          "embedding_base_url", "chunk_size", "chunk_overlap"}
+        # Embedding fields apply live: the indexer manager drops its cached
+        # embedding services so the next collection touched (and every
+        # re-index) uses the new provider, while collections already open
+        # keep searching their existing index until they are re-indexed.
+        embedding_fields = {"embedding_model", "embedding_provider", "remote_embedding_model",
+                            "embedding_base_url", "embedding_api_key", "ollama_cloud_api_key",
+                            "ollama_base_url"}
         # OCR fields that can be applied at runtime (no restart needed)
         ocr_fields = {
             "enable_ocr",
@@ -150,9 +176,18 @@ class ConfigManager:
         # A masked secret coming back means the client never saw the real one —
         # drop it so a plain save doesn't overwrite the stored key with "****".
         updates = {
-            k: v for k, v in updates.items()
+            k: v for k, v in normalize_config_keys(updates).items()
             if not (k in SECRET_CONFIG_FIELDS and v == MASKED_SECRET)
         }
+
+        if "embedding_provider" in updates:
+            from services.embedding_providers import PROVIDER_IDS
+            if updates["embedding_provider"] not in PROVIDER_IDS:
+                result["errors"].append(
+                    f"Unknown embedding provider: {updates['embedding_provider']}"
+                )
+                result["success"] = False
+                return result
 
         # Validate updates
         for key in updates.keys():
@@ -162,6 +197,19 @@ class ConfigManager:
 
         if not result["success"]:
             return result
+
+        # "Re-index needed" is about what actually changed, not what the form
+        # happened to post: saving the embedding panel untouched must not
+        # tell everyone to rebuild every index.
+        before = normalize_config_keys(app_db.get_all_config())
+        current_values = self.get_current_config()
+
+        def _changed(key: str, value: Any) -> bool:
+            if key in before:
+                return str(before[key]) != str(value)
+            if key in SECRET_CONFIG_FIELDS:
+                return bool(value)
+            return key not in current_values or str(current_values[key]) != str(value)
 
         # Store in database (primary persistence)
         try:
@@ -181,10 +229,11 @@ class ConfigManager:
 
         # Update runtime settings (for non-restart fields)
         ocr_settings_changed = False
+        embedding_settings_changed = False
         for key, value in updates.items():
             if key in restart_fields:
                 result["requires_restart"] = True
-            if key in reindex_fields:
+            if key in reindex_fields and _changed(key, value):
                 result["requires_reindex"] = True
 
             result["updated_fields"].append(key)
@@ -195,6 +244,8 @@ class ConfigManager:
                     setattr(settings, key, value)
                     if key in ocr_fields:
                         ocr_settings_changed = True
+                    if key in embedding_fields:
+                        embedding_settings_changed = True
                 except Exception as e:
                     result["errors"].append(f"Failed to update {key}: {e}")
                     result["success"] = False
@@ -206,6 +257,13 @@ class ConfigManager:
                 indexer_manager.reload_document_extractor()
             except Exception as e:
                 logger.warning(f"Failed to reload document extractor after OCR settings change: {e}")
+
+        if embedding_settings_changed:
+            try:
+                from services.indexer_manager import indexer_manager
+                indexer_manager.reset_embedding_services()
+            except Exception as e:
+                logger.warning(f"Failed to reset embedding services after settings change: {e}")
 
         return result
 
@@ -245,81 +303,13 @@ class ConfigManager:
 
 
     def get_embedding_models(self) -> list:
-        """Get list of recommended embedding models.
+        """Curated sentence-transformers models for the "local" provider.
 
-        Returns list of dicts with model info:
-            - name: Model name
-            - description: Brief description
-            - dimensions: Embedding dimensions
-            - size_mb: Approximate model size in MB
-            - speed: Relative speed (fast, medium, slow)
-            - quality: Relative quality (good, better, best)
+        The catalog lives in services/embedding_providers.py; this keeps the
+        older `name`/`description` shape for existing callers.
         """
-        return [
-            {
-                "name": "BAAI/bge-base-en-v1.5",
-                "description": "Current default - strong English retrieval quality",
-                "dimensions": 768,
-                "size_mb": 420,
-                "speed": "medium",
-                "quality": "best",
-                "language": "English",
-            },
-            {
-                "name": "Qwen/Qwen3-Embedding-0.6B",
-                "description": "Instruction-aware retrieval model - stronger but heavier than MiniLM",
-                "dimensions": 1024,
-                "size_mb": 1300,
-                "speed": "slow",
-                "quality": "best",
-                "language": "Multilingual",
-            },
-            {
-                "name": "all-MiniLM-L6-v2",
-                "description": "Fast and efficient baseline",
-                "dimensions": 384,
-                "size_mb": 90,
-                "speed": "fast",
-                "quality": "good",
-                "language": "English",
-            },
-            {
-                "name": "all-mpnet-base-v2",
-                "description": "High quality - slower but more accurate",
-                "dimensions": 768,
-                "size_mb": 420,
-                "speed": "slow",
-                "quality": "best",
-                "language": "English",
-            },
-            {
-                "name": "paraphrase-MiniLM-L3-v2",
-                "description": "Fastest - lower quality but very fast",
-                "dimensions": 384,
-                "size_mb": 60,
-                "speed": "very fast",
-                "quality": "fair",
-                "language": "English",
-            },
-            {
-                "name": "paraphrase-multilingual-MiniLM-L12-v2",
-                "description": "Multilingual support - 50+ languages",
-                "dimensions": 384,
-                "size_mb": 470,
-                "speed": "medium",
-                "quality": "better",
-                "language": "Multilingual",
-            },
-            {
-                "name": "all-MiniLM-L12-v2",
-                "description": "Balanced - good quality and speed",
-                "dimensions": 384,
-                "size_mb": 120,
-                "speed": "medium",
-                "quality": "better",
-                "language": "English",
-            },
-        ]
+        from services.embedding_providers import local_model_catalog
+        return local_model_catalog()
 
 
 # Global instance
