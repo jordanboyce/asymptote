@@ -310,6 +310,15 @@
                 <div v-if="result.source_format" class="badge badge-outline badge-sm">
                   {{ result.source_format.toUpperCase() }}
                 </div>
+                <!-- Sensitivity label in force for the source document -->
+                <div
+                  v-if="showLabel(result.sensitivity)"
+                  class="badge badge-sm"
+                  :class="labelBadgeClass(result.sensitivity)"
+                  :title="`Sensitivity: ${result.sensitivity}`"
+                >
+                  {{ result.sensitivity }}
+                </div>
                 <!-- Local reference indicator -->
                 <div v-if="result.source_type === 'local_reference'" class="badge badge-ghost badge-sm"
                   title="Indexed in-place from local file">
@@ -447,6 +456,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import http from '../utils/http'
 import { Plus, History, SlidersHorizontal, Sparkles, X, Search as SearchIcon } from 'lucide-vue-next'
+import { labelBadgeClass, showLabel } from '../utils/governance'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'

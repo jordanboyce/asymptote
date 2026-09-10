@@ -180,10 +180,16 @@ async def search_documents(
         results = search_result["results"]
 
         # Add URLs to each result (include collection_id for proper routing)
+        # and resolve the sensitivity label in force (document override,
+        # else the collection's).
+        from services.collection_service import collection_service
+        from services.governance import effective_sensitivity
+        collection = collection_service.get_collection(collection_id)
         base_url = str(request.base_url).rstrip('/')
         for result in results:
             result.pdf_url = f"{base_url}/documents/{result.document_id}/pdf?collection_id={collection_id}"
             result.page_url = f"{base_url}/documents/{result.document_id}/pdf?collection_id={collection_id}#page={result.page_number}"
+            result.sensitivity = effective_sensitivity(collection, result.sensitivity)
 
         execution_time_ms = int((time.time() - start_time) * 1000)
 

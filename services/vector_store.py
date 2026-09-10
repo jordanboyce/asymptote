@@ -422,6 +422,9 @@ class VectorStore:
             csv_values=chunk.get("csv_values"),
             source_type=doc_info.get("source_type") if doc_info else None,
             source_path=doc_info.get("source_path") if doc_info else None,
+            # Document-level override only; the API layer resolves the
+            # collection default (it knows which collection it is serving).
+            sensitivity=doc_info.get("sensitivity") if doc_info else None,
         )
 
     def delete_document(self, document_id: str) -> int:

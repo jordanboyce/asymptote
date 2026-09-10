@@ -59,6 +59,14 @@ class DocumentMetadata(BaseModel):
     # v3.2: Prompt injection warnings (page_num -> scan result dict)
     injection_warnings: Optional[Dict[str, Any]] = Field(None, description="Flagged pages with injection scan details")
 
+    # v3.3: Governance — attribution, labels, and the content-policy decision
+    uploaded_by: Optional[str] = Field(None, description="Verified identity that added the document (None = unattributed)")
+    content_hash: Optional[str] = Field(None, description="Full sha256 of the file (blocklist key)")
+    sensitivity: Optional[str] = Field(None, description="Per-document sensitivity override; None inherits the collection label")
+    sensitivity_effective: Optional[str] = Field(None, description="Label in force: the override, else the collection's")
+    policy_status: str = Field(default="clear", description="clear | flagged | quarantined | approved")
+    policy_flags: Optional[Dict[str, Any]] = Field(None, description="Content-policy scan summary when anything was found")
+
 
 class SearchResult(BaseModel):
     """A single search result."""
@@ -75,6 +83,9 @@ class SearchResult(BaseModel):
     # v3.0: Format-aware result metadata
     source_format: Optional[str] = Field(None, description="Source format: pdf, txt, docx, csv, md, json")
     extraction_method: Optional[str] = Field(None, description="How text was extracted: text, ocr, hybrid")
+
+    # v3.3: Sensitivity label in force for the source document
+    sensitivity: Optional[str] = Field(None, description="public | internal | confidential | restricted")
 
     # v3.0: CSV-specific result data (for table rendering)
     csv_row_number: Optional[int] = Field(None, description="Row number for CSV results")
@@ -279,6 +290,7 @@ class ChatSource(BaseModel):
     document_id: str = Field(..., description="Document identifier")
     pdf_url: str = Field(..., description="URL to download the document")
     page_url: str = Field(..., description="URL to view the specific page")
+    sensitivity: Optional[str] = Field(None, description="Sensitivity label in force for the source")
 
 
 class ChatRequest(BaseModel):

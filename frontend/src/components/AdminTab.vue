@@ -131,6 +131,276 @@
       </div>
     </section>
 
+    <!-- ═══ Content review ═══ -->
+    <section aria-labelledby="admin-review">
+      <div class="flex items-center justify-between mb-3">
+        <h2 id="admin-review" class="text-sm font-semibold uppercase tracking-wider text-base-content/60">Content review</h2>
+        <span class="text-xs text-base-content/45">
+          scanner: <span class="font-mono">{{ review.content_policy_action || '…' }}</span>
+          · {{ review.blocked_hashes ?? 0 }} blocked hash{{ (review.blocked_hashes ?? 0) === 1 ? '' : 'es' }}
+        </span>
+      </div>
+
+      <div v-if="reviewError" class="alert alert-error py-2">
+        <span class="text-sm">{{ reviewError }}</span>
+        <button class="btn btn-xs btn-ghost" @click="loadReview">Retry</button>
+      </div>
+
+      <template v-else>
+        <div v-if="reviewQueue.length === 0" class="text-center py-6 text-sm text-base-content/45 border border-dashed border-base-300 rounded-lg">
+          Nothing is held or flagged.
+        </div>
+        <div v-else class="overflow-x-auto rounded-lg border border-base-300/60">
+          <table class="table table-sm">
+            <thead>
+              <tr class="text-[10px] uppercase tracking-wider text-base-content/45">
+                <th>Status</th>
+                <th>Source</th>
+                <th>Added by</th>
+                <th>Categories</th>
+                <th class="text-right">Score</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="d in reviewQueue" :key="d.collection_id + d.document_id">
+                <tr>
+                  <td>
+                    <span class="badge badge-sm" :class="policyBadge(d.policy_status)?.cls">{{ policyBadge(d.policy_status)?.text }}</span>
+                    <span v-if="d.policy_flags?.critical" class="badge badge-sm badge-error badge-outline ml-1">critical</span>
+                  </td>
+                  <td>
+                    <div class="font-medium truncate max-w-[28ch]" :title="d.filename">{{ d.filename }}</div>
+                    <div class="text-[11px] text-base-content/50">{{ d.collection_name }} · {{ formatDay(d.upload_timestamp) }}</div>
+                  </td>
+                  <td class="text-xs">{{ d.uploaded_by || 'unattributed' }}</td>
+                  <td class="text-xs">
+                    <span v-for="(n, cat) in d.policy_flags?.categories || {}" :key="cat" class="badge badge-xs badge-outline mr-1">{{ categoryLabel(cat) }} {{ n }}</span>
+                    <span v-if="d.policy_flags?.llm?.categories?.length" class="badge badge-xs badge-info badge-outline">LLM: {{ d.policy_flags.llm.categories.map(categoryLabel).join(', ') }}</span>
+                  </td>
+                  <td class="text-right tabular-nums">{{ d.policy_flags?.max_score ?? '—' }}</td>
+                  <td class="text-right whitespace-nowrap">
+                    <button class="btn btn-xs btn-ghost" @click="toggleDetails(d)">{{ expanded === key(d) ? 'Hide' : 'Details' }}</button>
+                    <button class="btn btn-xs btn-success btn-outline ml-1" :disabled="busy === key(d)" @click="approve(d)">Approve</button>
+                    <button class="btn btn-xs btn-error btn-outline ml-1" :disabled="busy === key(d)" @click="remove(d, true)">Remove &amp; block</button>
+                  </td>
+                </tr>
+                <tr v-if="expanded === key(d)">
+                  <td colspan="6" class="bg-base-200/60">
+                    <div v-if="!policyFlagPages(d.policy_flags).length" class="text-xs text-base-content/50">No page-level findings recorded.</div>
+                    <div v-for="entry in policyFlagPages(d.policy_flags)" :key="entry.page" class="text-xs mb-2">
+                      <div class="font-semibold">Page {{ entry.page }} · score {{ entry.risk_score }}</div>
+                      <div v-for="(f, i) in entry.findings" :key="i" class="ml-2 mt-0.5">
+                        <span class="capitalize">{{ categoryLabel(f.category) }}</span>
+                        <span class="badge badge-xs ml-1" :class="f.severity === 'critical' || f.severity === 'high' ? 'badge-error' : 'badge-warning'">{{ f.severity }}</span>
+                        <code v-if="f.matched_text" class="ml-1 text-[11px] text-base-content/70 break-all">{{ f.matched_text }}</code>
+                      </div>
+                    </div>
+                    <div v-if="d.policy_flags?.llm?.rationale" class="text-xs text-base-content/60 mt-1">
+                      LLM rationale: {{ d.policy_flags.llm.rationale }}
+                    </div>
+                    <button class="btn btn-xs btn-ghost mt-1" :disabled="busy === key(d)" @click="remove(d, false)">Remove without blocking</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Reports -->
+        <div class="mt-4">
+          <div class="text-[10px] uppercase tracking-wider text-base-content/45 mb-2">Reports from users</div>
+          <div v-if="review.reports?.length === 0" class="text-xs text-base-content/45">No reports.</div>
+          <div v-else class="overflow-x-auto rounded-lg border border-base-300/60">
+            <table class="table table-sm">
+              <thead>
+                <tr class="text-[10px] uppercase tracking-wider text-base-content/45">
+                  <th>When</th>
+                  <th>Reported by</th>
+                  <th>Source</th>
+                  <th>Reason</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in review.reports" :key="r.id">
+                  <td class="text-xs whitespace-nowrap">{{ formatWhen(r.timestamp) }}</td>
+                  <td class="text-xs">{{ r.actor || 'anonymous' }}</td>
+                  <td class="text-xs">
+                    <div class="font-medium">{{ r.detail?.filename || r.document_id }}</div>
+                    <div class="text-base-content/50">{{ r.collection_id }} · added by {{ r.detail?.uploaded_by || 'unattributed' }}</div>
+                  </td>
+                  <td class="text-xs max-w-[36ch]">{{ r.detail?.reason || '—' }}</td>
+                  <td class="text-right whitespace-nowrap">
+                    <button class="btn btn-xs btn-error btn-outline" :disabled="busy === (r.collection_id + r.document_id)" @click="remove({ collection_id: r.collection_id, document_id: r.document_id, filename: r.detail?.filename }, true)">Remove &amp; block</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- ═══ Policy settings ═══ -->
+    <section aria-labelledby="admin-policy">
+      <h2 id="admin-policy" class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3">Policy</h2>
+      <div class="rounded-lg border border-base-300/60 bg-base-100 p-4 space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="form-control">
+            <label class="label pb-1" for="policy-action"><span class="label-text font-medium">When the scan flags a source</span></label>
+            <select id="policy-action" v-model="policyForm.content_policy_action" class="select select-bordered select-sm">
+              <option value="off">Off — do not scan</option>
+              <option value="flag">Flag — index it, show a badge</option>
+              <option value="quarantine">Quarantine — index it, hide it until approved</option>
+              <option value="reject">Reject — refuse to index it</option>
+            </select>
+            <p class="text-[11px] text-base-content/50 mt-1">
+              Critical findings (child abuse material indicators, attack planning) are always held, even on Flag.
+            </p>
+          </div>
+          <div class="form-control">
+            <label class="label pb-1 cursor-pointer justify-start gap-2">
+              <input v-model="policyForm.content_policy_llm_review" type="checkbox" class="checkbox checkbox-sm" />
+              <span class="label-text font-medium">Ask the chat LLM for a second opinion</span>
+            </label>
+            <p class="text-[11px] text-base-content/50">
+              Sends a sample of pages to the provider chat already uses. Costs tokens per upload; can escalate, never clears.
+            </p>
+            <div v-if="policyForm.content_policy_llm_review" class="flex gap-2 mt-2">
+              <input v-model="policyForm.content_policy_llm_provider" class="input input-bordered input-xs flex-1" placeholder="provider (blank = chat default)" aria-label="Review provider" />
+              <input v-model="policyForm.content_policy_llm_model" class="input input-bordered input-xs flex-1" placeholder="model (optional)" aria-label="Review model" />
+            </div>
+          </div>
+        </div>
+
+        <div class="border-t border-base-300/60 pt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="form-control">
+            <label class="label pb-1 cursor-pointer justify-start gap-2">
+              <input v-model="policyForm.aup_required" type="checkbox" class="checkbox checkbox-sm" />
+              <span class="label-text font-medium">Require acceptance of an acceptable-use policy</span>
+            </label>
+            <p class="text-[11px] text-base-content/50">
+              Each person must accept it (once per version) before adding sources. Needs identities, so it only applies under private collections.
+            </p>
+            <div class="flex items-center gap-2 mt-2">
+              <span class="text-xs">Version</span>
+              <input v-model="policyForm.aup_version" class="input input-bordered input-xs w-20" aria-label="Policy version" />
+              <span class="text-[11px] text-base-content/45">bump it to re-prompt everyone</span>
+            </div>
+          </div>
+          <div class="form-control">
+            <label class="label pb-1" for="policy-text"><span class="label-text font-medium">Policy text (markdown; blank = built-in)</span></label>
+            <textarea id="policy-text" v-model="policyForm.aup_text" class="textarea textarea-bordered text-xs font-mono" rows="6" placeholder="Leave empty to use the default policy"></textarea>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-2">
+          <span v-if="policySaved" class="text-xs text-success">Saved</span>
+          <button class="btn btn-sm btn-primary" :disabled="policySaving" @click="savePolicy">
+            <span v-if="policySaving" class="loading loading-spinner loading-xs"></span>
+            Save policy settings
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ Audit trail ═══ -->
+    <section aria-labelledby="admin-audit">
+      <div class="flex items-center justify-between mb-3 gap-2 flex-wrap">
+        <h2 id="admin-audit" class="text-sm font-semibold uppercase tracking-wider text-base-content/60">Audit trail</h2>
+        <div class="flex items-center gap-2">
+          <select v-model="auditFilter.action" class="select select-bordered select-xs" aria-label="Filter by action" @change="loadAudit">
+            <option value="">All actions</option>
+            <option v-for="a in auditActions" :key="a" :value="a">{{ a }}</option>
+          </select>
+          <input v-model="auditFilter.actor" class="input input-bordered input-xs w-40" placeholder="actor" aria-label="Filter by actor" @keyup.enter="loadAudit" />
+          <button class="btn btn-xs btn-ghost" @click="loadAudit">Apply</button>
+          <a class="btn btn-xs btn-outline" :href="auditCsvHref" target="_blank" rel="noopener">Export CSV</a>
+        </div>
+      </div>
+      <div v-if="auditError" class="alert alert-error py-2"><span class="text-sm">{{ auditError }}</span></div>
+      <div v-else-if="auditEvents.length === 0" class="text-center py-6 text-sm text-base-content/45 border border-dashed border-base-300 rounded-lg">
+        No events yet.
+      </div>
+      <div v-else class="overflow-x-auto rounded-lg border border-base-300/60 max-h-96">
+        <table class="table table-xs">
+          <thead>
+            <tr class="text-[10px] uppercase tracking-wider text-base-content/45">
+              <th>When</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Where</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="e in auditEvents" :key="e.id">
+              <td class="whitespace-nowrap">{{ formatWhen(e.timestamp) }}</td>
+              <td class="truncate max-w-[20ch]">{{ e.actor || 'anonymous' }}</td>
+              <td class="font-mono">{{ e.action }}</td>
+              <td class="truncate max-w-[24ch]">
+                {{ e.collection_id || '' }}<span v-if="e.document_id"> · {{ e.document_id.slice(0, 8) }}</span><span v-if="e.target"> · {{ e.target }}</span>
+              </td>
+              <td class="max-w-[40ch] truncate" :title="detailText(e.detail)">{{ detailText(e.detail) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-[11px] text-base-content/45 mt-1">
+        Kept for {{ auditRetention ? auditRetention + ' days' : 'ever' }} (AUDIT_RETENTION_DAYS).
+      </p>
+    </section>
+
+    <!-- ═══ Blocklist, acknowledgements, suspension ═══ -->
+    <section aria-labelledby="admin-blocklist">
+      <h2 id="admin-blocklist" class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3">Blocklist &amp; people</h2>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="rounded-lg border border-base-300/60 bg-base-100 p-4 space-y-3">
+          <div class="text-xs font-medium">Blocked file hashes</div>
+          <p class="text-[11px] text-base-content/50">A removed-and-blocked file cannot be re-added to any collection. Add a sha256 by hand to block a file you do not hold.</p>
+          <div class="flex gap-2">
+            <input v-model="newHash" class="input input-bordered input-xs flex-1 font-mono" placeholder="sha256 (64 hex)" aria-label="Hash to block" />
+            <input v-model="newHashReason" class="input input-bordered input-xs w-32" placeholder="reason" aria-label="Reason" />
+            <button class="btn btn-xs btn-outline" :disabled="!newHash.trim()" @click="blockHash">Block</button>
+          </div>
+          <div v-if="blocked.length === 0" class="text-xs text-base-content/45">Nothing blocked.</div>
+          <ul v-else class="space-y-1 max-h-48 overflow-y-auto">
+            <li v-for="h in blocked" :key="h.content_hash" class="flex items-center gap-2 text-xs">
+              <code class="font-mono text-[11px] truncate flex-1" :title="h.content_hash">{{ h.content_hash.slice(0, 16) }}…</code>
+              <span class="truncate max-w-[16ch] text-base-content/60" :title="h.filename || ''">{{ h.filename || '' }}</span>
+              <span class="text-base-content/45 whitespace-nowrap">{{ formatDay(h.blocked_at) }}</span>
+              <button class="btn btn-ghost btn-xs" @click="unblockHash(h.content_hash)">Unblock</button>
+            </li>
+          </ul>
+        </div>
+
+        <div class="space-y-4">
+          <div class="rounded-lg border border-base-300/60 bg-base-100 p-4 space-y-2">
+            <div class="text-xs font-medium">Suspend an identity</div>
+            <p class="text-[11px] text-base-content/50">Revokes every MCP token they hold and withdraws their edge admission when that is configured. Their sources stay until you remove them.</p>
+            <div class="flex gap-2">
+              <input v-model="suspendEmail" type="email" class="input input-bordered input-xs flex-1" placeholder="person@example.com" aria-label="Identity to suspend" />
+              <input v-model="suspendReason" class="input input-bordered input-xs w-32" placeholder="reason" aria-label="Reason" />
+              <button class="btn btn-xs btn-error btn-outline" :disabled="!suspendEmail.trim()" @click="suspend">Suspend</button>
+            </div>
+          </div>
+          <div class="rounded-lg border border-base-300/60 bg-base-100 p-4 space-y-2">
+            <div class="text-xs font-medium">Policy acknowledgements <span class="text-base-content/45 font-normal">(version {{ aupAcks.version }})</span></div>
+            <div v-if="aupAcks.acknowledgements.length === 0" class="text-xs text-base-content/45">
+              {{ aupAcks.required ? 'Nobody has accepted the current version yet.' : 'Acknowledgement is not required on this deployment.' }}
+            </div>
+            <ul v-else class="space-y-0.5 max-h-40 overflow-y-auto text-xs">
+              <li v-for="a in aupAcks.acknowledgements" :key="a.user_id + a.version" class="flex justify-between gap-2">
+                <span class="truncate">{{ a.user_id }}</span>
+                <span class="text-base-content/45 whitespace-nowrap">v{{ a.version }} · {{ formatDay(a.accepted_at) }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ═══ Edge access (relocated from Settings) ═══ -->
     <section v-if="userStore.canInviteNewPeople" aria-labelledby="admin-access">
       <h2 id="admin-access" class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3">Access</h2>
@@ -140,13 +410,206 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { RefreshCw } from 'lucide-vue-next'
 import http from '../utils/http'
 import AccessAdmin from './AccessAdmin.vue'
 import { useUserStore } from '../stores/userStore'
+import { useUiStore } from '../stores/uiStore'
+import { policyBadge, policyFlagPages, categoryLabel } from '../utils/governance'
 
 const userStore = useUserStore()
+const ui = useUiStore()
+
+// ── Content review ─────────────────────────────────────────────────────
+const review = ref({ quarantined: [], flagged: [], reports: [] })
+const reviewError = ref('')
+const expanded = ref('')
+const busy = ref('')
+const reviewQueue = computed(() => [...(review.value.quarantined || []), ...(review.value.flagged || [])])
+const key = (d) => `${d.collection_id}:${d.document_id}`
+const toggleDetails = (d) => { expanded.value = expanded.value === key(d) ? '' : key(d) }
+
+const loadReview = async () => {
+  reviewError.value = ''
+  try {
+    const resp = await http.get('/api/admin/review')
+    review.value = resp.data
+  } catch (err) {
+    reviewError.value = err.message || 'Could not load the review queue'
+  }
+}
+
+const approve = async (d) => {
+  busy.value = key(d)
+  try {
+    await http.post(`/api/admin/documents/${d.collection_id}/${d.document_id}/approve`, { note: '' })
+    ui.notify(`Approved ${d.filename}.`, 'success')
+    await Promise.all([loadReview(), loadAudit()])
+  } catch (err) {
+    ui.toastError(err, 'Could not approve the document')
+  } finally {
+    busy.value = ''
+  }
+}
+
+const remove = async (d, block) => {
+  const what = d.filename || d.document_id
+  if (!window.confirm(block ? `Remove "${what}" and block the file from being re-added?` : `Remove "${what}"?`)) return
+  busy.value = key(d)
+  try {
+    await http.post(`/api/admin/documents/${d.collection_id}/${d.document_id}/remove`, { block, reason: '' })
+    ui.notify(block ? `Removed and blocked ${what}.` : `Removed ${what}.`, 'success')
+    await Promise.all([loadReview(), loadAudit(), loadBlocked()])
+  } catch (err) {
+    ui.toastError(err, 'Could not remove the document')
+  } finally {
+    busy.value = ''
+  }
+}
+
+// ── Policy settings (persisted through /api/config) ────────────────────
+const policyForm = reactive({
+  content_policy_action: 'flag',
+  content_policy_llm_review: false,
+  content_policy_llm_provider: '',
+  content_policy_llm_model: '',
+  aup_required: false,
+  aup_version: '1',
+  aup_text: '',
+})
+const policySaving = ref(false)
+const policySaved = ref(false)
+
+const loadPolicy = async () => {
+  try {
+    const resp = await http.get('/api/config')
+    for (const k of Object.keys(policyForm)) {
+      if (resp.data[k] !== undefined && resp.data[k] !== null) policyForm[k] = resp.data[k]
+    }
+    policyForm.aup_version = String(policyForm.aup_version)
+  } catch { /* leave defaults */ }
+}
+
+const savePolicy = async () => {
+  policySaving.value = true
+  policySaved.value = false
+  try {
+    const resp = await http.post('/api/config', { ...policyForm })
+    if (resp.data?.success === false) {
+      ui.notify((resp.data.errors || []).join('; ') || 'Could not save', 'error')
+    } else {
+      policySaved.value = true
+      setTimeout(() => { policySaved.value = false }, 2500)
+      await Promise.all([loadReview(), userStore.loadCurrentUser(), loadAcks()])
+    }
+  } catch (err) {
+    ui.toastError(err, 'Could not save policy settings')
+  } finally {
+    policySaving.value = false
+  }
+}
+
+// ── Audit trail ────────────────────────────────────────────────────────
+const auditEvents = ref([])
+const auditActions = ref([])
+const auditRetention = ref(0)
+const auditError = ref('')
+const auditFilter = reactive({ action: '', actor: '' })
+const auditCsvHref = computed(() => {
+  const p = new URLSearchParams({ format: 'csv', limit: '2000' })
+  if (auditFilter.action) p.set('action', auditFilter.action)
+  if (auditFilter.actor) p.set('actor', auditFilter.actor)
+  return `/api/admin/audit?${p.toString()}`
+})
+
+const loadAudit = async () => {
+  auditError.value = ''
+  try {
+    const params = { limit: 200 }
+    if (auditFilter.action) params.action = auditFilter.action
+    if (auditFilter.actor.trim()) params.actor = auditFilter.actor.trim()
+    const resp = await http.get('/api/admin/audit', { params })
+    auditEvents.value = resp.data.events || []
+    auditActions.value = resp.data.actions || []
+    auditRetention.value = resp.data.retention_days || 0
+  } catch (err) {
+    auditError.value = err.message || 'Could not load the audit trail'
+  }
+}
+
+const detailText = (detail) => {
+  if (!detail) return ''
+  if (typeof detail === 'string') return detail
+  return Object.entries(detail)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : typeof v === 'object' ? JSON.stringify(v) : v}`)
+    .join(' · ')
+}
+
+// ── Blocklist / suspension / acknowledgements ──────────────────────────
+const blocked = ref([])
+const newHash = ref('')
+const newHashReason = ref('')
+const suspendEmail = ref('')
+const suspendReason = ref('')
+const aupAcks = ref({ required: false, version: '1', acknowledgements: [] })
+
+const loadBlocked = async () => {
+  try {
+    blocked.value = (await http.get('/api/admin/blocked-hashes')).data.hashes || []
+  } catch { blocked.value = [] }
+}
+
+const blockHash = async () => {
+  try {
+    await http.post('/api/admin/blocked-hashes', { content_hash: newHash.value.trim(), reason: newHashReason.value })
+    newHash.value = ''
+    newHashReason.value = ''
+    await Promise.all([loadBlocked(), loadAudit(), loadReview()])
+  } catch (err) {
+    ui.toastError(err, 'Could not block that hash')
+  }
+}
+
+const unblockHash = async (h) => {
+  try {
+    await http.delete(`/api/admin/blocked-hashes/${h}`)
+    await Promise.all([loadBlocked(), loadAudit(), loadReview()])
+  } catch (err) {
+    ui.toastError(err, 'Could not unblock that hash')
+  }
+}
+
+const suspend = async () => {
+  const email = suspendEmail.value.trim()
+  if (!window.confirm(`Suspend ${email}? Their MCP tokens are revoked immediately.`)) return
+  try {
+    const resp = await http.post(`/api/admin/users/${encodeURIComponent(email)}/suspend`, { reason: suspendReason.value })
+    const r = resp.data
+    ui.notify(
+      `Suspended ${email}: ${r.tokens_revoked} token${r.tokens_revoked === 1 ? '' : 's'} revoked` +
+      (r.edge_revoked === true ? ', edge access withdrawn.' : r.edge_error ? ` (edge: ${r.edge_error})` : '.'),
+      'success',
+    )
+    suspendEmail.value = ''
+    suspendReason.value = ''
+    await loadAudit()
+  } catch (err) {
+    ui.toastError(err, 'Could not suspend that identity')
+  }
+}
+
+const loadAcks = async () => {
+  try {
+    aupAcks.value = (await http.get('/api/admin/aup-acknowledgements')).data
+  } catch { /* leave */ }
+}
+
+const formatWhen = (iso) => {
+  if (!iso) return '—'
+  try { return new Date(iso).toLocaleString() } catch { return iso }
+}
 
 const loading = ref(false)
 const sys = ref({})
@@ -205,7 +668,9 @@ const loadUsage = async () => {
 const loadAll = async () => {
   loading.value = true
   try {
-    await Promise.all([loadStats(), loadUsage()])
+    await Promise.all([
+      loadStats(), loadUsage(), loadReview(), loadPolicy(), loadAudit(), loadBlocked(), loadAcks(),
+    ])
   } finally {
     loading.value = false
   }

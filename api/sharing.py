@@ -25,6 +25,7 @@ async def get_current_user(user_id: str = Depends(get_current_user_id)):
     """
     from services.access_provisioning import access_provisioning_enabled, is_admin
     from services.app_database import app_db
+    from services import governance
     user = app_db.get_user(user_id) if user_id else None
     return {
         "user_id": user_id,
@@ -36,6 +37,18 @@ async def get_current_user(user_id: str = Depends(get_current_user_id)):
         # than letting an owner send an invitation that dead-ends at login.
         "edge_admission": access_provisioning_enabled(),
         "is_admin": is_admin(user_id),
+        # Whether to show the Admin tab (usage, content review, audit). With
+        # private collections off there is no operator distinction —
+        # require_admin is a no-op and every teammate is trusted — so the
+        # console is open to everyone, matching what the backend allows.
+        # is_admin stays the raw ADMIN_EMAILS check: edge admission is
+        # gated on it in every mode.
+        "admin_console": is_admin(user_id) or not settings.private_collections,
+        # Governance: whether the UI must show the acceptable-use modal
+        # before this person adds sources, and what the scanner does.
+        "aup": governance.aup_payload(user_id),
+        "content_policy_action": settings.content_policy_action,
+        "sensitivity_levels": list(governance.SENSITIVITY_LEVELS),
     }
 
 
@@ -207,6 +220,12 @@ async def create_share(collection_id: str, body: dict, request: Request, user_id
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    from services import audit
+    audit.record("share.create", actor=user_id, collection_id=collection_id,
+                 target=notify_email or None,
+                 detail={"share_id": share.get("share_id"), "permission": share.get("permission"),
+                         "expires_at": share.get("expires_at")})
 
     if notify_email:
         from services.access_provisioning import (
@@ -389,9 +408,13 @@ async def accept_share(share_token: str, user_id: str = Depends(get_current_user
     """Accept a share link to gain access to a collection."""
     try:
         result = sharing_service.accept_share(share_token, user_id)
-        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    from services import audit
+    audit.record("share.accept", actor=user_id,
+                 collection_id=(result or {}).get("collection_id"),
+                 detail={"share_id": share_token, "permission": (result or {}).get("permission")})
+    return result
 
 
 @router.get(
@@ -424,6 +447,12 @@ async def revoke_share(share_id: str, user_id: str = Depends(get_current_user_id
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    from services import audit
+    audit.record("share.revoke", actor=user_id,
+                 collection_id=(share or {}).get("collection_id"),
+                 target=(share or {}).get("invited_email"),
+                 detail={"share_id": share_id})
 
     result = {"message": "Share revoked", "success": True}
     invited = (share or {}).get("invited_email")

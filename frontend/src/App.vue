@@ -394,6 +394,12 @@
                         v-else-if="userStore.privateCollections"
                         class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                       >Private</span>
+                      <span
+                        v-if="showLabel(collection.sensitivity)"
+                        class="badge badge-xs"
+                        :class="labelBadgeClass(collection.sensitivity)"
+                        :title="`Sensitivity: ${collection.sensitivity}`"
+                      >{{ collection.sensitivity }}</span>
                     </div>
                     <p v-if="collection.description" class="mt-1.5 text-[13px] leading-relaxed text-base-content/55 truncate">{{ collection.description }}</p>
                   </div>
@@ -476,6 +482,12 @@
                           v-else-if="userStore.privateCollections"
                           class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                         >Private</span>
+                        <span
+                          v-if="showLabel(collection.sensitivity)"
+                          class="badge badge-xs"
+                          :class="labelBadgeClass(collection.sensitivity)"
+                          :title="`Sensitivity: ${collection.sensitivity}`"
+                        >{{ collection.sensitivity }}</span>
                       </div>
                     </div>
                   </div>
@@ -786,6 +798,24 @@
         </div>
 
         <div class="form-control w-full mb-4">
+          <label class="label pb-1" for="edit-collection-sensitivity">
+            <span class="label-text">Sensitivity</span>
+          </label>
+          <select
+            id="edit-collection-sensitivity"
+            v-model="editCollectionSensitivity"
+            class="select select-bordered w-full"
+          >
+            <option v-for="level in userStore.sensitivityLevels" :key="level" :value="level">
+              {{ level.charAt(0).toUpperCase() + level.slice(1) }}
+            </option>
+          </select>
+          <p class="text-xs opacity-70 mt-1">
+            {{ SENSITIVITY_HELP[editCollectionSensitivity] }} Shown on every result and citation; individual documents can override it.
+          </p>
+        </div>
+
+        <div class="form-control w-full mb-4">
           <label class="label" for="edit-collection-color">
             <span class="label-text">Color</span>
           </label>
@@ -915,6 +945,10 @@
       @complete="handleOnboardingComplete"
       @skip="handleOnboardingSkip"
     />
+
+    <!-- Acceptable-use acknowledgement: a takeover until accepted when the
+         deployment requires it, otherwise openable on demand -->
+    <AcceptableUseModal v-if="userStore.aup.enabled || userStore.aupOpen" />
 
     <!-- Background Jobs Sidebar Drawer -->
     <div
@@ -1058,9 +1092,10 @@ const tabs = computed(() => {
   t.push({ id: 'generate', label: 'Generate', icon: Sparkles })
   t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
   t.push({ id: 'mcp', label: 'MCP', icon: Plug })
-  // Operator console: usage, admissions, live stats. Admin-only — the
-  // backend enforces it too; hiding the tab just avoids a 403 surprise.
-  if (userStore.isAdmin) t.push({ id: 'admin', label: 'Admin', icon: Gauge })
+  // Operator console: usage, content review, audit, admissions. Admins
+  // under private collections (the backend enforces it too; hiding the tab
+  // just avoids a 403 surprise), everyone on an open deployment.
+  if (userStore.adminConsole) t.push({ id: 'admin', label: 'Admin', icon: Gauge })
   return t
 })
 
@@ -1078,6 +1113,8 @@ const ShareModal = defineAsyncComponent(() => import('./components/ShareModal.vu
 const ExpertiseLibrary = defineAsyncComponent(() => import('./components/ExpertiseLibrary.vue'))
 const WelcomeOnboarding = defineAsyncComponent(() => import('./components/WelcomeOnboarding.vue'))
 const AdminTab = defineAsyncComponent(() => import('./components/AdminTab.vue'))
+const AcceptableUseModal = defineAsyncComponent(() => import('./components/AcceptableUseModal.vue'))
+import { SENSITIVITY_HELP, labelBadgeClass, showLabel } from './utils/governance'
 import Toaster from './components/Toaster.vue'
 import {
   getConfiguredProviderIds,
@@ -1282,6 +1319,7 @@ const editCollectionName = ref('')
 const editCollectionDescription = ref('')
 const editCollectionColor = ref('#3b82f6')
 const editCollectionGuide = ref('')
+const editCollectionSensitivity = ref('internal')
 const updatingCollection = ref(false)
 
 // Delete confirmation modal
@@ -1468,6 +1506,7 @@ const openEditCollectionModal = (collection) => {
   editCollectionDescription.value = collection.description || ''
   editCollectionColor.value = collection.color || '#3b82f6'
   editCollectionGuide.value = collection.guide || ''
+  editCollectionSensitivity.value = collection.sensitivity || 'internal'
   editModal.open()
 }
 
@@ -1480,7 +1519,8 @@ const updateCollection = async () => {
       name: editingCollectionId.value === 'default' ? undefined : editCollectionName.value.trim(),
       description: editCollectionDescription.value.trim(),
       color: editCollectionColor.value,
-      guide: editCollectionGuide.value
+      guide: editCollectionGuide.value,
+      sensitivity: editCollectionSensitivity.value,
     })
     editModal.close()
   } catch (err) {
@@ -1603,10 +1643,17 @@ onMounted(async () => {
   // Share-invitation deep link (?share_token=... from emailed invites):
   // open the join dialog with the token prefilled, then clean the URL so a
   // reload doesn't re-prompt.
-  const shareToken = new URLSearchParams(window.location.search).get('share_token')
+  const params = new URLSearchParams(window.location.search)
+  const shareToken = params.get('share_token')
   if (shareToken) {
     shareInitialToken.value = shareToken
     openJoinSharedModal()
+    window.history.replaceState({}, '', window.location.pathname)
+  }
+  // ?tab=admin deep link (report-notification emails point here).
+  const wantedTab = params.get('tab')
+  if (wantedTab && VALID_TABS.includes(wantedTab)) {
+    activeTab.value = wantedTab
     window.history.replaceState({}, '', window.location.pathname)
   }
 

@@ -40,6 +40,17 @@ def _sweep() -> None:
     except Exception as e:
         logger.warning(f"Retention sweep of chat_usage failed: {e}")
 
+    # The audit trail is the accountability record, so it has its own,
+    # much longer window — and 0 keeps it forever.
+    if settings.audit_retention_days and settings.audit_retention_days > 0:
+        try:
+            removed = app_db.delete_old_audit_events(settings.audit_retention_days)
+            if removed:
+                logger.info(f"Retention: removed {removed} audit_events rows older than "
+                            f"{settings.audit_retention_days}d")
+        except Exception as e:
+            logger.warning(f"Retention sweep of audit_events failed: {e}")
+
 
 async def retention_loop() -> None:
     await asyncio.sleep(_FIRST_SWEEP_DELAY_S)

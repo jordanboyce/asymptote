@@ -251,6 +251,43 @@ class Settings(BaseSettings):
     search_history_retention_days: int = 30
     usage_retention_days: int = 180
 
+    # ── Content governance ───────────────────────────────────────────────
+    # What happens when the ingest-time content-policy scanner flags a
+    # document. "flag" indexes it and shows a badge (the same posture as
+    # the prompt-injection scan); "quarantine" indexes it but hides it from
+    # search, chat and MCP until an admin approves; "reject" refuses to
+    # index it at all; "off" skips the scan. A finding in a critical
+    # category (child sexual abuse material indicators, attack planning or
+    # incitement) is always at least quarantined under "flag" — the knob is
+    # a floor, not a ceiling. Rule packs are local regex; nothing leaves the
+    # machine unless CONTENT_POLICY_LLM_REVIEW is on.
+    content_policy_action: Literal["off", "flag", "quarantine", "reject"] = "flag"
+
+    # Second opinion from an LLM: a sample of pages is classified against
+    # the same categories through the provider named here (or, when empty,
+    # the deployment's default chat provider). Sends content to a provider
+    # the deployment already trusts for chat, but it costs tokens per
+    # upload, so it is off by default. Its verdict can escalate a document
+    # to flagged/quarantined; it never clears a rule-pack finding.
+    content_policy_llm_review: bool = False
+    content_policy_llm_provider: str = ""
+    content_policy_llm_model: str = ""
+    content_policy_llm_sample_pages: int = 6
+
+    # Acceptable-use acknowledgement. When on, every identity must accept
+    # the policy (once per version) before adding sources; bump the version
+    # to re-prompt everyone. Acceptance is recorded per identity, so this
+    # only takes effect under PRIVATE_COLLECTIONS, where every request has
+    # one. Empty text uses the built-in default policy (markdown).
+    aup_required: bool = False
+    aup_version: str = "1"
+    aup_text: str = ""
+
+    # Audit events (uploads, deletions, shares, tokens, policy decisions,
+    # admin actions) are the accountability trail and are kept far longer
+    # than the search log. 0 = keep forever.
+    audit_retention_days: int = 365
+
     # Extra Host header values the embedded /mcp endpoint accepts, comma-
     # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding
     # protection that only trusts localhost Hosts by default; when the app is

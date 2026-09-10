@@ -11,7 +11,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Current schema version - increment when making breaking changes
-SCHEMA_VERSION = "3.2"
+SCHEMA_VERSION = "3.3"
+
+# v3.3 governance columns on the documents table, in migration order.
+_GOVERNANCE_DOC_COLUMNS = [
+    ("uploaded_by", "TEXT DEFAULT NULL"),      # verified identity that added it
+    ("content_hash", "TEXT DEFAULT NULL"),     # full sha256 (blocklist key)
+    ("sensitivity", "TEXT DEFAULT NULL"),      # per-document label override
+    ("policy_status", "TEXT DEFAULT 'clear'"), # clear|flagged|quarantined|approved
+    ("policy_flags", "TEXT DEFAULT NULL"),     # JSON scan summary
+]
 
 
 class MetadataStore:
@@ -87,7 +96,13 @@ class MetadataStore:
                     chunk_size INTEGER DEFAULT NULL,
                     chunk_overlap INTEGER DEFAULT NULL,
                     schema_version TEXT DEFAULT '3.0',
-                    injection_warnings TEXT DEFAULT NULL
+                    injection_warnings TEXT DEFAULT NULL,
+                    -- v3.3: governance (attribution, blocklist key, labels, review)
+                    uploaded_by TEXT DEFAULT NULL,
+                    content_hash TEXT DEFAULT NULL,
+                    sensitivity TEXT DEFAULT NULL,
+                    policy_status TEXT DEFAULT 'clear',
+                    policy_flags TEXT DEFAULT NULL
                 )
             """)
 
@@ -144,6 +159,11 @@ class MetadataStore:
             # Migration from 3.1 to 3.2
             if current_version == "3.1":
                 self._migrate_to_v3_2(conn)
+                current_version = "3.2"
+
+            # Migration from 3.2 to 3.3
+            if current_version == "3.2":
+                self._migrate_to_v3_3(conn)
 
             # Update schema version
             conn.execute("""
@@ -241,6 +261,23 @@ class MetadataStore:
             conn.execute("ALTER TABLE documents ADD COLUMN injection_warnings TEXT DEFAULT NULL")
             logger.info("Added column injection_warnings to documents table")
 
+    def _migrate_to_v3_3(self, conn: sqlite3.Connection):
+        """Migrate from v3.2 to v3.3 schema (governance columns).
+
+        Existing rows get policy_status 'clear' — they were indexed before the
+        scanner existed and are not retroactively screened — and no
+        uploaded_by, which the sidebar shows as "unattributed".
+        """
+        doc_columns = self._get_table_columns(conn, "documents")
+        for col_name, col_def in _GOVERNANCE_DOC_COLUMNS:
+            if col_name not in doc_columns:
+                conn.execute(f"ALTER TABLE documents ADD COLUMN {col_name} {col_def}")
+                logger.info(f"Added column {col_name} to documents table")
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_documents_policy_status
+            ON documents(policy_status)
+        """)
+
     def _ensure_v3_1_columns(self, conn: sqlite3.Connection):
         """Ensure v3.1+ columns exist (defensive migration for runtime checks)."""
         doc_columns = self._get_table_columns(conn, "documents")
@@ -252,6 +289,10 @@ class MetadataStore:
         if "injection_warnings" not in doc_columns:
             logger.warning("Running defensive v3.2 migration - injection_warnings column missing")
             self._migrate_to_v3_2(conn)
+            migrated = True
+        if "policy_status" not in doc_columns:
+            logger.warning("Running defensive v3.3 migration - governance columns missing")
+            self._migrate_to_v3_3(conn)
             migrated = True
         if migrated:
             conn.execute("""
@@ -453,7 +494,8 @@ class MetadataStore:
                 cursor = conn.execute(f"""
                     SELECT document_id, filename, num_pages, num_chunks, upload_timestamp,
                            source_format, extraction_method, embedding_model, chunk_size,
-                           chunk_overlap, schema_version, source_path, source_type
+                           chunk_overlap, schema_version, source_path, source_type,
+                           uploaded_by, sensitivity, policy_status
                     FROM documents
                     WHERE document_id IN ({placeholders})
                 """, batch)
@@ -559,9 +601,31 @@ class MetadataStore:
     @staticmethod
     def _document_row_to_dict(row) -> dict:
         r = dict(row)
-        if r.get("injection_warnings"):
-            r["injection_warnings"] = json.loads(r["injection_warnings"])
+        for key in ("injection_warnings", "policy_flags"):
+            if r.get(key):
+                try:
+                    r[key] = json.loads(r[key])
+                except (TypeError, ValueError):
+                    r[key] = None
         return r
+
+    # Columns every document listing returns. One definition so the sidebar,
+    # the MCP tools and the review queue never disagree about the row shape.
+    _DOC_LIST_COLUMNS = """
+                    d.document_id,
+                    d.filename,
+                    d.num_chunks,
+                    d.num_pages,
+                    d.source_type,
+                    d.source_path,
+                    d.source_format,
+                    d.upload_timestamp,
+                    d.injection_warnings,
+                    d.uploaded_by,
+                    d.content_hash,
+                    d.sensitivity,
+                    d.policy_status,
+                    d.policy_flags"""
 
     def list_documents_page(self, limit: int, offset: int = 0, q: str = "") -> List[dict]:
         """One page of documents, newest first, optionally filename-filtered.
@@ -581,15 +645,7 @@ class MetadataStore:
                 params.append(f"%{self._escape_like(q)}%")
             params += [limit, offset]
             cursor = conn.execute(f"""
-                SELECT
-                    d.document_id,
-                    d.filename,
-                    d.num_chunks,
-                    d.num_pages,
-                    d.source_type,
-                    d.source_path,
-                    d.upload_timestamp,
-                    d.injection_warnings
+                SELECT {self._DOC_LIST_COLUMNS}
                 FROM documents d
                 {where}
                 ORDER BY COALESCE(d.upload_timestamp, '1970-01-01') DESC, d.document_id
@@ -615,34 +671,73 @@ class MetadataStore:
             self._ensure_v3_1_columns(conn)
 
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT
-                    d.document_id,
-                    d.filename,
-                    d.num_chunks,
-                    d.num_pages,
-                    d.source_type,
-                    d.source_path,
-                    d.upload_timestamp,
-                    d.injection_warnings
+            cursor = conn.execute(f"""
+                SELECT {self._DOC_LIST_COLUMNS}
                 FROM documents d
                 ORDER BY COALESCE(d.upload_timestamp, '1970-01-01') DESC
             """)
+            return [self._document_row_to_dict(row) for row in cursor.fetchall()]
 
-            rows = []
-            for row in cursor.fetchall():
-                r = dict(row)
-                if r.get("injection_warnings"):
-                    r["injection_warnings"] = json.loads(r["injection_warnings"])
-                rows.append(r)
-            return rows
+    def list_documents_by_policy_status(self, statuses) -> List[dict]:
+        """Documents whose policy_status is in ``statuses`` (the review queue)."""
+        wanted = [s for s in statuses if s]
+        if not wanted:
+            return []
+        with sqlite_connect(self.db_path) as conn:
+            self._ensure_v3_1_columns(conn)
+            conn.row_factory = sqlite3.Row
+            placeholders = ",".join("?" for _ in wanted)
+            cursor = conn.execute(f"""
+                SELECT {self._DOC_LIST_COLUMNS}
+                FROM documents d
+                WHERE d.policy_status IN ({placeholders})
+                ORDER BY COALESCE(d.upload_timestamp, '1970-01-01') DESC
+            """, wanted)
+            return [self._document_row_to_dict(row) for row in cursor.fetchall()]
+
+    def get_hidden_document_ids(self) -> set:
+        """Ids of documents retrieval must not return (quarantined)."""
+        with sqlite_connect(self.db_path) as conn:
+            self._ensure_v3_1_columns(conn)
+            rows = conn.execute(
+                "SELECT document_id FROM documents WHERE policy_status = 'quarantined'"
+            ).fetchall()
+            return {r[0] for r in rows}
+
+    def set_document_governance(self, document_id: str, *, sensitivity=..., policy_status=None,
+                                policy_flags=...):
+        """Update the governance columns of one document.
+
+        ``sensitivity`` and ``policy_flags`` use Ellipsis as "leave alone" so
+        None can mean "clear the override" / "no flags".
+        """
+        updates, params = [], []
+        if sensitivity is not ...:
+            updates.append("sensitivity = ?")
+            params.append(sensitivity)
+        if policy_status is not None:
+            updates.append("policy_status = ?")
+            params.append(policy_status)
+        if policy_flags is not ...:
+            updates.append("policy_flags = ?")
+            params.append(json.dumps(policy_flags) if policy_flags else None)
+        if not updates:
+            return
+        params.append(document_id)
+        with sqlite_connect(self.db_path) as conn:
+            self._ensure_v3_1_columns(conn)
+            conn.execute(f"UPDATE documents SET {', '.join(updates)} WHERE document_id = ?", params)
+            conn.commit()
 
     def add_document(self, document_id: str, filename: str, num_pages: int,
                      num_chunks: int, upload_timestamp: str,
                      source_format: str = None, extraction_method: str = "text",
                      embedding_model: str = None, chunk_size: int = None,
                      chunk_overlap: int = None, source_path: str = None,
-                     source_type: str = "upload", injection_warnings: dict = None):
+                     source_type: str = "upload", injection_warnings: dict = None,
+                     uploaded_by: str = None, content_hash: str = None,
+                     sensitivity: str = None, policy_status: str = "clear",
+                     policy_flags: dict = None):
         """
         Add document metadata.
 
@@ -674,6 +769,11 @@ class MetadataStore:
             "source_path": source_path,
             "source_type": source_type,
             "injection_warnings": injection_warnings,
+            "uploaded_by": uploaded_by,
+            "content_hash": content_hash,
+            "sensitivity": sensitivity,
+            "policy_status": policy_status,
+            "policy_flags": policy_flags,
         }])
 
     def add_documents(self, documents: List[dict]):
@@ -699,8 +799,9 @@ class MetadataStore:
                 INSERT OR REPLACE INTO documents
                 (document_id, filename, num_pages, num_chunks, upload_timestamp,
                  source_format, extraction_method, embedding_model, chunk_size,
-                 chunk_overlap, schema_version, source_path, source_type, injection_warnings)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 chunk_overlap, schema_version, source_path, source_type, injection_warnings,
+                 uploaded_by, content_hash, sensitivity, policy_status, policy_flags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     doc["document_id"],
@@ -717,6 +818,11 @@ class MetadataStore:
                     doc.get("source_path"),
                     doc.get("source_type", "upload"),
                     json.dumps(doc["injection_warnings"]) if doc.get("injection_warnings") else None,
+                    doc.get("uploaded_by"),
+                    doc.get("content_hash"),
+                    doc.get("sensitivity"),
+                    doc.get("policy_status") or "clear",
+                    json.dumps(doc["policy_flags"]) if doc.get("policy_flags") else None,
                 )
                 for doc in documents
             ])
@@ -814,14 +920,15 @@ class MetadataStore:
             cursor = conn.execute("""
                 SELECT document_id, filename, num_pages, num_chunks, upload_timestamp,
                        source_format, extraction_method, embedding_model, chunk_size,
-                       chunk_overlap, schema_version, source_path, source_type
+                       chunk_overlap, schema_version, source_path, source_type,
+                       uploaded_by, content_hash, sensitivity, policy_status, policy_flags
                 FROM documents
                 WHERE document_id = ?
             """, (document_id,))
 
             row = cursor.fetchone()
             if row:
-                return dict(row)
+                return self._document_row_to_dict(row)
             return None
 
     def document_exists(self, document_id: str) -> bool:

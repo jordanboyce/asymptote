@@ -19,6 +19,9 @@ Asymptote is a privacy-focused tool for indexing your own documents and data, ch
   - `services/agent_tools.py` — the same tool registry rendered as native Anthropic / OpenAI tool schemas.
   - `services/mcp_server.py` — embedded HTTP MCP endpoint mounted at `/mcp`.
   - `services/expertise_store.py` — named, markdown-body "Expertise" packs: reusable research frameworks/instructions a user can attach to a collection.
+  - `services/content_policy.py` — ingest-time content-policy scanner (local regex rule packs, optional LLM second opinion) and the clear/flagged/quarantined/rejected decision.
+  - `services/governance.py` — sensitivity labels, quarantine/approve/remove, the hash blocklist, reports, user suspension, and the acceptable-use acknowledgement. `services/audit.py` is the append-only trail behind all of it.
+- **Governance choke points.** Quarantined documents are filtered in `DocumentIndexer.search` (every retrieval surface), in the MCP document tools, and by `governance.assert_document_servable` on the pdf/chunks endpoints. Restricted collections are refused by `sharing_service.create_share` and by `mcp_server._resolve_collection_id` / `_visible_collections` unless the MCP token is scoped to them. The AUP gate lives in `api/documents._require_ingest`. Every ingest path passes `uploaded_by` down to the indexer, which also hashes the file and consults the blocklist.
 - [middleware/](../middleware/) — `user_context` resolves the owner recorded on collections. Multi-user mode is not supported (the app refuses to start with it enabled), so this always resolves to `default_user_id`; see [DEPLOYMENT.md](DEPLOYMENT.md) for why.
 
 ## Chat

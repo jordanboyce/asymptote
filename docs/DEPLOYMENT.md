@@ -179,6 +179,85 @@ application-level checks — different compliance regimes, different tenants —
 run a second instance. Separate instances remain a stronger boundary than any
 in-app flag.
 
+## Content governance
+
+Once several people can add sources, two questions follow: *who put this
+here?* and *should it be here at all?* The app answers both with a set of
+controls that are on by default and need no configuration, plus three
+settings for the deployment's policy. Everything below is domain-neutral —
+it applies to any corpus.
+
+**Always on**
+
+- **Attribution.** Every document row records the verified identity that
+  added it (`uploaded_by`); the sidebar shows it under private collections.
+  Background index jobs capture the identity that started them.
+- **Audit trail.** Uploads, index jobs, deletions, shares (create, accept,
+  revoke), MCP tokens (create, revoke), policy decisions, reports, label
+  changes, policy acknowledgements and every admin action land in an
+  append-only `audit_events` table. Admin tab → *Audit trail* filters it and
+  exports CSV; `AUDIT_RETENTION_DAYS` (default 365, `0` = forever) is the
+  only knob, and it is separate from the search-history sweep.
+- **Report.** Anyone who can read a collection can report one of its
+  documents (the flag icon in the sidebar). The report is audited and, when
+  `RESEND_API_KEY` is set, emailed to `ADMIN_EMAILS`.
+- **Hash blocklist.** Admin removal with *Remove & block* records the file's
+  sha256; the same bytes are refused at every ingest path in every
+  collection afterwards. Hashes can also be added by hand from an
+  organisation's own list.
+- **Sensitivity labels.** Every collection carries `public`, `internal`
+  (default), `confidential` or `restricted`; a document can override it.
+  The label travels on every search result, chat citation and MCP result.
+  `restricted` is the one label that is a boundary: the collection cannot be
+  shared, and MCP clients see it only through a personal token explicitly
+  scoped to it (MCP tab → token generator).
+
+**The scanner** (`CONTENT_POLICY_ACTION`, default `flag`)
+
+Every page of extracted text — including OCR output, image descriptions,
+audio transcripts, the first rows of spreadsheets, and source code for the
+secrets pack — is run through local regex rule packs at ingest: child sexual
+abuse material *indicators* (solicitation and slang, not mere mention),
+attack planning and incitement, weapons and drug trade, explicit content,
+credential dumps, and secrets. Nothing leaves the machine. The knob decides
+what a finding does: `flag` indexes with a badge, `quarantine` indexes but
+hides the document from search, chat and MCP until an admin approves it,
+`reject` refuses it, `off` skips the scan. Findings in the two critical
+categories are always at least quarantined. Secrets never flag on their own
+but make the document default to `confidential`.
+
+Set `CONTENT_POLICY_LLM_REVIEW=true` to add a second opinion from the chat
+LLM on a sample of pages. It can escalate a document; it never clears a
+rule-pack finding. It sends content to a provider chat already trusts, and
+costs tokens per upload, so it is off by default. Air-gapped deployments can
+point it at local Ollama.
+
+Be honest about coverage. This detects **text signals**. It cannot detect
+abuse imagery (that needs licensed hash databases that are not available
+for self-hosting) and it misses anything phrased to evade keywords. It is a
+tripwire; attribution, the audit trail and fast admin takedown are the
+controls. And "criminal" is contextual — a security team indexing threat
+intelligence is legitimate — which is why the default flags and reviews
+rather than blocks.
+
+**Acceptable-use acknowledgement** (`AUP_REQUIRED`, default `false`)
+
+With it on, every identity must accept the policy (once per `AUP_VERSION`)
+before adding sources; the app blocks the ingest endpoints until they do
+and shows the policy as a takeover. Bump the version to re-prompt everyone;
+set `AUP_TEXT` (markdown) to replace the built-in policy. Acceptance is
+recorded per identity, so this only takes effect under
+`PRIVATE_COLLECTIONS`. All three settings are editable live in Admin tab →
+*Policy*.
+
+**Admin actions** (Admin tab → *Content review*)
+
+Approve a held or flagged document, remove it with or without blocking its
+hash, act on user reports, and suspend an identity — which revokes every
+MCP token it holds and, when edge admission is configured, withdraws its
+Cloudflare Access admission. Suspension leaves the person's documents in
+place; removal is a separate, reviewable decision.
+
 ## Capacity & scaling
 
 Asymptote is **one process by design**: the FAISS indexes, background-job
@@ -236,4 +315,7 @@ Stop the container first, or snapshot the volume, so SQLite is not mid-write.
 - [ ] The people who can log in are all cleared to see **every document** in
       every collection — or `PRIVATE_COLLECTIONS=true` is on behind Cloudflare
       Access and the team tier holds nothing sensitive
+- [ ] `ADMIN_EMAILS` names whoever reviews flagged content, and
+      `CONTENT_POLICY_ACTION` / `AUP_REQUIRED` match what you told people
+      the rules are (see [Content governance](#content-governance))
 - [ ] The data directory is backed up

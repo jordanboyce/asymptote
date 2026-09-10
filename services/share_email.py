@@ -86,6 +86,23 @@ def send_share_email(
 </div>
 """
 
+    _deliver(to, subject=subject, text=text, html=html)
+
+
+def send_plain_email(to: str, *, subject: str, text: str) -> None:
+    """One plain-text message through the same Resend configuration.
+
+    Used for operator notifications (a reported document). Same rules as
+    invitations: unavailable without a key or in OFFLINE_MODE, and any
+    failure raises a readable RuntimeError for the caller to log.
+    """
+    if not share_email_enabled():
+        raise RuntimeError("Email sending is not configured: set RESEND_API_KEY in .env.")
+    html = f"<pre style=\"font-family: -apple-system, Segoe UI, Roboto, sans-serif; white-space: pre-wrap;\">{escape(text)}</pre>"
+    _deliver(to, subject=subject, text=text, html=html)
+
+
+def _deliver(to: str, *, subject: str, text: str, html: str) -> None:
     payload = json.dumps({
         "from": settings.resend_from,
         "to": [to],
@@ -106,7 +123,7 @@ def send_share_email(
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8") or "{}")
-        logger.info(f"Share invitation emailed to {to} (resend id {body.get('id', '?')})")
+        logger.info(f"Email sent to {to} (resend id {body.get('id', '?')})")
     except urllib.error.HTTPError as e:
         try:
             detail = json.loads(e.read().decode("utf-8")).get("message", "")

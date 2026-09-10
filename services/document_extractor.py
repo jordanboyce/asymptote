@@ -30,6 +30,12 @@ from services.audio_transcriber import AUDIO_EXTENSIONS, is_audio_file
 
 # Prompt injection detection
 from services.prompt_injection_detector import PromptInjectionDetector, InjectionScanResult
+# Content-policy screening (same shape, feeds the ingest decision)
+from services.content_policy import (
+    PolicyScanResult,
+    scan_pages as scan_policy_pages,
+    scanning_enabled as policy_scanning_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -222,12 +228,14 @@ class ExtractionResult:
 
     def __init__(self, page_texts: Dict[int, str], method: str = "text",
                  ocr_pages: List[int] = None, cleanup_pages: List[int] = None,
-                 injection_warnings: Dict[int, "InjectionScanResult"] = None):
+                 injection_warnings: Dict[int, "InjectionScanResult"] = None,
+                 policy_warnings: Dict[int, "PolicyScanResult"] = None):
         self.page_texts = page_texts
         self.method = method
         self.ocr_pages = ocr_pages or []
         self.cleanup_pages = cleanup_pages or []
         self.injection_warnings = injection_warnings or {}  # page_num -> InjectionScanResult
+        self.policy_warnings = policy_warnings or {}        # page_num -> PolicyScanResult
 
     def __getitem__(self, key):
         return self.page_texts[key]
@@ -524,8 +532,11 @@ class DocumentExtractor:
 
         # Audio files route through Whisper for transcription and then flow
         # through the normal indexing pipeline as a single-"page" document.
+        # A transcript is text like any other for the policy scan.
         if file_ext in AUDIO_EXTENSIONS:
-            return self._extract_audio(file_path)
+            result = self._extract_audio(file_path)
+            self._scan_policy(result, file_path)
+            return result
 
         # Images become a single-"page" document holding the vision model's
         # description + transcription (local OCR text as the fallback). The
@@ -536,6 +547,7 @@ class DocumentExtractor:
             result.injection_warnings = self._injection_detector.scan_pages(
                 result.page_texts, filename=file_path.name
             )
+            self._scan_policy(result, file_path)
             return result
 
         # Code files are skipped for injection scanning (high false-positive rate)
@@ -568,8 +580,24 @@ class DocumentExtractor:
             result.injection_warnings = self._injection_detector.scan_pages(
                 result.page_texts, filename=file_path.name
             )
+        self._scan_policy(result, file_path)
 
         return result
+
+    @staticmethod
+    def _scan_policy(result: ExtractionResult, file_path: Path) -> None:
+        """Attach per-page content-policy findings (no-op when the scan is off).
+
+        The decision — clear / flagged / quarantined / rejected — is taken by
+        the indexer, which knows the collection and the uploader; extraction
+        only reports what it saw.
+        """
+        if not policy_scanning_enabled():
+            return
+        try:
+            result.policy_warnings = scan_policy_pages(result.page_texts, filename=file_path.name)
+        except Exception as e:  # never let the tripwire break ingest
+            logger.warning(f"Content policy scan failed for {file_path.name}: {e}")
 
     def _extract_pdf(self, pdf_path: Path, force_ocr: bool = False) -> ExtractionResult:
         """

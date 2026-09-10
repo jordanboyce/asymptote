@@ -49,6 +49,13 @@
         </div>
 
         <div v-show="addSectionOpen && collectionStore.canEditCurrent" class="px-3 pb-3 space-y-2">
+          <!-- Governance reminder: sources are scanned and attributed -->
+          <p v-if="userStore.aup.enabled || userStore.contentPolicyAction !== 'off'" class="text-[10px] leading-snug text-base-content/50">
+            <template v-if="userStore.contentPolicyAction !== 'off'">Sources are scanned when added</template>
+            <template v-if="userStore.contentPolicyAction !== 'off' && userStore.privateCollections"> and recorded against your identity</template>
+            <template v-else-if="userStore.privateCollections">Sources are recorded against your identity</template>.
+            <button v-if="userStore.aup.enabled" type="button" class="link link-hover" @click="userStore.openAup()">Acceptable use</button>
+          </p>
           <!-- File/folder/record buttons -->
           <div class="flex gap-1.5">
             <template v-if="capabilities.native_file_picker === false">
@@ -293,6 +300,18 @@
           <Trash2 :size="11" aria-hidden="true" />
           {{ selectedDocuments.length }}
         </button>
+        <!-- Bulk sensitivity label for the selection -->
+        <select
+          v-if="selectedDocuments.length > 0 && collectionStore.canEditCurrent"
+          class="select select-bordered select-xs w-28"
+          :disabled="labelling"
+          aria-label="Set sensitivity label for selected sources"
+          @change="applyBulkLabel($event)"
+        >
+          <option value="">Label…</option>
+          <option value="__inherit__">Use collection default</option>
+          <option v-for="level in userStore.sensitivityLevels" :key="level" :value="level">{{ level }}</option>
+        </select>
       </div>
 
       <!-- Loading spinner -->
@@ -358,7 +377,31 @@
                 <ShieldAlert :size="9" />
                 {{ Object.keys(doc.injection_warnings).length }}p
               </button>
+              <!-- Sensitivity label in force (document override, else collection) -->
+              <span
+                v-if="showLabel(doc.sensitivity_effective)"
+                class="badge badge-xs"
+                :class="labelBadgeClass(doc.sensitivity_effective)"
+                :title="`Sensitivity: ${doc.sensitivity_effective}${doc.sensitivity ? ' (set on this document)' : ' (collection default)'}`"
+              >{{ doc.sensitivity_effective }}</span>
+              <!-- Content-policy outcome -->
+              <button
+                v-if="policyBadge(doc.policy_status)"
+                class="badge badge-xs gap-0.5 cursor-pointer"
+                :class="policyBadge(doc.policy_status).cls"
+                @click.stop="openPolicyFlags(doc)"
+                :title="policyBadge(doc.policy_status).title + ' Click for details.'"
+              >
+                <ShieldAlert :size="9" />
+                {{ policyBadge(doc.policy_status).text }}
+              </button>
             </div>
+            <!-- Attribution: who added it (identity deployments only) -->
+            <div
+              v-if="userStore.privateCollections && doc.uploaded_by"
+              class="text-[10px] text-base-content/40 truncate mt-0.5"
+              :title="`Added by ${doc.uploaded_by}`"
+            >by {{ doc.uploaded_by }}</div>
           </div>
 
           <!-- Action buttons -->
@@ -382,6 +425,15 @@
             >
               <Eye :size="12" />
             </a>
+            <button
+              class="btn btn-ghost btn-xs btn-circle"
+              @click="openReport(doc)"
+              :disabled="deleting"
+              title="Report this source to an administrator"
+              :aria-label="`Report ${doc.filename}`"
+            >
+              <Flag :size="12" />
+            </button>
             <button
               class="btn btn-ghost btn-xs btn-circle text-error"
               @click="confirmDelete(doc)"
@@ -528,15 +580,109 @@
       <form method="dialog" class="modal-backdrop"><button @click="closeInjectionModal">close</button></form>
     </dialog>
 
+    <!-- Content-policy findings modal -->
+    <dialog ref="policyModal" class="modal" aria-labelledby="policy-flags-title">
+      <div class="modal-box max-w-2xl">
+        <h3 id="policy-flags-title" class="font-bold text-lg flex items-center gap-2">
+          <ShieldAlert :size="18" :class="policyDoc?.policy_status === 'quarantined' ? 'text-error' : 'text-warning'" aria-hidden="true" />
+          Content policy
+        </h3>
+        <template v-if="policyDoc">
+          <p class="text-sm text-base-content/70 mt-1">{{ policyDoc.filename }}</p>
+          <p class="text-sm mt-3">
+            <template v-if="policyDoc.policy_status === 'quarantined'">
+              This source is <strong>held for review</strong>. It stays indexed but is hidden from search, chat and MCP until an administrator approves it.
+            </template>
+            <template v-else-if="policyDoc.policy_status === 'flagged'">
+              The scan <strong>flagged</strong> this source. It is still searchable; an administrator may review it.
+            </template>
+            <template v-else>
+              This source was flagged and later <strong>approved</strong> by an administrator.
+            </template>
+          </p>
+          <div v-if="policyDoc.policy_flags" class="mt-3 flex flex-wrap gap-1">
+            <span
+              v-for="(count, cat) in policyDoc.policy_flags.categories || {}"
+              :key="cat"
+              class="badge badge-sm badge-outline"
+            >{{ categoryLabel(cat) }} · {{ count }}</span>
+            <span v-if="policyDoc.policy_flags.critical" class="badge badge-sm badge-error">critical</span>
+            <span v-if="policyDoc.policy_flags.llm?.categories?.length" class="badge badge-sm badge-info badge-outline">
+              LLM: {{ policyDoc.policy_flags.llm.categories.map(categoryLabel).join(', ') }}
+            </span>
+          </div>
+          <div class="mt-4 space-y-3 max-h-[50vh] overflow-y-auto pr-1">
+            <div
+              v-for="entry in policyFlagPages(policyDoc.policy_flags)"
+              :key="entry.page"
+              class="card bg-base-200 border border-base-300"
+            >
+              <div class="card-body p-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-semibold text-sm">Page {{ entry.page }}</span>
+                  <span class="badge badge-sm badge-outline">score {{ entry.risk_score }}</span>
+                </div>
+                <div class="space-y-1 mt-2">
+                  <div
+                    v-for="(finding, idx) in entry.findings"
+                    :key="idx"
+                    class="rounded bg-base-100 border border-base-300 p-2 text-xs"
+                  >
+                    <span class="font-semibold capitalize">{{ categoryLabel(finding.category) }}</span>
+                    <span class="badge badge-xs ml-1" :class="{ 'badge-error': finding.severity === 'critical' || finding.severity === 'high', 'badge-warning': finding.severity === 'medium', 'badge-info': finding.severity === 'low' }">{{ finding.severity }}</span>
+                    <span class="text-base-content/50 font-mono ml-1">{{ finding.pattern_name }}</span>
+                    <div v-if="finding.matched_text" class="font-mono text-base-content/70 bg-base-200 rounded px-2 py-1 mt-1 break-all">{{ finding.matched_text }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+        <div class="modal-action"><button class="btn" @click="closePolicyModal">Close</button></div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button @click="closePolicyModal">close</button></form>
+    </dialog>
+
+    <!-- Report modal -->
+    <dialog ref="reportModal" class="modal" aria-labelledby="report-title">
+      <div class="modal-box">
+        <h3 id="report-title" class="font-bold text-lg flex items-center gap-2">
+          <Flag :size="18" aria-hidden="true" />
+          Report a source
+        </h3>
+        <p v-if="reportDoc" class="text-sm text-base-content/70 mt-1">{{ reportDoc.filename }}</p>
+        <p class="text-sm mt-3">
+          An administrator will be asked to review this source. Say what is wrong with it.
+        </p>
+        <textarea
+          v-model="reportReason"
+          class="textarea textarea-bordered w-full mt-3"
+          rows="3"
+          placeholder="e.g. Contains someone else's personal data / not something we should hold"
+          aria-label="Reason for the report"
+        ></textarea>
+        <div class="modal-action">
+          <button class="btn" @click="closeReportModal" :disabled="reporting">Cancel</button>
+          <button class="btn btn-warning" @click="submitReport" :disabled="reporting">
+            <span v-if="reporting" class="loading loading-spinner loading-xs"></span>
+            Send report
+          </button>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button @click="closeReportModal">close</button></form>
+    </dialog>
+
   </div>
 </template>
 
 <script setup>
 import { ref, computed, markRaw, onMounted, onBeforeUnmount, watch } from 'vue'
 import http from '../utils/http'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen, Flag } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useUiStore } from '../stores/uiStore'
+import { useUserStore } from '../stores/userStore'
+import { labelBadgeClass, showLabel, policyBadge, policyFlagPages, categoryLabel } from '../utils/governance'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useExpertiseStore } from '../stores/expertiseStore'
 
@@ -544,6 +690,7 @@ const emit = defineEmits(['document-deleted', 'close'])
 
 const collectionStore = useCollectionStore()
 const ui = useUiStore()
+const userStore = useUserStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const expertiseStore = useExpertiseStore()
 
@@ -751,6 +898,80 @@ async function uploadRecording(blob) {
   } finally {
     transcribing.value = false
     transcribeStatus.value = ''
+  }
+}
+
+// Content-policy findings modal state
+const policyModal = ref(null)
+const policyDoc = ref(null)
+
+function openPolicyFlags(doc) {
+  policyDoc.value = doc
+  policyModal.value?.showModal()
+}
+
+function closePolicyModal() {
+  policyModal.value?.close()
+}
+
+// Report-a-source modal state
+const reportModal = ref(null)
+const reportDoc = ref(null)
+const reportReason = ref('')
+const reporting = ref(false)
+
+function openReport(doc) {
+  reportDoc.value = doc
+  reportReason.value = ''
+  reportModal.value?.showModal()
+}
+
+function closeReportModal() {
+  reportModal.value?.close()
+}
+
+async function submitReport() {
+  if (!reportDoc.value) return
+  reporting.value = true
+  try {
+    const resp = await http.post(
+      `/documents/${reportDoc.value.document_id}/report`,
+      { reason: reportReason.value },
+      { params: { collection_id: collectionStore.currentCollectionId } },
+    )
+    const n = resp.data?.admins_notified || 0
+    ui.notify(n > 0 ? `Reported — ${n} administrator${n === 1 ? '' : 's'} notified.` : 'Reported for administrator review.', 'success')
+    closeReportModal()
+  } catch (err) {
+    ui.toastError(err, 'Could not send the report')
+  } finally {
+    reporting.value = false
+  }
+}
+
+// Bulk sensitivity relabel of the current selection
+const labelling = ref(false)
+
+async function applyBulkLabel(event) {
+  const value = event.target.value
+  event.target.value = ''
+  if (!value || selectedDocuments.value.length === 0) return
+  const sensitivity = value === '__inherit__' ? '' : value
+  labelling.value = true
+  try {
+    for (const docId of selectedDocuments.value) {
+      await http.patch(
+        `/documents/${docId}/governance`,
+        { sensitivity },
+        { params: { collection_id: collectionStore.currentCollectionId } },
+      )
+    }
+    ui.notify(`Labelled ${selectedDocuments.value.length} source${selectedDocuments.value.length === 1 ? '' : 's'}.`, 'success')
+    await loadDocuments()
+  } catch (err) {
+    ui.toastError(err, 'Could not update the label')
+  } finally {
+    labelling.value = false
   }
 }
 

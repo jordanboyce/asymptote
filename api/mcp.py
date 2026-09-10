@@ -65,9 +65,35 @@ async def update_mcp_config(updates: dict):
     tags=["mcp"],
 )
 async def create_mcp_token(body: dict, user_id: Optional[str] = Depends(get_current_user_id)):
-    """Mint a token. The plaintext is returned once and cannot be recovered."""
+    """Mint a token. The plaintext is returned once and cannot be recovered.
+
+    Body:
+        name: label for the device/client
+        collection_scope: optional list of *restricted* collection ids this
+            token may reach over MCP. Restricted collections are otherwise
+            invisible to every MCP client; the scope is the explicit grant.
+            Only collections the caller can already access are accepted.
+    """
+    from services import audit
+    from services.collection_service import collection_service
+
     name = (body or {}).get("name", "")
-    return mcp_tokens.generate_token(user_id, name)
+    raw_scope = (body or {}).get("collection_scope") or []
+    if not isinstance(raw_scope, list):
+        raise HTTPException(status_code=400, detail="collection_scope must be a list of collection ids")
+    visible = {c["id"] for c in collection_service.get_all_collections(user_id) if c.get("id")}
+    scope = []
+    for cid in raw_scope:
+        cid = str(cid).strip()
+        if cid and cid not in visible:
+            raise HTTPException(status_code=404, detail=f"Collection '{cid}' not found")
+        if cid:
+            scope.append(cid)
+
+    record = mcp_tokens.generate_token(user_id, name, collection_scope=scope or None)
+    audit.record("mcp_token.create", actor=user_id, target=record.get("id"),
+                 detail={"name": record.get("name"), "collection_scope": scope or None})
+    return record
 
 
 @router.get(
@@ -87,6 +113,8 @@ async def list_mcp_tokens(user_id: Optional[str] = Depends(get_current_user_id))
 async def revoke_mcp_token(token_id: str, user_id: Optional[str] = Depends(get_current_user_id)):
     if not mcp_tokens.revoke_token(token_id, user_id):
         raise HTTPException(status_code=404, detail="Token not found")
+    from services import audit
+    audit.record("mcp_token.revoke", actor=user_id, target=token_id)
     return {"revoked": True}
 
 

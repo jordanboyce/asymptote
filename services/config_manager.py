@@ -35,6 +35,11 @@ VALID_CONFIG_FIELDS = {
     "enable_llm_schema_inference", "llm_schema_inference_threshold",
     "enable_chat_tab",
     "ollama_num_ctx",
+    # Content governance (Admin tab → Policy)
+    "content_policy_action", "content_policy_llm_review",
+    "content_policy_llm_provider", "content_policy_llm_model",
+    "content_policy_llm_sample_pages",
+    "aup_required", "aup_version", "aup_text",
 }
 
 # Config fields holding a credential. GET /api/config returns MASKED_SECRET in
@@ -110,6 +115,15 @@ class ConfigManager:
             "llm_schema_inference_threshold": settings.llm_schema_inference_threshold,
             # UI feature flags
             "enable_chat_tab": settings.enable_chat_tab,
+            # Content governance
+            "content_policy_action": settings.content_policy_action,
+            "content_policy_llm_review": settings.content_policy_llm_review,
+            "content_policy_llm_provider": settings.content_policy_llm_provider,
+            "content_policy_llm_model": settings.content_policy_llm_model,
+            "content_policy_llm_sample_pages": settings.content_policy_llm_sample_pages,
+            "aup_required": settings.aup_required,
+            "aup_version": settings.aup_version,
+            "aup_text": settings.aup_text,
         }
 
         # Override with database values if present
@@ -185,6 +199,14 @@ class ConfigManager:
             if updates["embedding_provider"] not in PROVIDER_IDS:
                 result["errors"].append(
                     f"Unknown embedding provider: {updates['embedding_provider']}"
+                )
+                result["success"] = False
+                return result
+
+        if "content_policy_action" in updates:
+            if updates["content_policy_action"] not in ("off", "flag", "quarantine", "reject"):
+                result["errors"].append(
+                    "content_policy_action must be one of: off, flag, quarantine, reject"
                 )
                 result["success"] = False
                 return result

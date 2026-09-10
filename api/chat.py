@@ -146,6 +146,7 @@ def _cache_store(cache_ctx, answer_text: str, filtered_results, provider: str):
     if not answer_text or not filtered_results:
         return
     sources, fingerprints, seen = [], [], set()
+    label_cache: dict = {}
     for r, cid in filtered_results:
         sources.append({
             "filename": r.filename,
@@ -154,6 +155,7 @@ def _cache_store(cache_ctx, answer_text: str, filtered_results, provider: str):
             "similarity_score": r.similarity_score,
             "document_id": r.document_id,
             "collection_id": cid,
+            "sensitivity": _source_sensitivity(cid, r, label_cache),
         })
         if (cid, r.document_id) not in seen:
             seen.add((cid, r.document_id))
@@ -180,9 +182,20 @@ def _cached_sources(entry, base_url: str) -> list[dict]:
             "document_id": s["document_id"],
             "pdf_url": f"{base_url}/documents/{s['document_id']}/pdf?collection_id={s['collection_id']}",
             "page_url": f"{base_url}/documents/{s['document_id']}/pdf?collection_id={s['collection_id']}#page={s['page_number']}",
+            "sensitivity": s.get("sensitivity"),
         }
         for s in entry["sources"]
     ]
+
+
+def _source_sensitivity(collection_id: str, result, _cache: dict) -> str:
+    """Label in force for a retrieved chunk: document override, else the
+    collection's. Collections are looked up once per turn."""
+    from services.governance import effective_sensitivity
+
+    if collection_id not in _cache:
+        _cache[collection_id] = collection_service.get_collection(collection_id)
+    return effective_sensitivity(_cache[collection_id], getattr(result, "sensitivity", None))
 
 
 @router.delete("/api/chat/cache", tags=["chat"], summary="Clear the semantic answer cache")
@@ -716,6 +729,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         # Only show sources whose chunks actually made it into the prompt —
         # i.e. skip files that were inlined as authoritative JSONL.
         base_url = str(request.base_url).rstrip("/")
+        label_cache: dict = {}
         sources = [
             ChatSource(
                 filename=r.filename,
@@ -725,6 +739,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                 document_id=r.document_id,
                 pdf_url=f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}",
                 page_url=f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}",
+                sensitivity=_source_sensitivity(col_id, r, label_cache),
             )
             for r, col_id in filtered_results
         ]
@@ -1173,6 +1188,7 @@ async def chat_stream_endpoint(
 
             # ---------- sources --------------------------------------------------
             base_url = str(request.base_url).rstrip("/")
+            label_cache: dict = {}
             sources_data = [
                 {
                     "filename": r.filename,
@@ -1182,6 +1198,7 @@ async def chat_stream_endpoint(
                     "document_id": r.document_id,
                     "pdf_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}",
                     "page_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}",
+                    "sensitivity": _source_sensitivity(col_id, r, label_cache),
                 }
                 for r, col_id in filtered_results
             ]

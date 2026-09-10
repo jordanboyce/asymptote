@@ -43,6 +43,17 @@ MCP_PROFILE_FIELDS = (
 
 _request_mcp_profile: ContextVar[dict[str, Any]] = ContextVar("asymptote_request_mcp_profile", default={})
 
+# Collection ids a personal MCP token was explicitly scoped to. Only a
+# request authenticated with such a token has one; it is what unlocks a
+# *restricted* collection over MCP (services/governance.py).
+_request_mcp_token_scope: ContextVar[list[str] | None] = ContextVar(
+    "asymptote_request_mcp_token_scope", default=None
+)
+
+
+def get_request_mcp_token_scope() -> list[str] | None:
+    return _request_mcp_token_scope.get(None)
+
 MCP_CONFIG_FIELDS = (
     "enable_mcp",
     "mcp_server_id",
@@ -228,7 +239,7 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
         # UUID — do a case-insensitive name lookup before giving up. The lookup
         # runs over the caller's visible collections only, so in private-
         # collections mode it can't leak names.
-        all_cols = collection_service.get_all_collections()
+        all_cols = _visible_collections()
         name_match = next(
             (c for c in all_cols if c.get("name", "").strip().lower() == candidate.lower()),
             None,
@@ -253,10 +264,51 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
                 f"Collection '{candidate}' not found. Call list_collections() to "
                 f"see available collections."
             )
+
+    # A restricted collection is invisible to agents unless this request
+    # carries a personal token scoped to it — in every deployment mode.
+    from services.governance import mcp_can_expose
+
+    if not mcp_can_expose(collection_service.get_collection(candidate), get_request_mcp_token_scope()):
+        raise ValueError(
+            f"Collection '{candidate}' not found. Call list_collections() to "
+            f"see available collections."
+        )
     return candidate
 
 
-def _serialize_result(result: Any, rank: int, max_source_length: int) -> dict[str, Any]:
+def _visible_collections() -> list[dict[str, Any]]:
+    """Collections an MCP request may enumerate: the caller's accessible
+    set (private-collections aware), minus restricted ones the token is not
+    scoped to. Every fan-out and listing tool uses this, never the raw
+    collection list."""
+    from services.governance import mcp_can_expose
+
+    scope = get_request_mcp_token_scope()
+    return [
+        c for c in collection_service.get_all_collections()
+        if mcp_can_expose(c, scope)
+    ]
+
+
+def _visible_documents(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Quarantined documents never appear in MCP listings."""
+    from services.governance import visible_documents
+
+    return visible_documents(docs)
+
+
+def _is_hidden_doc(doc_info: dict[str, Any] | None) -> bool:
+    from services.governance import is_hidden
+
+    return is_hidden(doc_info)
+
+
+def _serialize_result(
+    result: Any, rank: int, max_source_length: int, collection: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    from services.governance import effective_sensitivity
+
     payload = {
         "rank": rank,
         "filename": result.filename,
@@ -267,6 +319,8 @@ def _serialize_result(result: Any, rank: int, max_source_length: int) -> dict[st
         "source_format": result.source_format,
         "source_type": result.source_type,
         "source_path": result.source_path,
+        # Label in force, so an agent can honour handling rules downstream.
+        "sensitivity": effective_sensitivity(collection, getattr(result, "sensitivity", None)),
     }
 
     if getattr(result, "symbol_name", None):
@@ -299,7 +353,7 @@ def health_check() -> dict[str, Any]:
     """
 
     try:
-        collections = collection_service.get_all_collections()
+        collections = _visible_collections()
         col_summary = [
             {
                 "collection_id": c.get("id", ""),
@@ -367,7 +421,7 @@ def list_collections() -> dict[str, Any]:
     collection, which may not be what the user asked about.
     """
 
-    collections = collection_service.get_all_collections()
+    collections = _visible_collections()
     default_id = (settings.mcp_default_collection or "").strip() or None
 
     entries = []
@@ -426,7 +480,7 @@ def get_collection_info(
 
     try:
         indexer = indexer_manager.get_indexer(resolved_collection)
-        documents = indexer.list_documents()
+        documents = _visible_documents(indexer.list_documents())
     except Exception:
         documents = []
 
@@ -534,7 +588,7 @@ def search_all_collections_sync(
     if not normalized_query:
         raise ValueError("query must not be empty")
 
-    all_cols = collection_service.get_all_collections()
+    all_cols = _visible_collections()
     if collection_ids:
         target_ids = [c.get("id") for c in all_cols if c.get("id") in set(collection_ids)]
     else:
@@ -589,7 +643,7 @@ def search_all_collections_sync(
             "collection_name": _mcp_safe_name(collection, cid),
             "top_score": top_score,
             "results": [
-                _serialize_result(r, rank, resolved_max_len)
+                _serialize_result(r, rank, resolved_max_len, collection=collection)
                 for rank, r in enumerate(hits, start=1)
             ],
         })
@@ -664,7 +718,7 @@ def list_recent_documents(
     def _docs_for_collection(cid: str) -> list[dict[str, Any]]:
         try:
             indexer = indexer_manager.get_indexer(cid)
-            docs = indexer.list_documents()
+            docs = _visible_documents(indexer.list_documents())
         except Exception:
             return []
         results = []
@@ -688,7 +742,7 @@ def list_recent_documents(
         all_docs = _docs_for_collection(resolved)
     else:
         all_docs = []
-        for c in collection_service.get_all_collections():
+        for c in _visible_collections():
             cid = c.get("id")
             if cid:
                 all_docs.extend(_docs_for_collection(cid))
@@ -877,7 +931,7 @@ def search_collection_sync(
 
     if resolved_include_sources:
         response["results"] = [
-            _serialize_result(result, rank, resolved_max_source_length)
+            _serialize_result(result, rank, resolved_max_source_length, collection=collection)
             for rank, result in enumerate(search_result.get("results", []), start=1)
         ]
     else:
@@ -1031,7 +1085,7 @@ def get_document_context(
     metadata_store = indexer.vector_store.metadata_store
 
     doc_info = metadata_store.get_document_info(document_id)
-    if not doc_info:
+    if not doc_info or _is_hidden_doc(doc_info):
         raise ValueError(
             f"Document '{document_id}' not found in collection "
             f"'{resolved_collection}'. Call get_collection_info() to see "
@@ -1191,6 +1245,7 @@ def find_in_documents_sync(
 
     indexer = indexer_manager.get_indexer(resolved_collection)
     metadata_store = indexer.vector_store.metadata_store
+    hidden_docs = metadata_store.get_hidden_document_ids()
 
     def _scan() -> tuple[list[dict[str, Any]], int]:
         # Literal ASCII patterns are prefiltered in SQL (INSTR), so only
@@ -1205,6 +1260,8 @@ def find_in_documents_sync(
         matches: list[dict[str, Any]] = []
         scanned = 0
         for chunk_id, document_id, filename, page_number, text in rows:
+            if document_id in hidden_docs:
+                continue
             scanned += 1
             text = text or ""
             if regex is not None:
@@ -1710,7 +1767,7 @@ def get_document_metadata(
     indexer = indexer_manager.get_indexer(resolved_collection)
     metadata_store = indexer.vector_store.metadata_store
     doc_info = metadata_store.get_document_info(document_id)
-    if not doc_info:
+    if not doc_info or _is_hidden_doc(doc_info):
         raise ValueError(
             f"Document '{document_id}' not found in collection "
             f"'{resolved_collection}'. Call get_collection_info() to see "
@@ -1741,7 +1798,7 @@ def get_document_metadata(
 
 def _find_collection_for_document(document_id: str) -> tuple[str, dict[str, Any]] | None:
     """Search all collections for a document_id. Returns (collection_id, doc_info) or None."""
-    for c in collection_service.get_all_collections():
+    for c in _visible_collections():
         cid = c.get("id")
         if not cid:
             continue
@@ -1757,7 +1814,7 @@ def _find_collection_for_document(document_id: str) -> tuple[str, dict[str, Any]
 
 def _find_collection_for_table(identifier: str) -> tuple[str, dict[str, Any]] | None:
     """Search all collections for a table identifier. Returns (collection_id, schema) or None."""
-    for c in collection_service.get_all_collections():
+    for c in _visible_collections():
         cid = c.get("id")
         if not cid:
             continue
@@ -1787,7 +1844,7 @@ def resource_collection(id: str) -> dict[str, Any]:
     stats = indexer_manager.get_collection_stats(resolved)
     try:
         indexer = indexer_manager.get_indexer(resolved)
-        documents = indexer.list_documents()
+        documents = _visible_documents(indexer.list_documents())
     except Exception:
         documents = []
 
@@ -1853,7 +1910,7 @@ def resource_all_collections() -> dict[str, Any]:
     page counts. Eliminates the need for list_collections() + repeated
     get_collection_info() calls when getting oriented.
     """
-    all_cols = collection_service.get_all_collections()
+    all_cols = _visible_collections()
     default_id = (settings.mcp_default_collection or "").strip() or None
 
     entries = []
@@ -1864,7 +1921,7 @@ def resource_all_collections() -> dict[str, Any]:
         stats = indexer_manager.get_collection_stats(cid)
         try:
             indexer = indexer_manager.get_indexer(cid)
-            raw_docs = indexer.list_documents()
+            raw_docs = _visible_documents(indexer.list_documents())
         except Exception:
             raw_docs = []
 
@@ -2081,6 +2138,10 @@ class ToggleableMCPApp:
                 profile = _normalize_profile(raw_profile)
 
         token = _request_mcp_profile.set(profile)
+        # The personal-token collection scope (restricted-collection grant)
+        # rides on request.state from main.py's auth middleware too.
+        state = scope.get("state", {}) if scope["type"] == "http" else {}
+        scope_token = _request_mcp_token_scope.set(state.get("mcp_token_scope") or None)
         # Bind the verified identity for private-collections scoping. The auth
         # middleware in main.py verifies the Access JWT and records the result
         # on the ASGI scope's state before this mount runs; MCP service tokens
@@ -2091,9 +2152,7 @@ class ToggleableMCPApp:
         if settings.private_collections:
             from middleware.user_context import set_request_user
 
-            user_token = set_request_user(
-                scope.get("state", {}).get("auth_identity") if scope["type"] == "http" else None
-            )
+            user_token = set_request_user(state.get("auth_identity"))
         try:
             await self.app(scope, receive, send)
         finally:
@@ -2101,6 +2160,7 @@ class ToggleableMCPApp:
                 from middleware.user_context import reset_request_user
 
                 reset_request_user(user_token)
+            _request_mcp_token_scope.reset(scope_token)
             _request_mcp_profile.reset(token)
 
 
