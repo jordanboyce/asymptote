@@ -46,6 +46,17 @@ class SharingService:
         if collection.get("owner_id") != owner_id:
             raise PermissionError("Only the collection owner can create shares")
 
+        # A restricted collection is the one label that is a boundary rather
+        # than a hint: it never leaves its owner by share link. Re-label it
+        # first if sharing is really intended.
+        from services.governance import is_restricted
+
+        if is_restricted(collection):
+            raise PermissionError(
+                "This collection is labelled restricted and cannot be shared. "
+                "Change its sensitivity label first if sharing is intended."
+            )
+
         expires_at = None
         if expires_days:
             expires_at = (datetime.utcnow() + timedelta(days=expires_days)).isoformat()

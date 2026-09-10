@@ -31,6 +31,7 @@ from api import (
     collections,
     documents,
     expertise,
+    governance,
     mcp,
     search,
     sharing,
@@ -273,6 +274,9 @@ if settings.auth_password or settings.private_collections:
             if token_record is not None:
                 request.state.auth_identity = token_record.get("user_id")
                 request.state.auth_via = "mcp_token"
+                # Restricted collections are only reachable over MCP through
+                # a token explicitly scoped to them (services/governance.py).
+                request.state.mcp_token_scope = token_record.get("collection_scope") or None
                 return await _call_with_user_context(request, call_next)
 
         return JSONResponse(
@@ -297,7 +301,7 @@ if settings.auth_password or settings.private_collections:
         finally:
             reset_request_user(token)
 
-for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise, admin):
+for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise, admin, governance):
     app.include_router(module.router)
 
 

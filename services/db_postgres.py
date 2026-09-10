@@ -220,6 +220,42 @@ class PostgresBackend(DatabaseBackend):
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tokens_hash ON mcp_tokens(token_hash)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user ON mcp_tokens(user_id)")
+                cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS collection_scope TEXT")
+
+                # Content governance — mirrors the SQLite backend.
+                cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS sensitivity TEXT DEFAULT 'internal'")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id SERIAL PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        actor TEXT,
+                        action TEXT NOT NULL,
+                        collection_id TEXT,
+                        document_id TEXT,
+                        target TEXT,
+                        detail TEXT
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(timestamp DESC)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_events(action, timestamp DESC)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor, timestamp DESC)")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS aup_acknowledgements (
+                        user_id TEXT NOT NULL,
+                        version TEXT NOT NULL,
+                        accepted_at TEXT NOT NULL,
+                        PRIMARY KEY (user_id, version)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS blocked_hashes (
+                        content_hash TEXT PRIMARY KEY,
+                        blocked_by TEXT,
+                        blocked_at TEXT NOT NULL,
+                        reason TEXT,
+                        filename TEXT
+                    )
+                """)
 
                 # Ensure default user
                 cur.execute("SELECT id FROM users WHERE id = 'default'")
@@ -405,14 +441,14 @@ class PostgresBackend(DatabaseBackend):
     def update_collection(self, collection_id: str, name=None, description=None, color=None,
                           chunk_size=None, chunk_overlap=None, embedding_model=None,
                           mcp_display_name=None, mcp_display_description=None,
-                          guide=None):
+                          guide=None, sensitivity=None):
         updates, params = [], []
         for field, val in [("name", name), ("description", description), ("color", color),
                            ("chunk_size", chunk_size), ("chunk_overlap", chunk_overlap),
                            ("embedding_model", embedding_model),
                            ("mcp_display_name", mcp_display_name),
                            ("mcp_display_description", mcp_display_description),
-                           ("guide", guide)]:
+                           ("guide", guide), ("sensitivity", sensitivity)]:
             if val is not None:
                 updates.append(f"{field} = %s")
                 params.append(val)
@@ -1041,18 +1077,32 @@ class PostgresBackend(DatabaseBackend):
 
     # ── Personal MCP access tokens ────────────────────────────
 
+    @staticmethod
+    def _decode_scope(row: Dict[str, Any]) -> Dict[str, Any]:
+        raw = row.get("collection_scope")
+        if isinstance(raw, str) and raw:
+            try:
+                row["collection_scope"] = json.loads(raw)
+            except json.JSONDecodeError:
+                row["collection_scope"] = None
+        elif not raw:
+            row["collection_scope"] = None
+        return row
+
     def create_mcp_token(
-        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str
+        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
+        collection_scope: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         token_id = str(uuid.uuid4())
         ts = datetime.utcnow().isoformat()
+        scope_json = json.dumps(list(collection_scope)) if collection_scope else None
         conn = self._conn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at)
-                       VALUES (%s, %s, %s, %s, %s, %s)""",
-                    (token_id, user_id, name, token_hash, token_prefix, ts),
+                    """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (token_id, user_id, name, token_hash, token_prefix, ts, scope_json),
                 )
             conn.commit()
             return {
@@ -1063,6 +1113,7 @@ class PostgresBackend(DatabaseBackend):
                 "created_at": ts,
                 "last_used_at": None,
                 "revoked_at": None,
+                "collection_scope": list(collection_scope) if collection_scope else None,
             }
         finally:
             self._put(conn)
@@ -1072,12 +1123,12 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 cur.execute(
-                    """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at
+                    """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope
                        FROM mcp_tokens WHERE user_id IS NOT DISTINCT FROM %s
                        ORDER BY created_at DESC""",
                     (user_id,),
                 )
-                return [dict(r) for r in cur.fetchall()]
+                return [self._decode_scope(dict(r)) for r in cur.fetchall()]
         finally:
             self._put(conn)
 
@@ -1087,7 +1138,182 @@ class PostgresBackend(DatabaseBackend):
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 cur.execute("SELECT * FROM mcp_tokens WHERE token_hash = %s", (token_hash,))
                 row = cur.fetchone()
-                return dict(row) if row else None
+                return self._decode_scope(dict(row)) if row else None
+        finally:
+            self._put(conn)
+
+    def revoke_all_mcp_tokens_for_user(self, user_id: Optional[str]) -> int:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE mcp_tokens SET revoked_at = %s
+                       WHERE user_id IS NOT DISTINCT FROM %s AND revoked_at IS NULL""",
+                    (datetime.utcnow().isoformat(), user_id),
+                )
+                affected = cur.rowcount
+            conn.commit()
+            return affected
+        finally:
+            self._put(conn)
+
+    # ── Audit trail ──────────────────────────────────────────
+
+    def add_audit_event(
+        self,
+        actor: Optional[str],
+        action: str,
+        collection_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        target: Optional[str] = None,
+        detail: Optional[str] = None,
+    ) -> int:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO audit_events (timestamp, actor, action, collection_id, document_id, target, detail)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (datetime.utcnow().isoformat(), actor, action, collection_id, document_id, target, detail),
+                )
+                event_id = cur.fetchone()[0]
+            conn.commit()
+            return event_id
+        finally:
+            self._put(conn)
+
+    def list_audit_events(
+        self,
+        limit: int = 200,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        since: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        for col, val in (("action", action), ("actor", actor),
+                         ("collection_id", collection_id), ("document_id", document_id)):
+            if val:
+                clauses.append(f"{col} = %s")
+                params.append(val)
+        if since:
+            clauses.append("timestamp >= %s")
+            params.append(since)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM audit_events {where} ORDER BY timestamp DESC, id DESC LIMIT %s",
+                    params,
+                )
+                return self._fetchall_dict(cur)
+        finally:
+            self._put(conn)
+
+    def delete_old_audit_events(self, days: int) -> int:
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM audit_events WHERE timestamp < %s", (cutoff,))
+                deleted = cur.rowcount
+            conn.commit()
+            return deleted
+        finally:
+            self._put(conn)
+
+    # ── Acceptable-use acknowledgements ──────────────────────
+
+    def record_aup_acknowledgement(self, user_id: str, version: str) -> Dict[str, Any]:
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO aup_acknowledgements (user_id, version, accepted_at)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT (user_id, version) DO UPDATE SET accepted_at = EXCLUDED.accepted_at""",
+                    (user_id, version, ts),
+                )
+            conn.commit()
+            return {"user_id": user_id, "version": version, "accepted_at": ts}
+        finally:
+            self._put(conn)
+
+    def get_aup_acknowledgement(self, user_id: str, version: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM aup_acknowledgements WHERE user_id = %s AND version = %s",
+                    (user_id, version),
+                )
+                return self._fetchone_dict(cur)
+        finally:
+            self._put(conn)
+
+    def list_aup_acknowledgements(self) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM aup_acknowledgements ORDER BY accepted_at DESC")
+                return self._fetchall_dict(cur)
+        finally:
+            self._put(conn)
+
+    # ── Hash blocklist ───────────────────────────────────────
+
+    def add_blocked_hash(
+        self, content_hash: str, blocked_by: Optional[str], reason: str = "",
+        filename: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO blocked_hashes (content_hash, blocked_by, blocked_at, reason, filename)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (content_hash) DO UPDATE SET
+                         blocked_by = EXCLUDED.blocked_by, blocked_at = EXCLUDED.blocked_at,
+                         reason = EXCLUDED.reason, filename = EXCLUDED.filename""",
+                    (content_hash, blocked_by, ts, reason or "", filename),
+                )
+            conn.commit()
+            return {"content_hash": content_hash, "blocked_by": blocked_by,
+                    "blocked_at": ts, "reason": reason or "", "filename": filename}
+        finally:
+            self._put(conn)
+
+    def remove_blocked_hash(self, content_hash: str) -> bool:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM blocked_hashes WHERE content_hash = %s", (content_hash,))
+                affected = cur.rowcount
+            conn.commit()
+            return affected > 0
+        finally:
+            self._put(conn)
+
+    def is_hash_blocked(self, content_hash: str) -> bool:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM blocked_hashes WHERE content_hash = %s", (content_hash,))
+                return cur.fetchone() is not None
+        finally:
+            self._put(conn)
+
+    def list_blocked_hashes(self) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM blocked_hashes ORDER BY blocked_at DESC")
+                return self._fetchall_dict(cur)
         finally:
             self._put(conn)
 

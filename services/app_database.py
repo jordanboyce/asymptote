@@ -320,10 +320,67 @@ class SQLiteBackend(DatabaseBackend):
                 ON mcp_tokens(user_id)
             """)
 
+            # ── Content governance ────────────────────────────
+            # Append-only accountability trail (services/audit.py): who
+            # uploaded, deleted, shared, minted a token, accepted the policy,
+            # and what an admin did about a flagged document. Kept far longer
+            # than search_history (AUDIT_RETENTION_DAYS).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    actor TEXT,
+                    action TEXT NOT NULL,
+                    collection_id TEXT,
+                    document_id TEXT,
+                    target TEXT,
+                    detail TEXT
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(timestamp DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_events(action, timestamp DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor, timestamp DESC)")
+
+            # Acceptable-use acknowledgements, one row per identity per
+            # policy version — bumping AUP_VERSION re-prompts everyone.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS aup_acknowledgements (
+                    user_id TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    accepted_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, version)
+                )
+            """)
+
+            # Admin hash blocklist: a removed file's sha256, so the same
+            # bytes cannot be re-uploaded (to any collection) afterwards.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS blocked_hashes (
+                    content_hash TEXT PRIMARY KEY,
+                    blocked_by TEXT,
+                    blocked_at TEXT NOT NULL,
+                    reason TEXT,
+                    filename TEXT
+                )
+            """)
+
             # ── Migrations for existing databases ────────────
             # Add owner_id to collections if missing
             try:
                 conn.execute("ALTER TABLE collections ADD COLUMN owner_id TEXT DEFAULT 'default'")
+            except sqlite3.OperationalError:
+                pass
+
+            # Governance: collection sensitivity label (public | internal |
+            # confidential | restricted) and the optional collection scope
+            # on personal MCP tokens (JSON list of ids a token may reach in
+            # restricted collections).
+            try:
+                conn.execute("ALTER TABLE collections ADD COLUMN sensitivity TEXT DEFAULT 'internal'")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE mcp_tokens ADD COLUMN collection_scope TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -550,6 +607,7 @@ class SQLiteBackend(DatabaseBackend):
         mcp_display_name: Optional[str] = None,
         mcp_display_description: Optional[str] = None,
         guide: Optional[str] = None,
+        sensitivity: Optional[str] = None,
     ):
         updates = []
         params = []
@@ -558,7 +616,7 @@ class SQLiteBackend(DatabaseBackend):
                              ("embedding_model", embedding_model),
                              ("mcp_display_name", mcp_display_name),
                              ("mcp_display_description", mcp_display_description),
-                             ("guide", guide)]:
+                             ("guide", guide), ("sensitivity", sensitivity)]:
             if value is not None:
                 updates.append(f"{field} = ?")
                 params.append(value)
@@ -1081,16 +1139,30 @@ class SQLiteBackend(DatabaseBackend):
 
     # ── Personal MCP access tokens ────────────────────────────
 
+    @staticmethod
+    def _decode_scope(row: Dict[str, Any]) -> Dict[str, Any]:
+        raw = row.get("collection_scope")
+        if isinstance(raw, str) and raw:
+            try:
+                row["collection_scope"] = json.loads(raw)
+            except json.JSONDecodeError:
+                row["collection_scope"] = None
+        elif not raw:
+            row["collection_scope"] = None
+        return row
+
     def create_mcp_token(
-        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str
+        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
+        collection_scope: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         token_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().isoformat()
+        scope_json = json.dumps(list(collection_scope)) if collection_scope else None
         with sqlite_connect(self.db_path) as conn:
             conn.execute(
-                """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (token_id, user_id, name, token_hash, token_prefix, timestamp),
+                """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (token_id, user_id, name, token_hash, token_prefix, timestamp, scope_json),
             )
             conn.commit()
         return {
@@ -1101,17 +1173,18 @@ class SQLiteBackend(DatabaseBackend):
             "created_at": timestamp,
             "last_used_at": None,
             "revoked_at": None,
+            "collection_scope": list(collection_scope) if collection_scope else None,
         }
 
     def list_mcp_tokens(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
         with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at
+                """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope
                    FROM mcp_tokens WHERE user_id IS ? ORDER BY created_at DESC""",
                 (user_id,),
             ).fetchall()
-            return [dict(r) for r in rows]
+            return [self._decode_scope(dict(r)) for r in rows]
 
     def get_mcp_token_by_hash(self, token_hash: str) -> Optional[Dict[str, Any]]:
         with sqlite_connect(self.db_path) as conn:
@@ -1119,7 +1192,16 @@ class SQLiteBackend(DatabaseBackend):
             row = conn.execute(
                 "SELECT * FROM mcp_tokens WHERE token_hash = ?", (token_hash,)
             ).fetchone()
-            return dict(row) if row else None
+            return self._decode_scope(dict(row)) if row else None
+
+    def revoke_all_mcp_tokens_for_user(self, user_id: Optional[str]) -> int:
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE mcp_tokens SET revoked_at = ? WHERE user_id IS ? AND revoked_at IS NULL",
+                (datetime.utcnow().isoformat(), user_id),
+            )
+            conn.commit()
+            return cursor.rowcount
 
     def touch_mcp_token(self, token_id: str) -> None:
         with sqlite_connect(self.db_path) as conn:
@@ -1138,6 +1220,129 @@ class SQLiteBackend(DatabaseBackend):
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    # ── Audit trail ──────────────────────────────────────────
+
+    def add_audit_event(
+        self,
+        actor: Optional[str],
+        action: str,
+        collection_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        target: Optional[str] = None,
+        detail: Optional[str] = None,
+    ) -> int:
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """INSERT INTO audit_events (timestamp, actor, action, collection_id, document_id, target, detail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (datetime.utcnow().isoformat(), actor, action, collection_id, document_id, target, detail),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def list_audit_events(
+        self,
+        limit: int = 200,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        since: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        for col, val in (("action", action), ("actor", actor),
+                         ("collection_id", collection_id), ("document_id", document_id)):
+            if val:
+                clauses.append(f"{col} = ?")
+                params.append(val)
+        if since:
+            clauses.append("timestamp >= ?")
+            params.append(since)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"SELECT * FROM audit_events {where} ORDER BY timestamp DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def delete_old_audit_events(self, days: int) -> int:
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM audit_events WHERE timestamp < ?", (cutoff,))
+            conn.commit()
+            return cursor.rowcount
+
+    # ── Acceptable-use acknowledgements ──────────────────────
+
+    def record_aup_acknowledgement(self, user_id: str, version: str) -> Dict[str, Any]:
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO aup_acknowledgements (user_id, version, accepted_at)
+                   VALUES (?, ?, ?)""",
+                (user_id, version, timestamp),
+            )
+            conn.commit()
+        return {"user_id": user_id, "version": version, "accepted_at": timestamp}
+
+    def get_aup_acknowledgement(self, user_id: str, version: str) -> Optional[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM aup_acknowledgements WHERE user_id = ? AND version = ?",
+                (user_id, version),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_aup_acknowledgements(self) -> List[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM aup_acknowledgements ORDER BY accepted_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ── Hash blocklist ───────────────────────────────────────
+
+    def add_blocked_hash(
+        self, content_hash: str, blocked_by: Optional[str], reason: str = "",
+        filename: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO blocked_hashes (content_hash, blocked_by, blocked_at, reason, filename)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (content_hash, blocked_by, timestamp, reason or "", filename),
+            )
+            conn.commit()
+        return {"content_hash": content_hash, "blocked_by": blocked_by,
+                "blocked_at": timestamp, "reason": reason or "", "filename": filename}
+
+    def remove_blocked_hash(self, content_hash: str) -> bool:
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM blocked_hashes WHERE content_hash = ?", (content_hash,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def is_hash_blocked(self, content_hash: str) -> bool:
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM blocked_hashes WHERE content_hash = ?", (content_hash,)
+            ).fetchone()
+            return row is not None
+
+    def list_blocked_hashes(self) -> List[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM blocked_hashes ORDER BY blocked_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     # ── User Preferences ─────────────────────────────────────
 

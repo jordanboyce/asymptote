@@ -36,21 +36,29 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def generate_token(user_id: Optional[str], name: str) -> Dict[str, Any]:
+def generate_token(
+    user_id: Optional[str], name: str, collection_scope: Optional[List[str]] = None
+) -> Dict[str, Any]:
     """Create and persist a new token. Returns it WITH the plaintext — once.
 
     Callers must show `token` to the user immediately and never log it or
     store it themselves; it cannot be retrieved again after this call.
+
+    ``collection_scope`` lists restricted collections this token may reach
+    over MCP (services/governance.py). Only collections the creator can
+    already access may be named — the caller validates that.
     """
     from services.app_database import app_db
 
     name = (name or "").strip() or "Unnamed device"
     plaintext = f"{TOKEN_PREFIX}{secrets.token_urlsafe(32)}"
+    scope = [str(c).strip() for c in (collection_scope or []) if str(c).strip()] or None
     record = app_db.create_mcp_token(
         user_id=user_id,
         name=name,
         token_hash=_hash(plaintext),
         token_prefix=plaintext[:_PREFIX_DISPLAY_LEN],
+        collection_scope=scope,
     )
     record["token"] = plaintext
     return record

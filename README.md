@@ -865,6 +865,20 @@ JWT, which is why the mode refuses to start without Access configured. (The
 old `ENABLE_MULTI_USER` flag also refuses to start: it filtered the collection
 list without enforcing anything.) Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
+**Content governance.** Once several people can add sources, every document
+records who added it, every upload / deletion / share / token / admin action
+lands in an audit trail, anyone can report a document, and admins can remove
+one and block its hash from being re-added. Documents are scanned at ingest
+by local rule packs (abuse-material indicators, attack planning, weapons and
+drug trade, explicit content, credential dumps, secrets); `CONTENT_POLICY_ACTION`
+decides whether a finding flags, quarantines (hides until approved) or rejects
+the document. Collections carry a sensitivity label — `restricted` ones cannot
+be shared and are invisible to MCP clients without an explicitly scoped token —
+and `AUP_REQUIRED=true` makes each identity accept an acceptable-use policy
+before adding sources. Everything runs locally; the optional LLM second
+opinion is off by default. Full description in
+[docs/DEPLOYMENT.md → Content governance](docs/DEPLOYMENT.md#content-governance).
+
 **Also worth setting:**
 
 1. **HTTPS** (`SSL_CERTFILE`/`SSL_KEYFILE`, or terminate at the proxy)

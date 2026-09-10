@@ -324,6 +324,22 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
     """
     from api.deps import require_collection_access
     require_collection_access(collection_id, user_id, write=True)
+
+    # Sensitivity is a governance label: validated, and its changes audited
+    # (it decides whether the collection can be shared or reached over MCP).
+    sensitivity = None
+    if "sensitivity" in updates and updates["sensitivity"] is not None:
+        from services.governance import normalize_sensitivity
+        try:
+            sensitivity = normalize_sensitivity(updates["sensitivity"])
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        previous = (collection_service.get_collection(collection_id) or {}).get("sensitivity")
+        if previous != sensitivity:
+            from services import audit
+            audit.record("collection.sensitivity", actor=user_id, collection_id=collection_id,
+                         detail={"from": previous, "to": sensitivity})
+
     collection = collection_service.update_collection(
         collection_id=collection_id,
         name=updates.get("name"),
@@ -333,6 +349,7 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
         chunk_overlap=updates.get("chunk_overlap"),
         embedding_model=updates.get("embedding_model"),
         guide=updates.get("guide"),
+        sensitivity=sensitivity,
     )
 
     if not collection:

@@ -31,8 +31,10 @@ from services.form_field_extractor import (
     estimate_form_likelihood,
     is_form_like_text,
 )
+from services import audit, governance
+from services.content_policy import BlockedContentError, ContentRejectedError
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from api.deps import (
     get_indexer,
     require_collection_access,
@@ -51,6 +53,22 @@ def _require_write(collection_id: str) -> None:
     endpoints (upload, index, delete) additionally require write access.
     """
     require_collection_access(collection_id, get_request_user(), write=True)
+
+
+def _require_ingest(collection_id: str) -> None:
+    """Write access plus the acceptable-use acknowledgement.
+
+    Every path that adds sources — upload, staged upload, repo index, local
+    index — comes through here, so the AUP gate has exactly one place to
+    live. Deletion deliberately does not: refusing the policy must not
+    trap someone's existing documents in the index.
+    """
+    _require_write(collection_id)
+    governance.require_aup(get_request_user())
+
+
+def _is_policy_refusal(error: Exception) -> bool:
+    return isinstance(error, (BlockedContentError, ContentRejectedError))
 
 
 @router.post(
@@ -82,7 +100,7 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
         )
 
     # Get indexer for the collection
-    _require_write(collection_id)
+    _require_ingest(collection_id)
     try:
         indexer = get_indexer(collection_id)
     except ValueError as e:
@@ -111,8 +129,10 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
 
     indexed_docs = []
     failed_docs = []
+    policy_refusals = 0
     total_pages = 0
     total_chunks = 0
+    uploaded_by = get_request_user()
 
     for file in files:
         file_path = None  # per-iteration: the except block must never see a previous file's path
@@ -138,7 +158,10 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
             logger.info(f"Saved uploaded file: {safe_filename} to collection {collection_id}")
 
             # Index the document
-            doc_metadata = indexer.index_document(file_path, safe_filename)
+            doc_metadata = indexer.index_document(
+                file_path, safe_filename,
+                collection_id=collection_id, uploaded_by=uploaded_by,
+            )
 
             # Register document with collection
             collection_service.add_document(collection_id, doc_metadata.document_id)
@@ -148,7 +171,11 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
             total_chunks += doc_metadata.total_chunks
 
         except Exception as e:
-            logger.error(f"Failed to index {file.filename}: {e}")
+            if _is_policy_refusal(e):
+                policy_refusals += 1
+                logger.warning(f"Refused {file.filename}: {e}")
+            else:
+                logger.error(f"Failed to index {file.filename}: {e}")
             failed_docs.append({"filename": file.filename, "error": str(e)})
             # Clean up this file's partial save if indexing failed
             if file_path is not None:
@@ -161,13 +188,22 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
     # Persist the index if any documents were successfully indexed
     if indexed_docs:
         indexer.save_index()
+        audit.record("document.upload", collection_id=collection_id,
+                     detail={"files": [f.filename for f in files][:50],
+                             "document_ids": indexed_docs[:50],
+                             "indexed": len(indexed_docs), "failed": len(failed_docs)})
 
     # Build response message
     if failed_docs and not indexed_docs:
-        # All files failed
+        # All files failed. A policy refusal is the caller's problem, not
+        # the server's, so it reports as 422 rather than 500.
         error_details = "; ".join([f"{f['filename']}: {f['error']}" for f in failed_docs])
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=(
+                status.HTTP_422_UNPROCESSABLE_ENTITY
+                if policy_refusals == len(failed_docs)
+                else status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
             detail=f"All files failed to index. Errors: {error_details}",
         )
 
@@ -216,7 +252,7 @@ def stage_uploads(  # sync: disk writes run in FastAPI's threadpool
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files provided",
         )
-    _require_write(collection_id)
+    _require_ingest(collection_id)
     try:
         get_indexer(collection_id)
     except ValueError as e:
@@ -570,7 +606,7 @@ def upload_repository(  # sync: extraction+embedding run in FastAPI's threadpool
         )
 
     # Verify collection exists and the caller can write to it
-    _require_write(request.collection_id)
+    _require_ingest(request.collection_id)
     try:
         get_indexer(request.collection_id)
     except ValueError as e:
@@ -598,6 +634,7 @@ def upload_repository(  # sync: extraction+embedding run in FastAPI's threadpool
             recursive=request.recursive,
             file_extensions=file_extensions,
             exclude_patterns=request.exclude_patterns,
+            uploaded_by=get_request_user(),
         )
 
         return RepoUploadResponse(
@@ -679,7 +716,7 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
         )
 
     # Get indexer for the collection
-    _require_write(request.collection_id)
+    _require_ingest(request.collection_id)
     try:
         indexer = get_indexer(request.collection_id)
     except ValueError as e:
@@ -688,6 +725,7 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
             detail=str(e),
         )
 
+    uploaded_by = get_request_user()
     try:
         if request.copy_to_library:
             # Copy file to data/documents/ directory first, then index
@@ -707,14 +745,20 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
             logger.info(f"Copied file to library: {path} -> {dest_path}")
 
             # Index from the copied location
-            doc_metadata = indexer.index_document(dest_path, dest_path.name)
+            doc_metadata = indexer.index_document(
+                dest_path, dest_path.name,
+                collection_id=request.collection_id, uploaded_by=uploaded_by,
+            )
 
             # Standard upload behavior - no source_path reference
             doc_metadata.source_type = "upload"
 
         else:
             # Index directly from source path (no copy)
-            doc_metadata = indexer.index_document(path, path.name)
+            doc_metadata = indexer.index_document(
+                path, path.name,
+                collection_id=request.collection_id, uploaded_by=uploaded_by,
+            )
 
             # Update metadata with source path info
             indexer.vector_store.metadata_store.update_document_source(
@@ -732,11 +776,17 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
 
         # Persist the index
         indexer.save_index()
+        audit.record("document.upload", collection_id=request.collection_id,
+                     document_id=doc_metadata.document_id,
+                     detail={"files": [path.name], "document_ids": [doc_metadata.document_id],
+                             "indexed": 1, "failed": 0, "local_reference": not request.copy_to_library})
 
         logger.info(f"Indexed local file: {path} -> {doc_metadata.document_id} (copy={request.copy_to_library})")
         return doc_metadata
 
     except Exception as e:
+        if _is_policy_refusal(e):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
         logger.error(f"Failed to index local file {request.file_path}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -802,12 +852,13 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
             detail="No valid files to index",
         )
 
-    _require_write(request.collection_id)
+    _require_ingest(request.collection_id)
     try:
         job_id = upload_service.start_local_index(
             file_paths=valid_paths,
             collection_id=request.collection_id,
             copy_to_library=request.copy_to_library,
+            uploaded_by=get_request_user(),
         )
 
         return UploadJobResponse(
@@ -872,6 +923,7 @@ async def list_documents(
 
         # Get document directory for this collection
         document_dir = indexer_manager.get_documents_path(collection_id)
+        collection = collection_service.get_collection(collection_id)
 
         paged = limit > 0
         if paged:
@@ -919,7 +971,14 @@ async def list_documents(
                 indexed_at=indexed_at,
                 source_type=source_type,
                 source_path=source_path,
+                source_format=doc.get("source_format"),
                 injection_warnings=doc.get("injection_warnings"),
+                uploaded_by=doc.get("uploaded_by"),
+                content_hash=doc.get("content_hash"),
+                sensitivity=doc.get("sensitivity"),
+                sensitivity_effective=governance.effective_sensitivity(collection, doc.get("sensitivity")),
+                policy_status=doc.get("policy_status") or "clear",
+                policy_flags=doc.get("policy_flags"),
             )
             doc_metadata_list.append(doc_metadata)
 
@@ -976,6 +1035,8 @@ async def get_pdf(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Document {document_id} not found",
             )
+        # Quarantined documents are only served to a reviewer.
+        governance.assert_document_servable(doc_info)
 
         # Determine file path based on source type
         if doc_info.get("source_type") == "local_reference" and doc_info.get("source_path"):
@@ -1090,6 +1151,7 @@ async def get_document_chunks(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Document {document_id} not found",
             )
+        governance.assert_document_servable(doc_info)
 
         all_chunks = metadata_store.get_chunks_by_document(document_id)
         if max_chunks > 0:
@@ -1187,47 +1249,17 @@ def delete_document(  # sync: FAISS rebuild on delete runs in the threadpool
 
         _require_write(collection_id)
 
-        # Get document directory for this collection
-        document_dir = indexer_manager.get_documents_path(collection_id)
-
-        # Get document metadata before deletion (including source info)
-        doc_info = indexer.vector_store.metadata_store.get_document_info(document_id)
-
-        if not doc_info:
+        # Index, collection tracking, file on disk, answer cache, audit —
+        # one implementation shared with the admin "remove and block" action.
+        try:
+            outcome = governance.remove_document(collection_id, document_id)
+        except KeyError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Document {document_id} not found",
             )
 
-        # Delete from index
-        num_deleted = indexer.delete_document(document_id)
-
-        # Remove document from collection tracking
-        collection_service.remove_document(collection_id, document_id)
-
-        # Only delete file from filesystem if it was uploaded (not a local reference)
-        file_deleted = False
-        is_local_reference = doc_info.get("source_type") == "local_reference"
-
-        if not is_local_reference:
-            doc_path = document_dir / doc_info["filename"]
-            if doc_path.exists():
-                doc_path.unlink()
-                file_deleted = True
-                logger.info(f"Deleted document file: {doc_info['filename']}")
-        else:
-            logger.info(f"Skipping file deletion for local reference: {doc_info.get('source_path')}")
-
-        # Persist the changes
-        indexer.save_index()
-
-        return {
-            "message": f"Deleted document {document_id}",
-            "filename": doc_info["filename"],
-            "chunks_deleted": num_deleted,
-            "file_deleted": file_deleted,
-            "was_local_reference": is_local_reference,
-        }
+        return {"message": f"Deleted document {document_id}", **outcome}
 
     except HTTPException:
         raise
@@ -1237,3 +1269,56 @@ def delete_document(  # sync: FAISS rebuild on delete runs in the threadpool
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete document: {str(e)}",
         )
+
+
+class ReportRequest(BaseModel):
+    """Body for reporting a document."""
+    reason: str = ""
+
+
+@router.post(
+    "/documents/{document_id}/report",
+    summary="Report a document for administrator review",
+    tags=["documents"],
+)
+def report_document(document_id: str, body: ReportRequest, request: Request, collection_id: str = "default"):
+    """Anyone who can read a collection may flag one of its documents.
+
+    The report lands in the audit trail and, when email is configured,
+    in the admins' inboxes. The document itself is untouched — takedown is
+    the admin's decision, in the Admin tab.
+    """
+    get_indexer(collection_id)  # read access check
+    try:
+        return governance.report_document(
+            collection_id, document_id, body.reason, app_url=str(request.base_url)
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found")
+
+
+class DocumentGovernanceUpdate(BaseModel):
+    """Body for per-document governance changes."""
+    sensitivity: str | None = None   # "" or null clears the override
+
+
+@router.patch(
+    "/documents/{document_id}/governance",
+    summary="Set a per-document sensitivity label",
+    tags=["documents"],
+)
+def update_document_governance(document_id: str, body: DocumentGovernanceUpdate, collection_id: str = "default"):
+    """Override the collection's sensitivity label for one document.
+
+    Owners and readwrite sharees may relabel; the audit trail records who.
+    Policy status (quarantine/approve) is admin-only and lives under
+    /api/admin — a user cannot clear their own document's hold.
+    """
+    get_indexer(collection_id)
+    _require_write(collection_id)
+    try:
+        return governance.set_document_sensitivity(collection_id, document_id, body.sensitivity)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found")

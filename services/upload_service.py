@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 from config import settings
+from services import audit
 from services.app_database import app_db
 from services.indexer_manager import indexer_manager
 from services.collection_service import collection_service
@@ -253,6 +254,7 @@ class UploadService:
         file_paths: List[str],
         collection_id: str = "default",
         copy_to_library: bool = False,
+        uploaded_by: Optional[str] = None,
     ) -> int:
         """Start a background job to index local files.
 
@@ -260,6 +262,9 @@ class UploadService:
             file_paths: List of absolute file paths to index
             collection_id: Target collection ID
             copy_to_library: If True, copy files to library; otherwise index in-place
+            uploaded_by: Identity that started the job. Captured here, on the
+                request thread, because the worker thread has no request
+                context to read it from; recorded on every document row.
 
         Returns:
             Job ID for tracking progress
@@ -274,6 +279,11 @@ class UploadService:
 
         # Create job record with job_type='index' for local file indexing
         job_id = app_db.create_upload_job(collection_id, len(file_paths), job_type="index")
+        audit.record("document.index_job", actor=uploaded_by, collection_id=collection_id,
+                     target=str(job_id),
+                     detail={"kind": "local", "files": len(file_paths),
+                             "copy_to_library": copy_to_library,
+                             "sample": [Path(p).name for p in file_paths[:10]]})
 
         # Initialize cancellation flag
         self._cancel_flags[job_id] = False
@@ -281,7 +291,7 @@ class UploadService:
         # Start background thread
         thread = threading.Thread(
             target=self._run_local_index,
-            args=(job_id, file_paths, collection_id, copy_to_library),
+            args=(job_id, file_paths, collection_id, copy_to_library, uploaded_by),
             name=f"local-index-job-{job_id}",
             daemon=False,
         )
@@ -300,6 +310,7 @@ class UploadService:
         file_paths: List[str],
         collection_id: str,
         copy_to_library: bool,
+        uploaded_by: Optional[str] = None,
     ):
         """Run local file indexing in background thread."""
         documents_dir = indexer_manager.get_documents_path(collection_id) if copy_to_library else None
@@ -338,7 +349,7 @@ class UploadService:
             f"Starting local index job {job_id}: {len(file_paths)} files, copy={copy_to_library}"
         )
         works = [make_work(Path(fp)) for fp in file_paths]
-        self._process_bulk_job(job_id, works, collection_id)
+        self._process_bulk_job(job_id, works, collection_id, uploaded_by=uploaded_by)
 
 
     def start_repo_index(
@@ -348,6 +359,7 @@ class UploadService:
         recursive: bool = True,
         file_extensions: Optional[List[str]] = None,
         exclude_patterns: Optional[List[str]] = None,
+        uploaded_by: Optional[str] = None,
     ) -> int:
         """Start a background job to index a repository/folder.
 
@@ -417,11 +429,14 @@ class UploadService:
         # Create job record
         job_id = app_db.create_upload_job(collection_id, len(files_to_index), job_type="index")
         self._cancel_flags[job_id] = False
+        audit.record("document.index_job", actor=uploaded_by, collection_id=collection_id,
+                     target=str(job_id),
+                     detail={"kind": "repo", "path": repo_path, "files": len(files_to_index)})
 
         # Start background thread
         thread = threading.Thread(
             target=self._run_repo_index,
-            args=(job_id, files_to_index, repo_path, collection_id),
+            args=(job_id, files_to_index, repo_path, collection_id, uploaded_by),
             name=f"repo-index-job-{job_id}",
             daemon=False,
         )
@@ -440,6 +455,7 @@ class UploadService:
         file_paths: List[str],
         repo_path: str,
         collection_id: str,
+        uploaded_by: Optional[str] = None,
     ):
         """Run repository indexing in background thread."""
         documents_dir = indexer_manager.get_documents_path(collection_id)
@@ -472,7 +488,7 @@ class UploadService:
             f"Starting repo index job {job_id}: {len(file_paths)} files from {repo_path}"
         )
         works = [make_work(Path(fp)) for fp in file_paths]
-        self._process_bulk_job(job_id, works, collection_id)
+        self._process_bulk_job(job_id, works, collection_id, uploaded_by=uploaded_by)
 
     def _make_file_progress_callback(
         self,
@@ -521,7 +537,8 @@ class UploadService:
 
         return progress_callback
 
-    def _process_bulk_job(self, job_id: int, works: List[_BulkFileWork], collection_id: str):
+    def _process_bulk_job(self, job_id: int, works: List[_BulkFileWork], collection_id: str,
+                          uploaded_by: Optional[str] = None):
         """Shared bulk pipeline behind local-index and repo-index jobs.
 
         Extraction/chunking runs in a small worker pool while chunks accumulate
@@ -684,7 +701,10 @@ class UploadService:
 
             def stage_and_prepare(work: _BulkFileWork):
                 index_path = work.stage()
-                return index_path, indexer.prepare_document(index_path, index_path.name)
+                return index_path, indexer.prepare_document(
+                    index_path, index_path.name,
+                    collection_id=collection_id, uploaded_by=uploaded_by,
+                )
 
             work_iter = iter(enumerate(works, 1))
             pending = deque()
@@ -778,6 +798,8 @@ class UploadService:
                                 progress_callback=self._make_file_progress_callback(
                                     job_id, work.display_name, idx, total_files, write_job
                                 ),
+                                collection_id=collection_id,
+                                uploaded_by=uploaded_by,
                             )
                         except Exception as e:
                             fail_file(idx, work, e)

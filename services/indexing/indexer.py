@@ -20,6 +20,9 @@ from services.document_extractor import DocumentExtractor, ExtractionResult
 from services.chunker import TextChunker
 from services.embedder import EmbeddingService
 from services.vector_store import VectorStore
+from services import audit, content_policy
+from services.content_policy import BlockedContentError, ContentRejectedError
+from services.governance import content_hash_of
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,13 @@ class PreparedDocument:
     source_format: str
     extraction_method: str
     injection_warnings: Optional[dict] = None
+    # v3.3 governance: decided at prepare time so the batch persist is a
+    # pure write and a rejected file never reaches the embedder.
+    uploaded_by: Optional[str] = None
+    content_hash: Optional[str] = None
+    sensitivity: Optional[str] = None
+    policy_status: str = "clear"
+    policy_flags: Optional[dict] = None
 
 
 class ChunkBatcher:
@@ -109,6 +119,7 @@ class DocumentIndexer:
         document_path: Path,
         filename: str,
         collection_id: str | None = None,
+        uploaded_by: str | None = None,
     ) -> DocumentMetadata:
         """
         Index a single document (PDF, TXT, DOCX, CSV, MD, or JSON).
@@ -117,6 +128,7 @@ class DocumentIndexer:
             document_path: Path to the document file
             filename: Original filename
             collection_id: Collection being indexed into
+            uploaded_by: Verified identity adding the document (attribution)
 
         Returns:
             DocumentMetadata object
@@ -125,7 +137,69 @@ class DocumentIndexer:
             document_path, filename,
             progress_callback=None,
             collection_id=collection_id,
+            uploaded_by=uploaded_by,
         )
+
+    # ── Governance helpers ────────────────────────────────────────────
+
+    def _admit(self, document_path: Path, filename: str, collection_id: str | None,
+               uploaded_by: str | None) -> tuple[str, str]:
+        """Hash the file and refuse it if the hash is blocklisted.
+
+        Returns (content_hash, document_id). The document id has always been
+        the first 16 hex chars of the sha256; the full hash is what the
+        blocklist keys on.
+        """
+        content_hash = content_hash_of(document_path)
+        document_id = content_hash[:16]
+        if content_policy.is_hash_blocked(content_hash):
+            audit.record("document.blocked", actor=uploaded_by, collection_id=collection_id,
+                         document_id=document_id, target=content_hash,
+                         detail={"filename": filename})
+            raise BlockedContentError(
+                f"{filename} matches a file an administrator removed and blocked; it cannot be re-added."
+            )
+        return content_hash, document_id
+
+    def _apply_policy(
+        self,
+        page_results: dict,
+        page_texts: dict,
+        *,
+        filename: str,
+        document_id: str,
+        collection_id: str | None,
+        uploaded_by: str | None,
+    ) -> tuple[str, Optional[dict], Optional[str]]:
+        """Fold the per-page scan into the document's policy decision.
+
+        Records the outcome in the audit trail and raises
+        ContentRejectedError under CONTENT_POLICY_ACTION=reject so the file
+        never reaches the embedder or the metadata store.
+        """
+        if not content_policy.scanning_enabled():
+            return "clear", None, None
+        llm = content_policy.llm_review(page_texts, filename) if settings.content_policy_llm_review else None
+        status, flags, suggested = content_policy.decide(page_results or {}, llm=llm)
+        if status != "clear":
+            audit.record(
+                f"document.{status}", actor=uploaded_by, collection_id=collection_id,
+                document_id=document_id,
+                detail={
+                    "filename": filename,
+                    "categories": (flags or {}).get("categories"),
+                    "max_score": (flags or {}).get("max_score"),
+                    "critical": (flags or {}).get("critical"),
+                    "llm": ((flags or {}).get("llm") or {}).get("categories"),
+                },
+            )
+        if status == "rejected":
+            cats = ", ".join(sorted((flags or {}).get("categories") or {})) or "policy"
+            raise ContentRejectedError(
+                f"{filename} was refused by the content policy ({cats}). "
+                f"Contact an administrator if you believe this is a mistake."
+            )
+        return status, flags, suggested
 
     def index_document_with_progress(
         self,
@@ -133,6 +207,7 @@ class DocumentIndexer:
         filename: str,
         progress_callback: Optional[ProgressCallback] = None,
         collection_id: str | None = None,
+        uploaded_by: str | None = None,
     ) -> DocumentMetadata:
         """
         Index a single document with granular progress reporting (v4.0).
@@ -142,6 +217,7 @@ class DocumentIndexer:
             filename: Original filename
             progress_callback: Optional callback for progress updates
                 Signature: (phase, progress, detail, chunks_done, chunks_total)
+            uploaded_by: Verified identity adding the document (attribution)
 
         Returns:
             DocumentMetadata object
@@ -157,8 +233,8 @@ class DocumentIndexer:
                 except Exception as e:
                     logger.warning(f"Progress callback error: {e}")
 
-        # Generate document ID from file content hash
-        document_id = self._generate_document_id(document_path)
+        # Hash the content (document id + blocklist key); refuse blocked files.
+        content_hash, document_id = self._admit(document_path, filename, collection_id, uploaded_by)
 
         # Determine source format from file extension
         source_format = document_path.suffix.lower().lstrip(".")
@@ -172,6 +248,7 @@ class DocumentIndexer:
                 document_path, filename, document_id, source_format=source_format,
                 progress_callback=progress_callback,
                 collection_id=collection_id,
+                uploaded_by=uploaded_by, content_hash=content_hash,
             )
 
         # Handle code files with symbol-aware chunking
@@ -179,6 +256,8 @@ class DocumentIndexer:
             return self._index_code_file(
                 document_path, filename, document_id, source_format,
                 progress_callback=progress_callback,
+                collection_id=collection_id,
+                uploaded_by=uploaded_by, content_hash=content_hash,
             )
 
         # Phase 1: Extract text from document
@@ -200,6 +279,13 @@ class DocumentIndexer:
         if num_pages == 0:
             logger.warning(f"No pages extracted from {filename}")
             raise ValueError(f"Could not extract any pages from {filename}")
+
+        # Content policy: decide before spending embedding time.
+        policy_status, policy_flags, suggested_sensitivity = self._apply_policy(
+            extraction_result.policy_warnings, page_texts,
+            filename=filename, document_id=document_id,
+            collection_id=collection_id, uploaded_by=uploaded_by,
+        )
 
         # Phase 2: Chunk the text with format metadata
         report("chunking", 0, f"Chunking {num_pages} pages")
@@ -255,6 +341,11 @@ class DocumentIndexer:
             chunk_size=self.text_chunker.chunk_size,
             chunk_overlap=self.text_chunker.chunk_overlap,
             injection_warnings=injection_warnings,
+            uploaded_by=uploaded_by,
+            content_hash=content_hash,
+            sensitivity=suggested_sensitivity,
+            policy_status=policy_status,
+            policy_flags=policy_flags,
         )
         report("saving", 100, f"Saved {num_chunks} chunks")
 
@@ -270,11 +361,17 @@ class DocumentIndexer:
             embedding_model=self.embedding_service.model_name,
             chunk_size=self.text_chunker.chunk_size,
             chunk_overlap=self.text_chunker.chunk_overlap,
+            injection_warnings=injection_warnings,
+            uploaded_by=uploaded_by,
+            content_hash=content_hash,
+            sensitivity=suggested_sensitivity,
+            policy_status=policy_status,
+            policy_flags=policy_flags,
         )
 
         logger.info(
             f"Successfully indexed {filename}: {num_pages} pages, {num_chunks} chunks "
-            f"(format={source_format}, method={extraction_method})"
+            f"(format={source_format}, method={extraction_method}, policy={policy_status})"
         )
         return metadata
 
@@ -282,6 +379,8 @@ class DocumentIndexer:
         self,
         document_path: Path,
         filename: str,
+        collection_id: str | None = None,
+        uploaded_by: str | None = None,
     ) -> Optional[PreparedDocument]:
         """
         Extract and chunk a document without embedding or persisting anything.
@@ -303,7 +402,7 @@ class DocumentIndexer:
         if source_format in ("csv", "xlsx", "xls") and settings.csv_row_level_indexing:
             return None
 
-        document_id = self._generate_document_id(document_path)
+        content_hash, document_id = self._admit(document_path, filename, collection_id, uploaded_by)
 
         if self.document_extractor.is_code_file(document_path):
             code_chunks = self.document_extractor.extract_code_chunks(document_path, document_id)
@@ -311,6 +410,10 @@ class DocumentIndexer:
                 logger.warning(f"No chunks extracted from code file {filename}")
                 raise ValueError(f"Could not extract any chunks from {filename}")
             chunks = self._code_chunks_to_metadata(code_chunks, source_format)
+            policy_status, policy_flags, suggested = self._scan_code_policy(
+                chunks, filename=filename, document_id=document_id,
+                collection_id=collection_id, uploaded_by=uploaded_by,
+            )
             return PreparedDocument(
                 document_id=document_id,
                 filename=filename,
@@ -318,6 +421,11 @@ class DocumentIndexer:
                 total_pages=len(chunks),  # for code, "pages" = symbol chunks
                 source_format=source_format,
                 extraction_method="text",
+                uploaded_by=uploaded_by,
+                content_hash=content_hash,
+                sensitivity=suggested,
+                policy_status=policy_status,
+                policy_flags=policy_flags,
             )
 
         extraction_result = self.document_extractor.extract_text(document_path)
@@ -343,6 +451,12 @@ class DocumentIndexer:
             logger.warning(f"No chunks created from {filename}")
             raise ValueError(f"Could not create any chunks from {filename}")
 
+        policy_status, policy_flags, suggested = self._apply_policy(
+            extraction_result.policy_warnings, page_texts,
+            filename=filename, document_id=document_id,
+            collection_id=collection_id, uploaded_by=uploaded_by,
+        )
+
         return PreparedDocument(
             document_id=document_id,
             filename=filename,
@@ -351,6 +465,11 @@ class DocumentIndexer:
             source_format=source_format,
             extraction_method=extraction_result.method,
             injection_warnings=injection_warnings,
+            uploaded_by=uploaded_by,
+            content_hash=content_hash,
+            sensitivity=suggested,
+            policy_status=policy_status,
+            policy_flags=policy_flags,
         )
 
     def index_prepared_documents(
@@ -404,6 +523,11 @@ class DocumentIndexer:
                 "chunk_size": self.text_chunker.chunk_size,
                 "chunk_overlap": self.text_chunker.chunk_overlap,
                 "injection_warnings": p.injection_warnings,
+                "uploaded_by": p.uploaded_by,
+                "content_hash": p.content_hash,
+                "sensitivity": p.sensitivity,
+                "policy_status": p.policy_status,
+                "policy_flags": p.policy_flags,
             }
             for p in prepared
         ])
@@ -420,6 +544,12 @@ class DocumentIndexer:
                 embedding_model=self.embedding_service.model_name,
                 chunk_size=self.text_chunker.chunk_size,
                 chunk_overlap=self.text_chunker.chunk_overlap,
+                injection_warnings=p.injection_warnings,
+                uploaded_by=p.uploaded_by,
+                content_hash=p.content_hash,
+                sensitivity=p.sensitivity,
+                policy_status=p.policy_status,
+                policy_flags=p.policy_flags,
             )
             for p in prepared
         ]
@@ -432,6 +562,8 @@ class DocumentIndexer:
         source_format: str = "csv",
         progress_callback: Optional[ProgressCallback] = None,
         collection_id: str | None = None,
+        uploaded_by: str | None = None,
+        content_hash: str | None = None,
     ) -> DocumentMetadata:
         """Index a CSV or Excel workbook into the structured SQL store only.
 
@@ -463,6 +595,23 @@ class DocumentIndexer:
         total_rows = sum(len(s['rows']) for s in sheets)
         report("extracting", 100,
                f"Extracted {total_rows} rows across {len(sheets)} sheet(s)")
+
+        # Content policy over a rendering of the first rows of each sheet —
+        # a credential dump is most often a spreadsheet.
+        policy_status, policy_flags, suggested_sensitivity = "clear", None, None
+        if content_policy.scanning_enabled():
+            page_texts = {
+                n: "\n".join(
+                    ", ".join(str(v) for v in (row.values() if isinstance(row, dict) else row))
+                    for row in sheet['rows'][:500]
+                )
+                for n, sheet in enumerate(sheets, start=1)
+            }
+            policy_status, policy_flags, suggested_sensitivity = self._apply_policy(
+                content_policy.scan_pages(page_texts, filename=filename), page_texts,
+                filename=filename, document_id=document_id,
+                collection_id=collection_id, uploaded_by=uploaded_by,
+            )
 
         # Populate the structured store for every sheet. No chunks, no
         # embeddings — the chat path queries this via SQL.
@@ -498,6 +647,11 @@ class DocumentIndexer:
             embedding_model=self.embedding_service.model_name,
             chunk_size=self.text_chunker.chunk_size,
             chunk_overlap=self.text_chunker.chunk_overlap,
+            uploaded_by=uploaded_by,
+            content_hash=content_hash,
+            sensitivity=suggested_sensitivity,
+            policy_status=policy_status,
+            policy_flags=policy_flags,
         )
         report("saving", 100, f"Recorded {total_rows} rows")
 
@@ -512,6 +666,11 @@ class DocumentIndexer:
             embedding_model=self.embedding_service.model_name,
             chunk_size=self.text_chunker.chunk_size,
             chunk_overlap=self.text_chunker.chunk_overlap,
+            uploaded_by=uploaded_by,
+            content_hash=content_hash,
+            sensitivity=suggested_sensitivity,
+            policy_status=policy_status,
+            policy_flags=policy_flags,
         )
 
         logger.info(
@@ -527,6 +686,9 @@ class DocumentIndexer:
         document_id: str,
         source_format: str,
         progress_callback: Optional[ProgressCallback] = None,
+        collection_id: str | None = None,
+        uploaded_by: str | None = None,
+        content_hash: str | None = None,
     ) -> DocumentMetadata:
         """
         Index a source code file using symbol-aware chunking.
@@ -554,6 +716,11 @@ class DocumentIndexer:
         chunks = self._code_chunks_to_metadata(code_chunks, source_format)
         num_chunks = len(chunks)
         report("extracting", 100, f"Extracted {num_chunks} symbol chunks")
+
+        policy_status, policy_flags, suggested_sensitivity = self._scan_code_policy(
+            chunks, filename=filename, document_id=document_id,
+            collection_id=collection_id, uploaded_by=uploaded_by,
+        )
 
         report("embedding", 0, f"Generating embeddings for {num_chunks} chunks", 0, num_chunks)
         chunk_texts = [c.text for c in chunks]
@@ -584,6 +751,11 @@ class DocumentIndexer:
             embedding_model=self.embedding_service.model_name,
             chunk_size=self.text_chunker.chunk_size,
             chunk_overlap=self.text_chunker.chunk_overlap,
+            uploaded_by=uploaded_by,
+            content_hash=content_hash,
+            sensitivity=suggested_sensitivity,
+            policy_status=policy_status,
+            policy_flags=policy_flags,
         )
         report("saving", 100, f"Saved {num_chunks} chunks")
 
@@ -598,10 +770,28 @@ class DocumentIndexer:
             embedding_model=self.embedding_service.model_name,
             chunk_size=self.text_chunker.chunk_size,
             chunk_overlap=self.text_chunker.chunk_overlap,
+            uploaded_by=uploaded_by,
+            content_hash=content_hash,
+            sensitivity=suggested_sensitivity,
+            policy_status=policy_status,
+            policy_flags=policy_flags,
         )
 
         logger.info(f"Successfully indexed code file {filename}: {num_chunks} symbol chunks")
         return metadata
+
+    def _scan_code_policy(self, chunks, *, filename: str, document_id: str,
+                          collection_id: str | None, uploaded_by: str | None):
+        """Code gets only the sensitivity packs (secrets, credential dumps):
+        the acceptability rules are noise over identifiers and fixtures."""
+        if not content_policy.scanning_enabled():
+            return "clear", None, None
+        page_texts = {i: c.text for i, c in enumerate(chunks, start=1)}
+        results = content_policy.scan_pages(page_texts, filename=filename, code=True)
+        return self._apply_policy(
+            results, page_texts, filename=filename, document_id=document_id,
+            collection_id=collection_id, uploaded_by=uploaded_by,
+        )
 
     @staticmethod
     def _code_chunks_to_metadata(code_chunks, source_format: str) -> List[ChunkMetadata]:
@@ -755,6 +945,13 @@ class DocumentIndexer:
                 query_embedding, top_k=fetch_k, allowed_chunk_ids=allowed_chunk_ids
             )
 
+        # Quarantined documents stay indexed (so an admin can approve them
+        # without a re-index) but must never surface: this is the retrieval
+        # choke point every surface — search, chat, MCP — comes through.
+        hidden = self.vector_store.metadata_store.get_hidden_document_ids()
+        if hidden:
+            results = [r for r in results if r.document_id not in hidden]
+
         # Drop results from files that are already fully inlined as structured
         # JSONL in the synthesis prompt — keeping their chunks would waste
         # tokens and risk the model trusting truncated snippets over the full
@@ -892,15 +1089,9 @@ class DocumentIndexer:
             document_path: Path to the document file
 
         Returns:
-            Document ID (SHA256 hash)
+            Document ID (first 16 hex chars of the file's SHA256)
         """
-        hasher = hashlib.sha256()
-        with open(document_path, "rb") as f:
-            # Read file in chunks to handle large files
-            for chunk in iter(lambda: f.read(8192), b""):
-                hasher.update(chunk)
-
-        return hasher.hexdigest()[:16]  # Use first 16 characters
+        return content_hash_of(document_path)[:16]
 
     def _bm25_to_search_results(self, bm25_results: list) -> list:
         """

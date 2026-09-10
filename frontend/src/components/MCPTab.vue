@@ -94,12 +94,32 @@
             </button>
           </div>
 
+          <!-- Restricted collections are invisible to every MCP client unless
+               a token is explicitly scoped to them: the grant is made here,
+               per token, and shows in the table so it can be revoked knowingly. -->
+          <div v-if="restrictedCollections.length" class="rounded-lg border border-error/30 bg-error/5 p-3 max-w-xl">
+            <p class="text-xs font-medium flex items-center gap-1.5">
+              <ShieldAlert :size="13" class="text-error" aria-hidden="true" />
+              Grant this token access to restricted collections
+            </p>
+            <p class="text-[11px] text-base-content/55 mt-0.5">
+              Restricted collections never appear over MCP by default. Tick one to let this specific token reach it.
+            </p>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+              <label v-for="c in restrictedCollections" :key="c.id" class="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input v-model="newTokenScope" type="checkbox" class="checkbox checkbox-xs checkbox-error" :value="c.id" />
+                {{ c.name }}
+              </label>
+            </div>
+          </div>
+
           <div v-if="tokens.length" class="overflow-x-auto">
             <table class="table table-sm">
               <thead>
                 <tr>
                   <th>Name</th>
                   <th>Token</th>
+                  <th>Restricted access</th>
                   <th>Created</th>
                   <th>Last used</th>
                   <th></th>
@@ -109,6 +129,12 @@
                 <tr v-for="t in tokens" :key="t.id" :class="{ 'opacity-50': t.revoked_at }">
                   <td>{{ t.name }}</td>
                   <td class="font-mono text-xs text-base-content/60">{{ t.token_prefix }}…</td>
+                  <td class="text-xs">
+                    <span v-if="!t.collection_scope || !t.collection_scope.length" class="text-base-content/40">none</span>
+                    <span v-else class="flex flex-wrap gap-1">
+                      <span v-for="cid in t.collection_scope" :key="cid" class="badge badge-xs badge-error badge-outline">{{ collectionName(cid) }}</span>
+                    </span>
+                  </td>
                   <td class="text-xs text-base-content/60">{{ formatDate(t.created_at) }}</td>
                   <td class="text-xs text-base-content/60">{{ t.last_used_at ? formatDate(t.last_used_at) : 'Never' }}</td>
                   <td class="text-right">
@@ -273,6 +299,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { ShieldAlert } from 'lucide-vue-next'
 import http from '../utils/http'
 
 // MCP state
@@ -287,6 +314,7 @@ const activeTab = ref('claude')
 // Personal access tokens
 const tokens = ref([])
 const newTokenName = ref('')
+const newTokenScope = ref([])
 const newTokenPlaintext = ref('')
 const tokenCreating = ref(false)
 const exportTokenId = ref('')
@@ -312,6 +340,10 @@ const sanitizeServerId = (value) =>
   (value.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^[-_]+|[-_]+$/g, '')) || 'asymptote'
 
 const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at))
+const restrictedCollections = computed(() =>
+  mcpCollections.value.filter((c) => c.sensitivity === 'restricted')
+)
+const collectionName = (cid) => mcpCollections.value.find((c) => c.id === cid)?.name || cid
 
 const serverId = computed(() => sanitizeServerId(`asymptote-${exportCollectionId.value}`))
 const serverUrl = computed(() =>
@@ -409,10 +441,14 @@ const createToken = async () => {
   tokenCreating.value = true
   mcpError.value = ''
   try {
-    const response = await http.post('/api/mcp/tokens', { name: newTokenName.value })
+    const response = await http.post('/api/mcp/tokens', {
+      name: newTokenName.value,
+      collection_scope: newTokenScope.value,
+    })
     newTokenPlaintext.value = response.data.token
     lastCreatedTokenId.value = response.data.id
     newTokenName.value = ''
+    newTokenScope.value = []
     await loadTokens()
     exportTokenId.value = response.data.id
   } catch (error) {

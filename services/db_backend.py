@@ -81,6 +81,7 @@ class DatabaseBackend(ABC):
         mcp_display_name: Optional[str] = None,
         mcp_display_description: Optional[str] = None,
         guide: Optional[str] = None,
+        sensitivity: Optional[str] = None,
     ):
         ...
 
@@ -165,8 +166,12 @@ class DatabaseBackend(ABC):
 
     @abstractmethod
     def create_mcp_token(
-        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str
+        self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
+        collection_scope: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        """collection_scope: ids of *restricted* collections this token may
+        reach over MCP. Restricted collections are otherwise never exposed
+        to MCP clients (see services/governance.py)."""
         ...
 
     @abstractmethod
@@ -184,6 +189,80 @@ class DatabaseBackend(ABC):
     @abstractmethod
     def revoke_mcp_token(self, token_id: str, user_id: Optional[str]) -> bool:
         """Revoke a token owned by user_id. Returns False if not found/not owned."""
+        ...
+
+    @abstractmethod
+    def revoke_all_mcp_tokens_for_user(self, user_id: Optional[str]) -> int:
+        """Admin suspension: revoke every live token of one identity. Returns count."""
+        ...
+
+    # ── Audit trail ──────────────────────────────────────────
+    # Append-only accountability log (services/audit.py). Rows are only
+    # ever removed by the retention sweep.
+
+    @abstractmethod
+    def add_audit_event(
+        self,
+        actor: Optional[str],
+        action: str,
+        collection_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        target: Optional[str] = None,
+        detail: Optional[str] = None,
+    ) -> int:
+        ...
+
+    @abstractmethod
+    def list_audit_events(
+        self,
+        limit: int = 200,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        since: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def delete_old_audit_events(self, days: int) -> int:
+        ...
+
+    # ── Acceptable-use acknowledgements ──────────────────────
+
+    @abstractmethod
+    def record_aup_acknowledgement(self, user_id: str, version: str) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def get_aup_acknowledgement(self, user_id: str, version: str) -> Optional[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def list_aup_acknowledgements(self) -> List[Dict[str, Any]]:
+        ...
+
+    # ── Hash blocklist ───────────────────────────────────────
+    # sha256 of files an admin removed with "block": the same bytes are
+    # refused at every ingest path afterwards, in every collection.
+
+    @abstractmethod
+    def add_blocked_hash(
+        self, content_hash: str, blocked_by: Optional[str], reason: str = "",
+        filename: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def remove_blocked_hash(self, content_hash: str) -> bool:
+        ...
+
+    @abstractmethod
+    def is_hash_blocked(self, content_hash: str) -> bool:
+        ...
+
+    @abstractmethod
+    def list_blocked_hashes(self) -> List[Dict[str, Any]]:
         ...
 
     # ── Upload Jobs ──────────────────────────────────────────
