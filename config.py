@@ -34,15 +34,16 @@ class Settings(BaseSettings):
     # vectors. The full catalog (labels, costs, models, endpoints) lives in
     # services/embedding_providers.py; ids as of writing:
     #   local              sentence-transformers in-process (default)
-    #   google | mistral | voyage | jina | openai
+    #   google | mistral | voyage | jina | openrouter | openai
     #                      hosted APIs speaking the OpenAI embeddings shape;
     #                      chunks are sent out at index time and queries at
     #                      search time, so pick these only when that egress
     #                      is acceptable (OFFLINE_MODE refuses them)
     #   ollama             a self-hosted Ollama daemon at OLLAMA_BASE_URL
     #   openai_compatible  any OpenAI-style endpoint at EMBEDDING_BASE_URL
-    #   ollama_cloud       kept for old configs; ollama.com serves no
-    #                      embedding models today
+    #   ollama_cloud | xai hidden from the picker: neither serves an
+    #                      embedding model today (ollama.com rejects the
+    #                      call; xAI documents the route but lists no model)
     embedding_provider: str = "local"
     # Model for the "local" provider (a sentence-transformers name).
     embedding_model: str = "all-MiniLM-L6-v2"
@@ -54,9 +55,9 @@ class Settings(BaseSettings):
     # Base URL for embedding_provider="openai_compatible" (…/v1).
     embedding_base_url: str = ""
     # Key for the selected embedding provider. Empty falls back to the team
-    # key saved on the matching AI Providers card (Google, OpenAI, …), so a
-    # key added for chat is reused. Providers without a chat card (Mistral,
-    # Voyage, Jina) need this set.
+    # key saved on the matching AI Providers card (Google, OpenAI,
+    # OpenRouter, …), so a key added for chat is reused. Providers without a
+    # chat card (Mistral, Voyage, Jina) need this set.
     embedding_api_key: str = ""
     # Ollama Cloud API key, used by embedding_provider="ollama_cloud" and as
     # the automatic key for vision OCR when VISION_OCR_PROVIDER=ollama_cloud.

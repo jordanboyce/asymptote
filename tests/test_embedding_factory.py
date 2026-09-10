@@ -147,6 +147,60 @@ def test_google_reuses_provider_card_key(monkeypatch, stub_services, clean_embed
     }
 
 
+def test_openrouter_reuses_provider_card_key_and_free_default(monkeypatch, stub_services, clean_embedding_settings):
+    from services.app_database import app_db
+
+    monkeypatch.setattr(_settings(), "embedding_provider", "openrouter")
+    monkeypatch.setattr(
+        app_db, "get_agent_api_key", lambda provider: "sk-or-team" if provider == "openrouter" else None
+    )
+    embedder.create_embedding_service()
+    assert stub_services["compat"] == {
+        "model_name": "nvidia/nemotron-3-embed-1b:free",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "sk-or-team",
+        "label": "OpenRouter",
+    }
+
+
+def test_openrouter_without_key_points_at_the_provider_card(monkeypatch, stub_services, clean_embedding_settings, no_team_keys):
+    monkeypatch.setattr(_settings(), "embedding_provider", "openrouter")
+    with pytest.raises(RuntimeError, match="add the OpenRouter key under Settings"):
+        embedder.create_embedding_service()
+
+
+def test_xai_is_hidden_and_fails_closed_without_a_model(monkeypatch, clean_embedding_settings):
+    """xAI documents an embeddings route but serves no model on it (2026-09).
+    The entry stays hidden; choosing it by env must fail with a readable
+    reason before any network call, not with a vendor stack trace."""
+    from services.app_database import app_db
+
+    assert get_provider("xai")["hidden"] is True
+    monkeypatch.setattr(_settings(), "embedding_provider", "xai")
+    monkeypatch.setattr(
+        app_db, "get_agent_api_key", lambda provider: "xai-team" if provider == "grok" else None
+    )
+    with pytest.raises(RuntimeError, match=r"xAI \(Grok\) needs a model name"):
+        embedder.create_embedding_service()
+
+
+def test_xai_with_explicit_model_probes_the_real_endpoint(monkeypatch, stub_services, clean_embedding_settings):
+    from services.app_database import app_db
+
+    monkeypatch.setattr(_settings(), "embedding_provider", "xai")
+    monkeypatch.setattr(_settings(), "remote_embedding_model", "v1")
+    monkeypatch.setattr(
+        app_db, "get_agent_api_key", lambda provider: "xai-team" if provider == "grok" else None
+    )
+    embedder.create_embedding_service()
+    assert stub_services["compat"] == {
+        "model_name": "v1",
+        "base_url": "https://api.x.ai/v1",
+        "api_key": "xai-team",
+        "label": "xAI (Grok)",
+    }
+
+
 def test_embedding_api_key_beats_provider_card(monkeypatch, stub_services, clean_embedding_settings):
     from services.app_database import app_db
 
@@ -368,6 +422,26 @@ def test_openai_compatible_explains_auth_failure(monkeypatch):
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             api_key="bad",
             label="Google Gemini",
+        )
+
+
+def test_openai_compatible_explains_missing_credit(monkeypatch):
+    import io
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 402, "Payment Required", {},
+            io.BytesIO(b'{"error":{"message":"Insufficient credits"}}'),
+        )
+
+    monkeypatch.setattr(embedder.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="OpenRouter says this account has no credit.*Insufficient credits"):
+        embedder.OpenAICompatibleEmbeddingService(
+            model_name="qwen/qwen3-embedding-8b",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-or-1",
+            label="OpenRouter",
         )
 
 

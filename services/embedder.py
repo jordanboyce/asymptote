@@ -295,8 +295,9 @@ class OpenAICompatibleEmbeddingService:
 
     This one request shape — `{"model": ..., "input": [...]}` in, a `data`
     list of `{"index", "embedding"}` out — is what OpenAI, Google Gemini's
-    compatibility layer, Mistral, Voyage, Jina, Together, LM Studio, vLLM
-    and most other embedding APIs speak, so one class covers all of them.
+    compatibility layer, Mistral, Voyage, Jina, OpenRouter, Together, LM
+    Studio, vLLM and most other embedding APIs speak, so one class covers
+    all of them.
     `label` is only used in error messages so a non-engineer reads
     "Google Gemini rejected the key", not a URL.
     """
@@ -347,8 +348,19 @@ class OpenAICompatibleEmbeddingService:
                     f"{self.label} has no model called '{self.model_name}' or the base URL "
                     f"{self.base_url} is wrong (HTTP 404). {body}"
                 )
+            if e.code == 402:
+                # OpenRouter answers 402 when the account has no credit left.
+                return (
+                    f"{self.label} says this account has no credit for model "
+                    f"'{self.model_name}' (HTTP 402). Add credit or choose a free model. {body}"
+                )
             if e.code == 429:
-                return f"{self.label} is rate-limiting this key (HTTP 429). Wait a moment or check your plan."
+                # The body usually names the limit that was hit (OpenRouter's
+                # free models cap requests per minute and per day).
+                return (
+                    f"{self.label} is rate-limiting this key (HTTP 429). Wait a moment "
+                    f"or check your plan's limits. {body}"
+                )
             return f"{self.label} returned HTTP {e.code} for model '{self.model_name}'. {body}"
         if isinstance(e, urllib.error.URLError):
             return f"Could not reach {self.label} at {self.base_url}: {e.reason}"
@@ -513,7 +525,7 @@ def create_embedding_service(
     api_key = resolve_embedding_api_key(provider, explicit_key)
     if entry["needs_key"] and not api_key:
         where = (
-            f"add a {entry['label']} key under Settings → AI Providers, or enter one "
+            f"add the {entry['label']} key under Settings → AI Providers, or enter one "
             f"in the Embedding section"
             if entry.get("key_provider")
             else "enter one in the Embedding section of Settings"
