@@ -41,22 +41,27 @@ def client(fresh_db, monkeypatch):
 
 def test_catalog_hides_unavailable_provider_and_reports_keys(client, fresh_db):
     fresh_db.set_agent_api_key("google", "AIza-team")
+    fresh_db.set_agent_api_key("openrouter", "sk-or-team")
 
     body = client.get("/api/embedding/providers").json()
     ids = [p["id"] for p in body["providers"]]
 
     assert ids[0] == "local"
     assert "ollama_cloud" not in ids  # hidden: ollama.com serves no embedding models
-    assert {"google", "mistral", "voyage", "jina", "openai", "ollama", "openai_compatible"} <= set(ids)
+    assert "xai" not in ids           # hidden: xAI lists no embedding model
+    assert {"google", "mistral", "voyage", "jina", "openrouter", "openai", "ollama", "openai_compatible"} <= set(ids)
 
     by_id = {p["id"]: p for p in body["providers"]}
     assert by_id["google"]["key_configured"] is True
     assert by_id["google"]["key_source"] == "provider_card"
+    assert by_id["openrouter"]["key_source"] == "provider_card"
+    assert by_id["openrouter"]["default_model"].endswith(":free")
     assert by_id["mistral"]["key_configured"] is False
     assert by_id["local"]["needs_key"] is False
     assert body["current"]["provider"] == "local"
     # No secret leaks through the catalog.
     assert "AIza-team" not in str(body)
+    assert "sk-or-team" not in str(body)
 
 
 def test_catalog_keeps_hidden_provider_when_it_is_the_current_choice(client, monkeypatch):

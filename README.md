@@ -341,7 +341,7 @@ Create a `.env` file to customize settings:
 DATA_DIR=./data                          # Where documents and indexes are stored
 
 # Embeddings — see "Choosing where embeddings run" below
-EMBEDDING_PROVIDER=local                # local | google | mistral | voyage | jina | openai | ollama | openai_compatible
+EMBEDDING_PROVIDER=local                # local | google | mistral | voyage | jina | openrouter | openai | ollama | openai_compatible
 EMBEDDING_MODEL=all-MiniLM-L6-v2        # model for the local provider
 REMOTE_EMBEDDING_MODEL=                 # model for any other provider (blank = its recommended one)
 EMBEDDING_API_KEY=                      # blank = reuse the matching AI Providers key
@@ -808,14 +808,16 @@ move that work to a hosted API instead:
 | Mistral (`mistral`) | Free tier | own key | EU-hosted. |
 | Voyage AI (`voyage`) | Free tier | own key | Retrieval-focused models. |
 | Jina AI (`jina`) | Free tier | own key | Free credits without a card. |
+| OpenRouter (`openrouter`) | Free tier | reused from AI Providers | Dozens of models behind one key. The `:free` ones allow 50 requests a day (1,000 after buying $10 of credit); paid ones cost cents per million tokens. |
 | OpenAI (`openai`) | Paid, low cost | reused from AI Providers | Cents per thousand pages. |
 | Ollama on your own server (`ollama`) | Self-hosted | none | Point `OLLAMA_BASE_URL` at a machine that has pulled an embedding model. |
 | Custom endpoint (`openai_compatible`) | Depends | optional | Any OpenAI-style `/embeddings` API: LM Studio, vLLM, LiteLLM, Together, … |
 
 Hosted options send document text to that vendor at index time and query
-text at search time; `OFFLINE_MODE=true` refuses them. Ollama Cloud is not
-offered: as of September 2026 its API serves chat models only and rejects
-embedding calls.
+text at search time; `OFFLINE_MODE=true` refuses them. Ollama Cloud and xAI
+(Grok) are not offered: as of September 2026 Ollama Cloud serves chat models
+only and rejects embedding calls, and xAI documents an embeddings endpoint
+but lists no embedding model for it.
 
 Use **Test connection** in Settings before saving — it embeds one short
 string with the unsaved values and reports the vector size or the exact

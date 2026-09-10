@@ -19,8 +19,8 @@ Provider `kind` decides the transport:
                          (OpenAICompatibleEmbeddingService)
 
 `key_provider` names the AI Providers card whose saved team key is reused
-when no embedding-specific key is set, so someone who already added a Google
-or OpenAI key for chat doesn't have to paste it twice.
+when no embedding-specific key is set, so someone who already added a Google,
+OpenAI or OpenRouter key for chat doesn't have to paste it twice.
 
 `cost` is a coarse, honest label for non-engineers, not a price list:
   - "free"        nothing to pay, ever (runs on your own hardware)
@@ -153,6 +153,39 @@ EMBEDDING_PROVIDERS: List[Dict[str, Any]] = [
         ],
     },
     {
+        "id": "openrouter",
+        "label": "OpenRouter",
+        "kind": "openai_compatible",
+        "cost": "free_tier",
+        "cost_label": "Free tier",
+        "privacy": (
+            "Document text is sent to OpenRouter and on to whichever company "
+            "hosts the chosen model; some free models let that host keep it "
+            "for training."
+        ),
+        "blurb": (
+            "One key, dozens of embedding models. The ':free' ones cost nothing "
+            "but allow only 50 requests a day (1,000 once you have bought $10 of "
+            "credit), and every search is a request, so busy teams should pick "
+            "a paid model at a few cents per million tokens. Reuses the "
+            "OpenRouter key from AI Providers."
+        ),
+        "needs_key": True,
+        "key_provider": "openrouter",
+        "key_link": "https://openrouter.ai/keys",
+        "pricing_link": "https://openrouter.ai/collections/embedding-models",
+        "base_url": "https://openrouter.ai/api/v1",
+        "default_model": "nvidia/nemotron-3-embed-1b:free",
+        "models": [
+            {"id": "nvidia/nemotron-3-embed-1b:free", "label": "Nemotron 3 Embed 1B — free (recommended)", "dimensions": 2048, "language": "Multilingual"},
+            {"id": "nvidia/llama-nemotron-embed-vl-1b-v2:free", "label": "Llama Nemotron Embed VL 1B — free, very long inputs", "dimensions": 2048, "language": "Multilingual"},
+            {"id": "liquid/lfm-2.5-embedding-350m:free", "label": "LFM2.5 Embedding 350M — free, small; host may train on your text", "dimensions": 1024, "language": "Multilingual"},
+            {"id": "qwen/qwen3-embedding-8b", "label": "Qwen3 Embedding 8B — paid, about $0.01 per million tokens", "dimensions": 4096, "language": "Multilingual"},
+            {"id": "baai/bge-m3", "label": "BGE-M3 — paid, about $0.01 per million tokens", "dimensions": 1024, "language": "Multilingual"},
+            {"id": "openai/text-embedding-3-small", "label": "OpenAI text-embedding-3-small — paid, about $0.02 per million tokens", "dimensions": 1536, "language": "Multilingual"},
+        ],
+    },
+    {
         "id": "openai",
         "label": "OpenAI",
         "kind": "openai_compatible",
@@ -238,6 +271,33 @@ EMBEDDING_PROVIDERS: List[Dict[str, Any]] = [
         "models": [
             {"id": "nomic-embed-text", "label": "nomic-embed-text", "dimensions": 768, "language": "English"},
         ],
+    },
+    # xAI's REST reference documents POST /v1/embeddings and GET
+    # /v1/embedding-models, but the only model id on that page is a
+    # placeholder ("v1", version 0.1.0) and the models/pricing page lists no
+    # embedding model at all (checked 2026-09-09; api.x.ai/v1/embedding-models
+    # answers 401 without a key, so the route exists). Kept hidden with the
+    # real endpoint so EMBEDDING_PROVIDER=xai plus REMOTE_EMBEDDING_MODEL gets
+    # a genuine probe the day xAI ships one; until then it fails closed.
+    {
+        "id": "xai",
+        "label": "xAI (Grok)",
+        "kind": "openai_compatible",
+        "cost": "paid",
+        "cost_label": "Paid",
+        "privacy": "Document text is sent to xAI when indexing and searching.",
+        "blurb": (
+            "Not available: xAI documents an embeddings endpoint but offers no "
+            "embedding model on it (checked September 2026). Pick another option."
+        ),
+        "hidden": True,
+        "needs_key": True,
+        "key_provider": "grok",
+        "key_link": "https://console.x.ai/",
+        "pricing_link": "https://docs.x.ai/developers/models",
+        "base_url": "https://api.x.ai/v1",
+        "default_model": "",
+        "models": [],
     },
 ]
 
