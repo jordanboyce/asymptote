@@ -73,11 +73,14 @@ async def create_mcp_token(body: dict, user_id: Optional[str] = Depends(get_curr
             token may reach over MCP. Restricted collections are otherwise
             invisible to every MCP client; the scope is the explicit grant.
             Only collections the caller can already access are accepted.
+        can_write: optional bool (default false). Lets agents holding this
+            token add and update sources via the write_document tool.
     """
     from services import audit
     from services.collection_service import collection_service
 
     name = (body or {}).get("name", "")
+    can_write = bool((body or {}).get("can_write", False))
     raw_scope = (body or {}).get("collection_scope") or []
     if not isinstance(raw_scope, list):
         raise HTTPException(status_code=400, detail="collection_scope must be a list of collection ids")
@@ -90,9 +93,12 @@ async def create_mcp_token(body: dict, user_id: Optional[str] = Depends(get_curr
         if cid:
             scope.append(cid)
 
-    record = mcp_tokens.generate_token(user_id, name, collection_scope=scope or None)
+    record = mcp_tokens.generate_token(
+        user_id, name, collection_scope=scope or None, can_write=can_write,
+    )
     audit.record("mcp_token.create", actor=user_id, target=record.get("id"),
-                 detail={"name": record.get("name"), "collection_scope": scope or None})
+                 detail={"name": record.get("name"), "collection_scope": scope or None,
+                         "can_write": can_write})
     return record
 
 

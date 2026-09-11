@@ -1,7 +1,7 @@
 <template>
   <div
     v-if="show"
-    class="fixed inset-0 z-[300] bg-base-200 flex items-center justify-center p-6 overflow-y-auto"
+    class="fixed inset-0 z-[300] bg-base-200 flex items-center justify-center p-4 sm:p-6 overflow-y-auto"
     role="dialog"
     aria-modal="true"
     aria-labelledby="welcome-title"

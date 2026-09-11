@@ -383,6 +383,12 @@ class SQLiteBackend(DatabaseBackend):
                 conn.execute("ALTER TABLE mcp_tokens ADD COLUMN collection_scope TEXT")
             except sqlite3.OperationalError:
                 pass
+            # Per-token write grant for the write_document MCP tool. Existing
+            # tokens stay read-only (DEFAULT 0) — writes are opt-in at mint time.
+            try:
+                conn.execute("ALTER TABLE mcp_tokens ADD COLUMN can_write INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
 
             # Add MCP display name/description (optional aliases for MCP output)
             for col in ["mcp_display_name TEXT", "mcp_display_description TEXT"]:
@@ -1149,20 +1155,22 @@ class SQLiteBackend(DatabaseBackend):
                 row["collection_scope"] = None
         elif not raw:
             row["collection_scope"] = None
+        row["can_write"] = bool(row.get("can_write"))
         return row
 
     def create_mcp_token(
         self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
         collection_scope: Optional[List[str]] = None,
+        can_write: bool = False,
     ) -> Dict[str, Any]:
         token_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().isoformat()
         scope_json = json.dumps(list(collection_scope)) if collection_scope else None
         with sqlite_connect(self.db_path) as conn:
             conn.execute(
-                """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (token_id, user_id, name, token_hash, token_prefix, timestamp, scope_json),
+                """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope, can_write)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (token_id, user_id, name, token_hash, token_prefix, timestamp, scope_json, 1 if can_write else 0),
             )
             conn.commit()
         return {
@@ -1174,13 +1182,14 @@ class SQLiteBackend(DatabaseBackend):
             "last_used_at": None,
             "revoked_at": None,
             "collection_scope": list(collection_scope) if collection_scope else None,
+            "can_write": bool(can_write),
         }
 
     def list_mcp_tokens(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
         with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope
+                """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope, can_write
                    FROM mcp_tokens WHERE user_id IS ? ORDER BY created_at DESC""",
                 (user_id,),
             ).fetchall()

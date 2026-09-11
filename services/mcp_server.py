@@ -54,6 +54,18 @@ _request_mcp_token_scope: ContextVar[list[str] | None] = ContextVar(
 def get_request_mcp_token_scope() -> list[str] | None:
     return _request_mcp_token_scope.get(None)
 
+
+# Whether the current MCP request may add or update sources. A personal
+# token carries its own flag (read-only unless minted with writes enabled);
+# every other caller — an SSO session, the shared password, an Access
+# service token, the in-process chat loop — is a full user and may write,
+# subject to the collection's own write permission and the AUP gate.
+_request_mcp_can_write: ContextVar[bool] = ContextVar("asymptote_request_mcp_can_write", default=True)
+
+
+def get_request_mcp_can_write() -> bool:
+    return _request_mcp_can_write.get(True)
+
 MCP_CONFIG_FIELDS = (
     "enable_mcp",
     "mcp_server_id",
@@ -1792,6 +1804,283 @@ def get_document_metadata(
 
 
 # ---------------------------------------------------------------------------
+# Writing sources — agents adding or updating documents in a collection
+# ---------------------------------------------------------------------------
+
+# Text formats an agent may author directly. Binary formats (PDF, DOCX,
+# images, audio) need a real file and go through the upload endpoints.
+from services.code_extractor import SUPPORTED_CODE_EXTENSIONS as _CODE_EXTS
+
+_WRITABLE_EXTENSIONS = {".md", ".txt", ".json", ".jsonl", ".csv", ".html", ".htm"} | set(_CODE_EXTS)
+_WRITE_MAX_CHARS = 2_000_000
+_WRITE_MODES = ("create", "replace", "append")
+
+
+def _safe_source_filename(filename: str) -> str:
+    """Normalize an agent-supplied filename to what the upload path would store.
+
+    Folder separators flatten to underscores (same as folder uploads), path
+    traversal and control characters are refused, and a bare name gets `.md`
+    — agents that say "write my notes" usually mean markdown.
+    """
+    raw = (filename or "").strip().replace("\\", "/").strip("/")
+    if not raw:
+        raise ValueError("filename must not be empty")
+    if any(ord(ch) < 32 for ch in raw):
+        raise ValueError("filename must not contain control characters")
+    safe = raw.replace("/", "_")
+    if safe in (".", "..") or safe.startswith(".."):
+        raise ValueError("filename must not be a relative path")
+    from pathlib import PurePosixPath
+
+    suffix = PurePosixPath(safe).suffix.lower()
+    if not suffix:
+        safe += ".md"
+        suffix = ".md"
+    if suffix not in _WRITABLE_EXTENSIONS:
+        raise ValueError(
+            f"'{suffix}' is not a text format this tool can write. Use one of: "
+            ".md, .txt, .json, .jsonl, .csv, .html, or a source-code extension. "
+            "Binary formats (PDF, DOCX, images, audio) must be uploaded as files."
+        )
+    return safe
+
+
+def _require_mcp_write(collection_id: str | None) -> str:
+    """Resolve the target collection and check every write gate.
+
+    Mirrors api/documents._require_ingest for the agent surface: collection
+    visibility, the token's write flag, the collection's write permission
+    under private collections, and the acceptable-use acknowledgement.
+    """
+    resolved = _resolve_collection_id(collection_id)
+
+    if not get_request_mcp_can_write():
+        raise ValueError(
+            "This MCP token is read-only. Generate a token with 'Allow adding "
+            "and updating sources' enabled (Settings → MCP) to write to collections."
+        )
+
+    from middleware.user_context import get_request_user
+    from services.sharing_service import sharing_service
+    from services import governance
+    from fastapi import HTTPException
+
+    user = get_request_user()
+    if sharing_service.check_collection_access(resolved, user) == "read":
+        raise ValueError(
+            f"Collection '{resolved}' is shared with you read-only; its owner "
+            "manages the sources."
+        )
+    try:
+        governance.require_aup(user)
+    except HTTPException as e:
+        detail = e.detail
+        message = detail.get("message") if isinstance(detail, dict) else str(detail)
+        raise ValueError(f"{message} Open the app and accept it, then retry.")
+    return resolved
+
+
+def _find_document_by_filename(indexer, filename: str) -> dict[str, Any] | None:
+    """Exact-filename lookup within one collection (newest first if several)."""
+    store = indexer.vector_store.metadata_store
+    for row in store.list_documents_page(limit=50, offset=0, q=filename):
+        if row.get("filename") == filename:
+            return row
+    return None
+
+
+def write_document_sync(
+    filename: str,
+    content: str,
+    collection_id: str | None = None,
+    mode: Literal["create", "replace", "append"] = "create",
+) -> dict[str, Any]:
+    """Synchronous implementation of write_document; docs on the MCP wrapper."""
+    from middleware.user_context import get_request_user
+    from services import audit, governance
+    from services.content_policy import BlockedContentError, ContentRejectedError
+
+    if mode not in _WRITE_MODES:
+        raise ValueError(f"mode must be one of: {', '.join(_WRITE_MODES)}")
+    if not isinstance(content, str):
+        raise ValueError("content must be a string")
+    if not content.strip():
+        raise ValueError("content must not be empty")
+    if len(content) > _WRITE_MAX_CHARS:
+        raise ValueError(
+            f"content is {len(content):,} characters; the limit per write is "
+            f"{_WRITE_MAX_CHARS:,}. Split it into several documents."
+        )
+
+    safe_filename = _safe_source_filename(filename)
+    resolved = _require_mcp_write(collection_id)
+    indexer = indexer_manager.get_indexer(resolved)
+    store = indexer.vector_store.metadata_store
+    document_dir = indexer_manager.get_documents_path(resolved)
+    uploaded_by = get_request_user()
+
+    existing = _find_document_by_filename(indexer, safe_filename)
+    replaced_id: str | None = None
+    final_content = content
+
+    if existing:
+        existing_id = existing.get("document_id")
+        if mode == "create":
+            raise ValueError(
+                f"A source named '{safe_filename}' already exists in collection "
+                f"'{resolved}' (document_id {existing_id}). Pass mode='replace' to "
+                "overwrite it or mode='append' to add to the end of it."
+            )
+        if mode == "append":
+            if existing.get("source_type") == "local_reference":
+                raise ValueError(
+                    f"'{safe_filename}' is indexed in place from "
+                    f"{existing.get('source_path')}; edit that file directly and "
+                    "re-index it rather than appending over MCP."
+                )
+            current_path = document_dir / safe_filename
+            if not current_path.exists():
+                raise ValueError(
+                    f"The stored file for '{safe_filename}' is missing on disk; use "
+                    "mode='replace' to write it fresh."
+                )
+            previous = current_path.read_text(encoding="utf-8", errors="replace")
+            separator = "" if previous.endswith("\n\n") else ("\n" if previous.endswith("\n") else "\n\n")
+            final_content = previous + separator + content
+        # replace and append both retire the old record; its chunks, file and
+        # collection membership go through the same path the delete button uses.
+        governance.remove_document(resolved, existing_id, actor=uploaded_by)
+        replaced_id = existing_id
+
+    file_path = document_dir / safe_filename
+    # newline="\n": store exactly the bytes the agent sent (no CRLF
+    # translation on Windows), so the content hash is platform-independent.
+    file_path.write_text(final_content, encoding="utf-8", newline="\n")
+
+    # Identical bytes already indexed under another name: the document id is
+    # the content hash, so indexing again would collide. Say so instead.
+    content_hash = governance.content_hash_of(file_path)
+    duplicate = store.get_document_info(content_hash[:16])
+    if duplicate and duplicate.get("filename") != safe_filename:
+        file_path.unlink(missing_ok=True)
+        return _tool_response({
+            "status": "duplicate",
+            "collection_id": resolved,
+            "filename": safe_filename,
+            "document_id": duplicate.get("document_id"),
+            "existing_filename": duplicate.get("filename"),
+            "note": (
+                f"Identical content is already indexed as '{duplicate.get('filename')}'. "
+                "Nothing was written."
+            ),
+        }, "write_document")
+
+    try:
+        meta = indexer.index_document(
+            file_path, safe_filename, collection_id=resolved, uploaded_by=uploaded_by,
+        )
+    except (BlockedContentError, ContentRejectedError) as e:
+        file_path.unlink(missing_ok=True)
+        raise ValueError(str(e))
+    except Exception as e:
+        file_path.unlink(missing_ok=True)
+        logger.error("write_document: failed to index %s: %s", safe_filename, e)
+        raise ValueError(f"Failed to index '{safe_filename}': {e}")
+
+    collection_service.add_document(resolved, meta.document_id)
+    indexer.save_index()
+    audit.record(
+        "document.upload", collection_id=resolved, document_id=meta.document_id,
+        detail={
+            "files": [safe_filename], "document_ids": [meta.document_id],
+            "indexed": 1, "failed": 0, "via": "mcp", "mode": mode,
+            "replaced_document_id": replaced_id,
+        },
+    )
+
+    status = {"create": "created", "replace": "replaced", "append": "appended"}[mode]
+    if mode != "create" and replaced_id is None:
+        status = "created"  # replace/append with nothing there yet
+    payload: dict[str, Any] = {
+        "status": status,
+        "collection_id": resolved,
+        "collection_name": _mcp_safe_name(collection_service.get_collection(resolved), resolved),
+        "document_id": meta.document_id,
+        "filename": safe_filename,
+        "total_pages": meta.total_pages,
+        "total_chunks": meta.total_chunks,
+        "policy_status": meta.policy_status,
+        "characters": len(final_content),
+    }
+    if replaced_id:
+        payload["replaced_document_id"] = replaced_id
+    if meta.policy_status and meta.policy_status != "clear":
+        payload["note"] = (
+            "The content scan flagged this source; it may be held from search "
+            "until an administrator reviews it."
+        )
+    return _tool_response(payload, "write_document")
+
+
+@_asymptote_mcp.tool()
+async def write_document(
+    filename: str,
+    content: str,
+    collection_id: str | None = None,
+    mode: Literal["create", "replace", "append"] = "create",
+) -> dict[str, Any]:
+    """Add a new text source to a collection, or update one you added before.
+
+    The content is stored as a file in the collection and indexed exactly
+    like an upload — searchable by `search_collection`, readable by
+    `get_document_context`, visible in the app's Sources panel. Use it to
+    save research notes, summaries, meeting minutes, generated reports,
+    structured data, or any markdown you want the collection to remember.
+
+    Parameters:
+      - filename: Name for the source, e.g. "meeting-notes-2026-09.md". A
+        name without an extension gets ".md". Only text formats are
+        accepted: .md, .txt, .json, .jsonl, .csv, .html, and source-code
+        extensions. Folder separators are flattened to underscores.
+      - content: The full text to store (UTF-8). For CSV, include the
+        header row — the file is also loaded as a queryable table.
+      - collection_id: Optional. If omitted, uses the server's default
+        collection. Call `list_collections` to pick the right target; a
+        name is accepted in place of the id.
+      - mode:
+          "create"  (default) — fails if a source with this filename exists.
+          "replace" — overwrite the existing source with `content`
+                      (re-indexed from scratch; the old document_id retires).
+          "append"  — add `content` to the end of the existing source and
+                      re-index it. Creates the source if it doesn't exist.
+
+    Returns:
+      - status: "created", "replaced", "appended", or "duplicate" (identical
+        content already indexed under another filename — nothing written)
+      - document_id, filename, total_pages, total_chunks, policy_status
+      - replaced_document_id: the retired id, for replace/append
+
+    Rules and limits:
+      - Writes need a token minted with writes enabled (Settings → MCP), or a
+        signed-in session. A collection shared read-only refuses writes.
+      - Content is scanned by the deployment's content policy and recorded
+        against the caller's identity, like every upload.
+      - One write holds at most 2,000,000 characters; split larger material.
+      - Sources indexed in place from a local path cannot be appended to.
+
+    To remove a source, use the app; there is deliberately no delete tool.
+    """
+    return await asyncio.to_thread(
+        write_document_sync,
+        filename,
+        content,
+        collection_id=collection_id,
+        mode=mode,
+    )
+
+
+# ---------------------------------------------------------------------------
 # MCP Resources — passive context the host LLM can load without tool calls
 # ---------------------------------------------------------------------------
 
@@ -2139,9 +2428,10 @@ class ToggleableMCPApp:
 
         token = _request_mcp_profile.set(profile)
         # The personal-token collection scope (restricted-collection grant)
-        # rides on request.state from main.py's auth middleware too.
+        # and write flag ride on request.state from main.py's auth middleware.
         state = scope.get("state", {}) if scope["type"] == "http" else {}
         scope_token = _request_mcp_token_scope.set(state.get("mcp_token_scope") or None)
+        write_token = _request_mcp_can_write.set(bool(state.get("mcp_token_can_write", True)))
         # Bind the verified identity for private-collections scoping. The auth
         # middleware in main.py verifies the Access JWT and records the result
         # on the ASGI scope's state before this mount runs; MCP service tokens
@@ -2160,6 +2450,7 @@ class ToggleableMCPApp:
                 from middleware.user_context import reset_request_user
 
                 reset_request_user(user_token)
+            _request_mcp_can_write.reset(write_token)
             _request_mcp_token_scope.reset(scope_token)
             _request_mcp_profile.reset(token)
 

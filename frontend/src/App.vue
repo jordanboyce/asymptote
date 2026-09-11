@@ -1,5 +1,5 @@
 <template>
-  <div class="h-screen flex flex-col overflow-hidden bg-base-200" :class="{ 'select-none cursor-col-resize': isResizing || isResizingAnalysis }">
+  <div class="h-dvh flex flex-col overflow-hidden bg-base-200" :class="{ 'select-none cursor-col-resize': isResizing || isResizingAnalysis }">
 
     <!-- ── Header ── -->
     <header class="flex items-center gap-2 px-3 h-11 bg-base-100 border-b border-base-300 flex-shrink-0 z-50">
@@ -46,8 +46,9 @@
         <span class="hidden md:inline text-xs">Sources</span>
       </button>
 
-      <!-- Tabs (hidden on collections overview) -->
-      <template v-if="!isCollectionsView">
+      <!-- Tabs (hidden on collections overview; on phones they live in the
+           bottom tab bar instead) -->
+      <div v-if="!isCollectionsView" class="hidden md:flex items-center gap-2">
         <button
           v-for="tab in tabs"
           :key="tab.id"
@@ -58,9 +59,9 @@
           :aria-current="activeTab === tab.id ? 'page' : undefined"
         >
           <component :is="tab.icon" :size="14" />
-          <span class="hidden sm:inline">{{ tab.label }}</span>
+          <span class="hidden lg:inline">{{ tab.label }}</span>
         </button>
-      </template>
+      </div>
 
       <!-- Spacer -->
       <div class="flex-1"></div>
@@ -70,6 +71,17 @@
         <Users :size="12" />
         <span class="max-w-24 truncate">{{ userStore.displayName }}</span>
       </div>
+
+      <!-- Phone: active-job indicator (the status footer is hidden there) -->
+      <button
+        v-if="backgroundJobsStore.hasActiveJobs"
+        class="md:hidden btn btn-ghost btn-circle btn-sm"
+        @click="showJobsDrawer = true"
+        :title="`${backgroundJobsStore.activeJobCount} active job${backgroundJobsStore.activeJobCount === 1 ? '' : 's'}`"
+        :aria-label="`Background jobs — ${backgroundJobsStore.activeJobCount} active`"
+      >
+        <Loader2 :size="16" class="animate-spin text-warning" aria-hidden="true" />
+      </button>
 
       <!-- Analysis sidebar toggle (hidden on collections overview) -->
       <button
@@ -85,7 +97,7 @@
       </button>
 
       <!-- Global AI provider pill: app-wide default + click-to-switch menu -->
-      <div v-if="providerPill.configured.length > 0" class="dropdown dropdown-end hidden sm:block">
+      <div v-if="providerPill.configured.length > 0" class="dropdown dropdown-end hidden md:block">
         <label
           tabindex="0"
           class="btn btn-xs btn-ghost gap-1 normal-case font-normal h-7 min-h-0 border border-base-300 rounded-full px-2.5"
@@ -117,8 +129,8 @@
         </ul>
       </div>
 
-      <!-- Help menu -->
-      <div class="dropdown dropdown-end">
+      <!-- Help menu (desktop; phones get it in the overflow menu) -->
+      <div class="dropdown dropdown-end hidden md:block">
         <button tabindex="0" class="btn btn-ghost btn-circle btn-sm" title="Help" aria-label="Help menu" aria-haspopup="menu">
           <HelpCircle :size="16" />
         </button>
@@ -140,7 +152,7 @@
 
       <!-- Settings button -->
       <button
-        class="btn btn-ghost btn-circle btn-sm"
+        class="hidden md:inline-flex btn btn-ghost btn-circle btn-sm"
         :class="{ 'bg-base-300': activeTab === 'settings' }"
         @click="activeTab = 'settings'"
         title="Settings"
@@ -151,13 +163,68 @@
       </button>
 
       <!-- Signed-in identity + sign out (Cloudflare Access deployments only) -->
-      <div v-if="me.authenticated_via === 'cloudflare-access'" class="dropdown dropdown-end">
+      <div v-if="me.authenticated_via === 'cloudflare-access'" class="dropdown dropdown-end hidden md:block">
         <button tabindex="0" class="btn btn-ghost btn-circle btn-sm" :title="me.identity || 'Signed in'" aria-label="Account menu">
           <CircleUser :size="16" />
         </button>
         <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-50 w-64 p-2 shadow border border-base-300">
           <li class="menu-title"><span class="truncate">{{ me.identity || 'Signed in' }}</span></li>
           <li>
+            <a :href="me.logout_url" class="text-error">
+              <LogOut :size="14" />
+              Sign out
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Phone: one overflow menu holds what the desktop header shows inline -->
+      <div class="dropdown dropdown-end md:hidden">
+        <button tabindex="0" class="btn btn-ghost btn-circle btn-sm" title="More" aria-label="More options" aria-haspopup="menu">
+          <EllipsisVertical :size="18" />
+        </button>
+        <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[60] w-64 p-2 shadow-lg border border-base-300 max-h-[70vh] overflow-y-auto flex-nowrap">
+          <li v-if="me.identity || userStore.isPrivateMode" class="menu-title">
+            <span class="truncate">{{ me.identity || userStore.displayName }}</span>
+          </li>
+          <li>
+            <button :class="{ 'active': activeTab === 'settings' }" @click="activeTab = 'settings'; closeMenus()">
+              <Settings :size="14" />
+              Settings
+            </button>
+          </li>
+          <li>
+            <button @click="showJobsDrawer = true; closeMenus()">
+              <Loader2 v-if="backgroundJobsStore.hasActiveJobs" :size="14" class="animate-spin text-warning" aria-hidden="true" />
+              <Bell v-else :size="14" aria-hidden="true" />
+              Background jobs
+              <span v-if="backgroundJobsStore.activeJobCount > 0" class="badge badge-warning badge-xs ml-auto">{{ backgroundJobsStore.activeJobCount }}</span>
+            </button>
+          </li>
+          <template v-if="providerPill.configured.length > 0">
+            <li class="menu-title pt-2"><span class="text-xs">Default AI provider</span></li>
+            <li v-for="pid in providerPill.configured" :key="'m-' + pid">
+              <button class="flex items-center gap-2" :class="{ 'active': pid === providerPill.id }" @click="setGlobalProvider(pid)">
+                <Check v-if="pid === providerPill.id" :size="12" class="flex-shrink-0" aria-hidden="true" />
+                <span v-else class="w-3 flex-shrink-0" aria-hidden="true"></span>
+                <span class="flex-1 text-left text-sm truncate">{{ providerDisplayName(pid) }}</span>
+              </button>
+            </li>
+          </template>
+          <li class="menu-title pt-2"><span class="text-xs">Help</span></li>
+          <li>
+            <a href="https://github.com/jordanboyce/asymptote#readme" target="_blank" rel="noopener">
+              <BookOpen :size="14" />
+              Documentation
+            </a>
+          </li>
+          <li>
+            <button @click="showOnboarding = true; closeMenus()">
+              <Sparkles :size="14" />
+              Run setup again
+            </button>
+          </li>
+          <li v-if="me.authenticated_via === 'cloudflare-access'">
             <a :href="me.logout_url" class="text-error">
               <LogOut :size="14" />
               Sign out
@@ -226,15 +293,15 @@
           :class="activeTab === 'chat' ? 'overflow-hidden p-0' : 'overflow-y-auto'"
         >
           <!-- Chat gets full height, no padding wrapper -->
-          <div v-if="activeTab === 'chat'" class="h-full p-4">
+          <div v-if="activeTab === 'chat'" class="h-full p-3 md:p-4">
             <ChatTab @switch-tab="switchTab" />
           </div>
 
           <!-- All other tabs: padded scroll container -->
-          <div v-else class="px-6 py-6">
+          <div v-else class="px-4 py-4 md:px-6 md:py-6">
 
             <!-- Collections overview -->
-            <div v-if="activeTab === 'collections'" class="pt-4">
+            <div v-if="activeTab === 'collections'" class="pt-2 md:pt-4">
               <header class="flex items-end justify-between gap-6 flex-wrap pb-5 mb-4 border-b border-base-300/60">
                 <div class="min-w-0">
                   <h1 class="text-[22px] leading-none font-semibold tracking-tight">Collections</h1>
@@ -246,15 +313,15 @@
                   </p>
                 </div>
 
-                <div class="flex items-center gap-2 flex-wrap">
+                <div class="flex items-center gap-2 flex-wrap w-full sm:w-auto">
                   <!-- Search -->
-                  <div class="relative">
+                  <div class="relative w-full sm:w-auto">
                     <Search :size="13" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-base-content/40 pointer-events-none" />
                     <input
                       v-model="collectionsSearch"
                       type="text"
                       placeholder="Search collections"
-                      class="input input-sm input-bordered pl-7 pr-7 w-56 focus:w-64 transition-[width]"
+                      class="input input-sm input-bordered pl-7 pr-7 w-full sm:w-56 sm:focus:w-64 transition-[width]"
                       aria-label="Search collections"
                     />
                     <button
@@ -357,7 +424,7 @@
                   <span class="text-[10px] uppercase tracking-[0.14em] font-semibold text-base-content/40">Shared with me</span>
                 </li>
                 <li
-                  class="group flex items-start gap-5 py-5 cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary rounded-sm"
+                  class="group flex items-start gap-3 py-4 sm:gap-5 sm:py-5 cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary rounded-sm"
                   @click="selectCollectionAndNavigate(collection.id)"
                   :aria-current="collection.id === collectionStore.currentCollectionId ? 'true' : undefined"
                   role="button"
@@ -410,7 +477,7 @@
                       <span class="text-[10px] uppercase tracking-wider text-base-content/35">{{ (collection.document_count || 0) === 1 ? 'doc' : 'docs' }}</span>
                     </span>
 
-                    <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                    <div class="flex items-center gap-0.5 hover-reveal">
                       <button
                         v-if="userStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
@@ -503,7 +570,7 @@
                       <span class="text-[15px] font-medium text-base-content/75">{{ collection.document_count || 0 }}</span>
                       <span class="text-[10px] uppercase tracking-wider text-base-content/35">{{ (collection.document_count || 0) === 1 ? 'doc' : 'docs' }}</span>
                     </span>
-                    <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                    <div class="flex items-center gap-0.5 hover-reveal">
                       <button
                         v-if="userStore.privateCollections && collection.permission === 'owner' && !collection.team"
                         @click.stop="openShareModal(collection)"
@@ -577,7 +644,7 @@
 
     <!-- ── Footer status bar (background jobs) ── -->
     <footer
-      class="flex items-center gap-3 px-3 h-6 bg-base-100 border-t border-base-300 text-[11px] text-base-content/55 flex-shrink-0"
+      class="hidden md:flex items-center gap-3 px-3 h-6 bg-base-100 border-t border-base-300 text-[11px] text-base-content/55 flex-shrink-0"
       role="contentinfo"
       aria-label="Background jobs status"
     >
@@ -638,6 +705,26 @@
         {{ statsStore.pages }} {{ statsStore.pages === 1 ? 'page' : 'pages' }}
       </span>
     </footer>
+
+    <!-- ── Phone: bottom tab bar (the header tabs move here) ── -->
+    <nav
+      v-if="!isCollectionsView"
+      class="md:hidden flex-shrink-0 flex items-stretch bg-base-100 border-t border-base-300 pb-[env(safe-area-inset-bottom)]"
+      aria-label="Main"
+    >
+      <button
+        v-for="tab in tabs"
+        :key="tab.id"
+        class="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1.5 min-h-[3.25rem] text-[10px] leading-none transition-colors"
+        :class="activeTab === tab.id ? 'text-primary font-semibold' : 'text-base-content/55'"
+        @click="activeTab = tab.id; sourcesSidebarOpen = false; analysisSidebarOpen = false"
+        :aria-label="tab.label"
+        :aria-current="activeTab === tab.id ? 'page' : undefined"
+      >
+        <component :is="tab.icon" :size="20" aria-hidden="true" />
+        <span class="truncate max-w-full">{{ tab.label }}</span>
+      </button>
+    </nav>
 
     <!-- Global toast stack + backend-unreachable banner -->
     <Toaster />
@@ -1079,7 +1166,7 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
-import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, Gauge, HelpCircle } from 'lucide-vue-next'
+import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, Gauge, HelpCircle, EllipsisVertical } from 'lucide-vue-next'
 import http from './utils/http'
 import { useModal } from './composables/useModal'
 
@@ -1164,9 +1251,14 @@ const providerPill = computed(() => {
 
 const providerDisplayName = getProviderDisplayName
 
+// DaisyUI dropdowns stay open while their trigger has focus; blur closes them.
+const closeMenus = () => {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+}
+
 const setGlobalProvider = (pid) => {
   setActiveProviderLS(pid) // dispatches the change event → pill refreshes
-  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  closeMenus()
 }
 
 // Restore the last active tab so a refresh doesn't dump the user back in Chat
@@ -1218,6 +1310,13 @@ const compactQuery = window.matchMedia('(max-width: 767px)')
 const isCompact = ref(compactQuery.matches)
 compactQuery.addEventListener('change', e => { isCompact.value = e.matches })
 
+// Narrow (tablet-width) mode: panels stay inline, but two 320px panels on a
+// 768px screen would leave the answer column ~130px wide — so only one of
+// the two may be open at a time.
+const narrowQuery = window.matchMedia('(max-width: 1023px)')
+const isNarrow = ref(narrowQuery.matches)
+narrowQuery.addEventListener('change', e => { isNarrow.value = e.matches })
+
 // Sources sidebar state (persisted; starts closed in compact mode where an
 // open overlay would cover the whole answer surface)
 const sourcesSidebarOpen = ref(
@@ -1226,7 +1325,7 @@ const sourcesSidebarOpen = ref(
 
 watch(sourcesSidebarOpen, v => {
   if (!isCompact.value) localStorage.setItem('sources_sidebar_open', String(v))
-  if (v && isCompact.value) analysisSidebarOpen.value = false  // one overlay at a time
+  if (v && (isCompact.value || isNarrow.value)) analysisSidebarOpen.value = false  // one panel at a time
 })
 
 // Analysis sidebar state (persisted, resizable)
@@ -1238,18 +1337,40 @@ const analysisSidebarOpen = ref(
 )
 const isResizingAnalysis = ref(false)
 
+// Both persisted open on a narrow window: the Sources panel wins (before the
+// watcher below is registered, so this doesn't overwrite the preference).
+if (isNarrow.value && sourcesSidebarOpen.value && analysisSidebarOpen.value) {
+  analysisSidebarOpen.value = false
+}
+
 watch(analysisSidebarOpen, v => {
-  if (!isCompact.value) localStorage.setItem('analysis_sidebar_open', String(v))
-  if (v && isCompact.value) sourcesSidebarOpen.value = false  // one overlay at a time
+  if (!isCompact.value && !isNarrow.value) localStorage.setItem('analysis_sidebar_open', String(v))
+  if (v && (isCompact.value || isNarrow.value)) sourcesSidebarOpen.value = false  // one panel at a time
 })
 
-// Overlay panels cap at 85% of the window so a sliver of context stays visible
-const compactPanelCap = () => Math.round(window.innerWidth * 0.85)
+watch(isNarrow, narrow => {
+  if (narrow && !isCompact.value && sourcesSidebarOpen.value && analysisSidebarOpen.value) {
+    analysisSidebarOpen.value = false
+  }
+})
+
+// Live viewport width so overlay sizing follows rotations and resizes
+const viewportWidth = ref(window.innerWidth)
+window.addEventListener('resize', () => { viewportWidth.value = window.innerWidth }, { passive: true })
+
+// Overlay panels: on phones they take the full width (a full sheet is
+// easier to read and dismiss than a sliver of chat peeking through); on
+// wider compact windows they keep their desktop width, capped at 85% so
+// some context stays visible.
+const compactPanelWidth = (preferred) =>
+  viewportWidth.value < 480
+    ? viewportWidth.value
+    : Math.min(preferred, Math.round(viewportWidth.value * 0.85))
 const effectiveSidebarWidth = computed(() =>
-  isCompact.value ? Math.min(sidebarWidth.value, compactPanelCap()) : sidebarWidth.value
+  isCompact.value ? compactPanelWidth(sidebarWidth.value) : sidebarWidth.value
 )
 const effectiveAnalysisWidth = computed(() =>
-  isCompact.value ? Math.min(analysisWidth.value, compactPanelCap()) : analysisWidth.value
+  isCompact.value ? compactPanelWidth(analysisWidth.value) : analysisWidth.value
 )
 
 // Entering compact mode with both panels open would stack two overlays; close them.
@@ -1260,6 +1381,7 @@ watch(isCompact, compact => {
   } else {
     sourcesSidebarOpen.value = localStorage.getItem('sources_sidebar_open') !== 'false'
     analysisSidebarOpen.value = localStorage.getItem('analysis_sidebar_open') !== 'false'
+      && !(isNarrow.value && sourcesSidebarOpen.value)
   }
 })
 

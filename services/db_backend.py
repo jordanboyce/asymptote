@@ -168,10 +168,12 @@ class DatabaseBackend(ABC):
     def create_mcp_token(
         self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
         collection_scope: Optional[List[str]] = None,
+        can_write: bool = False,
     ) -> Dict[str, Any]:
         """collection_scope: ids of *restricted* collections this token may
         reach over MCP. Restricted collections are otherwise never exposed
-        to MCP clients (see services/governance.py)."""
+        to MCP clients (see services/governance.py).
+        can_write: whether the token may add/update sources (write_document)."""
         ...
 
     @abstractmethod

@@ -359,8 +359,8 @@
         <div class="rounded-lg border border-base-300/60 bg-base-100 p-4 space-y-3">
           <div class="text-xs font-medium">Blocked file hashes</div>
           <p class="text-[11px] text-base-content/50">A removed-and-blocked file cannot be re-added to any collection. Add a sha256 by hand to block a file you do not hold.</p>
-          <div class="flex gap-2">
-            <input v-model="newHash" class="input input-bordered input-xs flex-1 font-mono" placeholder="sha256 (64 hex)" aria-label="Hash to block" />
+          <div class="flex flex-wrap gap-2">
+            <input v-model="newHash" class="input input-bordered input-xs flex-1 min-w-[10rem] font-mono" placeholder="sha256 (64 hex)" aria-label="Hash to block" />
             <input v-model="newHashReason" class="input input-bordered input-xs w-32" placeholder="reason" aria-label="Reason" />
             <button class="btn btn-xs btn-outline" :disabled="!newHash.trim()" @click="blockHash">Block</button>
           </div>
@@ -379,8 +379,8 @@
           <div class="rounded-lg border border-base-300/60 bg-base-100 p-4 space-y-2">
             <div class="text-xs font-medium">Suspend an identity</div>
             <p class="text-[11px] text-base-content/50">Revokes every MCP token they hold and withdraws their edge admission when that is configured. Their sources stay until you remove them.</p>
-            <div class="flex gap-2">
-              <input v-model="suspendEmail" type="email" class="input input-bordered input-xs flex-1" placeholder="person@example.com" aria-label="Identity to suspend" />
+            <div class="flex flex-wrap gap-2">
+              <input v-model="suspendEmail" type="email" class="input input-bordered input-xs flex-1 min-w-[10rem]" placeholder="person@example.com" aria-label="Identity to suspend" />
               <input v-model="suspendReason" class="input input-bordered input-xs w-32" placeholder="reason" aria-label="Reason" />
               <button class="btn btn-xs btn-error btn-outline" :disabled="!suspendEmail.trim()" @click="suspend">Suspend</button>
             </div>

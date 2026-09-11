@@ -15,6 +15,7 @@
             <li>list_tables · query_table</li>
             <li>aggregate_table · get_table_rows</li>
             <li>list_collections · health_check</li>
+            <li>write_document <span class="font-sans text-base-content/45">— add or update a source (write-enabled tokens)</span></li>
           </ul>
         </div>
         <div>
@@ -62,6 +63,7 @@
               Mint a token here instead of setting up a Cloudflare Access service token by hand.
               It only ever works against <code class="font-mono text-xs">/mcp</code> — it can't reach
               the rest of the app or the UI — and it's baked into the config snippets below automatically.
+              Tokens are read-only unless you allow writes when generating them.
             </p>
           </div>
 
@@ -94,6 +96,20 @@
             </button>
           </div>
 
+          <!-- Writes are opt-in per token: a leaked read token can search,
+               a leaked write token can plant content. -->
+          <label class="flex items-start gap-2.5 max-w-xl cursor-pointer">
+            <input v-model="newTokenCanWrite" type="checkbox" class="checkbox checkbox-sm checkbox-warning mt-0.5" />
+            <span>
+              <span class="block text-sm font-medium">Allow adding and updating sources</span>
+              <span class="block text-xs text-base-content/55">
+                Enables the <code class="font-mono">write_document</code> tool for this token, so an agent can save
+                notes, summaries, or markdown into a collection. Off, the token can only read. Collection write
+                permissions and the content policy still apply.
+              </span>
+            </span>
+          </label>
+
           <!-- Restricted collections are invisible to every MCP client unless
                a token is explicitly scoped to them: the grant is made here,
                per token, and shows in the table so it can be revoked knowingly. -->
@@ -119,6 +135,7 @@
                 <tr>
                   <th>Name</th>
                   <th>Token</th>
+                  <th>Access</th>
                   <th>Restricted access</th>
                   <th>Created</th>
                   <th>Last used</th>
@@ -129,6 +146,10 @@
                 <tr v-for="t in tokens" :key="t.id" :class="{ 'opacity-50': t.revoked_at }">
                   <td>{{ t.name }}</td>
                   <td class="font-mono text-xs text-base-content/60">{{ t.token_prefix }}…</td>
+                  <td class="text-xs whitespace-nowrap">
+                    <span v-if="t.can_write" class="badge badge-xs badge-warning badge-outline">read + write</span>
+                    <span v-else class="text-base-content/40">read-only</span>
+                  </td>
                   <td class="text-xs">
                     <span v-if="!t.collection_scope || !t.collection_scope.length" class="text-base-content/40">none</span>
                     <span v-else class="flex flex-wrap gap-1">
@@ -315,6 +336,7 @@ const activeTab = ref('claude')
 const tokens = ref([])
 const newTokenName = ref('')
 const newTokenScope = ref([])
+const newTokenCanWrite = ref(false)
 const newTokenPlaintext = ref('')
 const tokenCreating = ref(false)
 const exportTokenId = ref('')
@@ -444,11 +466,13 @@ const createToken = async () => {
     const response = await http.post('/api/mcp/tokens', {
       name: newTokenName.value,
       collection_scope: newTokenScope.value,
+      can_write: newTokenCanWrite.value,
     })
     newTokenPlaintext.value = response.data.token
     lastCreatedTokenId.value = response.data.id
     newTokenName.value = ''
     newTokenScope.value = []
+    newTokenCanWrite.value = false
     await loadTokens()
     exportTokenId.value = response.data.id
   } catch (error) {

@@ -119,6 +119,11 @@ wrinkle: **MCP clients authenticate as a token, not as a person.**
   revocable per-token from the same screen. Under
   [private collections](#private-collections) it carries the identity of
   whoever created it, so it sees exactly that person's collections.
+  Tokens are **read-only by default**; tick *Allow adding and updating
+  sources* when generating one to let the agent use the `write_document`
+  tool (save notes, summaries, markdown into a collection). A write still
+  needs write permission on the collection, passes the content policy scan,
+  is attributed to the token's owner, and lands in the audit trail.
 - With `AUTH_PASSWORD` alone (no personal token), clients send
   `Authorization: Bearer <password>` and work normally, but anonymously —
   see below.

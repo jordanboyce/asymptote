@@ -12,8 +12,8 @@
 
       <!-- Create new share -->
       <div v-if="collectionId" class="mt-4 space-y-3">
-        <div class="flex gap-2 items-end">
-          <div class="form-control flex-1">
+        <div class="flex flex-wrap gap-2 items-end">
+          <div class="form-control flex-1 min-w-[8rem]">
             <label class="label py-1" for="share-permission"><span class="label-text text-xs">Permission</span></label>
             <select id="share-permission" v-model="newPermission" class="select select-bordered select-sm w-full">
               <option value="read">Read only</option>

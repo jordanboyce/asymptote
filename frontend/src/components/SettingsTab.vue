@@ -26,7 +26,7 @@
       </div>
     </header>
 
-    <div class="flex gap-10 items-start">
+    <div class="flex flex-col sm:flex-row gap-4 sm:gap-10 items-stretch sm:items-start">
 
       <!-- ── Section rail ── -->
       <nav class="w-40 flex-shrink-0 sticky top-2 hidden sm:block" aria-label="Settings sections">
@@ -44,11 +44,12 @@
         </ul>
       </nav>
 
-      <!-- Mobile: section picker replaces the rail -->
-      <div class="sm:hidden fixed bottom-8 left-0 right-0 px-6 z-20 pointer-events-none">
+      <!-- Mobile: section picker replaces the rail (inline at the top, so
+           it never collides with the bottom tab bar) -->
+      <div class="sm:hidden w-full">
         <select
           v-model="activeSection"
-          class="select select-bordered select-sm w-full shadow-lg pointer-events-auto"
+          class="select select-bordered select-sm w-full"
           aria-label="Settings section"
         >
           <option v-for="s in SECTIONS" :key="s.id" :value="s.id">{{ s.label }}</option>
@@ -56,7 +57,7 @@
       </div>
 
       <!-- ── Content column ── -->
-      <div class="flex-1 min-w-0 max-w-2xl pb-20">
+      <div class="flex-1 min-w-0 max-w-2xl pb-8">
 
         <!-- ═══ General ═══ -->
         <section v-show="activeSection === 'general'" aria-labelledby="settings-general">
