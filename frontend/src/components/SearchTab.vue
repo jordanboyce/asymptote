@@ -85,10 +85,10 @@
               /
             </button>
             <span class="badge badge-xs badge-ghost">{{ searchModeLabel }}</span>
-            <span class="badge badge-xs badge-ghost">Top {{ searchStore.topK }}</span>
+            <span class="badge badge-xs badge-ghost hidden sm:inline-flex">Top {{ searchStore.topK }}</span>
             <template v-if="hasAnyProvider">
-              <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
-              <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary">Synth</span>
+              <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary hidden sm:inline-flex">Rerank</span>
+              <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary hidden sm:inline-flex">Synth</span>
             </template>
           </div>
 
@@ -120,7 +120,7 @@
       <p v-if="searchDisabled" class="text-xs text-warning mt-1.5 text-center">
         No data indexed in this collection. Add sources first.
       </p>
-      <p v-else class="text-xs text-base-content/30 mt-1.5 text-center">Enter to search</p>
+      <p v-else class="hidden sm:block text-xs text-base-content/30 mt-1.5 text-center">Enter to search</p>
     </div>
 
     <!-- Loading indicator -->

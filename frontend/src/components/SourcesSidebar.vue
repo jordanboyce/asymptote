@@ -268,8 +268,9 @@
         </div>
       </div>
 
-      <!-- Document list header -->
-      <div class="flex items-center gap-2 px-3 py-2 border-b border-base-300 flex-shrink-0">
+      <!-- Document list header (wraps on narrow panels so the filter and
+           bulk controls never push each other out of view) -->
+      <div class="flex items-center flex-wrap gap-x-2 gap-y-1.5 px-3 py-2 border-b border-base-300 flex-shrink-0">
         <input
           v-if="documents.length > 0"
           type="checkbox"

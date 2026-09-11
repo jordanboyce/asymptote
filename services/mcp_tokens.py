@@ -37,7 +37,10 @@ def _hash(token: str) -> str:
 
 
 def generate_token(
-    user_id: Optional[str], name: str, collection_scope: Optional[List[str]] = None
+    user_id: Optional[str],
+    name: str,
+    collection_scope: Optional[List[str]] = None,
+    can_write: bool = False,
 ) -> Dict[str, Any]:
     """Create and persist a new token. Returns it WITH the plaintext — once.
 
@@ -47,6 +50,11 @@ def generate_token(
     ``collection_scope`` lists restricted collections this token may reach
     over MCP (services/governance.py). Only collections the creator can
     already access may be named — the caller validates that.
+
+    ``can_write`` lets the token add and update sources (the
+    ``write_document`` MCP tool). Off by default so a leaked read token
+    cannot plant content; the collection's own write permission and the
+    AUP gate still apply on top.
     """
     from services.app_database import app_db
 
@@ -59,6 +67,7 @@ def generate_token(
         token_hash=_hash(plaintext),
         token_prefix=plaintext[:_PREFIX_DISPLAY_LEN],
         collection_scope=scope,
+        can_write=bool(can_write),
     )
     record["token"] = plaintext
     return record

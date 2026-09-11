@@ -267,6 +267,10 @@ Use the **Settings → MCP** tab in the UI to:
 - **Generate a personal access token** — a self-serve bearer credential scoped to `/mcp` only, so
   connecting a client never requires editing `.env` or provisioning anything in Cloudflare. Revoke
   it from the same screen when a machine is retired.
+- **Let agents write back** — tick *Allow adding and updating sources* on a token and the agent gets
+  a `write_document` tool: it can save markdown notes, summaries, JSON, or CSV into a collection
+  (`create`, `replace`, or `append`), indexed like any upload and subject to the same content policy,
+  attribution, and audit trail. Tokens are read-only unless you opt in.
 - Copy or download ready-to-paste Claude Code `.mcp.json`, Codex `config.toml`, and GitHub Copilot
   `.vscode/mcp.json` snippets — the token above is already filled in
 

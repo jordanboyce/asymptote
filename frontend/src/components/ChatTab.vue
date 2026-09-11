@@ -41,7 +41,7 @@
                     </div>
                   </button>
                   <button
-                    class="btn btn-xs btn-ghost btn-circle opacity-0 group-hover:opacity-100 focus:opacity-100"
+                    class="btn btn-xs btn-ghost btn-circle hover-reveal"
                     title="Delete session"
                     :aria-label="`Delete chat session: ${session.title || 'New chat'}`"
                     @click.stop="deleteSession(session.id)"
@@ -184,18 +184,19 @@
 
           <!-- User message -->
           <div v-if="msg.role === 'user'" class="flex justify-end">
-            <div class="max-w-[80%] rounded-2xl rounded-tr-sm bg-primary text-primary-content px-4 py-3 shadow-sm">
+            <div class="max-w-[88%] sm:max-w-[80%] rounded-2xl rounded-tr-sm bg-primary text-primary-content px-3 py-2.5 sm:px-4 sm:py-3 shadow-sm">
               <p class="text-sm whitespace-pre-wrap">{{ msg.content }}</p>
             </div>
           </div>
 
           <!-- Assistant message -->
           <div v-else class="flex flex-col gap-1">
-            <div class="flex items-start gap-2 max-w-[90%]">
-              <div class="flex-shrink-0 w-7 h-7 rounded-full bg-base-300 flex items-center justify-center mt-1">
+            <div class="flex items-start gap-2 max-w-full sm:max-w-[90%]">
+              <!-- Avatar: phones give the width to the answer instead -->
+              <div class="flex-shrink-0 w-7 h-7 rounded-full bg-base-300 hidden sm:flex items-center justify-center mt-1">
                 <Bot :size="14" class="text-base-content/60" />
               </div>
-              <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-4 py-3 shadow-sm flex-1">
+              <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-3 py-2.5 sm:px-4 sm:py-3 shadow-sm flex-1 min-w-0">
                 <div
                   v-if="msg.slashCommand"
                   class="prose prose-sm max-w-none whitespace-pre-wrap font-mono text-xs leading-snug"
@@ -440,7 +441,7 @@
             </div>
 
             <!-- Per-message source count -->
-            <div v-if="msg.sources && msg.sources.length > 0" class="ml-9">
+            <div v-if="msg.sources && msg.sources.length > 0" class="sm:ml-9">
               <span class="flex items-center gap-1 text-xs text-base-content/40">
                 <FileText :size="12" />
                 {{ msg.sources.length }} source{{ msg.sources.length !== 1 ? 's' : '' }} retrieved
@@ -452,7 +453,7 @@
 
         <!-- Typing indicator — only show while waiting for the first SSE event -->
         <div v-if="loading && !hasStreamingMessage" class="flex items-start gap-2">
-          <div class="flex-shrink-0 w-7 h-7 rounded-full bg-base-300 flex items-center justify-center">
+          <div class="flex-shrink-0 w-7 h-7 rounded-full bg-base-300 hidden sm:flex items-center justify-center">
             <Bot :size="14" class="text-base-content/60" />
           </div>
           <div class="rounded-2xl rounded-tl-sm bg-base-200 border border-base-300 px-4 py-3 shadow-sm">
@@ -528,8 +529,8 @@
               >
                 /
               </button>
-              <span v-if="selectedProvider" class="badge badge-xs" :class="providerBadgeClass(selectedProvider)">{{ providerDisplayName(selectedProvider) }}</span>
-              <span v-if="rerank" class="badge badge-xs badge-outline badge-primary">Rerank</span>
+              <span v-if="selectedProvider" class="badge badge-xs hidden sm:inline-flex" :class="providerBadgeClass(selectedProvider)">{{ providerDisplayName(selectedProvider) }}</span>
+              <span v-if="rerank" class="badge badge-xs badge-outline badge-primary hidden sm:inline-flex">Rerank</span>
             </div>
 
             <!-- Right: send button -->
@@ -546,7 +547,7 @@
             </button>
           </div>
         </div>
-        <p class="text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /tools, /stats, /docs, /help</p>
+        <p class="hidden sm:block text-xs text-base-content/30 mt-1.5 text-center">Enter to send · Shift+Enter for new line · Try /tools, /stats, /docs, /help</p>
       </div>
 
   </div>
@@ -872,11 +873,17 @@ const onInputBlur = () => {
   }, 150)
 }
 
+// Touch keyboards: Enter inserts a newline and the send button sends — the
+// convention on phones, where an accidental send is costlier than a tap.
+// Physical keyboards keep Enter-to-send.
+const coarsePointer = window.matchMedia('(pointer: coarse)')
+
 const onKeydown = (e) => {
   // Let the picker handle navigation keys first when it's open.
   if (slashPickerOpen.value && slashPickerRef.value?.handleKeydown(e)) return
 
   if (e.key === 'Enter' && !e.shiftKey) {
+    if (coarsePointer.matches) return
     e.preventDefault()
     sendMessage()
   }

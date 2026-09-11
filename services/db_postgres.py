@@ -221,6 +221,8 @@ class PostgresBackend(DatabaseBackend):
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tokens_hash ON mcp_tokens(token_hash)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user ON mcp_tokens(user_id)")
                 cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS collection_scope TEXT")
+                # Per-token write grant (write_document); existing tokens stay read-only.
+                cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS can_write BOOLEAN NOT NULL DEFAULT FALSE")
 
                 # Content governance — mirrors the SQLite backend.
                 cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS sensitivity TEXT DEFAULT 'internal'")
@@ -1087,11 +1089,13 @@ class PostgresBackend(DatabaseBackend):
                 row["collection_scope"] = None
         elif not raw:
             row["collection_scope"] = None
+        row["can_write"] = bool(row.get("can_write"))
         return row
 
     def create_mcp_token(
         self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
         collection_scope: Optional[List[str]] = None,
+        can_write: bool = False,
     ) -> Dict[str, Any]:
         token_id = str(uuid.uuid4())
         ts = datetime.utcnow().isoformat()
@@ -1100,9 +1104,9 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                    (token_id, user_id, name, token_hash, token_prefix, ts, scope_json),
+                    """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope, can_write)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (token_id, user_id, name, token_hash, token_prefix, ts, scope_json, bool(can_write)),
                 )
             conn.commit()
             return {
@@ -1114,6 +1118,7 @@ class PostgresBackend(DatabaseBackend):
                 "last_used_at": None,
                 "revoked_at": None,
                 "collection_scope": list(collection_scope) if collection_scope else None,
+                "can_write": bool(can_write),
             }
         finally:
             self._put(conn)
@@ -1123,7 +1128,7 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 cur.execute(
-                    """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope
+                    """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope, can_write
                        FROM mcp_tokens WHERE user_id IS NOT DISTINCT FROM %s
                        ORDER BY created_at DESC""",
                     (user_id,),

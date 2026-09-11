@@ -277,6 +277,8 @@ if settings.auth_password or settings.private_collections:
                 # Restricted collections are only reachable over MCP through
                 # a token explicitly scoped to them (services/governance.py).
                 request.state.mcp_token_scope = token_record.get("collection_scope") or None
+                # Adding/updating sources over MCP is opt-in per token.
+                request.state.mcp_token_can_write = bool(token_record.get("can_write"))
                 return await _call_with_user_context(request, call_next)
 
         return JSONResponse(
