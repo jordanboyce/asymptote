@@ -276,7 +276,7 @@ unauthenticated until you set `AUTH_PASSWORD`.
 
 Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
 
-Use the **Settings → MCP** tab in the UI to:
+Use **Connect** in the UI to:
 - Enable or disable the MCP server without restarting
 - Choose the default collection and retrieval settings used by MCP
 - Keep MCP in search-only mode (recommended) to avoid duplicate model usage
@@ -288,8 +288,14 @@ Use the **Settings → MCP** tab in the UI to:
   a `write_document` tool: it can save markdown notes, summaries, JSON, or CSV into a collection
   (`create`, `replace`, or `append`), indexed like any upload and subject to the same content policy,
   attribution, and audit trail. Tokens are read-only unless you opt in.
-- Copy or download ready-to-paste Claude Code `.mcp.json`, Codex `config.toml`, and GitHub Copilot
-  `.vscode/mcp.json` snippets — the token above is already filled in
+- Copy or download AnythingLLM `anythingllm_mcp_servers.json`, Claude Code `.mcp.json`,
+  Codex `config.toml`, and GitHub Copilot `.vscode/mcp.json` snippets. Newly created tokens
+  are filled in; existing tokens require pasting the credential you saved.
+
+For AnythingLLM, merge the entry into its storage `plugins/anythingllm_mcp_servers.json`
+and reload MCP servers in AnythingLLM. The export uses its `streamable` transport.
+Use an Asymptote URL reachable from the AnythingLLM host or container; a container's
+`localhost` points to itself. See [AnythingLLM's MCP setup](https://docs.anythingllm.com/mcp-compatibility/overview).
 
 ### Step 4: Verify Setup
 
@@ -1102,4 +1108,3 @@ This is a reference implementation. Feel free to fork and adapt for your needs.
 ---
 
 **Asymptote** - Always approaching understanding, never quite reaching it.
-

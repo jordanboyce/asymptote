@@ -49,9 +49,26 @@ availability depends on edition and deployment; documentation is not a benchmark
 | Permissions | Opt-in private collections, verified Access identity, read/readwrite shares, admin gates | Collection permissions are not source-system ACL synchronization. Onyx documents permission sync for selected connectors as an Enterprise feature. |
 | Private deployment | Self-hosting, local embeddings/models, offline configuration | Control of deployment is useful, but hosted embeddings/chat still send text externally. Enforce egress at the network layer when required. |
 | MCP server | Streamable HTTP, search/context/table tools, resources, personal tokens, optional writes | Onyx also exposes private search over MCP. This branch adds read/write tool annotations and fixes explicit-token handling on open deployments. |
-| MCP client | External clients connect to Asymptote | Onyx can additionally invoke external MCP servers. That is a distinct, deferred product scope. |
+| MCP client | External clients connect to Asymptote; configuration export includes AnythingLLM | Onyx and AnythingLLM can invoke external MCP servers. Asymptote can supply knowledge to those clients; hosting arbitrary external tools here is deferred. |
+| Workspace and conversation sources | Persistent collections and document ingestion | AnythingLLM distinguishes thread attachments from embedded workspace documents. End-to-end selected sources, temporary attachments, and context-budget feedback remain gaps here. |
+| Answer modes | Retrieval-backed chat and a separate passage search | AnythingLLM separates document-only Query, general Chat, and Agent modes. Asymptote should make evidence scope and missing evidence clear before adding another mode selector. |
 | Research outputs | Existing summaries, FAQs, timelines, briefings, study guides, Markdown export | NotebookLM additionally offers media and other Studio outputs. They are not implemented here. |
 | Evaluation and operations | Regression tests; usage, governance and audit code | Needs a repeatable retrieval benchmark, connector operations, load tests, restore drills, and deployment-level security review. |
+
+### What to take from AnythingLLM
+
+AnythingLLM is the closest reference for approachable self-hosted workspaces and
+provider choice. Adopt its clear distinction between persistent workspace sources
+and temporary conversation attachments, and make connection failures actionable.
+Its MCP client also makes it a potential companion: use AnythingLLM's agent with
+Asymptote's knowledge server. This branch supplies the corresponding config export.
+
+Prioritize explicit source scope, evidence inspection, and dependable ingestion.
+Avoid duplicating its broad agent flows and tool catalog in Asymptote's primary UX.
+AnythingLLM's live-document sync is documented as a beta preview with different
+Desktop and Docker capabilities; it is a useful direction, not evidence that
+production-grade connector operations are trivial. Workspace model overrides are
+another option to revisit when pilot users need different privacy or cost policies.
 
 ## Changes made
 
@@ -65,6 +82,8 @@ availability depends on edition and deployment; documentation is not a benchmark
 - Reordered MCP setup around the connection task; moved the tool inventory to a
   collapsed reference. Corrected the Claude project config filename to `.mcp.json`.
   Clarified that a URL's collection selection is a default, not an access limit.
+- Added an AnythingLLM configuration export with its documented `streamable`
+  transport, credential handling, merge instructions, and container URL guidance.
 - Required operator authorization for global MCP configuration in private mode.
   Token write permission now requires an actual JSON boolean; `"false"` can no
   longer become a write-enabled token through Python truthiness.
@@ -102,12 +121,14 @@ availability depends on edition and deployment; documentation is not a benchmark
 - Initial baseline: 342 backend tests and 12 frontend tests. Three initial
   provider-construction failures were resolved by installing the test environment's
   SOCKS proxy dependency; application code was not changed to bypass the proxy.
-- Updated suite: 358 backend tests and 15 frontend tests pass.
+- Updated suite: 358 backend tests and 17 frontend tests pass.
 - Production frontend build passes. ESLint reports zero errors and five existing
   `v-html` warnings; these were not silently disabled.
 - Browser visual verification was blocked by Chromium download failures in the
   review environment. Desktop/mobile navigation is covered by component tests;
   a human visual review remains required before release.
+- AnythingLLM export is checked against its documented configuration schema and
+  component-tested; a live AnythingLLM connection was not available to verify.
 - Backend tests use temporary databases and mocked model/provider boundaries.
   They do not establish model quality, real SSO behavior, Postgres parity under
   load, or successful air-gap deployment.
@@ -121,4 +142,9 @@ availability depends on edition and deployment; documentation is not a benchmark
 - [NotebookLM notebook context and grounding](https://support.google.com/notebooklm/answer/17003757)
 - [NotebookLM reports and learning features](https://blog.google/innovation-and-ai/models-and-research/google-labs/notebooklm-student-features/)
 - [Workspace NotebookLM data protections](https://workspaceupdates.googleblog.com/2025/02/notebooklm-and-notebooklm-plus-now-workspace-core-service.html)
+- [AnythingLLM MCP configuration](https://docs.anythingllm.com/mcp-compatibility/overview)
+- [AnythingLLM conversation attachments and workspace documents](https://docs.anythingllm.com/chatting-with-documents/introduction)
+- [AnythingLLM chat modes](https://docs.anythingllm.com/features/chat-modes)
+- [AnythingLLM workspace model configuration](https://docs.anythingllm.com/setup/llm-configuration/overview)
+- [AnythingLLM live-document sync preview](https://docs.anythingllm.com/beta-preview/active-features/live-document-sync)
 - [MCP Streamable HTTP requirements](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)

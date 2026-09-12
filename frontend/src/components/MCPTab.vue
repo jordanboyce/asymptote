@@ -3,7 +3,7 @@
     <header>
       <h1 class="text-xl font-semibold">Connect your AI tools</h1>
       <p class="mt-2 text-sm text-base-content/60 max-w-2xl">
-        Search your sources from Claude Code, Codex, or VS Code using MCP.
+        Search your sources from AnythingLLM, Claude Code, Codex, or VS Code using MCP.
         Your client receives retrieved passages, so choose a client you trust with this data.
       </p>
     </header>
@@ -359,6 +359,7 @@ const mcpSettings = ref({
 })
 
 const configTabs = [
+  { key: 'anythingllm', label: 'AnythingLLM' },
   { key: 'claude', label: 'Claude Code' },
   { key: 'codex', label: 'Codex' },
   { key: 'copilot', label: 'GitHub Copilot' },
@@ -399,6 +400,12 @@ const activeTabMeta = computed(() => {
   const headers = { 'Authorization': `Bearer ${authHeaderValue.value}` }
   const httpEntry = { type: 'http', url: serverUrl.value, headers }
   const tabs = {
+    anythingllm: {
+      label: 'AnythingLLM config',
+      content: JSON.stringify({ mcpServers: { [serverId.value]: { ...httpEntry, type: 'streamable' } } }, null, 2),
+      filename: 'anythingllm_mcp_servers.json',
+      hint: 'Merge this entry into anythingllm_mcp_servers.json in your AnythingLLM storage/plugins directory, then reload MCP servers in AnythingLLM. The URL must be reachable from AnythingLLM; localhost inside Docker refers to that container. Keep the credential private.',
+    },
     claude: {
       label: 'Claude Code config',
       content: JSON.stringify({ mcpServers: { [serverId.value]: httpEntry } }, null, 2),
