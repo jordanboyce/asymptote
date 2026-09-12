@@ -3,8 +3,10 @@
 Repeated questions are the normal case for a team FAQ appliance: many people
 asking near-identical things of a mostly-static corpus. Generating each answer
 costs provider tokens; this cache returns the stored answer instead when a new
-question is semantically close enough (cosine similarity of local embeddings —
-lookup itself never calls an API).
+question is a matching candidate. The chat layer additionally requires the
+same question text (ignoring whitespace) and revalidates source permissions,
+quarantine status, content hashes, and effective sensitivity before serving it.
+Embeddings use the configured provider, which can be local or hosted.
 
 Scope and safety rules:
 

@@ -1,12 +1,29 @@
-# Asymptote API
+# Asymptote
 
-**Privacy-focused, self-hosted advanced search using hybrid semantic + keyword retrieval**
+**Ask your sources. Check the evidence. Connect your AI tools.**
 
-Upload documents (PDF, TXT, DOCX, Markdown, CSV/XLSX, source code, audio, images), run advanced hybrid semantic + keyword retrieval, and get relevant passages with direct source links. Asymptote is privacy-focused by design: core search runs locally, and external AI is optional.
+Asymptote is a self-hosted knowledge workspace for individuals and small teams.
+Add documents to a collection, ask questions with citations, or find the exact
+passage you need. Connect Claude Code, Codex, and other MCP clients to the same
+knowledge. Local embeddings work out of the box; answer generation uses a model
+you configure. Hosted providers receive the text they process.
 
-> **Why "Asymptote"?** In mathematics, an asymptote is a line that a curve approaches but never quite reaches. Like semantic search continuously approaching perfect understanding of your documents - getting closer with every query, but always refining, always learning. We're forever approaching the answer, never claiming to have reached it completely.
+The everyday workspace has three destinations:
 
-> 📚 **Developer docs** live in [docs/](docs/): [Architecture](docs/ARCHITECTURE.md) · [Roadmap](docs/ROADMAP.md). Agent guidance is in [CLAUDE.md](CLAUDE.md). Financial-analysis features live on the `fintech` branch.
+- **Ask** — converse with your collection and open supporting sources.
+- **Find** — search passages without requiring an answer-generation model.
+- **Connect** — create a personal MCP token and configure your AI client.
+
+Reports, saved instructions, and administration are under **More**. Notes and
+tools open on demand. Existing collections, saved conversations, and API routes
+remain available.
+
+Start with a curated knowledge collection: engineering runbooks, product docs,
+research, or internal procedures. This project does not yet provide the connector
+breadth or source permission syncing of an enterprise search platform.
+
+[Deployment](docs/DEPLOYMENT.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[Product assessment and priorities](docs/PRODUCT_ASSESSMENT.md) · [Roadmap](docs/ROADMAP.md)
 
 ---
 
@@ -55,15 +72,15 @@ open http://localhost:8473
 
 That's the whole setup — the image builds the frontend, bundles OCR (Tesseract + Poppler), bakes the embedding model into the image, and persists documents/indexes in `./data`. No `.env` is required to start; add one to override defaults. For corporate CA certificates, drop `.crt` files into `certs/ca/` before building (see [Corporate SSL Configuration](#corporate-ssl-configuration)).
 
-Note that `docker compose up -d` publishes port 8473 to your network, and the app is unauthenticated by default. Before sharing the URL with anyone, read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — everyone who can reach Asymptote sees the whole corpus.
+`docker compose up -d` publishes port 8473 to **127.0.0.1 only**. To expose it on a trusted network, explicitly set `BIND_ADDRESS` and configure authentication first. Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) before granting team access.
 
 ### Sharing it with a team
 
-Asymptote is a shared appliance, not a multi-tenant service: there are no per-user permissions, so the only thing to configure is who can reach it. The recommended setup is an SSO proxy (Cloudflare Access, Tailscale, oauth2-proxy, Authelia) with the app bound so the proxy is the only route in — colleagues sign in with the identity they already have, and you write no code. Walkthrough and verification steps: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Choose an access model deliberately. In the default shared-appliance mode, everyone admitted can access the team corpus. `PRIVATE_COLLECTIONS=true` enables collection ownership and read/readwrite sharing using verified Cloudflare Access identities; configure `ADMIN_EMAILS` for operators. An arbitrary SSO proxy alone does not enable per-user collection isolation. Setup and verification: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ### Air-gapped / offline deployment
 
-Asymptote runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, guaranteeing zero egress beyond the local Ollama or self-hosted endpoints you configure. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
+Asymptote runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, limiting supported provider paths to the local or self-hosted endpoints you configure. Enforce a network egress policy for a verifiable no-egress deployment. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
 
 ### Hosting on a PaaS (Railway, Render, Fly.io, Coolify, …)
 
@@ -259,7 +276,7 @@ unauthenticated until you set `AUTH_PASSWORD`.
 
 Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
 
-Use the **Settings → MCP** tab in the UI to:
+Use **Connect** in the UI to:
 - Enable or disable the MCP server without restarting
 - Choose the default collection and retrieval settings used by MCP
 - Keep MCP in search-only mode (recommended) to avoid duplicate model usage
@@ -271,8 +288,14 @@ Use the **Settings → MCP** tab in the UI to:
   a `write_document` tool: it can save markdown notes, summaries, JSON, or CSV into a collection
   (`create`, `replace`, or `append`), indexed like any upload and subject to the same content policy,
   attribution, and audit trail. Tokens are read-only unless you opt in.
-- Copy or download ready-to-paste Claude Code `.mcp.json`, Codex `config.toml`, and GitHub Copilot
-  `.vscode/mcp.json` snippets — the token above is already filled in
+- Copy or download AnythingLLM `anythingllm_mcp_servers.json`, Claude Code `.mcp.json`,
+  Codex `config.toml`, and GitHub Copilot `.vscode/mcp.json` snippets. Newly created tokens
+  are filled in; existing tokens require pasting the credential you saved.
+
+For AnythingLLM, merge the entry into its storage `plugins/anythingllm_mcp_servers.json`
+and reload MCP servers in AnythingLLM. The export uses its `streamable` transport.
+Use an Asymptote URL reachable from the AnythingLLM host or container; a container's
+`localhost` points to itself. See [AnythingLLM's MCP setup](https://docs.anythingllm.com/mcp-compatibility/overview).
 
 ### Step 4: Verify Setup
 
@@ -837,16 +860,15 @@ echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env  # faster, less accurate
 
 ### Security Considerations
 
-**Asymptote is a shared team appliance: everyone who can reach it sees the whole
-corpus.** There are no per-user permissions inside the app — every route
-(search, upload, delete, chat on your stored provider keys, and the whole `/mcp`
-tool surface) is available to anyone who can open the port. So the only question
-to answer is *who can reach it*, and two settings decide:
+**In the default shared-appliance mode, everyone admitted can access the team
+corpus.** Enable private collections for verified per-person access; otherwise
+network admission is the main trust boundary. These settings control exposure:
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `HOST` | `127.0.0.1` | This machine only. Docker sets `0.0.0.0` itself, where the published port controls exposure. |
-| `AUTH_PASSWORD` | empty | No auth. Required for anything reachable beyond loopback. |
+| `BIND_ADDRESS` | `127.0.0.1` | Published host interface for Docker Compose. Set explicitly for a protected network deployment. |
+| `AUTH_PASSWORD` | empty | No auth. Required for anything reachable beyond loopback unless an identity proxy is the exclusive ingress. |
 
 The defaults are safe together: a loopback-only bind needs no password. Change
 one and you must change the other — the app warns loudly at startup if it is
@@ -1086,4 +1108,3 @@ This is a reference implementation. Feel free to fork and adapt for your needs.
 ---
 
 **Asymptote** - Always approaching understanding, never quite reaching it.
-

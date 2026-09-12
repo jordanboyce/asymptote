@@ -1,37 +1,12 @@
 <template>
   <div class="space-y-6">
-    <!-- What this server exposes -->
-    <div class="rounded-xl border border-base-300 bg-base-200/40 px-4 py-3 space-y-2">
-      <p class="text-xs font-semibold text-base-content/60 uppercase tracking-wide">What the MCP server exposes</p>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs text-base-content/70">
-        <div>
-          <p class="font-medium text-base-content/80 mb-0.5">Tools (call these)</p>
-          <ul class="space-y-0.5 font-mono">
-            <li>search_all_collections</li>
-            <li>search_collection</li>
-            <li>list_recent_documents</li>
-            <li>get_document_context</li>
-            <li>find_in_documents</li>
-            <li>list_tables · query_table</li>
-            <li>aggregate_table · get_table_rows</li>
-            <li>list_collections · health_check</li>
-            <li>write_document <span class="font-sans text-base-content/45">— add or update a source (write-enabled tokens)</span></li>
-          </ul>
-        </div>
-        <div>
-          <p class="font-medium text-base-content/80 mb-0.5">Resources (load as context)</p>
-          <ul class="space-y-0.5 font-mono">
-            <li>collections://all</li>
-            <li>collection://&#123;id&#125;</li>
-            <li>collection://&#123;id&#125;/guide</li>
-            <li>collection://&#123;id&#125;/schema</li>
-            <li>collection://&#123;id&#125;/tables</li>
-            <li>document://&#123;id&#125;</li>
-            <li>table://&#123;id&#125;</li>
-          </ul>
-        </div>
-      </div>
-    </div>
+    <header>
+      <h1 class="text-xl font-semibold">Connect your AI tools</h1>
+      <p class="mt-2 text-sm text-base-content/60 max-w-2xl">
+        Search your sources from AnythingLLM, Claude Code, Codex, or VS Code using MCP.
+        Your client receives retrieved passages, so choose a client you trust with this data.
+      </p>
+    </header>
 
     <!-- Enable toggle -->
     <div class="card bg-base-200">
@@ -43,13 +18,13 @@
               {{ mcpSettings.enable_mcp ? 'Enabled' : 'Disabled' }}
             </span>
           </div>
-          <input v-model="mcpSettings.enable_mcp" type="checkbox" class="toggle toggle-primary" @change="saveMcpToggle" />
+          <input v-if="userStore.adminConsole" v-model="mcpSettings.enable_mcp" aria-label="Enable MCP server" type="checkbox" class="toggle toggle-primary" @change="saveMcpToggle" />
         </div>
       </div>
     </div>
 
     <div v-if="!mcpSettings.enable_mcp" class="alert">
-      <span class="text-sm">Enable the MCP server above to connect Claude Code, Codex, or GitHub Copilot to your documents.</span>
+      <span class="text-sm">{{ userStore.adminConsole ? 'Enable MCP to connect your AI tools.' : 'Ask your administrator to enable MCP for this deployment.' }}</span>
     </div>
 
     <template v-else>
@@ -60,10 +35,8 @@
           <div>
             <h3 class="card-title text-base">Personal access tokens</h3>
             <p class="mt-1 text-sm text-base-content/60">
-              Mint a token here instead of setting up a Cloudflare Access service token by hand.
-              It only ever works against <code class="font-mono text-xs">/mcp</code> — it can't reach
-              the rest of the app or the UI — and it's baked into the config snippets below automatically.
-              Tokens are read-only unless you allow writes when generating them.
+              Create a token for each device. Tokens let clients read the collections you can access.
+              You can revoke them here at any time; adding or updating sources is optional.
             </p>
           </div>
 
@@ -176,8 +149,8 @@
           <div>
             <h3 class="card-title text-base">Connect a client</h3>
             <p class="mt-1 text-sm text-base-content/60">
-              Pick a collection and a token, then copy the config for your agent. The URL bakes in a
-              <code class="font-mono text-xs">?collection_id=</code> so the agent searches that collection by default.
+              Pick a default collection, then copy the configuration into your client.
+              This selects where searches start; it does not restrict the token to that collection.
             </p>
           </div>
 
@@ -200,7 +173,7 @@
 
           <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
             <!-- Tab bar -->
-            <div class="flex border-b border-base-300 bg-base-200/30">
+            <div class="flex flex-wrap border-b border-base-300 bg-base-200/30">
               <button
                 v-for="tab in configTabs"
                 :key="tab.key"
@@ -249,7 +222,7 @@
       </div>
 
       <!-- Advanced / Global server defaults -->
-      <div class="card bg-base-200">
+      <div v-if="userStore.adminConsole" class="card bg-base-200">
         <div class="card-body p-0">
           <details class="group">
             <summary class="cursor-pointer px-5 py-4 text-sm font-medium text-base-content/60 hover:text-base-content select-none list-none flex items-center justify-between">
@@ -309,6 +282,39 @@
 
     </template>
 
+    <!-- What this server exposes -->
+    <details class="rounded-lg border border-base-300 px-4 py-3 space-y-2">
+      <summary class="cursor-pointer text-sm font-medium">Tools and resources reference</summary>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs text-base-content/70">
+        <div>
+          <p class="font-medium text-base-content/80 mb-0.5">Tools (call these)</p>
+          <ul class="space-y-0.5 font-mono">
+            <li>search_all_collections</li>
+            <li>search_collection</li>
+            <li>list_recent_documents</li>
+            <li>get_document_context</li>
+            <li>find_in_documents</li>
+            <li>list_tables · query_table</li>
+            <li>aggregate_table · get_table_rows</li>
+            <li>list_collections · health_check</li>
+            <li>write_document <span class="font-sans text-base-content/45">— add or update a source (write-enabled tokens)</span></li>
+          </ul>
+        </div>
+        <div>
+          <p class="font-medium text-base-content/80 mb-0.5">Resources (load as context)</p>
+          <ul class="space-y-0.5 font-mono">
+            <li>collections://all</li>
+            <li>collection://&#123;id&#125;</li>
+            <li>collection://&#123;id&#125;/guide</li>
+            <li>collection://&#123;id&#125;/schema</li>
+            <li>collection://&#123;id&#125;/tables</li>
+            <li>document://&#123;id&#125;</li>
+            <li>table://&#123;id&#125;</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
     <div v-if="mcpError" class="alert alert-error py-2">
       <span>{{ mcpError }}</span>
     </div>
@@ -322,6 +328,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { ShieldAlert } from 'lucide-vue-next'
 import http from '../utils/http'
+import { useUserStore } from '../stores/userStore'
+const userStore = useUserStore()
 
 // MCP state
 const mcpLoading = ref(false)
@@ -351,6 +359,7 @@ const mcpSettings = ref({
 })
 
 const configTabs = [
+  { key: 'anythingllm', label: 'AnythingLLM' },
   { key: 'claude', label: 'Claude Code' },
   { key: 'codex', label: 'Codex' },
   { key: 'copilot', label: 'GitHub Copilot' },
@@ -391,17 +400,23 @@ const activeTabMeta = computed(() => {
   const headers = { 'Authorization': `Bearer ${authHeaderValue.value}` }
   const httpEntry = { type: 'http', url: serverUrl.value, headers }
   const tabs = {
+    anythingllm: {
+      label: 'AnythingLLM config',
+      content: JSON.stringify({ mcpServers: { [serverId.value]: { ...httpEntry, type: 'streamable' } } }, null, 2),
+      filename: 'anythingllm_mcp_servers.json',
+      hint: 'Merge this entry into anythingllm_mcp_servers.json in your AnythingLLM storage/plugins directory, then reload MCP servers in AnythingLLM. The URL must be reachable from AnythingLLM; localhost inside Docker refers to that container. Keep the credential private.',
+    },
     claude: {
       label: 'Claude Code config',
       content: JSON.stringify({ mcpServers: { [serverId.value]: httpEntry } }, null, 2),
-      filename: `.mcp-${exportCollectionId.value}.json`,
-      hint: 'Place this file in your project root, or merge into ~/.claude/mcp.json for global access.',
+      filename: '.mcp.json',
+      hint: 'Save as .mcp.json in your project root. This configuration contains a credential; keep it out of version control.',
     },
     codex: {
       label: 'Codex config',
       content: `[mcp_servers.${serverId.value}]\nurl = "${serverUrl.value}"\nhttp_headers = { "Authorization" = "Bearer ${authHeaderValue.value}" }\n`,
-      filename: `config-${exportCollectionId.value}.toml`,
-      hint: 'Merge this into your Codex config.toml.',
+      filename: 'config.toml',
+      hint: 'Merge this entry into your existing Codex config.toml. Keep the credential private.',
     },
     copilot: {
       label: 'GitHub Copilot config',

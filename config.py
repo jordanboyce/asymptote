@@ -70,16 +70,16 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"   # used for embeddings and inference
 
     # Semantic answer cache: single-turn chat questions that closely match a
-    # previously answered one (cosine similarity of LOCAL embeddings — the
-    # lookup never calls an API) return the stored answer instead of spending
-    # provider tokens. Entries are invalidated when any source document the
+    # previously answered one are candidate cache hits. The chat layer also
+    # requires matching question text and currently accessible sources. Query
+    # embeddings use the configured local or hosted embedding provider. Entries are invalidated when any source document the
     # answer cited changes or disappears, and a request with use_cache=false
     # (the Regenerate button) bypasses and replaces the entry. Note the
     # deliberate scope of invalidation: NEW unrelated documents don't evict
     # existing answers, so a cached answer reflects the corpus as of when it
     # was generated until its sources change or it's regenerated.
     enable_answer_cache: bool = True
-    answer_cache_threshold: float = 0.9   # cosine similarity to count as "same question"
+    answer_cache_threshold: float = 0.9   # candidate similarity; chat also checks question text
     answer_cache_max_per_scope: int = 200  # LRU cap per collection/scope
 
     # Share invitations by email via Resend (https://resend.com). When the
