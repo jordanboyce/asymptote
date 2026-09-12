@@ -79,8 +79,9 @@
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-4 h-4">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
         </svg>
-        <span class="text-sm flex-1">Configure an AI provider in Settings to use Chat.</span>
-        <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Settings</button>
+        <span class="text-sm flex-1">Connect a model to ask questions, or find passages without one.</span>
+        <button class="btn btn-xs btn-primary" @click="$emit('switch-tab', 'settings')">Connect a model</button>
+        <button class="btn btn-xs btn-ghost" @click="$emit('switch-tab', 'search')">Find passages</button>
       </div>
 
       <!-- Chat Settings Drawer -->
@@ -136,7 +137,8 @@
         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
         </svg>
-        <span class="text-sm">No documents indexed. Upload and index sources before chatting.</span>
+        <span class="text-sm flex-1">Add sources to this collection to start asking questions.</span>
+        <button class="btn btn-xs" @click="$emit('show-sources')">Add sources</button>
       </div>
       <div v-else-if="indexingActive" class="alert alert-info flex-shrink-0 py-2" role="status">
         <span class="loading loading-spinner loading-xs" aria-hidden="true"></span>
@@ -590,7 +592,7 @@ import {
   setProviderOverride,
 } from '../utils/aiProviders.js'
 
-const emit = defineEmits(['switch-tab'])
+const emit = defineEmits(['switch-tab', 'show-sources'])
 
 const chatStore = useChatStore()
 const collectionStore = useCollectionStore()

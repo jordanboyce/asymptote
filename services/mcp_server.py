@@ -11,6 +11,7 @@ from typing import Any, Literal
 from urllib.parse import parse_qs, urlencode
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
@@ -347,7 +348,7 @@ def _serialize_result(
     return payload
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def health_check() -> dict[str, Any]:
     """Check that the Asymptote MCP server is reachable and report its status.
 
@@ -409,7 +410,7 @@ def health_check() -> dict[str, Any]:
     }, "health_check")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_collections() -> dict[str, Any]:
     """List every document collection available on this MCP server.
 
@@ -456,7 +457,7 @@ def list_collections() -> dict[str, Any]:
     }, "list_collections")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_collection_info(
     collection_id: str | None = None,
     detail: Literal["counts", "with_documents"] = "with_documents",
@@ -567,7 +568,7 @@ def _normalize_search_filters(filters: dict[str, Any] | None) -> dict[str, Any] 
     return out or None
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_collection_facets(collection_id: str | None = None) -> dict[str, Any]:
     """List the filterable metadata for a collection.
 
@@ -672,7 +673,7 @@ def search_all_collections_sync(
     }, "search_all_collections")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def search_all_collections(
     query: str,
     mode: Literal["semantic", "keyword", "hybrid"] | None = None,
@@ -709,7 +710,7 @@ async def search_all_collections(
     )
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_recent_documents(
     limit: int = 10,
     collection_id: str | None = None,
@@ -961,7 +962,7 @@ def search_collection_sync(
     return _tool_response(response, "search_collection")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def search_collection(
     query: str,
     collection_id: str | None = None,
@@ -1041,7 +1042,7 @@ _DOC_CONTEXT_MAX_CHARS_DEFAULT = 12000
 _DOC_CONTEXT_MAX_CHARS_CAP = 40000
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_document_context(
     document_id: str,
     page_number: int | None = None,
@@ -1314,7 +1315,7 @@ def find_in_documents_sync(
     }, "find_in_documents")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def find_in_documents(
     pattern: str,
     literal: bool = True,
@@ -1454,7 +1455,7 @@ def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_tables(collection_id: str | None = None) -> dict[str, Any]:
     """List every CSV / Excel sheet ingested as a typed SQL table.
 
@@ -1495,7 +1496,7 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
     }, "list_tables")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_table_schema(
     identifier: str,
     collection_id: str | None = None,
@@ -1531,7 +1532,7 @@ def get_table_schema(
     return _tool_response(_format_schema_summary(schema), "get_table_schema")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_table_rows(
     identifier: str,
     limit: int = 200,
@@ -1604,7 +1605,7 @@ def get_table_rows(
     }, "get_table_rows")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def query_table(
     sql: str,
     max_rows: int = 500,
@@ -1655,7 +1656,7 @@ _AGG_FN_SQL = {
 }
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def aggregate_table(
     identifier: str,
     aggregate_col: str,
@@ -1747,7 +1748,7 @@ def aggregate_table(
     }, "aggregate_table")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_document_metadata(
     document_id: str,
     collection_id: str | None = None,
@@ -2023,7 +2024,7 @@ def write_document_sync(
     return _tool_response(payload, "write_document")
 
 
-@_asymptote_mcp.tool()
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 async def write_document(
     filename: str,
     content: str,

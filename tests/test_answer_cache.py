@@ -28,7 +28,7 @@ def _store(cache, vec=V_A, scope="col:default", model="mini", question="what is 
                   "similarity_score": 0.9, "document_id": "doc1", "collection_id": "default"}],
         fingerprints=fingerprints if fingerprints is not None else [
             {"collection_id": "default", "document_id": "doc1",
-             "filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3}
+             "filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3, "content_hash": "hash-a", "sensitivity": "internal"}
         ],
         provider="ollama",
     )
@@ -131,7 +131,7 @@ def test_lookup_serves_fresh_entry(chat_env, cache, monkeypatch):
     _store(cache)
     monkeypatch.setattr(
         chat_env, "_document_fingerprint",
-        lambda cid, did: {"filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3},
+        lambda cid, did: {"filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3, "content_hash": "hash-a", "sensitivity": "internal"},
     )
     ctx = chat_env._cache_context(_request(), "default")
     entry = chat_env._cache_lookup(ctx)
@@ -143,7 +143,7 @@ def test_lookup_discards_entry_when_source_changed(chat_env, cache, monkeypatch)
     # Document re-uploaded since the answer was generated
     monkeypatch.setattr(
         chat_env, "_document_fingerprint",
-        lambda cid, did: {"filename": "a.pdf", "upload_timestamp": "t2-CHANGED", "num_chunks": 3},
+        lambda cid, did: {"filename": "a.pdf", "upload_timestamp": "t2-CHANGED", "num_chunks": 3, "content_hash": "hash-a", "sensitivity": "internal"},
     )
     ctx = chat_env._cache_context(_request(), "default")
     assert chat_env._cache_lookup(ctx) is None
@@ -157,6 +157,28 @@ def test_lookup_discards_entry_when_source_deleted(chat_env, cache, monkeypatch)
     assert chat_env._cache_lookup(ctx) is None
 
 
+def test_similar_questions_do_not_reuse_a_different_answer(chat_env, cache, monkeypatch):
+    _store(cache, question="what was revenue in 2024?")
+    monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: {
+        "filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3,
+        "content_hash": "hash-a", "sensitivity": "internal",
+    })
+    # The fake embedder gives both questions IDENTICAL vectors; the answer
+    # must still be regenerated because the requested year changed.
+    from models.schemas import ChatMessage
+    ctx = chat_env._cache_context(_request(messages=[
+        ChatMessage(role="user", content="what was revenue in 2025?")
+    ]), "default")
+    assert chat_env._cache_lookup(ctx) is None
+
+
+def test_cache_refuses_sources_without_fingerprints(chat_env, cache):
+    _store(cache, fingerprints=[])
+    ctx = chat_env._cache_context(_request(), "default")
+    assert chat_env._cache_lookup(ctx) is None
+    assert cache.stats()["entries"] == 0
+
+
 def test_store_skips_sourceless_answers(chat_env, cache):
     ctx = chat_env._cache_context(_request(), "default")
     chat_env._cache_store(ctx, "no idea", [], "ollama")
@@ -164,7 +186,7 @@ def test_store_skips_sourceless_answers(chat_env, cache):
 
 
 def test_store_then_lookup_roundtrip(chat_env, cache, monkeypatch):
-    fp = {"filename": "b.pdf", "upload_timestamp": "t9", "num_chunks": 7}
+    fp = {"filename": "b.pdf", "upload_timestamp": "t9", "num_chunks": 7, "content_hash": "hash-b", "sensitivity": "internal"}
     monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: dict(fp))
     result = SimpleNamespace(
         filename="b.pdf", page_number=2, text_snippet="snippet",

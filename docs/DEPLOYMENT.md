@@ -2,9 +2,9 @@
 
 By default Asymptote is a **shared team appliance**. Everyone who can reach it
 sees the whole corpus — every collection, every document, every table, and the
-same `/mcp` tool surface. There are no per-user permissions inside the app,
-which makes deployment simple: the only question you have to answer is *who
-can reach it*. This guide answers it.
+same `/mcp` knowledge surface (subject to restricted-source handling). This
+default does not isolate users. Choose private collections when users should
+have different access; choose shared-appliance mode only for a trusted group.
 
 Deployments fronted by Cloudflare Access can additionally opt into
 [private collections](#private-collections) — per-person ownership and
@@ -20,6 +20,7 @@ password resets, no per-user configuration.
 | Setting | Default | What it controls |
 |---|---|---|
 | `HOST` | `127.0.0.1` | Which interfaces accept connections. Docker sets `0.0.0.0`; there the published port is the boundary. |
+| `BIND_ADDRESS` | `127.0.0.1` | Host interface published by Docker Compose. Existing LAN deployments must explicitly set this when upgrading. |
 | `AUTH_PASSWORD` | empty | A shared secret required on every request except `/health`. Use it when the app stays reachable on a network your proxy does not exclusively own. |
 | `CORS_ALLOW_ORIGINS` | empty | Which *other* web origins may read responses in a browser. Empty is correct unless a separate web app calls the API. |
 
@@ -31,8 +32,9 @@ refuses to start with `ENABLE_MULTI_USER=true` (see
 
 ### A. Just you, on your machine
 
-The defaults. `HOST=127.0.0.1` means nothing outside your machine can connect,
-so no password is needed.
+Python binds to `HOST=127.0.0.1`. Docker Compose publishes to
+`BIND_ADDRESS=127.0.0.1` even though the process inside the container listens on
+all container interfaces. Neither default exposes the app to your LAN.
 
 ```bash
 docker compose up -d     # or: python main.py

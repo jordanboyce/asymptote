@@ -56,7 +56,7 @@ router = APIRouter()
 # services/answer_cache.py for the rules; these helpers own the pieces that
 # need chat-layer context (indexers, document metadata, source URLs).
 
-_FINGERPRINT_FIELDS = ("filename", "upload_timestamp", "num_chunks")
+_FINGERPRINT_FIELDS = ("filename", "upload_timestamp", "num_chunks", "content_hash", "sensitivity")
 
 
 def _cache_context(chat_request: ChatRequest, collection_id: str):
@@ -97,15 +97,20 @@ def _cache_context(chat_request: ChatRequest, collection_id: str):
 
 
 def _document_fingerprint(collection_id: str, document_id: str) -> dict | None:
-    from services.indexer_manager import indexer_manager
+    from services.governance import effective_sensitivity, is_hidden
 
     try:
-        info = indexer_manager.get_indexer(collection_id).vector_store.metadata_store.get_document_info(document_id)
+        # Reauthorize on every cache hit: a share may have been revoked since
+        # the question's scope was resolved. Never bypass the API access gate.
+        info = get_indexer(collection_id).vector_store.metadata_store.get_document_info(document_id)
+        if not info or is_hidden(info):
+            return None
+        collection = collection_service.get_collection(collection_id)
+        fingerprint = {field: info.get(field) for field in _FINGERPRINT_FIELDS}
+        fingerprint["sensitivity"] = effective_sensitivity(collection, info.get("sensitivity"))
+        return fingerprint
     except Exception:
         return None
-    if not info:
-        return None
-    return {field: info.get(field) for field in _FINGERPRINT_FIELDS}
 
 
 def _cache_lookup(cache_ctx):
@@ -120,20 +125,26 @@ def _cache_lookup(cache_ctx):
     )
     if entry is None:
         return None
+    # Embeddings can place "2024 revenue" next to "2025 revenue", or
+    # "is permitted" next to "is not permitted". Similarity is a candidate
+    # lookup, not proof that a stored answer answers the same question.
+    if " ".join(entry["question"].split()) != " ".join(cache_ctx["question"].split()):
+        return None
+    # Legacy or incomplete entries cannot establish the provenance of every
+    # returned source, so regenerate rather than serving unvalidated text.
+    source_ids = {(s.get("collection_id"), s.get("document_id")) for s in entry["sources"]}
+    fingerprint_ids = {(fp.get("collection_id"), fp.get("document_id")) for fp in entry["fingerprints"]}
+    if not source_ids or source_ids != fingerprint_ids:
+        answer_cache.delete(entry["id"])
+        return None
     for fp in entry["fingerprints"]:
         current = _document_fingerprint(fp["collection_id"], fp["document_id"])
         if current != {field: fp.get(field) for field in _FINGERPRINT_FIELDS}:
             answer_cache.delete(entry["id"])
-            logger.info(
-                f"Answer cache: entry for {entry['question']!r} stale "
-                f"(source {fp.get('filename') or fp['document_id']} changed) — discarded"
-            )
+            logger.info("Answer cache: stale or inaccessible source; entry discarded")
             return None
     answer_cache.mark_hit(entry["id"])
-    logger.info(
-        f"Answer cache HIT (similarity {entry['similarity']}): "
-        f"{cache_ctx['question']!r} ≈ {entry['question']!r}"
-    )
+    logger.debug("Answer cache hit (similarity %s)", entry["similarity"])
     return entry
 
 
@@ -159,7 +170,9 @@ def _cache_store(cache_ctx, answer_text: str, filtered_results, provider: str):
         })
         if (cid, r.document_id) not in seen:
             seen.add((cid, r.document_id))
-            fp = _document_fingerprint(cid, r.document_id) or dict.fromkeys(_FINGERPRINT_FIELDS)
+            fp = _document_fingerprint(cid, r.document_id)
+            if fp is None:
+                return  # Do not persist an answer whose sources cannot be verified.
             fingerprints.append({"collection_id": cid, "document_id": r.document_id, **fp})
     try:
         answer_cache.store(
@@ -202,6 +215,12 @@ def _source_sensitivity(collection_id: str, result, _cache: dict) -> str:
 async def clear_answer_cache(collection_id: str = None):
     """Drop cached answers — for one collection, or all of them."""
     from services.answer_cache import answer_cache
+    from api.deps import require_admin, require_collection_access
+
+    if collection_id:
+        require_collection_access(collection_id, get_request_user(), write=True)
+    else:
+        require_admin("clear all cached answers")
 
     removed = answer_cache.clear(f"col:{collection_id}" if collection_id else None)
     return {"cleared": removed}

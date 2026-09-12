@@ -199,8 +199,7 @@ if _cors_origins:
 # Registered BEFORE the auth block on purpose: Starlette runs the last-added
 # middleware first, so auth ends up outermost and resolves
 # request.state.auth_identity before the limiter reads it. Deliberately
-# always-on (unlike auth, which only exists when a password or private
-# collections is configured) — an open deployment still deserves limits.
+# always-on (including on a local/open deployment) — an open deployment still deserves limits.
 from middleware.rate_limit import enforce_rate_limit as _enforce_rate_limit
 
 app.middleware("http")(_enforce_rate_limit)
@@ -227,81 +226,88 @@ def _password_from_auth_header(header: str) -> str:
     return ""
 
 
-if settings.auth_password or settings.private_collections:
-    @app.middleware("http")
-    async def require_auth(request, call_next):
-        if request.url.path == "/health":
-            return await call_next(request)
-        # CORS preflights are sent without credentials by spec, and this
-        # middleware runs outside CORSMiddleware — pass them through so the
-        # preflight can be answered; the actual request still authenticates.
-        if request.method == "OPTIONS":
-            return await call_next(request)
+@app.middleware("http")
+async def require_auth(request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+    # CORS preflights are sent without credentials by spec, and this
+    # middleware runs outside CORSMiddleware — pass them through so the
+    # preflight can be answered; the actual request still authenticates.
+    if request.method == "OPTIONS":
+        return await call_next(request)
 
-        # Cloudflare Access trust: a valid signed assertion from the edge is
-        # stronger auth than the shared password (per-identity, revocable),
-        # and accepting it removes the browser's second login prompt after
-        # SSO. Signature/issuer/audience/expiry are all verified — a spoofed
-        # header without the team's private key gets nowhere.
-        from services.access_jwt import get_verifier
-        verifier = get_verifier()
-        if verifier is not None:
-            assertion = request.headers.get("cf-access-jwt-assertion", "")
-            if assertion:
-                claims = await asyncio.to_thread(verifier.verify, assertion)
-                if claims is not None:
-                    request.state.auth_identity = verifier.identity_from_claims(claims)
-                    request.state.auth_via = "cloudflare-access"
-                    return await _call_with_user_context(request, call_next)
-
-        presented = _password_from_auth_header(request.headers.get("authorization", ""))
-
-        if settings.auth_password:
-            if presented and secrets.compare_digest(presented, settings.auth_password):
-                request.state.auth_identity = None
-                request.state.auth_via = "password"
+    # Cloudflare Access trust: a valid signed assertion from the edge is
+    # stronger auth than the shared password (per-identity, revocable),
+    # and accepting it removes the browser's second login prompt after
+    # SSO. Signature/issuer/audience/expiry are all verified — a spoofed
+    # header without the team's private key gets nowhere.
+    from services.access_jwt import get_verifier
+    verifier = get_verifier()
+    if verifier is not None:
+        assertion = request.headers.get("cf-access-jwt-assertion", "")
+        if assertion:
+            claims = await asyncio.to_thread(verifier.verify, assertion)
+            if claims is not None:
+                request.state.auth_identity = verifier.identity_from_claims(claims)
+                request.state.auth_via = "cloudflare-access"
                 return await _call_with_user_context(request, call_next)
 
-        # Personal MCP access tokens: self-serve alternative to a Cloudflare
-        # Access service token, minted from the app itself (Settings → MCP)
-        # by anyone who can already reach it. Deliberately scoped to /mcp —
-        # a leaked token cannot touch the rest of the API or the UI. Under
-        # private collections it resolves to the identity that created it,
-        # so an MCP client sees exactly that person's collections.
-        if request.url.path.startswith("/mcp") and presented and presented.startswith("asy_mcp_"):
-            from services.mcp_tokens import verify_token
-            token_record = await asyncio.to_thread(verify_token, presented)
-            if token_record is not None:
-                request.state.auth_identity = token_record.get("user_id")
-                request.state.auth_via = "mcp_token"
-                # Restricted collections are only reachable over MCP through
-                # a token explicitly scoped to them (services/governance.py).
-                request.state.mcp_token_scope = token_record.get("collection_scope") or None
-                # Adding/updating sources over MCP is opt-in per token.
-                request.state.mcp_token_can_write = bool(token_record.get("can_write"))
-                return await _call_with_user_context(request, call_next)
+    presented = _password_from_auth_header(request.headers.get("authorization", ""))
 
-        return JSONResponse(
-            {"detail": "Not authenticated"},
-            status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="Asymptote"'},
-        )
+    if settings.auth_password:
+        if presented and secrets.compare_digest(presented, settings.auth_password):
+            request.state.auth_identity = None
+            request.state.auth_via = "password"
+            return await _call_with_user_context(request, call_next)
 
-    async def _call_with_user_context(request, call_next):
-        """Bind the verified identity to a contextvar for the request's scope.
+    # Personal MCP access tokens: self-serve alternative to a Cloudflare
+    # Access service token, minted from the app itself (Settings → MCP)
+    # by anyone who can already reach it. Deliberately scoped to /mcp —
+    # a leaked token cannot touch the rest of the API or the UI. Under
+    # private collections it resolves to the identity that created it,
+    # so an MCP client sees exactly that person's collections.
+    if (request.url.path == "/mcp" or request.url.path.startswith("/mcp/")) and presented and presented.startswith("asy_mcp_"):
+        from services.mcp_tokens import verify_token
+        token_record = await asyncio.to_thread(verify_token, presented)
+        if token_record is not None:
+            request.state.auth_identity = token_record.get("user_id")
+            request.state.auth_via = "mcp_token"
+            # Restricted collections are only reachable over MCP through
+            # a token explicitly scoped to them (services/governance.py).
+            request.state.mcp_token_scope = token_record.get("collection_scope") or None
+            # Adding/updating sources over MCP is opt-in per token.
+            request.state.mcp_token_can_write = bool(token_record.get("can_write"))
+            return await _call_with_user_context(request, call_next)
 
-        Routers read identity from request.state; service-layer code that has
-        no Request in reach (deps.get_indexer, the chat tool loop) reads the
-        contextvar. Set before call_next so the downstream task inherits it.
-        """
-        if not settings.private_collections:
-            return await call_next(request)
-        from middleware.user_context import set_request_user, reset_request_user
-        token = set_request_user(getattr(request.state, "auth_identity", None))
-        try:
-            return await call_next(request)
-        finally:
-            reset_request_user(token)
+    # An explicit MCP credential must retain its permissions even on a
+    # local/open appliance. Never silently turn a revoked token into an
+    # anonymous (fully trusted) request.
+    if not settings.auth_password and not settings.private_collections and not (
+        presented and presented.startswith("asy_mcp_")
+    ):
+        return await call_next(request)
+
+    return JSONResponse(
+        {"detail": "Not authenticated"},
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Asymptote"'},
+    )
+
+async def _call_with_user_context(request, call_next):
+    """Bind the verified identity to a contextvar for the request's scope.
+
+    Routers read identity from request.state; service-layer code that has
+    no Request in reach (deps.get_indexer, the chat tool loop) reads the
+    contextvar. Set before call_next so the downstream task inherits it.
+    """
+    if not settings.private_collections:
+        return await call_next(request)
+    from middleware.user_context import set_request_user, reset_request_user
+    token = set_request_user(getattr(request.state, "auth_identity", None))
+    try:
+        return await call_next(request)
+    finally:
+        reset_request_user(token)
 
 for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise, admin, governance):
     app.include_router(module.router)

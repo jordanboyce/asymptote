@@ -11,10 +11,10 @@
       <div class="text-center mb-6">
         <img src="/icon_black.svg" alt="" class="w-14 h-14 mx-auto mb-5 opacity-90" />
         <h1 id="welcome-title" class="text-2xl font-semibold tracking-tight">
-          Welcome to Asymptote
+          Answers from your sources
         </h1>
         <p class="text-sm text-base-content/60 mt-2 max-w-sm mx-auto leading-relaxed">
-          Connect the AI you trust. You can change this anytime in Settings.
+          Add sources, ask questions, and check the citations. Connect a local model for private answers; hosted models receive the context used to answer.
         </p>
       </div>
 
@@ -186,12 +186,12 @@
           This deployment runs air-gapped — only local and self-hosted models are available.
           <span class="text-base-content/30" aria-hidden="true">·</span>
         </template>
-        <button class="link link-hover" @click="emit('skip')">Set up later</button>
+        <button class="link link-hover" @click="emit('skip')">Start with search</button>
       </div>
 
       <!-- Trust copy footer -->
       <div class="mt-8 text-center text-[11px] text-base-content/45 leading-relaxed">
-        Your documents stay on this device.
+        Sources are stored on your Asymptote server. Hosted AI and embedding providers receive the text they process.
       </div>
     </div>
   </div>

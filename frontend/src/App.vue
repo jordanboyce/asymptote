@@ -34,7 +34,7 @@
 
       <!-- Sources toggle (hidden on collections overview) -->
       <button
-        v-if="!isCollectionsView"
+        v-if="isWorkspaceView"
         class="btn btn-xs btn-ghost gap-1"
         :class="sourcesSidebarOpen ? 'btn-active' : ''"
         @click="sourcesSidebarOpen = !sourcesSidebarOpen"
@@ -46,22 +46,15 @@
         <span class="hidden md:inline text-xs">Sources</span>
       </button>
 
-      <!-- Tabs (hidden on collections overview; on phones they live in the
-           bottom tab bar instead) -->
-      <div v-if="!isCollectionsView" class="hidden md:flex items-center gap-2">
-        <button
-          v-for="tab in tabs"
-          :key="tab.id"
-          class="btn btn-xs btn-ghost gap-1.5 rounded-md transition-all"
-          :class="activeTab === tab.id ? 'bg-base-200 font-semibold' : 'font-normal'"
-          @click="activeTab = tab.id"
-          :aria-label="tab.label"
-          :aria-current="activeTab === tab.id ? 'page' : undefined"
-        >
-          <component :is="tab.icon" :size="14" />
-          <span class="hidden lg:inline">{{ tab.label }}</span>
-        </button>
-      </div>
+      <WorkspaceNav
+        v-if="!isCollectionsView"
+        class="hidden md:flex"
+        :active-tab="activeTab"
+        :chat-enabled="chatTabEnabled"
+        :admin-console="userStore.adminConsole"
+        @navigate="switchTab"
+        @notes="openNotes"
+      />
 
       <!-- Spacer -->
       <div class="flex-1"></div>
@@ -81,19 +74,6 @@
         :aria-label="`Background jobs — ${backgroundJobsStore.activeJobCount} active`"
       >
         <Loader2 :size="16" class="animate-spin text-warning" aria-hidden="true" />
-      </button>
-
-      <!-- Analysis sidebar toggle (hidden on collections overview) -->
-      <button
-        v-if="!isCollectionsView"
-        class="btn btn-ghost btn-circle btn-sm"
-        :class="{ 'bg-base-300': analysisSidebarOpen }"
-        @click="analysisSidebarOpen = !analysisSidebarOpen"
-        title="Toggle Studio panel"
-        aria-label="Toggle Studio panel"
-        :aria-pressed="analysisSidebarOpen"
-      >
-        <PanelRightOpen :size="16" :class="analysisSidebarOpen ? 'rotate-180 transition-transform' : 'transition-transform'" />
       </button>
 
       <!-- Global AI provider pill: app-wide default + click-to-switch menu -->
@@ -241,7 +221,7 @@
            squeezing it, so the answer column keeps the full window width.
            This backdrop closes whichever panel is open. -->
       <div
-        v-if="isCompact && (sourcesSidebarOpen || analysisSidebarOpen)"
+        v-if="isWorkspaceView && isCompact && (sourcesSidebarOpen || analysisSidebarOpen)"
         class="absolute inset-0 z-30 bg-base-content/20"
         @click="sourcesSidebarOpen = false; analysisSidebarOpen = false"
         aria-hidden="true"
@@ -249,7 +229,7 @@
 
       <!-- Left sidebar: sources (resizable, hidden on collections overview) -->
       <aside
-        v-show="!isCollectionsView"
+        v-show="isWorkspaceView"
         class="bg-base-100 overflow-hidden flex flex-col"
         :class="[
           isResizing ? '' : 'transition-all duration-200 ease-in-out',
@@ -294,7 +274,7 @@
         >
           <!-- Chat gets full height, no padding wrapper -->
           <div v-if="activeTab === 'chat'" class="h-full p-3 md:p-4">
-            <ChatTab @switch-tab="switchTab" />
+            <ChatTab @switch-tab="switchTab" @show-sources="sourcesSidebarOpen = true" />
           </div>
 
           <!-- All other tabs: padded scroll container -->
@@ -608,7 +588,7 @@
 
       <!-- Right sidebar: Studio (resizable, hidden on collections overview) -->
       <aside
-        v-show="!isCollectionsView"
+        v-show="isWorkspaceView"
         class="bg-base-100 overflow-hidden flex flex-col border-l border-base-300"
         :class="[
           isResizingAnalysis ? '' : 'transition-all duration-200 ease-in-out',
@@ -707,24 +687,16 @@
     </footer>
 
     <!-- ── Phone: bottom tab bar (the header tabs move here) ── -->
-    <nav
+    <WorkspaceNav
       v-if="!isCollectionsView"
-      class="md:hidden flex-shrink-0 flex items-stretch bg-base-100 border-t border-base-300 pb-[env(safe-area-inset-bottom)]"
-      aria-label="Main"
-    >
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        class="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1.5 min-h-[3.25rem] text-[10px] leading-none transition-colors"
-        :class="activeTab === tab.id ? 'text-primary font-semibold' : 'text-base-content/55'"
-        @click="activeTab = tab.id; sourcesSidebarOpen = false; analysisSidebarOpen = false"
-        :aria-label="tab.label"
-        :aria-current="activeTab === tab.id ? 'page' : undefined"
-      >
-        <component :is="tab.icon" :size="20" aria-hidden="true" />
-        <span class="truncate max-w-full">{{ tab.label }}</span>
-      </button>
-    </nav>
+      class="md:hidden flex-shrink-0 bg-base-100 border-t border-base-300 pb-[env(safe-area-inset-bottom)]"
+      mobile
+      :active-tab="activeTab"
+      :chat-enabled="chatTabEnabled"
+      :admin-console="userStore.adminConsole"
+      @navigate="navigateMobile"
+      @notes="openNotes"
+    />
 
     <!-- Global toast stack + backend-unreachable banner -->
     <Toaster />
@@ -1166,30 +1138,17 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
-import { Search, Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, PanelRightOpen, MessageSquare, Library, Share2, Users, Plug, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, Gauge, HelpCircle, EllipsisVertical } from 'lucide-vue-next'
+import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, Library, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical } from 'lucide-vue-next'
 import http from './utils/http'
 import { useModal } from './composables/useModal'
 
 const chatTabEnabled = ref(true)
 
-const tabs = computed(() => {
-  const t = []
-  if (chatTabEnabled.value) t.push({ id: 'chat', label: 'Chat', icon: MessageSquare })
-  t.push({ id: 'search', label: 'Search', icon: Search })
-  t.push({ id: 'generate', label: 'Generate', icon: Sparkles })
-  t.push({ id: 'expertise', label: 'Expertise', icon: BookOpen })
-  t.push({ id: 'mcp', label: 'MCP', icon: Plug })
-  // Operator console: usage, content review, audit, admissions. Admins
-  // under private collections (the backend enforces it too; hiding the tab
-  // just avoids a 403 surprise), everyone on an open deployment.
-  if (userStore.adminConsole) t.push({ id: 'admin', label: 'Admin', icon: Gauge })
-  return t
-})
-
 // Core layout + default tab load eagerly; every other tab is code-split so
 // the initial bundle stays small.
 import SourcesSidebar from './components/SourcesSidebar.vue'
 import StudioSidebar from './components/StudioSidebar.vue'
+import WorkspaceNav from './components/WorkspaceNav.vue'
 import ChatTab from './components/ChatTab.vue'
 
 const SearchTab = defineAsyncComponent(() => import('./components/SearchTab.vue'))
@@ -1333,7 +1292,7 @@ const ANALYSIS_MIN = 240
 const ANALYSIS_MAX = 600
 const analysisWidth = ref(parseInt(localStorage.getItem('analysis_width') || '320'))
 const analysisSidebarOpen = ref(
-  isCompact.value ? false : localStorage.getItem('analysis_sidebar_open') !== 'false'
+  isCompact.value ? false : localStorage.getItem('analysis_sidebar_open') === 'true'
 )
 const isResizingAnalysis = ref(false)
 
@@ -1380,7 +1339,7 @@ watch(isCompact, compact => {
     analysisSidebarOpen.value = false
   } else {
     sourcesSidebarOpen.value = localStorage.getItem('sources_sidebar_open') !== 'false'
-    analysisSidebarOpen.value = localStorage.getItem('analysis_sidebar_open') !== 'false'
+    analysisSidebarOpen.value = localStorage.getItem('analysis_sidebar_open') === 'true'
       && !(isNarrow.value && sourcesSidebarOpen.value)
   }
 })
@@ -1409,6 +1368,16 @@ const startResizeAnalysis = (e) => {
 
 // True when the user is on the all-collections overview — sidebars hide here.
 const isCollectionsView = computed(() => activeTab.value === 'collections')
+const isWorkspaceView = computed(() => ['chat', 'search'].includes(activeTab.value))
+const navigateMobile = (tab) => {
+  switchTab(tab)
+  sourcesSidebarOpen.value = false
+  analysisSidebarOpen.value = false
+}
+const openNotes = () => {
+  if (!isWorkspaceView.value) switchTab(chatTabEnabled.value ? 'chat' : 'search')
+  analysisSidebarOpen.value = true
+}
 
 // Most recent active job, surfaced inline in the footer.
 const footerActiveJob = computed(() =>
@@ -1470,6 +1439,7 @@ const checkOnboardingNeeded = () => {
   // Users who pre-configured a chat provider via another path (e.g. the
   // MCP setup flow) shouldn't be blocked by this screen.
   showOnboarding.value = getConfiguredProviderIds().length === 0
+    && localStorage.getItem('onboarding_dismissed') !== 'true'
 }
 
 const handleOnboardingComplete = () => {
@@ -1485,7 +1455,9 @@ const handleOnboardingComplete = () => {
 
 const handleOnboardingSkip = () => {
   showOnboarding.value = false
-  activeTab.value = 'settings'
+  localStorage.setItem('onboarding_dismissed', 'true')
+  activeTab.value = 'search'
+  if (statsStore.documents === 0) sourcesSidebarOpen.value = true
 }
 
 // Collections overview: view, search, sort
@@ -1785,12 +1757,15 @@ onMounted(async () => {
   // Server-stored team keys count as configured providers — the pill may
   // appear (or change) once they're known. providerStore reactivity takes
   // care of the refresh; no listeners needed.
-  providerStore.loadServerProviders()
+  providerStore.loadServerProviders().then(() => {
+    if (providerStore.configuredIds.length > 0) showOnboarding.value = false
+  })
 
   // Load UI feature flags from server config
   try {
     const cfgResp = await http.get('/api/config')
     chatTabEnabled.value = cfgResp.data.enable_chat_tab ?? true
+    if (!chatTabEnabled.value) showOnboarding.value = false
     if (!chatTabEnabled.value && activeTab.value === 'chat') {
       activeTab.value = 'search'
     }

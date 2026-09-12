@@ -2,6 +2,7 @@
 
 import logging
 from typing import Optional
+from pydantic import BaseModel, Field, StrictBool
 
 from fastapi import Depends, HTTPException, status, Request
 
@@ -14,10 +15,17 @@ from services.mcp_server import (
 )
 
 from fastapi import APIRouter
+from api.deps import require_admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class MCPTokenRequest(BaseModel):
+    name: str = Field("", max_length=200)
+    collection_scope: list[str] = Field(default_factory=list, max_length=100)
+    can_write: StrictBool = False
 
 
 @router.get(
@@ -37,6 +45,7 @@ async def get_mcp_config():
 )
 async def update_mcp_config(updates: dict):
     """Update embedded MCP settings without restarting the app."""
+    require_admin("change MCP server settings")
     filtered_updates = {
         key: value
         for key, value in updates.items()
@@ -64,7 +73,7 @@ async def update_mcp_config(updates: dict):
     summary="Create a personal MCP access token",
     tags=["mcp"],
 )
-async def create_mcp_token(body: dict, user_id: Optional[str] = Depends(get_current_user_id)):
+async def create_mcp_token(body: MCPTokenRequest, user_id: Optional[str] = Depends(get_current_user_id)):
     """Mint a token. The plaintext is returned once and cannot be recovered.
 
     Body:
@@ -79,11 +88,9 @@ async def create_mcp_token(body: dict, user_id: Optional[str] = Depends(get_curr
     from services import audit
     from services.collection_service import collection_service
 
-    name = (body or {}).get("name", "")
-    can_write = bool((body or {}).get("can_write", False))
-    raw_scope = (body or {}).get("collection_scope") or []
-    if not isinstance(raw_scope, list):
-        raise HTTPException(status_code=400, detail="collection_scope must be a list of collection ids")
+    name = body.name
+    can_write = body.can_write
+    raw_scope = body.collection_scope
     visible = {c["id"] for c in collection_service.get_all_collections(user_id) if c.get("id")}
     scope = []
     for cid in raw_scope:

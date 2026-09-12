@@ -21,7 +21,7 @@ services:
       #   OFFLINE_BUNDLE: "1"
     container_name: asymptote
     ports:
-      - "8473:8473"
+      - "${BIND_ADDRESS:-127.0.0.1}:8473:8473"
     env_file:
       - path: .env
         required: false

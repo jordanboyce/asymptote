@@ -2,14 +2,14 @@
   <div class="flex flex-col h-full">
 
     <!-- Header bar -->
-    <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Studio">
+    <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Notes and tools">
       <Sparkles :size="15" class="text-base-content/60 flex-shrink-0" aria-hidden="true" />
-      <span class="font-semibold text-sm flex-1">Studio</span>
+      <span class="font-semibold text-sm flex-1">Notes and tools</span>
       <button
         class="btn btn-ghost btn-xs btn-circle"
         @click="$emit('close')"
-        title="Close Studio sidebar"
-        aria-label="Close Studio sidebar"
+        title="Close notes and tools"
+        aria-label="Close notes and tools"
       >
         <X :size="13" />
       </button>
@@ -31,12 +31,12 @@
         </button>
         <div v-show="open.generate" class="px-3 pb-3 space-y-1.5">
           <p class="text-[11px] text-base-content/50 leading-snug">
-            Turn this collection into a source-grounded document — every claim cites its sources.
+            Turn this collection into a source-grounded document — review the citations before sharing.
           </p>
           <div class="flex flex-col gap-1.5">
             <button class="btn btn-outline btn-xs gap-1" @click="$emit('switch-tab', 'generate')">
               <Sparkles :size="11" />
-              Open Generate
+              Create a report
             </button>
             <button class="btn btn-outline btn-xs gap-1" @click="sendToChat('Give me a briefing of this collection: the key themes, what each source covers, and any open questions, with citations.')">
               <MessageSquare :size="11" />
@@ -133,7 +133,7 @@ const collectionStore = useCollectionStore()
 
 const open = reactive({
   generate: true,
-  tables: true,
+  tables: false,
   notes: false,
   export: false,
 })
