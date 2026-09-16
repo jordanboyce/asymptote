@@ -329,6 +329,9 @@ What protects the deployment when many people share it:
 | `RATE_LIMIT_CHAT_PER_MINUTE` | 6 | Per-identity chat requests/min |
 | `RATE_LIMIT_SEARCH_PER_MINUTE` | 30 | Per-identity searches/min |
 | `RATE_LIMIT_DEFAULT_PER_MINUTE` | 120 | Everything else under `/api` |
+| `RATE_LIMIT_MCP_PER_MINUTE` | 0 | `/mcp` agent calls, keyed per personal token; 0 = unlimited |
+| `RESEARCH_MAX_CONCURRENT` | 3 | Parallel `research_documents` calls; extra callers queue |
+| `RESEARCH_QUEUE_TIMEOUT_SECONDS` | 60 | How long a queued research call waits before a retryable "busy" error |
 | `CHAT_DAILY_TOKEN_BUDGET` | 0 (off) | Provider tokens one identity may spend on chat per UTC day. Cached answers stay free once capped. |
 | `MAX_CONCURRENT_INDEX_JOBS` | 2 | Indexing jobs across all collections |
 | `COLLECTION_STORAGE_LIMIT_BYTES` | 5 GiB | Most a single collection may hold, as the sum of its source files. Every ingest path (upload, staged upload, local/repo index jobs, `write_document` over MCP) refuses a file that would cross it with a **413** carrying the numbers; the Sources panel and the collections overview show usage. `0` = unlimited. |

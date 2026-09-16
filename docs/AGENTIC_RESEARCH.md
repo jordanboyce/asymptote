@@ -72,6 +72,12 @@ identifier, and inspect the relevant implementation or runbook context.
   not a versioned snapshot or proof that the source content has not changed.
 - Failed branches remain visible as failures. Other branches can still supply
   useful evidence; the app keeps partially failed research activity open.
+- Research calls are gated by concurrency, not rate: `RESEARCH_MAX_CONCURRENT`
+  (default 3) slots, and a caller that waits longer than
+  `RESEARCH_QUEUE_TIMEOUT_SECONDS` (default 60) gets a retryable "busy" error.
+  `/mcp` has its own rate-limit class, `RATE_LIMIT_MCP_PER_MINUTE`, keyed on
+  the personal token and unlimited (0) by default, because agents fan out
+  tool calls and handle 429s badly.
 
 Research currently operates within one collection per call. Source excerpts must
 be enabled for the MCP profile. Numeric aggregation should continue to use the
@@ -81,11 +87,16 @@ that the table collector cannot enforce.
 
 ## What coverage means
 
-`retrieved` means selected passages came from a query's retrieval branches.
-`no_selected_evidence` means none survived retrieval and selection for that query.
-`search_failed` means all of that query's branches failed. These are retrieval
-signals, not correctness scores or proof of a complete search. Context limits and
-document diversity can omit candidates; the response reports the omitted count.
+`retrieved` means at least one *strong* passage came from a query's retrieval
+branches. `weak_evidence` means the query only matched single-branch passages
+ranked below third place in that branch: research fills `top_k` with whatever
+survives, so this separates agreement between branches from a stray match. Each
+result also carries `evidence_strength` (`strong` or `weak`), and coverage lists
+`strong_evidence_ids` separately. `no_selected_evidence` means nothing survived
+retrieval and selection for that query. `search_failed` means all of that
+query's branches failed. These are retrieval signals, not correctness scores or
+proof of a complete search. Context limits and document diversity can omit
+candidates; the response reports the omitted count.
 
 The agent is instructed to inspect dates and exceptions, rephrase missing
 questions, avoid repeating successful searches, and report remaining gaps. This

@@ -301,6 +301,8 @@ async def require_auth(request, call_next):
             request.state.mcp_token_scope = token_record.get("collection_scope") or None
             # Adding/updating sources over MCP is opt-in per token.
             request.state.mcp_token_can_write = bool(token_record.get("can_write"))
+            # Any MCP rate budget is per token, not per identity or IP.
+            request.state.rate_limit_key = f"mcp-token:{token_record.get('id')}"
             return await _call_with_user_context(request, call_next)
 
     # An explicit MCP credential must retain its permissions even on a

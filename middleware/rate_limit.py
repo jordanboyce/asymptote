@@ -42,6 +42,10 @@ _PRUNE_THRESHOLD = 5000
 
 def _classify(path: str) -> Optional[str]:
     """Expense class for a path, or None when the path is never limited."""
+    # Agent traffic has its own budget (0 = unlimited, the default) so a
+    # fan-out of tool calls is never throttled by the human-facing classes.
+    if path == "/mcp" or path.startswith("/mcp/"):
+        return "mcp"
     if not path.startswith("/api/"):
         return None
     if path.startswith("/api/chat"):
@@ -62,8 +66,8 @@ class RateLimiter:
         self._lock = threading.Lock()
         # (class, key) -> [tokens, last_refill_monotonic]
         self._buckets: Dict[Tuple[str, str], list] = {}
-        self._allowed = {"chat": 0, "search": 0, "default": 0, "register": 0}
-        self._rejected = {"chat": 0, "search": 0, "default": 0, "register": 0}
+        self._allowed = {"chat": 0, "search": 0, "default": 0, "register": 0, "mcp": 0}
+        self._rejected = {"chat": 0, "search": 0, "default": 0, "register": 0, "mcp": 0}
 
     @staticmethod
     def _limit_for(cls: str) -> int:
@@ -72,6 +76,7 @@ class RateLimiter:
             "search": settings.rate_limit_search_per_minute,
             "default": settings.rate_limit_default_per_minute,
             "register": settings.rate_limit_register_per_minute,
+            "mcp": settings.rate_limit_mcp_per_minute,
         }[cls]
 
     def check(self, cls: str, key: str) -> Optional[int]:
@@ -135,6 +140,11 @@ rate_limiter = RateLimiter()
 
 def resolve_limit_key(request) -> str:
     """Verified identity when auth resolved one, else best-available IP."""
+    # Auth may pin a finer key (a personal MCP token) so one credential's
+    # budget is its own, whatever machine or user it runs as.
+    pinned = getattr(request.state, "rate_limit_key", None)
+    if pinned:
+        return pinned
     identity = getattr(request.state, "auth_identity", None)
     if identity:
         return identity
