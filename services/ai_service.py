@@ -1027,7 +1027,8 @@ class AIService:
         prompt = (
             "You are a research assistant. Based on the information below, "
             "provide a clear, concise answer to the user's query. Cite your sources "
-            "using [Source N] notation when referencing retrieved passages.\n\n"
+            "using [Source N] notation when referencing retrieved passages — just the "
+            "number, e.g. [Source 2], not the filename or page.\n\n"
             "Rules:\n"
             "- Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
             "(file counts, available documents, date ranges, what's in the collection).\n"
