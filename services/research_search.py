@@ -64,8 +64,13 @@ def research(query, subqueries, search, find, *, top_k=8, max_per_document=2,
             raise ValueError(f"{name} must be an integer from {lo} to {hi}")
 
     # Literal lookups complement meaning-based search for policy IDs and quotes.
-    literals = re.findall(r'["“]([^"”]{2,120})["”]', queries[0])
-    literals += re.findall(r'\b[A-Za-z]{1,12}-\d+[A-Za-z0-9-]*\b', queries[0])
+    # Subqueries count too: an agent that isolates "the exact phrase" or EQ-17
+    # into its own subquestion still gets an exact-match branch for it.
+    literals = []
+    for text in queries:
+        literals += re.findall(r'["“]([^"”]{2,120})["”]', text)
+    for text in queries:
+        literals += re.findall(r'\b[A-Za-z]{1,12}-\d+[A-Za-z0-9-]*\b', text)
     literals = list(dict.fromkeys(literals))[:2]
     plan = [(q, "hybrid", i) for i, q in enumerate(queries)]
     plan.append((queries[0], "keyword", 0))

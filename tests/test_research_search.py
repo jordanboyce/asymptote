@@ -42,6 +42,14 @@ def test_queries_are_deduplicated_but_negation_and_identifiers_survive():
     assert all(c["status"] == "retrieved" for c in result["coverage"])
 
 
+def test_literal_branches_also_come_from_subqueries_and_stay_capped():
+    literals = []
+    research('return policy', ['"five working days"', 'EQ-17 exception', '"field team"'],
+             lambda q, mode: [hit("x")], lambda p: literals.append(p) or [])
+    # Quoted phrases first, then identifiers; capped at two so the seven-branch bound holds.
+    assert literals == ["five working days", "field team"]
+
+
 def test_duplicate_hits_in_one_branch_do_not_boost_ranking():
     result = research("rules", [], lambda *a: [hit("a"), hit("a"), hit("b")], lambda _: [])
     assert result["candidate_count"] == 2

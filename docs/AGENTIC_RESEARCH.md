@@ -56,7 +56,8 @@ identifier, and inspect the relevant implementation or runbook context.
 - One original query plus up to three explicit subqueries; each is at most 1,000
   characters. Duplicate queries are removed without dropping negation.
 - Hybrid retrieval for each query, keyword retrieval for the original question,
-  and up to two literal searches for quoted phrases or identifiers such as EQ-17.
+  and up to two literal searches for quoted phrases or identifiers such as EQ-17,
+  taken from the original query and the subqueries.
   A call performs at most seven retrieval branches, with no hidden model calls.
 - Passages are deduplicated and combined using
   [reciprocal rank fusion](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf).

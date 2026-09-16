@@ -60,7 +60,7 @@
 
         <label class="option-chip">
           <span>Results</span>
-          <select v-model.number="searchStore.topK" class="select select-sm min-h-9 h-9 w-auto pr-8 bg-transparent border-none focus:outline-none" aria-label="Maximum results" :disabled="loading">
+          <select v-model.number="searchStore.topK" class="select select-sm min-h-9 h-9 w-auto pr-8 bg-base-100 border-none focus:outline-none" aria-label="Maximum results" :disabled="loading">
             <option v-for="n in resultLimits" :key="n" :value="n">{{ n }}</option>
           </select>
         </label>

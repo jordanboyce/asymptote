@@ -96,8 +96,27 @@ def _transport_security() -> TransportSecuritySettings:
     return TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
 
 
+from services.research_search import RESEARCH_INSTRUCTIONS as _RESEARCH_INSTRUCTIONS
+
+# Surfaced to the model by MCP clients that honour server instructions. Keep it
+# domain-neutral: the corpus is whatever the owner indexed.
+_SERVER_INSTRUCTIONS = (
+    "Asymptote indexes the caller's own documents (PDF, Office, text, Markdown, "
+    "code, CSV/XLSX tables) and answers only from them. Every tool is scoped to "
+    "the collections this credential may see; authorization is enforced server-"
+    "side and cannot be widened by arguments. Start with list_collections when "
+    "the question names a collection, project, or archive. Use research_documents "
+    "for multi-part questions, search_collection for one quick lookup, "
+    "find_in_documents for exact strings, and get_document_context to read the "
+    "surrounding text before quoting. For counts, sums, filters, or rankings over "
+    "CSV/XLSX data use list_tables and the table tools, never passage search. "
+    "Cite filename and page from the results and say what the sources do not "
+    "establish. " + _RESEARCH_INSTRUCTIONS
+)
+
 _asymptote_mcp = FastMCP(
     "Asymptote",
+    instructions=_SERVER_INSTRUCTIONS,
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
@@ -416,16 +435,16 @@ def list_collections() -> dict[str, Any]:
     """List every document collection available on this MCP server.
 
     Call this FIRST whenever the user's question could plausibly target a
-    different collection than the current default — e.g. "What's in Jane
-    Smith's portfolio?", "Compare client A and client B", or any question
-    that names a person, account, or project that might map to its own
-    collection. Each collection is typically one client / account / project
-    and has its own documents, CSVs, and portfolio tables.
+    different collection than the current default — e.g. "What does the
+    project handbook say?", "Compare the 2023 and 2024 reports", or any
+    question that names a project, topic, team, or archive that might map
+    to its own collection. Each collection is one body of sources (a
+    project, a subject area, an archive) with its own documents and tables.
 
     Returns for each collection:
       - collection_id   → pass this as `collection_id` to any other tool
       - name            → human-facing name (match this against the user's phrasing)
-      - description     → free-text description, may contain client identifiers
+      - description     → free-text description written by the owner
       - document_count  → number of indexed documents
 
     Once you know the target collection_id, pass it explicitly to
@@ -472,7 +491,7 @@ def get_collection_info(
     Parameters:
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) to inspect
-        a specific client / account / project collection.
+        a specific collection.
       - detail: "with_documents" (default) returns the full per-document
         listing with filenames, chunk/page counts, and source metadata.
         "counts" returns only aggregate stats (total documents/chunks/pages
@@ -1049,8 +1068,8 @@ async def search_collection(
     Parameters:
       - query: Natural-language query for semantic mode or exact terms for keyword.
       - collection_id: Optional. If omitted, uses the server's default
-        collection. When the user asks about a specific client / account /
-        project, first call `list_collections` to find the right id, then
+        collection. When the user names a specific collection, project, or
+        archive, first call `list_collections` to find the right id, then
         pass it here.
       - mode: Retrieval strategy. "semantic" uses vector similarity (best for
         conceptual / paraphrased questions). "keyword" uses BM25 and is the
@@ -1083,8 +1102,8 @@ async def search_collection(
     - Narrative / prose / conceptual questions about PDFs, text, code, notes.
     - "How does X work", "where is Y described", "what does the doc say about Z".
 
-    For exact-string lookups (ticker symbols, CUSIPs, quoted phrases, policy
-    numbers, any verbatim identifier the user cites word-for-word), prefer
+    For exact-string lookups (quoted phrases, policy or part numbers, error
+    codes, any verbatim identifier the user cites word-for-word), prefer
     `find_in_documents` — it does a literal substring match and doesn't
     drop stopwords or tokenize the query.
 
@@ -1149,7 +1168,7 @@ def get_document_context(
         response flags `truncated: true` if there's more to read.
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
-        document lives in a specific client / account / project collection.
+        document lives in a specific collection.
 
     Returns:
       - document_id, filename, source_format, total_pages
@@ -1419,8 +1438,8 @@ async def find_in_documents(
     """Exact-substring OR regex search across a collection's indexed text chunks.
 
     Use this tool when the user cites an exact string that should appear
-    verbatim in a document (ticker symbol, CUSIP, client-name fragment, quoted
-    phrase, identifier, policy number) OR when you want a structural / pattern
+    verbatim in a document (a quoted phrase, an error code, a policy or part
+    number, a name fragment, any identifier) OR when you want a structural / pattern
     match that semantic search can't express. Unlike `search_collection` (tuned
     for semantic / BM25 ranking, drops stopwords and punctuation), this tool
     matches the literal string or regex against the raw chunk text.
@@ -1442,7 +1461,7 @@ async def find_in_documents(
         regexes raise a clear error.
       - case_sensitive: If true, the match is case-exact. If false (default),
         matching ignores ASCII case (regex compiled with `re.IGNORECASE`). Use
-        case_sensitive=true for ticker symbols or other case-bearing identifiers.
+        case_sensitive=true for case-bearing identifiers such as code symbols.
       - collection_id: Optional. If omitted, uses the server's default
         collection.
       - max_results: Max matches to return (default 20, cap 100). One chunk
@@ -1563,12 +1582,12 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
 
     Parameters:
       - collection_id: Optional. If omitted, uses the server's default
-        collection. When the user asks about a specific client / project,
+        collection. When the user names a specific collection or project,
         first call `list_collections` and then pass the right id here.
 
     Identifier forms accepted by other table tools:
       - `table_name`  — the SQL table identifier (e.g. "csv_data_abc123")
-      - `filename`    — original source filename (e.g. "portfolio.csv")
+      - `filename`    — original source filename (e.g. "inventory.csv")
       - `document_id` — the document's UUID from `get_collection_info`
 
     Recommended workflow after calling this:
@@ -1605,7 +1624,7 @@ def get_table_schema(
         whichever is more convenient.
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
-        table lives in a specific client / portfolio collection.
+        table lives in a specific collection.
       - identifier_type: Optional. Restrict the lookup to exactly one of
         "table_name", "filename", or "document_id". When omitted (default),
         all three are searched — the auto-detect behavior. Pass this only
@@ -1648,7 +1667,7 @@ def get_table_rows(
       - limit: max rows to return (default 200, cap 2000).
       - collection_id: Optional. If omitted, uses the server's default
         collection. Pass an explicit id (from `list_collections`) when the
-        table lives in a specific client / project collection.
+        table lives in a specific collection.
       - identifier_type: Optional. Restrict the lookup to exactly one of
         "table_name", "filename", or "document_id". When omitted (default),
         all three are searched.
