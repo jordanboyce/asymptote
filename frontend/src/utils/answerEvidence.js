@@ -11,6 +11,11 @@ export function sourceHref(source) {
   } catch { return '' }
 }
 
+// A bracket that starts with "Source N" and may continue with more sources or
+// a restated location. Bare numbers in brackets ("[2]") are left alone: they
+// are too ambiguous to turn into evidence links.
+const CITATION_GROUP = /\[Source\s+\d+(?:\s*[,;:](?:\s*Source)?[^\]]*)?\]/gi
+
 export function renderEvidenceMarkdown(text, sources = []) {
   const root = document.createElement('div')
   root.innerHTML = DOMPurify.sanitize(marked.parse(String(text || ''), { gfm: true, breaks: true }), {
@@ -24,20 +29,27 @@ export function renderEvidenceMarkdown(text, sources = []) {
   while (walker.nextNode()) nodes.push(walker.currentNode)
   for (const node of nodes) {
     if (node.parentElement.closest('a, code, pre, button')) continue
-    const pattern = /\[Source\s+(\d+)\]/gi
     const fragment = document.createDocumentFragment()
     let end = 0
-    for (const match of node.textContent.matchAll(pattern)) {
+    for (const match of node.textContent.matchAll(CITATION_GROUP)) {
       fragment.append(node.textContent.slice(end, match.index))
-      const number = Number(match[1])
-      if (number > 0 && number <= sources.length) {
-        const button = document.createElement('button')
-        button.type = 'button'
-        button.className = 'link link-primary font-medium px-1 rounded-sm'
-        button.dataset.sourceNumber = String(number)
-        button.setAttribute('aria-label', `Review source ${number}: ${sources[number - 1].filename}`)
-        button.textContent = match[0]
-        fragment.append(button)
+      // One bracket can carry several citations ("[Source 2, Source 3]") or a
+      // restated location ("[Source 2: file.pdf, page 56]"); each valid number
+      // becomes its own compact control and the model's wording stays in the label.
+      const numbers = [...match[0].matchAll(/Source\s+(\d+)/gi)].map(m => Number(m[1]))
+      const valid = numbers.filter(number => number > 0 && number <= sources.length)
+      if (valid.length && valid.length === numbers.length) {
+        valid.forEach((number, i) => {
+          if (i) fragment.append(' ')
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.className = 'link link-primary font-medium px-1 rounded-sm'
+          button.dataset.sourceNumber = String(number)
+          button.setAttribute('aria-label', `Review source ${number}: ${sources[number - 1].filename}`)
+          if (numbers.length === 1 && match[0] !== `[Source ${number}]`) button.title = match[0]
+          button.textContent = `[Source ${number}]`
+          fragment.append(button)
+        })
       } else {
         fragment.append(match[0])
       }

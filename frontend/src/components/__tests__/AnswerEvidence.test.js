@@ -33,6 +33,22 @@ describe('Answer evidence review', () => {
     expect(wrapper.text()).toContain('[Source 8]')
   })
 
+  it('links the citation shapes models actually emit, without inventing evidence', () => {
+    const sources = [source, { ...source, filename: 'Field manual.pdf', document_id: 'doc-2', page_number: 56 }]
+    const html = renderEvidenceMarkdown(
+      'Linked on save [Source 2: Field manual.pdf, page 56]. Both agree [Source 1, Source 2]. Unknown [Source 1, Source 9] and bare [2].',
+      sources,
+    )
+    const root = document.createElement('div')
+    root.innerHTML = html
+    const buttons = [...root.querySelectorAll('button[data-source-number]')]
+    expect(buttons.map(b => b.dataset.sourceNumber)).toEqual(['2', '1', '2'])
+    expect(buttons[0].textContent).toBe('[Source 2]')
+    expect(buttons[0].title).toBe('[Source 2: Field manual.pdf, page 56]')
+    expect(root.textContent).toContain('[Source 1, Source 9]')
+    expect(root.textContent).toContain('bare [2]')
+  })
+
   it('removes executable markup and model-authored citation controls', () => {
     const html = renderEvidenceMarkdown('<img src=x onerror="alert(1)"><button data-source-number="99">Fake</button> [Source 1]', [source])
     expect(html).not.toContain('onerror')

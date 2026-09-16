@@ -38,6 +38,12 @@ http.interceptors.response.use(
     return response
   },
   (error) => {
+    // A request the caller aborted (search cancel, tab switch) is not an
+    // outage: leave the offline flag alone and let the caller ignore it.
+    if (axios.isCancel(error) || error?.code === 'ERR_CANCELED') {
+      return Promise.reject(error)
+    }
+
     const ui = uiStore()
 
     // "Backend unreachable" arrives in different costumes depending on the

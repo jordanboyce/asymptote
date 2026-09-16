@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { useCollectionStore } from './collectionStore'
 
@@ -6,9 +6,20 @@ export const useSearchStore = defineStore('search', () => {
   // Search state
   const query = ref('')
   const topK = ref(parseInt(localStorage.getItem('asymptote_default_top_k')) || 10)
+  // Match settings persist like topK: the Find tab unmounts when the user
+  // switches tabs, so component-local state would silently reset.
+  const MODE_KEY = 'asymptote_search_mode'
+  const WEIGHT_KEY = 'asymptote_search_semantic_weight'
+  const savedMode = localStorage.getItem(MODE_KEY)
+  const searchMode = ref(['semantic', 'keyword', 'hybrid'].includes(savedMode) ? savedMode : 'hybrid')
+  const savedWeight = Number(localStorage.getItem(WEIGHT_KEY))
+  const semanticWeight = ref(Number.isFinite(savedWeight) && savedWeight > 0 && savedWeight <= 1 ? savedWeight : 0.7)
+  watch(searchMode, value => { try { localStorage.setItem(MODE_KEY, value) } catch { /* storage unavailable */ } })
+  watch(semanticWeight, value => { try { localStorage.setItem(WEIGHT_KEY, String(value)) } catch { /* storage unavailable */ } })
   const results = ref([])
   const lastQuery = ref('')
   const searched = ref(false)
+  const lastOptions = ref(null)
 
   // Support for multiple AI providers
   const aiResponses = ref([])  // Array of {provider, synthesis, aiUsage}
@@ -26,6 +37,7 @@ export const useSearchStore = defineStore('search', () => {
     results.value = data.results || []
     lastQuery.value = data.query || ''
     searched.value = true
+    lastOptions.value = data.options || null
 
     // AI responses (one per provider)
     if (data.aiResponses && data.aiResponses.length > 0) {
@@ -46,8 +58,8 @@ export const useSearchStore = defineStore('search', () => {
     return collectionStore.currentCollectionId || 'default'
   }
 
-  function getCacheKey(query, topK) {
-    return `${query.toLowerCase().trim()}|${topK}`
+  function getCacheKey(query, topK, options = null) {
+    return `${query.toLowerCase().trim()}|${topK}${options ? `|${JSON.stringify(options)}` : ''}`
   }
 
   // Get collection-specific cache
@@ -61,16 +73,16 @@ export const useSearchStore = defineStore('search', () => {
 
   function cacheSearchResult(data) {
     try {
-      const collectionId = getCurrentCollectionId()
-      const cacheKey = getCacheKey(data.query, topK.value)
-
-      // Normalize query to lowercase for consistency
-      const normalizedQuery = data.query.toLowerCase().trim()
+      const collectionId = data.collectionId || getCurrentCollectionId()
+      const resultTopK = data.topK || topK.value
+      const cacheKey = getCacheKey(data.query, resultTopK, data.options)
 
       // Create cache entry
       const entry = {
-        query: normalizedQuery,
-        topK: topK.value,
+        query: data.query.trim(),
+        topK: resultTopK,
+        options: data.options || null,
+        warnings: data.warnings || '',
         results: data.results,
         aiResponses: data.aiResponses || [],
         timestamp: Date.now(),
@@ -105,9 +117,9 @@ export const useSearchStore = defineStore('search', () => {
     return getCollectionCache()
   }
 
-  function getCachedResult(query, topKValue) {
+  function getCachedResult(query, topKValue, options = null) {
     const collectionCache = getCollectionCache()
-    const cacheKey = getCacheKey(query, topKValue)
+    const cacheKey = getCacheKey(query, topKValue, options)
     return collectionCache[cacheKey] || null
   }
 
@@ -130,10 +142,10 @@ export const useSearchStore = defineStore('search', () => {
     }
   }
 
-  function deleteCacheEntry(query, topKValue) {
+  function deleteCacheEntry(query, topKValue, options = null) {
     const collectionId = getCurrentCollectionId()
     const collectionCache = getCollectionCache()
-    const cacheKey = getCacheKey(query, topKValue)
+    const cacheKey = getCacheKey(query, topKValue, options)
     delete collectionCache[cacheKey]
     // Trigger reactivity
     cache.value[collectionId] = { ...collectionCache }
@@ -209,6 +221,8 @@ export const useSearchStore = defineStore('search', () => {
     results.value = []
     aiResponses.value = []
     searched.value = false
+    lastQuery.value = ''
+    lastOptions.value = null
   }
 
   function setQuery(newQuery) {
@@ -223,8 +237,11 @@ export const useSearchStore = defineStore('search', () => {
     // State
     query,
     topK,
+    searchMode,
+    semanticWeight,
     results,
     lastQuery,
+    lastOptions,
     searched,
     aiResponses,
     cache, // Reactive cache ref

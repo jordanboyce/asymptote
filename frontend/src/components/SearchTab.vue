@@ -1,130 +1,81 @@
 <template>
-  <div class="flex flex-col h-full min-h-0">
+  <div class="search-view flex flex-col h-full min-h-0 min-w-0">
 
-    <!-- Header row -->
-    <div class="flex items-center justify-end flex-shrink-0">
-      <div class="flex items-center gap-2">
-        <button v-if="searchStore.searched" class="btn btn-sm btn-primary gap-1" @click="startNewSearch">
-          <Plus :size="14" />
-          New
-        </button>
-        <button v-if="cacheStats.count > 0" class="btn btn-sm btn-ghost gap-1" @click="historyModal.open()">
-          <History :size="14" />
-          History ({{ cacheStats.count }})
-        </button>
+    <header class="flex items-center justify-between gap-3 flex-shrink-0 mb-4">
+      <div class="min-w-0">
+        <h2 class="text-lg font-semibold">Search sources</h2>
+        <p class="text-sm text-base-content/75 truncate">{{ collectionStore.currentCollection?.name || 'Current collection' }}</p>
       </div>
-    </div>
+      <div class="flex items-center gap-1">
+        <button v-if="searchStore.searched" class="btn btn-ghost btn-sm min-h-11" :disabled="loading" @click="startNewSearch"><Plus :size="16" />New search</button>
+        <button v-if="cacheStats.count > 0" class="btn btn-ghost btn-sm min-h-11" :disabled="loading" @click="historyModal.open()"><History :size="16" />History</button>
+      </div>
+    </header>
 
-    <!-- Search Settings Drawer -->
-    <AISettingsDrawer
+    <SearchSettings
       v-model:open="searchSettingsOpen"
-      mode="multi"
-      title="Search Settings"
       :configured-providers="configuredProviderIds"
       :selected-providers="selectedProviders"
       @update:selected-providers="onSelectedProvidersUpdate"
-      v-model:top-k="searchStore.topK"
-      v-model:search-mode="searchMode"
+      :search-mode="searchMode"
       v-model:semantic-weight="semanticWeight"
       v-model:rerank="localRerank"
       v-model:synthesize="localSynthesize"
       v-model:model-overrides="providerModelOverrides"
-      top-k-label="Max results"
-      :top-k-max="50"
       @switch-tab="$emit('switch-tab', $event)"
     />
 
-    <!-- Search input area -->
-    <div class="flex-shrink-0 pt-3">
-      <div
-        class="relative rounded-2xl border border-base-300 bg-base-200/60 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all"
-      >
-        <!-- Slash command picker (floats above the input) -->
-        <SlashCommandPicker
-          ref="slashPickerRef"
-          :show="slashPickerOpen"
-          :model-value="searchStore.query"
-          @select="onSlashSelect"
-          @close="slashPickerOpen = false"
-        />
-
-        <label for="search-query" class="sr-only">Search your indexed documents</label>
-        <input
-          id="search-query"
-          ref="searchInputRef"
-          v-model="searchStore.query"
-          type="text"
-          class="w-full bg-transparent border-none outline-none text-sm px-4 pt-3 pb-2 placeholder:text-base-content/30"
-          placeholder="Search your indexed documents..."
-          :disabled="loading"
-          @input="onInputChange"
-          @keydown="onKeydown"
-          @blur="onInputBlur"
-        />
-
-        <!-- Bottom toolbar -->
-        <div class="flex items-center justify-between px-3 pb-2">
-          <!-- Left: inline controls -->
-          <div class="flex items-center gap-1.5">
-            <button
-              class="btn btn-ghost btn-xs btn-circle"
-              @click="searchSettingsOpen = !searchSettingsOpen"
-              title="Search settings"
-              aria-label="Open search settings"
-              :aria-expanded="searchSettingsOpen"
-            >
-              <SlidersHorizontal :size="14" />
-            </button>
-            <button
-              class="btn btn-ghost btn-xs btn-circle font-mono"
-              @mousedown.prevent="toggleSlashPicker"
-              title="Slash commands"
-              aria-label="Show slash commands"
-              :aria-expanded="slashPickerOpen"
-            >
-              /
-            </button>
-            <span class="badge badge-xs badge-ghost">{{ searchModeLabel }}</span>
-            <span class="badge badge-xs badge-ghost hidden sm:inline-flex">Top {{ searchStore.topK }}</span>
-            <template v-if="hasAnyProvider">
-              <span v-if="localRerank" class="badge badge-xs badge-outline badge-primary hidden sm:inline-flex">Rerank</span>
-              <span v-if="localSynthesize" class="badge badge-xs badge-outline badge-secondary hidden sm:inline-flex">Synth</span>
-            </template>
-          </div>
-
-          <!-- Right: search/cancel button -->
-          <button
-            v-if="!loading"
-            class="btn btn-circle btn-sm btn-primary transition-all"
-            :class="{ 'btn-disabled opacity-40': searchButtonDisabled }"
-            :disabled="searchButtonDisabled"
-            @click="search"
-            title="Search"
-            aria-label="Run search"
-          >
-            <SearchIcon :size="16" aria-hidden="true" />
-          </button>
-          <button
-            v-else
-            class="btn btn-circle btn-sm btn-error transition-all"
-            @click="cancelSearch"
-            title="Cancel search"
-            aria-label="Cancel search"
-          >
-            <X :size="16" aria-hidden="true" />
-          </button>
+    <div class="flex-shrink-0">
+      <div class="relative rounded-xl border border-base-content/25 bg-base-100 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary">
+        <SlashCommandPicker ref="slashPickerRef" :show="slashPickerOpen" :model-value="searchStore.query" @select="onSlashSelect" @close="slashPickerOpen = false" />
+        <div class="flex items-center gap-2 p-2">
+          <label for="search-query" class="sr-only">Search your indexed documents</label>
+          <input id="search-query" ref="searchInputRef" v-model="searchStore.query" type="text"
+            class="min-w-0 flex-1 bg-transparent border-none outline-none text-base px-2 min-h-11 placeholder:text-base-content/60"
+            placeholder="Ask a question or find a passage…" :disabled="loading"
+            @input="onInputChange" @keydown="onKeydown" @blur="onInputBlur" />
+          <button v-if="!loading" class="btn btn-primary min-h-11" :disabled="searchButtonDisabled" @click="search"><SearchIcon :size="17" /><span>Search</span></button>
+          <button v-else class="btn btn-outline min-h-11" @click="cancelSearch"><X :size="17" />Cancel</button>
         </div>
       </div>
+      <div class="search-toolbar flex flex-wrap items-center gap-x-2 gap-y-2 mt-3">
+        <div class="join" role="group" aria-label="Match passages by">
+          <button v-for="option in matchModes" :key="option.value" type="button"
+            class="btn btn-sm join-item min-h-11 font-medium"
+            :class="searchMode === option.value ? 'btn-primary' : 'btn-outline border-base-content/25'"
+            :aria-pressed="searchMode === option.value" :title="option.description" :disabled="loading"
+            @click="searchMode = option.value">{{ option.label }}</button>
+        </div>
 
-      <!-- Empty collection notice -->
-      <p v-if="searchDisabled" class="text-xs text-warning mt-1.5 text-center">
-        No data indexed in this collection. Add sources first.
-      </p>
-      <p v-else class="hidden sm:block text-xs text-base-content/30 mt-1.5 text-center">Enter to search</p>
+        <label class="option-chip" :class="{ 'is-on': localSynthesize && aiActive, 'is-unavailable': !configuredProviderIds.length }"
+          :title="configuredProviderIds.length ? 'Summarize the matching passages with source references' : 'Connect an AI provider in Settings to enable answers'">
+          <input v-model="localSynthesize" type="checkbox" class="toggle toggle-sm toggle-primary" :disabled="loading || !configuredProviderIds.length" />
+          <span>AI answer</span>
+        </label>
+        <label class="option-chip" :class="{ 'is-on': localRerank && aiActive, 'is-unavailable': !configuredProviderIds.length }"
+          :title="configuredProviderIds.length ? 'Let the AI put the most relevant passages first (slower)' : 'Connect an AI provider in Settings to enable ranking'">
+          <input v-model="localRerank" type="checkbox" class="toggle toggle-sm toggle-primary" :disabled="loading || !configuredProviderIds.length" />
+          <span>AI ranking</span>
+        </label>
+
+        <label class="option-chip">
+          <span>Results</span>
+          <select v-model.number="searchStore.topK" class="select select-sm min-h-9 h-9 w-auto pr-8 bg-transparent border-none focus:outline-none" aria-label="Maximum results" :disabled="loading">
+            <option v-for="n in resultLimits" :key="n" :value="n">{{ n }}</option>
+          </select>
+        </label>
+
+        <button type="button" class="btn btn-ghost btn-sm min-h-11 gap-1.5 ml-auto" :disabled="loading" @click="searchSettingsOpen = true" :aria-expanded="searchSettingsOpen">
+          <SlidersHorizontal :size="16" aria-hidden="true" />
+          <span>{{ providerSummary }}</span>
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm min-h-11 font-mono" :disabled="loading" @click="toggleSlashPicker" :aria-expanded="slashPickerOpen" title="Slash commands: /tools, /stats, /docs">/</button>
+      </div>
+      <p v-if="searchDisabled" class="text-sm text-base-content/75 mt-2">No searchable passages yet. Add sources to this collection to get started.</p>
     </div>
 
     <!-- Loading indicator -->
-    <div v-if="loading" class="flex-shrink-0 mt-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
+    <div v-if="loading" role="status" aria-live="polite" class="flex-shrink-0 mt-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
       <div class="flex items-center gap-2">
         <span class="loading loading-spinner loading-sm text-primary"></span>
         <span class="text-sm font-semibold">{{ loadingHeadline }}</span>
@@ -142,7 +93,7 @@
     </div>
 
     <!-- Error Alert -->
-    <div v-if="error" class="flex-shrink-0 mt-3 alert alert-error">
+    <div v-if="error" role="alert" class="flex-shrink-0 mt-3 alert alert-error">
       <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -150,8 +101,11 @@
       <span>{{ error }}</span>
     </div>
 
+    <p v-if="notice" role="status" class="text-sm text-base-content/75 mt-3">{{ notice }}</p>
+    <p v-if="providerWarnings" role="status" class="text-sm text-base-content/80 mt-3">{{ providerWarnings }}</p>
+
     <!-- Results area (scrollable) -->
-    <div class="flex-1 overflow-y-auto min-h-0 space-y-4 mt-4 pr-1">
+    <div class="flex-1 overflow-y-auto min-h-0 space-y-5 mt-4 pr-1 scroll-quiet" :aria-busy="loading">
 
     <!-- Empty state (no search run yet) -->
     <div
@@ -162,55 +116,41 @@
         <div class="w-11 h-11 rounded-full bg-base-200 flex items-center justify-center">
           <SearchIcon :size="20" class="text-base-content/50" aria-hidden="true" />
         </div>
-        <h3 class="text-sm font-medium text-base-content/80">Search your sources</h3>
-        <p class="text-xs text-base-content/40">Find relevant passages across everything indexed in this collection.</p>
+        <h3 class="text-lg font-semibold">Find the passage you need</h3>
+        <p class="text-sm text-base-content/75 max-w-md leading-relaxed">Search by idea, phrase, or question. Open a matching source to read it in context.</p>
       </div>
       <div class="flex flex-col gap-1.5 w-full max-w-md">
         <button
           v-for="suggestion in searchSuggestions"
           :key="suggestion"
-          class="btn btn-sm btn-ghost justify-start font-normal text-base-content/70 hover:text-base-content border border-base-300 hover:border-base-content/20"
+          class="btn btn-ghost min-h-11 h-auto py-3 justify-start text-left font-normal text-base-content border border-base-300"
           @click="useSearchSuggestion(suggestion)"
         >
-          <Sparkles :size="13" class="text-base-content/30 flex-shrink-0" aria-hidden="true" />
-          <span class="truncate">{{ suggestion }}</span>
+          <Sparkles :size="13" class="text-base-content/70 flex-shrink-0" aria-hidden="true" />
+          <span class="whitespace-normal">{{ suggestion }}</span>
         </button>
       </div>
     </div>
 
     <!-- Cached-result notice (served instantly from the local search cache) -->
-    <div v-if="servedFromCache && !loading" class="flex items-center gap-1.5 text-xs text-base-content/50">
-      <span>cached &middot; {{ formatTimeAgo(servedFromCache.timestamp) }}</span>
+    <div v-if="servedFromCache && !loading" class="flex items-center gap-1.5 text-sm text-base-content/75">
+      <span>Saved result &middot; {{ formatTimeAgo(servedFromCache.timestamp) }}</span>
       <span aria-hidden="true">&middot;</span>
-      <button class="link link-hover text-primary" @click="refreshSearch">Refresh</button>
+      <button class="link link-primary min-h-11" @click="refreshSearch">Refresh</button>
     </div>
 
-    <!-- AI Synthesis (Multiple Providers) -->
-    <div v-if="searchStore.aiResponses && searchStore.aiResponses.length > 0" class="space-y-4">
-      <div v-for="(aiResponse, index) in searchStore.aiResponses" :key="index"
-        class="card bg-primary/5 border border-primary/20">
-        <div class="card-body">
-          <h3 class="card-title text-base">
-            <span class="badge badge-sm" :class="{
-              'badge-success': aiResponse.provider === 'openai',
-              'badge-primary': aiResponse.provider === 'anthropic',
-              'badge-info': aiResponse.provider === 'ollama'
-            }">
-              AI
-            </span>
-            {{ getProviderDisplayNameLocal(aiResponse.provider) }} Answer
-          </h3>
-          <div v-if="aiResponse.synthesis" class="prose prose-sm max-w-none whitespace-pre-wrap">{{ aiResponse.synthesis
-          }}</div>
-          <div v-if="aiResponse.aiUsage" class="text-xs text-base-content/40 mt-1">
-            {{ aiResponse.aiUsage.features_used.join(', ') }}
-            <span v-if="aiResponse.aiUsage.total_input_tokens !== undefined">
-              &middot; {{ aiResponse.aiUsage.total_input_tokens + aiResponse.aiUsage.total_output_tokens }} tokens
-            </span>
+    <section v-if="synthesizedAnswers.length" aria-label="Synthesized answers" class="space-y-5">
+      <article v-for="(aiResponse, index) in synthesizedAnswers" :key="index" class="rounded-xl border border-base-300 bg-base-200/40 p-4 sm:p-6 min-w-0">
+        <header class="flex flex-wrap items-center justify-between gap-3 mb-5">
+          <div>
+            <h3 class="text-lg font-semibold">Answer</h3>
+            <p class="text-sm text-base-content/75 mt-1">{{ getProviderDisplayNameLocal(aiResponse.provider) }} · Based on retrieved passages</p>
           </div>
-        </div>
-      </div>
-    </div>
+          <button class="btn btn-ghost btn-sm min-h-11" @click="copyAnswer(aiResponse, index)"><Copy :size="15" />{{ copiedAnswer === index ? 'Copied' : 'Copy answer' }}</button>
+        </header>
+        <AnswerEvidence :content="aiResponse.synthesis" :sources="aiResponse.results || searchStore.results" />
+      </article>
+    </section>
 
     <!-- Slash command output (takes the place of results when a / command was run) -->
     <div
@@ -234,163 +174,21 @@
       <pre class="p-4 font-mono text-xs leading-snug whitespace-pre-wrap overflow-x-auto">{{ slashOutput.content }}</pre>
     </div>
 
-    <!-- Results -->
-    <div v-if="searchStore.results.length > 0" class="space-y-3">
-      <div class="flex justify-between items-baseline gap-3">
-        <h3 class="text-sm font-semibold text-base-content/80">
-          {{ searchStore.results.length }} result{{ searchStore.results.length === 1 ? '' : 's' }}
-        </h3>
-        <p class="text-xs text-base-content/50 truncate">"{{ searchStore.lastQuery }}"</p>
+    <section v-if="searchStore.results.length" aria-label="Matching passages">
+      <div class="flex flex-wrap items-baseline justify-between gap-2 border-b border-base-300 pb-3">
+        <h3 class="text-base font-semibold">{{ searchStore.results.length }} matching passage{{ searchStore.results.length === 1 ? '' : 's' }}</h3>
+        <span class="text-sm text-base-content/75">{{ sourceCount }} source{{ sourceCount === 1 ? '' : 's' }}<span v-if="resultsRankedByAI"> · Ordered by {{ getProviderDisplayNameLocal(resultsRankedByAI) }}</span></span>
+        <p class="w-full text-sm text-base-content/75 break-words">Results for “{{ searchStore.lastQuery }}”</p>
       </div>
-
-      <div v-for="(result, index) in searchStore.results" :key="index" class="card bg-base-100 border border-base-300 shadow-sm hover:border-base-content/15 transition-colors">
-        <div class="card-body p-4">
-          <div class="flex justify-between items-start">
-            <div class="flex-1">
-              <h4 class="card-title text-base gap-2">
-                <!-- Format-aware icon -->
-                <svg v-if="result.source_format === 'csv'" class="w-5 h-5 text-success" fill="none"
-                  stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                <svg v-else-if="result.source_format === 'pdf'" class="w-5 h-5 text-error" fill="none"
-                  stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <svg v-else-if="result.source_format === 'md'" class="w-5 h-5 text-info" fill="none"
-                  stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                </svg>
-                <!-- Code file icon -->
-                <svg v-else-if="isCodeFile(result.filename)" class="w-5 h-5 text-primary" fill="none"
-                  stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                </svg>
-                <svg v-else class="w-5 h-5 text-base-content/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                {{ result.filename }}
-              </h4>
-              <div class="flex flex-wrap gap-1 mt-1">
-                <!-- Page/Row/Line indicator -->
-                <div v-if="result.source_format === 'csv' && result.csv_row_number"
-                  class="badge badge-success badge-sm">
-                  Row {{ result.csv_row_number }}
-                </div>
-                <div v-else-if="isCodeFile(result.filename) && result.line_start" class="badge badge-primary badge-sm">
-                  Lines {{ result.line_start }}<span v-if="result.line_end && result.line_end !== result.line_start">-{{
-                    result.line_end }}</span>
-                </div>
-                <div v-else-if="isCodeFile(result.filename) && result.symbol_name" class="badge badge-primary badge-sm">
-                  {{ result.symbol_type || 'Symbol' }}: {{ result.symbol_name }}
-                </div>
-                <div v-else-if="isCodeFile(result.filename)" class="badge badge-primary badge-sm">
-                  Section {{ result.page_number }}
-                </div>
-                <div v-else class="badge badge-primary badge-sm">
-                  Page {{ result.page_number }}
-                </div>
-                <!-- Similarity score -->
-                <div class="badge badge-ghost badge-sm">
-                  Similarity: {{ (result.similarity_score * 100).toFixed(1) }}%
-                </div>
-                <!-- Extraction method indicator (for OCR) -->
-                <div v-if="result.extraction_method === 'ocr'" class="badge badge-warning badge-sm">
-                  OCR
-                </div>
-                <div v-else-if="result.extraction_method === 'hybrid'" class="badge badge-info badge-sm">
-                  Hybrid
-                </div>
-                <!-- Format badge -->
-                <div v-if="result.source_format" class="badge badge-outline badge-sm">
-                  {{ result.source_format.toUpperCase() }}
-                </div>
-                <!-- Sensitivity label in force for the source document -->
-                <div
-                  v-if="showLabel(result.sensitivity)"
-                  class="badge badge-sm"
-                  :class="labelBadgeClass(result.sensitivity)"
-                  :title="`Sensitivity: ${result.sensitivity}`"
-                >
-                  {{ result.sensitivity }}
-                </div>
-                <!-- Local reference indicator -->
-                <div v-if="result.source_type === 'local_reference'" class="badge badge-ghost badge-sm"
-                  title="Indexed in-place from local file">
-                  local
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- CSV Table View (v3.0 feature) -->
-          <div v-if="result.source_format === 'csv' && result.csv_columns && result.csv_values"
-            class="mt-3 overflow-x-auto">
-            <table class="table table-xs table-zebra">
-              <thead>
-                <tr>
-                  <th v-for="col in result.csv_columns" :key="col" class="bg-base-300 text-xs font-semibold">
-                    {{ col }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td v-for="col in result.csv_columns" :key="col" class="text-sm">
-                    <span v-html="highlightText(String(result.csv_values[col] || ''), searchStore.query)"></span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <!-- Standard text snippet (for non-CSV or CSV without row data) -->
-          <p v-else class="text-sm mt-2" v-html="highlightText(result.text_snippet, searchStore.query)"></p>
-
-          <div class="card-actions justify-end mt-4">
-            <!-- Open Page button - only for PDFs (page_url uses #page=N which only works in PDF viewers) -->
-            <a v-if="result.source_format === 'pdf'" :href="result.page_url" target="_blank"
-              class="btn btn-sm btn-primary">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-              </svg>
-              Open Page {{ result.page_number }}
-            </a>
-            <!-- View button - for non-PDF files (no page anchor support) -->
-            <a v-else :href="result.pdf_url" target="_blank" class="btn btn-sm btn-primary">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-              </svg>
-              View File
-            </a>
-            <a :href="result.pdf_url" target="_blank" class="btn btn-sm btn-ghost" :download="result.filename">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              Download
-            </a>
-          </div>
-        </div>
+      <div class="divide-y divide-base-300">
+        <SearchResult v-for="(result, index) in searchStore.results" :key="index" :result="result" :index="index" :query="searchStore.lastQuery" />
       </div>
-    </div>
+    </section>
 
-    <!-- No Results -->
-    <div v-else-if="searchStore.searched && !loading" class="alert alert-info">
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-6 h-6">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-      </svg>
-      <span>No results found. Try a different query or upload more sources.</span>
+    <div v-else-if="searchStore.searched && !loading" class="py-10 text-center">
+      <h3 class="font-semibold text-lg">No matching passages</h3>
+      <p class="text-sm text-base-content/75 mt-2 max-w-md mx-auto leading-relaxed">Try fewer words or switch to meaning-based search to find related ideas. Check that the sources you need are in this collection.</p>
+      <button class="btn btn-outline mt-4 min-h-11" @click="searchSettingsOpen = true">Adjust search settings</button>
     </div>
 
     </div><!-- end scrollable results area -->
@@ -402,12 +200,11 @@
 
         <div class="space-y-2 max-h-96 overflow-y-auto">
           <div v-for="(entry, index) in historyEntries" :key="index"
-            class="card bg-base-200 hover:bg-base-300 cursor-pointer transition-colors"
-            @click="loadHistoryEntry(entry)">
+            class="rounded-lg bg-base-200">
             <div class="card-body p-4">
               <div class="flex items-start justify-between gap-4">
                 <div class="flex-1">
-                  <div class="font-semibold text-sm">{{ entry.query }}</div>
+                  <button class="text-left font-semibold text-sm link link-hover min-h-11" @click="loadHistoryEntry(entry)">{{ entry.query }}</button>
                   <div class="text-xs text-base-content/60 mt-1">
                     {{ formatTimeAgo(entry.timestamp) }}
                     &middot; {{ entry.results?.length || 0 }} results
@@ -418,7 +215,7 @@
                   </div>
                 </div>
                 <button
-                  class="btn btn-ghost btn-xs text-error"
+                  class="btn btn-ghost btn-sm min-h-11 min-w-11 text-error"
                   @click.stop="deleteHistoryEntry(entry)"
                   title="Delete from history"
                   :aria-label="`Delete history entry: ${entry.query}`"
@@ -455,12 +252,15 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import http from '../utils/http'
-import { Plus, History, SlidersHorizontal, Sparkles, X, Search as SearchIcon } from 'lucide-vue-next'
-import { labelBadgeClass, showLabel } from '../utils/governance'
+import { Plus, History, SlidersHorizontal, Sparkles, Copy, X, Search as SearchIcon } from 'lucide-vue-next'
+import { answerWithReferences } from '../utils/answerEvidence'
+import AnswerEvidence from './AnswerEvidence.vue'
+import SearchResult from './SearchResult.vue'
+import { storeToRefs } from 'pinia'
 import { useSearchStore } from '../stores/searchStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
-import AISettingsDrawer from './AISettingsDrawer.vue'
+import SearchSettings from './SearchSettings.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
 import { useModal } from '../composables/useModal'
 import { useProviderStore } from '../stores/providerStore'
@@ -473,6 +273,7 @@ import {
   getAISettings,
   migrateLegacySettings,
   resolveProvider,
+  getProviderConfig,
 } from '../utils/aiProviders.js'
 
 const emit = defineEmits(['stats-updated', 'switch-tab'])
@@ -485,7 +286,7 @@ const statsStore = useStatsStore()
 const searchDisabled = computed(() => statsStore.chunks === 0)
 
 const searchButtonDisabled = computed(() => {
-  if (!searchStore.query.trim()) return true
+  if (loading.value || !searchStore.query.trim()) return true
   // Slash commands bypass the vector index and don't need indexed content.
   if (isSlashCommand(searchStore.query)) return false
   return searchDisabled.value
@@ -498,6 +299,20 @@ const collectionStore = useCollectionStore()
 // Local state for loading and error (not persisted)
 const loading = ref(false)
 const error = ref('')
+const notice = ref('')
+const providerWarnings = ref('')
+const copiedAnswer = ref(null)
+const synthesizedAnswers = computed(() => searchStore.aiResponses.filter(response => response.synthesis))
+const sourceCount = computed(() => new Set(searchStore.results.map(result => result.document_id || result.filename)).size)
+let copyTimer
+async function copyAnswer(response, index) {
+  try {
+    await navigator.clipboard.writeText(answerWithReferences({ content: response.synthesis, sources: response.results || searchStore.results }))
+    copiedAnswer.value = index
+    clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copiedAnswer.value = null }, 2000)
+  } catch { notice.value = 'Could not copy the answer. Select the text to copy it manually.' }
+}
 
 // Slash command picker + inline output (rendered above results)
 const slashPickerOpen = ref(false)
@@ -524,7 +339,7 @@ const onInputBlur = () => {
 
 const onKeydown = (e) => {
   if (slashPickerOpen.value && slashPickerRef.value?.handleKeydown(e)) return
-  if (e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.isComposing) {
     e.preventDefault()
     search()
   }
@@ -553,7 +368,7 @@ const dismissSlashOutput = () => {
 
 // Empty state (no search run yet, nothing else on screen)
 const searchSuggestions = [
-  'summarize the key points of these sources',
+  'What are the key requirements?',
   'important dates and deadlines',
   'definitions of key terms',
 ]
@@ -567,14 +382,29 @@ const useSearchSuggestion = (suggestion) => {
   nextTick(() => searchInputRef.value?.focus())
 }
 
-// Search mode options
-const searchMode = ref('hybrid')  // 'semantic', 'keyword', or 'hybrid'
-const semanticWeight = ref(0.7)     // Weight for semantic search in hybrid mode (0-1)
+// Match settings live in the store (persisted) so they survive tab switches.
+const { searchMode, semanticWeight } = storeToRefs(searchStore)
 
-const searchModeLabel = computed(() => {
-  if (searchMode.value === 'keyword') return 'Keyword'
-  if (searchMode.value === 'hybrid') return `Hybrid ${Math.round(semanticWeight.value * 100)}%`
-  return 'Semantic'
+const matchModes = [
+  { value: 'hybrid', label: 'Meaning + keywords', description: 'Combine related ideas with matching words (recommended)' },
+  { value: 'semantic', label: 'Meaning', description: 'Find related ideas, even when the wording differs' },
+  { value: 'keyword', label: 'Keywords', description: 'Prioritize matching words, names, and terms' },
+]
+const searchModeLabel = computed(() => matchModes.find(option => option.value === searchMode.value)?.label || 'Meaning')
+
+// Result-count presets; an unusual saved value stays selectable rather than being silently changed.
+const resultLimits = computed(() => {
+  const presets = [5, 10, 20, 50]
+  const current = Number(searchStore.topK)
+  return presets.includes(current) ? presets : [...presets, current].sort((a, b) => a - b)
+})
+
+// Which passages list is on screen: the first successful provider's order when
+// AI ranking ran, otherwise the plain retrieval order.
+const resultsRankedByAI = computed(() => {
+  const options = searchStore.lastOptions
+  if (!options?.rerank || !options.providers?.length) return null
+  return searchStore.aiResponses[0]?.provider || options.providers[0].id
 })
 
 // AbortController for cancelling ongoing searches
@@ -593,7 +423,6 @@ const searchSettingsOpen = ref(false)
 
 // Check which providers are configured
 const configuredProviderIds = ref([])
-const hasAnyProvider = computed(() => configuredProviderIds.value.length > 0)
 
 // Selected providers for this search session
 const PROVIDER_SELECTION_KEY = 'asymptote_selected_providers'
@@ -618,11 +447,12 @@ const initializeProviders = () => {
   if (saved) {
     try { savedSelection = JSON.parse(saved) } catch { savedSelection = [] }
   }
+  if (!Array.isArray(savedSelection)) savedSelection = []
 
   // Filter to only configured providers
   const validProviders = savedSelection.filter(p => configuredProviderIds.value.includes(p))
 
-  if (validProviders.length > 0) {
+  if (validProviders.length > 0 || saved === '[]') {
     // The saved multi-selection is Search's explicit per-surface override.
     selectedProviders.value = validProviders
   } else {
@@ -668,7 +498,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  stopLoadingPhaseAnimation()
+  abortController?.abort()
+  clearTimeout(copyTimer)
 })
 
 // Get configured AI settings from Settings tab (features only - rerank/synthesize)
@@ -691,56 +522,19 @@ const aiActive = computed(() => {
   return aiFeaturesEnabled.value && selectedProviders.value.length > 0
 })
 
-const loadingPhaseIndex = ref(0)
-let loadingPhaseTimer = null
-
-const loadingHeadline = computed(() => {
-  if (!aiActive.value) return 'Searching indexed sources'
-  if (selectedProviders.value.includes('ollama') && selectedProviders.value.length === 1) {
-    return 'Processing with local AI'
-  }
-  return 'Processing with AI providers'
+// Label for the settings button: which AI will answer, or why none will.
+const providerSummary = computed(() => {
+  if (!configuredProviderIds.value.length) return 'No AI connected'
+  const count = selectedProviders.value.length
+  if (!count) return 'No AI selected'
+  if (count === 1) return getProviderDisplayName(selectedProviders.value[0])
+  return `${count} AI providers`
 })
 
-const loadingPhases = computed(() => {
-  const phases = ['Scanning indexed chunks', 'Scoring relevance']
-  if (aiActive.value) {
-    const settings = getAISettings()
-    if (settings.rerank) phases.push('AI reranking in progress')
-    if (settings.synthesize) phases.push('Generating synthesized answer')
-    if (selectedProviders.value.includes('ollama')) phases.push('Waiting for local model response')
-  }
-  phases.push('Finalizing results')
-  return phases
-})
-
-const loadingPhaseMessage = computed(() => {
-  const phases = loadingPhases.value
-  return phases[loadingPhaseIndex.value % phases.length]
-})
-
-const startLoadingPhaseAnimation = () => {
-  if (loadingPhaseTimer) clearInterval(loadingPhaseTimer)
-  loadingPhaseIndex.value = 0
-  loadingPhaseTimer = setInterval(() => {
-    loadingPhaseIndex.value = (loadingPhaseIndex.value + 1) % loadingPhases.value.length
-  }, 1300)
-}
-
-const stopLoadingPhaseAnimation = () => {
-  if (loadingPhaseTimer) {
-    clearInterval(loadingPhaseTimer)
-    loadingPhaseTimer = null
-  }
-}
-
-watch(loading, (isLoading) => {
-  if (isLoading) {
-    startLoadingPhaseAnimation()
-  } else {
-    stopLoadingPhaseAnimation()
-  }
-})
+const loadingHeadline = computed(() => aiActive.value ? 'Searching and preparing AI results' : 'Searching your sources')
+const loadingPhaseMessage = computed(() => aiActive.value
+  ? 'AI answers and ranking can take a little longer. You can cancel at any time.'
+  : 'Finding passages that match your query.')
 
 const cacheStats = computed(() => searchStore.getCacheStats())
 
@@ -754,33 +548,6 @@ const historyEntries = computed(() => {
 })
 
 const getProviderDisplayNameLocal = getProviderDisplayName
-
-// Code file extensions for display logic
-const CODE_EXTENSIONS = ['.pas', '.dpr', '.dpk', '.pp', '.inc', '.dfm', '.mod', '.def', '.mi', '.asm', '.s']
-
-const isCodeFile = (filename) => {
-  if (!filename) return false
-  const ext = '.' + filename.split('.').pop().toLowerCase()
-  return CODE_EXTENSIONS.includes(ext)
-}
-
-const escapeRegExp = (str) => {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-const highlightText = (text, searchQuery) => {
-  if (!searchQuery) return text
-
-  const keywords = searchQuery.toLowerCase().split(/\s+/).filter(k => k.length > 2)
-  let result = text
-
-  keywords.forEach(keyword => {
-    const regex = new RegExp(`(${escapeRegExp(keyword)})`, 'gi')
-    result = result.replace(regex, '<mark class="bg-warning text-warning-content px-1 rounded">$1</mark>')
-  })
-
-  return result
-}
 
 const formatTimeAgo = (timestamp) => {
   const seconds = Math.floor((Date.now() - timestamp) / 1000)
@@ -797,14 +564,21 @@ const serveCachedResult = (entry) => {
   searchStore.setSearchResults({
     query: entry.query,
     results: entry.results,
-    aiResponses: entry.aiResponses
+    aiResponses: entry.aiResponses,
+    options: entry.options
   }, { cache: false })
   servedFromCache.value = { timestamp: entry.timestamp }
+  providerWarnings.value = entry.warnings || ''
+  error.value = ''
+  notice.value = ''
+  slashOutput.value = null
   statsStore.fetchStatsDebounced()
 }
 
 // Re-run the current query, bypassing the cache.
 const refreshSearch = async () => {
+  if (loading.value) return
+  searchStore.setQuery(searchStore.lastQuery)
   await executeSearch()
 }
 
@@ -814,12 +588,20 @@ const loadHistoryEntry = (entry) => {
   // Update the query and topK values
   searchStore.setQuery(entry.query)
   searchStore.setTopK(entry.topK)
+  if (entry.options) {
+    searchMode.value = entry.options.mode
+    semanticWeight.value = entry.options.semanticWeight
+    localRerank.value = entry.options.rerank
+    localSynthesize.value = entry.options.synthesize
+    onSelectedProvidersUpdate(entry.options.providers.map(p => p.id).filter(id => configuredProviderIds.value.includes(id)))
+    providerModelOverrides.value = Object.fromEntries(entry.options.providers.map(p => [p.id, p.model]))
+  }
 
   historyModal.close()
 }
 
 const deleteHistoryEntry = (entry) => {
-  searchStore.deleteCacheEntry(entry.query, entry.topK)
+  searchStore.deleteCacheEntry(entry.query, entry.topK, entry.options)
 }
 
 const clearAllHistory = () => {
@@ -835,12 +617,18 @@ const startNewSearch = () => {
   searchStore.setQuery('')
   error.value = ''
   servedFromCache.value = null
+  notice.value = ''
+  providerWarnings.value = ''
+  slashOutput.value = null
+  nextTick(() => searchInputRef.value?.focus())
 }
 
 const search = async () => {
   if (!searchStore.query.trim()) return
 
   error.value = ''
+  notice.value = ''
+  providerWarnings.value = ''
   slashPickerOpen.value = false
 
   // Intercept slash commands before any search machinery — they read collection
@@ -855,7 +643,7 @@ const search = async () => {
 
   // Exact cache hit — serve instantly; the "cached · N ago · Refresh" line
   // above the results lets the user re-run it fresh.
-  const cached = searchStore.getCachedResult(searchStore.query, searchStore.topK)
+  const cached = searchStore.getCachedResult(searchStore.query, searchStore.topK, currentOptions())
   if (cached) {
     serveCachedResult(cached)
     return
@@ -864,110 +652,125 @@ const search = async () => {
   await executeSearch()
 }
 
+// Include every result-affecting setting in the cache identity, never API keys.
+const currentOptions = () => ({
+  mode: searchMode.value,
+  semanticWeight: semanticWeight.value,
+  rerank: localRerank.value,
+  synthesize: localSynthesize.value,
+  providers: selectedProviders.value.map(id => ({
+    id, model: providerModelOverrides.value[id] || getProviderConfig(id)?.model || '',
+    baseUrl: getProviderConfig(id)?.baseUrl || '',
+  })),
+})
+
 const cancelSearch = () => {
-  if (abortController) {
-    abortController.abort()
-    abortController = null
-  }
+  abortController?.abort()
+  abortController = null
   loading.value = false
-  // Note: Backend/Ollama may continue processing, but we stop waiting for the response
-  error.value = 'Search cancelled (backend may still be processing)'
+  notice.value = 'Search cancelled. You can edit your query and try again.'
 }
 
+watch(() => collectionStore.currentCollectionId, () => {
+  cancelSearch()
+  searchStore.clearResults()
+  servedFromCache.value = null
+  slashOutput.value = null
+  notice.value = ''
+  error.value = ''
+  providerWarnings.value = ''
+})
+
 const executeSearch = async () => {
-  // Create new AbortController for this search
-  abortController = new AbortController()
-  const signal = abortController.signal
+  if (loading.value || !searchStore.query.trim()) return
+  const controller = new AbortController()
+  abortController = controller
+  const { signal } = controller
+  const query = searchStore.query.trim()
+  const topK = Math.max(1, Math.min(50, Math.round(Number(searchStore.topK)) || 10))
+  searchStore.topK = topK
+  const collectionId = collectionStore.currentCollectionId
+  const options = currentOptions()
+  const isCurrent = () => !signal.aborted && abortController === controller && collectionStore.currentCollectionId === collectionId
+  const body = { query, top_k: topK, mode: options.mode, semantic_weight: options.semanticWeight }
+  const endpoint = `/search?collection_id=${encodeURIComponent(collectionId)}`
 
   loading.value = true
   error.value = ''
+  notice.value = ''
+  providerWarnings.value = ''
   servedFromCache.value = null
+  searchStore.clearResults()
 
   try {
-    const aiSettings = getAISettings()
-    const useAI = aiActive.value
-
-    if (useAI && selectedProviders.value.length > 0) {
-      // Execute search with each selected provider in parallel
-      const searchPromises = selectedProviders.value.map(async (provider) => {
-        const body = {
-          query: searchStore.query,
-          top_k: searchStore.topK,
-          mode: searchMode.value,
-          semantic_weight: semanticWeight.value,
-          ai: {
-            provider: getAPIProviderName(provider),
-            rerank: !!aiSettings.rerank,
-            synthesize: !!aiSettings.synthesize
-          }
-        }
-
-        const headers = buildProviderHeaders(provider, providerModelOverrides.value[provider] || null)
-
+    if ((options.rerank || options.synthesize) && options.providers.length) {
+      const providerResults = await Promise.all(options.providers.map(async ({ id: provider, model }) => {
         try {
-          const collectionId = collectionStore.currentCollectionId
-          const response = await http.post(`/search?collection_id=${collectionId}`, body, { headers, signal, timeout: 0 }) // AI synthesis can run long; cancel is explicit
-          return {
-            provider,
-            results: response.data.results,
-            synthesis: response.data.synthesis,
-            aiUsage: response.data.ai_usage
-          }
+          const headers = buildProviderHeaders(provider, model || null)
+          const response = await http.post(endpoint, {
+            ...body,
+            ai: { provider: getAPIProviderName(provider), rerank: options.rerank, synthesize: options.synthesize },
+          }, { headers, signal, timeout: 0 })
+          return { provider, results: response.data.results, synthesis: response.data.synthesis, aiUsage: response.data.ai_usage }
         } catch (err) {
-          // Check if this was a cancellation
-          if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
-            throw err // Re-throw to be caught by outer catch
-          }
-          console.error(`Search with ${provider} failed:`, err)
-          return { provider, error: err.response?.data?.detail || `${provider} failed` }
+          if (signal.aborted) throw err
+          return { provider, error: err.response?.data?.detail || err.message || 'Request failed' }
         }
-      })
-
-      const providerResults = await Promise.all(searchPromises)
-      const successfulResults = providerResults.filter(r => !r.error)
-
-      if (successfulResults.length === 0) {
-        throw new Error(providerResults[0]?.error || 'All AI searches failed')
-      }
-
-      // Use results from first successful provider, collect all AI responses
-      const aiResponses = successfulResults
-        .filter(r => r.synthesis || r.aiUsage)
-        .map(r => ({ provider: r.provider, synthesis: r.synthesis, aiUsage: r.aiUsage }))
-
+      }))
+      if (!isCurrent()) return
+      const successful = providerResults.filter(result => !result.error)
+      if (!successful.length) throw new Error(providerResults[0]?.error || 'All AI searches failed')
+      const failed = providerResults.filter(result => result.error)
+      const missingAnswers = options.synthesize ? successful.filter(result => !result.synthesis) : []
+      providerWarnings.value = [
+        ...failed.map(result => `${getProviderDisplayName(result.provider)} could not complete this search.`),
+        ...missingAnswers.map(result => `${getProviderDisplayName(result.provider)} returned passages without an AI answer.`),
+      ].join(' ')
       searchStore.setSearchResults({
-        query: searchStore.query,
-        results: successfulResults[0].results,
-        aiResponses
-      })
+        query, topK, collectionId, options,
+        results: successful[0].results,
+        // Each provider can rerank differently; its citations must use its own order.
+        aiResponses: successful,
+        warnings: providerWarnings.value,
+      }, { cache: !failed.length && !missingAnswers.length })
     } else {
-      // Regular search without AI
-      const body = {
-        query: searchStore.query,
-        top_k: searchStore.topK,
-        mode: searchMode.value,
-        semantic_weight: semanticWeight.value
-      }
-      const collectionId = collectionStore.currentCollectionId
-      const response = await http.post(`/search?collection_id=${collectionId}`, body, { signal, timeout: 0 })
-      searchStore.setSearchResults({
-        query: searchStore.query,
-        results: response.data.results
-      })
+      const response = await http.post(endpoint, body, { signal, timeout: 0 })
+      if (!isCurrent()) return
+      searchStore.setSearchResults({ query, topK, collectionId, options, results: response.data.results })
     }
-
     statsStore.fetchStatsDebounced()
   } catch (err) {
-    // Check if this was a cancellation - don't show as error
-    if (err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
-      error.value = 'Search cancelled'
-      return
-    }
+    if (!isCurrent()) return
     error.value = err.response?.data?.detail || err.message || 'Search failed. Please try again.'
-    searchStore.clearResults()
   } finally {
-    loading.value = false
-    abortController = null
+    if (abortController === controller) {
+      loading.value = false
+      abortController = null
+    }
   }
 }
 </script>
+
+<style scoped>
+/* Toolbar chips: visible on/off state, 44px touch target, same rhythm as .btn-sm. */
+.option-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding-inline: 0.75rem;
+  border: 1px solid color-mix(in oklab, var(--color-base-content) 25%, transparent);
+  border-radius: var(--radius-field, 0.5rem);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.option-chip:hover { background-color: var(--color-base-200); }
+.option-chip.is-on {
+  border-color: color-mix(in oklab, var(--color-primary) 60%, transparent);
+  background-color: color-mix(in oklab, var(--color-primary) 8%, transparent);
+}
+.option-chip.is-unavailable { color: color-mix(in oklab, var(--color-base-content) 55%, transparent); cursor: not-allowed; }
+.option-chip:has(:focus-visible) { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+</style>
