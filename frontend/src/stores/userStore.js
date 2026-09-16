@@ -22,6 +22,12 @@ export const useUserStore = defineStore('user', () => {
   const sensitivityLevels = ref(['public', 'internal', 'confidential', 'restricted'])
   // Set by anything that wants the policy shown on demand (sidebar link).
   const aupOpen = ref(false)
+  // Online registration (/register): the mode the deployment runs in and,
+  // for admins, how many requests are waiting for review.
+  const registrationMode = ref('off')
+  const pendingRegistrations = ref(0)
+  // Per-collection storage cap in bytes (0 = unlimited).
+  const collectionStorageLimitBytes = ref(0)
 
   const isPrivateMode = computed(() => privateCollections.value)
   // Only an admin on a deployment with edge admission configured can invite
@@ -45,6 +51,9 @@ export const useUserStore = defineStore('user', () => {
       if (Array.isArray(response.data.sensitivity_levels)) {
         sensitivityLevels.value = response.data.sensitivity_levels
       }
+      registrationMode.value = response.data.registration_mode || 'off'
+      pendingRegistrations.value = response.data.pending_registrations || 0
+      collectionStorageLimitBytes.value = response.data.collection_storage_limit_bytes || 0
       loaded.value = true
     } catch (err) {
       console.error('Failed to load user info:', err)
@@ -84,6 +93,9 @@ export const useUserStore = defineStore('user', () => {
     aupOpen,
     contentPolicyAction,
     sensitivityLevels,
+    registrationMode,
+    pendingRegistrations,
+    collectionStorageLimitBytes,
     isPrivateMode,
     canInviteNewPeople,
     mustAcceptAup,

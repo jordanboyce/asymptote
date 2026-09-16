@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 from config import settings
-from services import audit
+from services import audit, storage_quota
 from services.app_database import app_db
 from services.indexer_manager import indexer_manager
 from services.collection_service import collection_service
@@ -82,6 +82,18 @@ class _BulkFileWork:
     stage: Callable[[], Path]
     finalize: Optional[Callable[[Any, Any], None]] = None
     cleanup: Optional[Callable[[], None]] = None
+    # Bytes of the source, known before staging so the storage cap can refuse
+    # the file without copying it; held_bytes is the reservation taken
+    # against the cap until the row commits or the file fails.
+    size_bytes: int = 0
+    held_bytes: int = 0
+
+
+def _size_of(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 class UploadService:
@@ -331,7 +343,8 @@ class UploadService:
                         shutil.copy2(str(source_path), str(final_path))
                     return final_path
 
-                return _BulkFileWork(display_name=source_path.name, stage=stage)
+                return _BulkFileWork(display_name=source_path.name, stage=stage,
+                                     size_bytes=_size_of(source_path))
 
             def stage() -> Path:
                 return source_path
@@ -343,7 +356,8 @@ class UploadService:
                     source_type="local_reference",
                 )
 
-            return _BulkFileWork(display_name=source_path.name, stage=stage, finalize=finalize)
+            return _BulkFileWork(display_name=source_path.name, stage=stage, finalize=finalize,
+                                 size_bytes=_size_of(source_path))
 
         logger.info(
             f"Starting local index job {job_id}: {len(file_paths)} files, copy={copy_to_library}"
@@ -482,7 +496,8 @@ class UploadService:
                 except Exception:
                     pass
 
-            return _BulkFileWork(display_name=safe_filename, stage=stage, cleanup=cleanup)
+            return _BulkFileWork(display_name=safe_filename, stage=stage, cleanup=cleanup,
+                                 size_bytes=_size_of(source_path))
 
         logger.info(
             f"Starting repo index job {job_id}: {len(file_paths)} files from {repo_path}"
@@ -576,6 +591,8 @@ class UploadService:
             def fail_file(idx: int, work: _BulkFileWork, error: Exception):
                 nonlocal resolved
                 resolved += 1
+                storage_quota.release(collection_id, work.held_bytes)
+                work.held_bytes = 0
                 logger.error(f"Failed to index {work.display_name}: {error}")
                 results["failed_files"].append({
                     "filename": work.display_name,
@@ -601,6 +618,9 @@ class UploadService:
 
             def complete_file(idx: int, work: _BulkFileWork, doc_metadata):
                 nonlocal resolved
+                # The row is committed: it now counts through SUM(file_size).
+                storage_quota.release(collection_id, work.held_bytes)
+                work.held_bytes = 0
                 try:
                     if work.finalize:
                         work.finalize(indexer, doc_metadata)
@@ -700,6 +720,10 @@ class UploadService:
             )
 
             def stage_and_prepare(work: _BulkFileWork):
+                # Storage cap first: a refused file is never copied or read.
+                work.held_bytes = storage_quota.take(
+                    collection_id, work.size_bytes, work.display_name
+                )
                 index_path = work.stage()
                 return index_path, indexer.prepare_document(
                     index_path, index_path.name,

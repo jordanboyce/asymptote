@@ -1,9 +1,60 @@
 @import "tailwindcss";
+/* Self-hosted variable Inter: one font file, every weight, no CDN — the
+   app has to look the same air-gapped as it does online. */
+@import "@fontsource-variable/inter";
 /* Only the themes the Settings picker offers — "all" ships every DaisyUI
    theme in the bundle for no benefit. `--default`/`--prefersdark` keep
    light/dark following the OS scheme until the user picks explicitly. */
 @plugin "daisyui" {
    themes: light --default, dark --prefersdark, cupcake, dracula, nord;
+}
+
+/* ─── Type & surface tokens ─────────────────────────────────────────── */
+/* The design language is theme-agnostic (see .impeccable.md): it comes
+   from type, rhythm and restraint, never from a palette. These tokens are
+   the only global opinions — a real typeface with its optical features on,
+   tight tracking at display sizes, and one radius scale used everywhere. */
+@theme {
+  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-optical-sizing: auto;
+  /* cv11: single-storey a; ss03: open digits; tnum stays opt-in via .tabular-nums */
+  font-feature-settings: "cv11", "ss03", "calt";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* NB: rules in this file are unlayered, so they beat DaisyUI's layered
+   component styles regardless of specificity. Keep them to things that
+   should win everywhere (type, focus) and never set sizes or radii on
+   bare elements — a `button { font: inherit }` here would flatten every
+   .btn-xs to body size. */
+h1, h2, h3 { letter-spacing: -0.01em; }
+
+/* Focus is the one affordance that must be visible in every theme. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--color-primary) 80%, transparent);
+  outline-offset: 2px;
+}
+
+/* Quiet scrollbars in the two side panels and long lists. */
+.scroll-quiet { scrollbar-width: thin; scrollbar-color: color-mix(in oklch, var(--color-base-content) 25%, transparent) transparent; }
+.scroll-quiet::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-quiet::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--color-base-content) 22%, transparent); border-radius: 999px; }
+.scroll-quiet::-webkit-scrollbar-track { background: transparent; }
+
+/* Motion is opt-out for people who ask for it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
 /* ─── DaisyUI 5 compat: stacked form groups ─────────────────────────────── */

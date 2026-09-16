@@ -20,7 +20,7 @@ from services.db_backend import DatabaseBackend
 logger = logging.getLogger(__name__)
 
 # Reuse the same helper for document counts (reads per-collection SQLite metadata.db)
-from services.app_database import _get_document_count_from_metadata
+from services.app_database import _get_document_count_from_metadata, _get_storage_bytes_from_metadata
 
 
 class PostgresBackend(DatabaseBackend):
@@ -258,6 +258,25 @@ class PostgresBackend(DatabaseBackend):
                         filename TEXT
                     )
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS registration_requests (
+                        id TEXT PRIMARY KEY,
+                        email TEXT NOT NULL UNIQUE,
+                        name TEXT,
+                        organization TEXT,
+                        note TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        requested_at TEXT NOT NULL,
+                        decided_at TEXT,
+                        decided_by TEXT,
+                        decision_note TEXT,
+                        request_ip TEXT,
+                        attempts INTEGER NOT NULL DEFAULT 1
+                    )
+                """)
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_registration_status ON registration_requests(status, requested_at DESC)"
+                )
 
                 # Ensure default user
                 cur.execute("SELECT id FROM users WHERE id = 'default'")
@@ -421,6 +440,7 @@ class PostgresBackend(DatabaseBackend):
                 coll = self._fetchone_dict(cur)
                 if coll:
                     coll['document_count'] = _get_document_count_from_metadata(collection_id)
+                    coll['storage_bytes'] = _get_storage_bytes_from_metadata(collection_id)
                 return coll
         finally:
             self._put(conn)
@@ -436,6 +456,7 @@ class PostgresBackend(DatabaseBackend):
                 colls = self._fetchall_dict(cur)
                 for c in colls:
                     c['document_count'] = _get_document_count_from_metadata(c['id'])
+                    c['storage_bytes'] = _get_storage_bytes_from_metadata(c['id'])
                 return colls
         finally:
             self._put(conn)
@@ -656,6 +677,7 @@ class PostgresBackend(DatabaseBackend):
                 results = self._fetchall_dict(cur)
                 for c in results:
                     c['document_count'] = _get_document_count_from_metadata(c['id'])
+                    c['storage_bytes'] = _get_storage_bytes_from_metadata(c['id'])
                     c['shared'] = True
                 return results
         finally:
@@ -1319,6 +1341,106 @@ class PostgresBackend(DatabaseBackend):
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM blocked_hashes ORDER BY blocked_at DESC")
                 return self._fetchall_dict(cur)
+        finally:
+            self._put(conn)
+
+    # ── Registration requests ────────────────────────────────
+
+    def upsert_registration_request(
+        self, email: str, name: str = "", organization: str = "", note: str = "",
+        request_ip: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        email = email.strip().lower()
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM registration_requests WHERE email = %s", (email,))
+                row = self._fetchone_dict(cur)
+                if row is None:
+                    rid = str(uuid.uuid4())
+                    cur.execute(
+                        """INSERT INTO registration_requests
+                           (id, email, name, organization, note, status, requested_at, request_ip, attempts)
+                           VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, 1)""",
+                        (rid, email, name or "", organization or "", note or "", ts, request_ip),
+                    )
+                    conn.commit()
+                    return self.get_registration_request(rid)
+                if row["status"] == "approved":
+                    return row
+                cur.execute(
+                    """UPDATE registration_requests
+                          SET name = %s, organization = %s, note = %s, status = 'pending',
+                              requested_at = %s, decided_at = NULL, decided_by = NULL,
+                              decision_note = NULL, request_ip = %s, attempts = attempts + 1
+                        WHERE id = %s""",
+                    (name or row["name"] or "", organization or row["organization"] or "",
+                     note or row["note"] or "", ts, request_ip, row["id"]),
+                )
+                conn.commit()
+                return self.get_registration_request(row["id"])
+        finally:
+            self._put(conn)
+
+    def get_registration_request(self, request_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM registration_requests WHERE id = %s", (request_id,))
+                return self._fetchone_dict(cur)
+        finally:
+            self._put(conn)
+
+    def get_registration_request_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM registration_requests WHERE email = %s", (email.strip().lower(),))
+                return self._fetchone_dict(cur)
+        finally:
+            self._put(conn)
+
+    def list_registration_requests(self, status: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                if status:
+                    cur.execute(
+                        "SELECT * FROM registration_requests WHERE status = %s ORDER BY requested_at DESC LIMIT %s",
+                        (status, limit),
+                    )
+                else:
+                    cur.execute("SELECT * FROM registration_requests ORDER BY requested_at DESC LIMIT %s", (limit,))
+                return self._fetchall_dict(cur)
+        finally:
+            self._put(conn)
+
+    def decide_registration_request(
+        self, request_id: str, status: str, decided_by: Optional[str], note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE registration_requests
+                          SET status = %s, decided_at = %s, decided_by = %s, decision_note = %s
+                        WHERE id = %s""",
+                    (status, ts, decided_by, note or "", request_id),
+                )
+                updated = cur.rowcount > 0
+            conn.commit()
+        finally:
+            self._put(conn)
+        return self.get_registration_request(request_id) if updated else None
+
+    def count_registration_requests(self, status: str = "pending") -> int:
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM registration_requests WHERE status = %s", (status,))
+                return int(cur.fetchone()[0] or 0)
         finally:
             self._put(conn)
 

@@ -59,11 +59,19 @@ http.interceptors.response.use(
 
     if (ui.offline) ui.offline = false
     const { status, data } = error.response
+    // `detail` is a string for most errors; the storage cap (413) sends a
+    // structured object whose own `detail` carries the sentence.
+    const detailText =
+      typeof data?.detail === 'string'
+        ? data.detail
+        : (data?.detail && typeof data.detail === 'object' && typeof data.detail.detail === 'string')
+          ? data.detail.detail
+          : null
 
     if (status === 429) {
       const seconds = data?.retry_after_seconds
       const message =
-        data?.detail ||
+        detailText ||
         `Rate limit reached — try again in ${seconds ?? 'a few'}s.`
       const now = Date.now()
       if (now - lastRateLimitToastAt > 3000) {
@@ -81,9 +89,11 @@ http.interceptors.response.use(
 
     return Promise.reject({
       status,
-      message: data?.detail || error.response.statusText || 'Request failed',
+      message: detailText || error.response.statusText || 'Request failed',
       isNetwork: false,
       isRateLimit: false,
+      isStorageLimit: status === 413 && data?.detail?.error === 'storage_limit_exceeded',
+      detail: data?.detail,
     })
   }
 )

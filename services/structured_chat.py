@@ -32,6 +32,8 @@ _MAX_STRUCTURED_ROWS_PER_TOOL = 200
 _MAX_SCHEMA_PROMPT_COLS = 40
 
 SUPPORTED_TOOLS = {
+    "research_documents",
+    "find_in_documents",
     "query_table",
     "search_documents",
     "get_document_context",
@@ -119,6 +121,10 @@ def build_tool_use_instructions() -> str:
         "tools in parallel. After tool results come back you'll get another "
         "turn to either call more tools or produce the final answer.\n\n"
         "DOCUMENT RETRIEVAL:\n"
+        '  - research_documents — multi-query research with bounded evidence and coverage gaps. Use for comparisons, exceptions and multi-part questions.\n'
+        '    <tool_call>{"tool":"research_documents","query":"What does EQ-17 require?","subqueries":["EQ-17 exceptions","EQ-17 effective dates"],"top_k":8}</tool_call>\n'
+        '  - find_in_documents — literal phrase or identifier lookup (not regex).\n'
+        '    <tool_call>{"tool":"find_in_documents","pattern":"EQ-17","max_results":10}</tool_call>\n'
         '  - search_documents — semantic / keyword / hybrid search of the '
         'collection. Use for narrative / prose / conceptual questions.\n'
         '    <tool_call>{"tool": "search_documents", "query": "Q3 revenue commentary", "mode": "semantic", "top_k": 5}</tool_call>\n'
@@ -239,6 +245,82 @@ def _coerce_collection_id(call: Dict[str, Any], default_collection_id: Optional[
     return default_collection_id
 
 
+class _SourceSelection:
+    """The user's selected sources, enforced on every tool the agent can call.
+
+    A checkbox in the sidebar is only a promise if the tool loop keeps it:
+    the model may call search with its own filters, open any document by id,
+    or run SQL against any table. Everything below intersects with, or
+    refuses outside of, the selection so the answer can only be built from
+    what the user picked. Tables are resolved lazily (one list_tables call)
+    and only when a table tool is actually used.
+    """
+
+    def __init__(self, document_ids: List[str], collection_id: Optional[str], mcp):
+        self.ids = set(document_ids)
+        self.collection_id = collection_id
+        self._mcp = mcp
+        self._tables: Optional[List[Dict[str, Any]]] = None
+
+    def merge_search_filters(self, filters: Any) -> Dict[str, Any]:
+        merged = dict(filters) if isinstance(filters, dict) else {}
+        requested = merged.get("document_ids")
+        if isinstance(requested, list) and requested:
+            allowed = [d for d in requested if d in self.ids]
+            if not allowed:
+                raise ValueError(
+                    "Those documents are outside the sources the user selected for this "
+                    "conversation. Search without document_ids to stay within the selection."
+                )
+            merged["document_ids"] = allowed
+        else:
+            merged["document_ids"] = sorted(self.ids)
+        return merged
+
+    def require_document(self, document_id: str) -> None:
+        if document_id not in self.ids:
+            raise ValueError(
+                f"Document {document_id} is not among the sources the user selected for this "
+                "conversation. Only the selected sources may be read."
+            )
+
+    def _load_tables(self) -> List[Dict[str, Any]]:
+        if self._tables is None:
+            try:
+                data = self._mcp.list_tables(collection_id=self.collection_id)
+                self._tables = list(data.get("tables") or [])
+            except Exception:
+                self._tables = []
+        return self._tables
+
+    def allowed_tables(self) -> List[Dict[str, Any]]:
+        return [t for t in self._load_tables() if t.get("document_id") in self.ids]
+
+    def require_table(self, identifier: str) -> None:
+        for t in self._load_tables():
+            if identifier in (t.get("table_name"), t.get("filename"), t.get("document_id")):
+                if t.get("document_id") in self.ids:
+                    return
+                raise ValueError(
+                    f"Table '{identifier}' belongs to a source outside the user's selection "
+                    "for this conversation."
+                )
+        # Unknown identifier: let the tool report it in its own words.
+
+    def require_sql(self, sql: str) -> None:
+        allowed = {t.get("table_name") for t in self.allowed_tables() if t.get("table_name")}
+        referenced = {
+            t.get("table_name") for t in self._load_tables()
+            if t.get("table_name") and re.search(rf'\b{re.escape(t["table_name"])}\b', sql)
+        }
+        outside = sorted(referenced - allowed)
+        if outside:
+            raise ValueError(
+                f"SQL references table(s) outside the user's selected sources: {', '.join(outside)}. "
+                f"Allowed tables: {', '.join(sorted(allowed)) or 'none'}."
+            )
+
+
 def execute_tool_calls(
     calls: List[Dict[str, Any]],
     agent_context: Dict[str, Any] | None = None,
@@ -246,7 +328,9 @@ def execute_tool_calls(
     """Run each parsed tool call in-process via the MCP tool functions.
 
     `agent_context` carries the chat-level defaults the agent inherits when
-    its tool call doesn't specify them — most importantly `collection_id`.
+    its tool call doesn't specify them — most importantly `collection_id`,
+    and `document_ids` when the user limited the conversation to a
+    selection of sources (enforced on every tool, see _SourceSelection).
     """
     # Lazy import — services.mcp_server pulls in heavy deps and the agent
     # loop is the only consumer here.
@@ -254,6 +338,9 @@ def execute_tool_calls(
 
     ctx = agent_context or {}
     default_collection_id = ctx.get("collection_id")
+    selection: Optional[_SourceSelection] = None
+    if ctx.get("document_ids"):
+        selection = _SourceSelection(list(ctx["document_ids"]), default_collection_id, mcp)
 
     results: List[Dict[str, Any]] = []
     for call in calls:
@@ -279,13 +366,42 @@ def execute_tool_calls(
         args_for_log: Dict[str, Any] = {}
 
         try:
-            if tool == "search_documents":
+            if selection is not None and collection_id != default_collection_id and tool != "list_collections":
+                raise ValueError("The source selection belongs to the current collection; tools cannot switch collections while it is active.")
+            if tool == "research_documents":
+                filters = call.get("filters")
+                if selection is not None:
+                    filters = selection.merge_search_filters(filters)
+                args_for_log = {
+                    "query": call.get("query"), "collection_id": collection_id,
+                    "subqueries": call.get("subqueries"), "top_k": call.get("top_k", 8),
+                    "max_per_document": call.get("max_per_document", 2),
+                    "max_context_chars": call.get("max_context_chars", 12000), "filters": filters,
+                }
+                data = mcp.research_documents_sync(**args_for_log)
+
+            elif tool == "find_in_documents":
+                filters = call.get("filters")
+                if selection is not None:
+                    filters = selection.merge_search_filters(filters)
+                pattern = call.get("pattern")
+                if not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 1000:
+                    raise ValueError("pattern must contain 1–1000 characters")
+                args_for_log = {"pattern": pattern, "collection_id": collection_id,
+                                "case_sensitive": call.get("case_sensitive", False),
+                                "max_results": max(1, min(int(call.get("max_results", 20)), 20)),
+                                "filters": filters}
+                data = mcp.find_in_documents_sync(**args_for_log, literal=True)
+
+            elif tool == "search_documents":
                 query = call.get("query")
                 if not query:
                     raise ValueError("search_documents requires 'query'")
                 mode = call.get("mode")
                 top_k = call.get("top_k")
                 filters = call.get("filters")
+                if selection is not None:
+                    filters = selection.merge_search_filters(filters)
                 args_for_log = {
                     "query": query, "mode": mode, "top_k": top_k,
                     "filters": filters, "collection_id": collection_id,
@@ -305,6 +421,8 @@ def execute_tool_calls(
                 document_id = call.get("document_id")
                 if not document_id:
                     raise ValueError("get_document_context requires 'document_id'")
+                if selection is not None:
+                    selection.require_document(document_id)
                 args_for_log = {
                     "document_id": document_id,
                     "page_number": call.get("page_number"),
@@ -324,11 +442,17 @@ def execute_tool_calls(
             elif tool == "list_tables":
                 args_for_log = {"collection_id": collection_id}
                 data = mcp.list_tables(collection_id=collection_id)
+                if selection is not None and isinstance(data, dict):
+                    kept = [t for t in (data.get("tables") or []) if t.get("document_id") in selection.ids]
+                    data = {**data, "tables": kept, "total_tables": len(kept),
+                            "note": "Limited to the sources the user selected for this conversation."}
 
             elif tool == "get_table_schema":
                 identifier = call.get("identifier") or call.get("table") or call.get("filename")
                 if not identifier:
                     raise ValueError("get_table_schema requires 'identifier'")
+                if selection is not None:
+                    selection.require_table(identifier)
                 args_for_log = {"identifier": identifier, "collection_id": collection_id}
                 data = mcp.get_table_schema(identifier=identifier, collection_id=collection_id)
 
@@ -336,6 +460,8 @@ def execute_tool_calls(
                 identifier = call.get("identifier") or call.get("table") or call.get("filename")
                 if not identifier:
                     raise ValueError("get_table_rows requires 'identifier'")
+                if selection is not None:
+                    selection.require_table(identifier)
                 limit = int(call.get("limit", 200))
                 args_for_log = {"identifier": identifier, "limit": limit, "collection_id": collection_id}
                 data = mcp.get_table_rows(
@@ -348,6 +474,8 @@ def execute_tool_calls(
                 sql = call.get("sql") or call.get("query")
                 if not sql:
                     raise ValueError("query_table requires 'sql'")
+                if selection is not None:
+                    selection.require_sql(sql)
                 max_rows = min(int(call.get("max_rows", _MAX_STRUCTURED_ROWS_PER_TOOL)), 2000)
                 args_for_log = {"sql": sql, "max_rows": max_rows, "collection_id": collection_id}
                 data = mcp.query_table(
@@ -362,6 +490,8 @@ def execute_tool_calls(
                 agg_fn = call.get("agg_fn") or call.get("fn")
                 if not identifier or not aggregate_col or not agg_fn:
                     raise ValueError("aggregate_table requires 'identifier', 'aggregate_col', 'agg_fn'")
+                if selection is not None:
+                    selection.require_table(identifier)
                 args_for_log = {
                     "identifier": identifier,
                     "aggregate_col": aggregate_col,
@@ -641,13 +771,21 @@ def build_structured_context(
     }
 
 
-def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, StructuredStore]]:
+def collect_structured_tables(
+    collection_ids: List[str],
+    document_ids: Optional[List[str]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, StructuredStore]]:
     """Gather structured tables from every collection in scope.
+
+    ``document_ids`` limits the result to tables that came from those
+    sources, so a conversation scoped to a selection never inlines or
+    advertises a spreadsheet the user did not pick.
 
     Returns (tables, stores_by_collection).
     """
     from services.indexer_manager import indexer_manager
 
+    selected = set(document_ids) if document_ids else None
     all_tables: List[Dict[str, Any]] = []
     stores: Dict[str, StructuredStore] = {}
     for cid in collection_ids:
@@ -664,6 +802,8 @@ def collect_structured_tables(collection_ids: List[str]) -> Tuple[List[Dict[str,
             logger.warning(f"collect_structured_tables: list_tables failed for '{cid}': {e}")
             continue
         for t in tables:
+            if selected is not None and t.get("document_id") not in selected:
+                continue
             t_copy = dict(t)
             t_copy["collection_id"] = cid
             all_tables.append(t_copy)

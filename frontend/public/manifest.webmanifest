@@ -1,0 +1,14 @@
+{
+  "name": "Asymptote",
+  "short_name": "Asymptote",
+  "description": "Answers from your own sources, with citations.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111827",
+  "icons": [
+    { "src": "/icon_black.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon_white.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "monochrome" }
+  ]
+}

@@ -20,8 +20,22 @@ Asymptote owns the trustworthy data layer; the intelligence layer lives upstream
 
 ## Toolbox — extensibility
 
-- **MCP expansion** — let external agents trigger re-indexing and metadata updates, not just read documents.
-- **PWA** — installable progressive web app as the next step beyond plain web.
+- **MCP expansion** — let external agents trigger re-indexing and metadata updates, not just read documents (`write_document` shipped 2026-09-11; re-index and metadata edits remain).
+- **PWA** — a web manifest and theme-color meta shipped 2026-09-12 (installable from the browser menu); an offline service worker is the remaining step.
+
+## Access & limits
+
+- **Online registration** — shipped 2026-09-12: `/register` (approval or open mode, domain allowlist, seat cap). Next: OIDC as an alternative identity source, expiring service tokens.
+- **Per-collection storage cap** — shipped 2026-09-12 (5 GiB default, `COLLECTION_STORAGE_LIMIT_BYTES`). Next: per-user totals across collections, and an admin view of storage by collection.
+
+## From the September 2026 product assessment (docs/PRODUCT_ASSESSMENT.md)
+
+Shipped 2026-09-12: the answer cache keys on the whole request (corpus version, guide, attached instructions, provider/model, retrieval settings, source selection) and the source selection is enforced end-to-end (retrieval, tool calls, table queries, overview, citations, reports, cache). Still open, in priority order:
+
+- **Retrieval benchmark** — a versioned corpus with answerable, unanswerable, exact-identifier, negation, date, table and cross-user cases; report recall@k, citation correctness, abstention and latency.
+- **Privacy and authorization review** — exercise every API/tool/resource as owner, reader, outsider, revoked token and anonymous; confirm egress for embeddings, OCR, reranking and chat.
+- **One dependable connector** — watched folder or SharePoint, with incremental sync, deletion propagation, resumable jobs and visible failure state.
+- **Reproducible deployment** — locked dependencies, validated container + Postgres path, backup/restore and upgrade drills.
 
 ## Always-on constraints
 

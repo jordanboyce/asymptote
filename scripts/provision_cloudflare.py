@@ -12,6 +12,9 @@ One idempotent run creates everything deployment shape B needs:
   7. a reusable Access policy `asymptote-invited` holding the admitted
      addresses, plus the one-time PIN login method so invited guests need
      no account in your identity provider
+  8. Access app on <hostname>/register (+ /api/register, /assets and the
+     brand files) with a Bypass policy, so the online-registration page is
+     reachable before sign-in (REGISTRATION_MODE in .env switches it on)
 
 Secrets (TUNNEL_TOKEN, AUTH_PASSWORD, CF_ACCESS_CLIENT_ID/SECRET) are written
 into the repo-local .env — which is gitignored — and never printed. The JWT
@@ -47,6 +50,16 @@ TUNNEL_NAME = "asymptote"
 SERVICE_TOKEN_NAME = "asymptote-mcp"
 MCP_BYPASS_POLICY_NAME = "mcp-app-token-gate"
 INVITE_POLICY_NAME = "asymptote-invited"
+PUBLIC_APP_NAME = "Asymptote public (registration)"
+PUBLIC_BYPASS_POLICY_NAME = "public-registration"
+# Everything the registration page needs before anyone is signed in: the
+# page, its two API paths (prefix match covers /api/register/config), the
+# hashed SPA bundle and the brand files. The app itself exempts exactly the
+# same paths from its own auth (main.py _PUBLIC_PATHS) and rate-limits the
+# form per IP; nothing under these paths reveals deployment data.
+PUBLIC_PATHS = ("/register", "/api/register", "/assets", "/favicon.ico",
+                "/manifest.webmanifest", "/icon_black.svg", "/icon_white.svg",
+                "/logo_black.svg", "/logo_white.svg")
 API = "https://api.cloudflare.com/client/v4"
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 
@@ -254,6 +267,28 @@ def main():
         print(f"access app '{HOSTNAME}/mcp': bypass policy '{MCP_BYPASS_POLICY_NAME}' added (personal tokens reach the app)")
     else:
         print(f"access app '{HOSTNAME}/mcp': bypass policy present")
+
+    # 5d. Online registration: one Access app spanning the public paths with
+    # a Bypass policy. Access matches an app's path as a prefix, so
+    # "<host>/api/register" also covers /api/register/config. Idempotent —
+    # an existing app keeps whatever paths it has; delete it in the dashboard
+    # to have this recreate it with the current PUBLIC_PATHS.
+    public_domain = f"{HOSTNAME}/register"
+    public_app = apps.get(public_domain)
+    if public_app is None:
+        public_app = cf("POST", f"/accounts/{ACCOUNT_ID}/access/apps", {
+            "name": PUBLIC_APP_NAME, "domain": public_domain, "type": "self_hosted",
+            "self_hosted_domains": [f"{HOSTNAME}{p}" for p in PUBLIC_PATHS],
+            "session_duration": "24h",
+        })
+        cf("POST", f"/accounts/{ACCOUNT_ID}/access/apps/{public_app['id']}/policies", {
+            "name": PUBLIC_BYPASS_POLICY_NAME, "decision": "bypass", "precedence": 1,
+            "include": [{"everyone": {}}],
+        })
+        print(f"access app '{PUBLIC_APP_NAME}': created (bypass on {len(PUBLIC_PATHS)} public paths)")
+    else:
+        print(f"access app '{PUBLIC_APP_NAME}': exists, leaving as-is")
+    print("  registration itself stays off until REGISTRATION_MODE=approval|open is set in .env")
 
     # 6. JWT trust: team domain + both apps' AUD tags -----------------------
     # With these set the app verifies the Cf-Access-Jwt-Assertion the edge

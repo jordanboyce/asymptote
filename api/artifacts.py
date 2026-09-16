@@ -73,6 +73,7 @@ async def generate_artifact(
         scope=artifact_request.scope,
         rerank=False,
         top_k=artifact_request.top_k,
+        document_ids=artifact_request.document_ids,
     )
 
     # chat_with_documents is a sync handler now — run it in a worker thread

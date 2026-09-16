@@ -33,6 +33,7 @@ from api import (
     expertise,
     governance,
     mcp,
+    register,
     search,
     sharing,
     system,
@@ -226,9 +227,32 @@ def _password_from_auth_header(header: str) -> str:
     return ""
 
 
+# Paths a person can reach before they have any identity: the health probe
+# and the online-registration page with its two endpoints. Everything the
+# registration endpoints do is validated and rate-limited on their own
+# (api/register.py); the Cloudflare Access application is told to bypass
+# the same paths (scripts/provision_cloudflare.py) so the form is reachable.
+_PUBLIC_PATHS = {"/health", "/register", "/api/register", "/api/register/config"}
+# The built frontend bundle is public too: the registration page is the same
+# SPA, so its hashed assets and brand files must load before sign-in. The
+# bundle holds no secrets — every fact about the deployment comes from the
+# API, which stays gated.
+_PUBLIC_STATIC = {"/favicon.ico", "/manifest.webmanifest", "/icon_black.svg", "/icon_white.svg",
+                  "/logo_black.svg", "/logo_white.svg"}
+
+
+def _is_public_path(path: str) -> bool:
+    return (
+        path in _PUBLIC_PATHS
+        or path in _PUBLIC_STATIC
+        or path.startswith("/assets/")
+        or path.startswith("/icons/")
+    )
+
+
 @app.middleware("http")
 async def require_auth(request, call_next):
-    if request.url.path == "/health":
+    if _is_public_path(request.url.path):
         return await call_next(request)
     # CORS preflights are sent without credentials by spec, and this
     # middleware runs outside CORSMiddleware — pass them through so the
@@ -309,7 +333,7 @@ async def _call_with_user_context(request, call_next):
     finally:
         reset_request_user(token)
 
-for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise, admin, governance):
+for module in (system, documents, search, chat, artifacts, collections, mcp, sharing, expertise, admin, governance, register):
     app.include_router(module.router)
 
 
@@ -342,9 +366,7 @@ class SPAStaticFiles(StaticFiles):
         return response
 
 
-@app.get("/", response_class=HTMLResponse, tags=["ui"], include_in_schema=False)
-async def web_interface():
-    """Serve the web interface."""
+def _spa_response() -> HTMLResponse:
     index_path = FRONTEND_DIST / "index.html"
     if index_path.exists():
         return HTMLResponse(
@@ -360,6 +382,19 @@ async def web_interface():
         ),
         status_code=200,
     )
+
+
+@app.get("/", response_class=HTMLResponse, tags=["ui"], include_in_schema=False)
+async def web_interface():
+    """Serve the web interface."""
+    return _spa_response()
+
+
+@app.get("/register", response_class=HTMLResponse, tags=["ui"], include_in_schema=False)
+async def register_page():
+    """The public registration page: the same SPA bundle, which renders the
+    registration view when loaded at this path (frontend/src/main.js)."""
+    return _spa_response()
 
 
 # Mounts must come after all routes so they don't override API routes.

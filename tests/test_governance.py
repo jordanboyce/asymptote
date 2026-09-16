@@ -247,7 +247,7 @@ def test_metadata_store_migrates_pre_governance_db(tmp_path):
             injection_warnings TEXT)""")
         conn.execute("INSERT INTO documents (document_id, filename, num_pages, num_chunks, upload_timestamp) VALUES ('old', 'old.pdf', 1, 1, '2025-01-01')")
     s = MetadataStore(path)
-    assert s.get_schema_version() == "3.3"
+    assert s.get_schema_version() == "3.4"
     old = s.get_document_info("old")
     assert old["policy_status"] == "clear"
     assert old["uploaded_by"] is None

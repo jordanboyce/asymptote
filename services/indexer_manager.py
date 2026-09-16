@@ -295,11 +295,19 @@ class IndexerManager:
             # collection grows (63k documents was a ~25MB list previously).
             doc_stats = indexer.get_document_stats()
 
+            from services import storage_quota
+
+            limit = storage_quota.limit_bytes()
+            used = int(doc_stats.get("storage_bytes") or 0)
             return {
                 "collection_id": collection_id,
                 "total_documents": doc_stats["total_documents"],
                 "total_chunks": indexer.vector_store.get_total_chunks(),
                 "total_pages": doc_stats["total_pages"],
+                "storage_bytes": used,
+                "storage_limit_bytes": limit,
+                "storage_remaining_bytes": max(0, limit - used) if limit else None,
+                "storage_percent": round(min(100.0, used / limit * 100), 1) if limit else 0.0,
             }
         except Exception as e:
             logger.error(f"Failed to get stats for '{collection_id}': {e}")
@@ -308,6 +316,10 @@ class IndexerManager:
                 "total_documents": 0,
                 "total_chunks": 0,
                 "total_pages": 0,
+                "storage_bytes": 0,
+                "storage_limit_bytes": 0,
+                "storage_remaining_bytes": None,
+                "storage_percent": 0.0,
             }
 
 

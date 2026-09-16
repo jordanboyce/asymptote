@@ -49,6 +49,18 @@ async def get_current_user(user_id: str = Depends(get_current_user_id)):
         "aup": governance.aup_payload(user_id),
         "content_policy_action": settings.content_policy_action,
         "sensitivity_levels": list(governance.SENSITIVITY_LEVELS),
+        # Online registration: the mode the /register page runs in (off
+        # unless edge admission is configured) and, for admins, how many
+        # requests are waiting so the Access panel can show a badge.
+        "registration_mode": (
+            settings.registration_mode if access_provisioning_enabled() else "off"
+        ),
+        "pending_registrations": (
+            app_db.count_registration_requests("pending") if is_admin(user_id) else 0
+        ),
+        # The per-collection storage cap, so the UI can show it without a
+        # second round-trip (0 = unlimited).
+        "collection_storage_limit_bytes": settings.collection_storage_limit_bytes,
     }
 
 

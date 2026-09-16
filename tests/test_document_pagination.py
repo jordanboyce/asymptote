@@ -66,12 +66,12 @@ def test_page_row_shape_matches_full_list(store):
 
 def test_document_stats(store):
     stats = store.get_document_stats()
-    assert stats == {"total_documents": 25, "total_pages": 25}
+    assert stats == {"total_documents": 25, "total_pages": 25, "storage_bytes": 0}
 
 
 def test_document_stats_empty_store(tmp_path):
     s = MetadataStore(tmp_path / "empty.db")
-    assert s.get_document_stats() == {"total_documents": 0, "total_pages": 0}
+    assert s.get_document_stats() == {"total_documents": 0, "total_pages": 0, "storage_bytes": 0}
 
 
 def test_registry_count_uses_documents_table(tmp_path):
@@ -104,4 +104,4 @@ def test_document_stats_sums_pages(tmp_path):
             num_chunks=1,
             upload_timestamp=f"2026-02-0{i + 1}T00:00:00",
         )
-    assert s.get_document_stats() == {"total_documents": 3, "total_pages": 10}
+    assert s.get_document_stats() == {"total_documents": 3, "total_pages": 10, "storage_bytes": 0}

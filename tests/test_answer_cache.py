@@ -112,7 +112,10 @@ def test_cache_context_single_turn_only(chat_env):
     from models.schemas import ChatMessage
 
     ctx = chat_env._cache_context(_request(), "default")
-    assert ctx and ctx["scope_key"] == "col:default" and ctx["embedding_model"] == "mini"
+    # "<scope>#<request fingerprint>": the scope names the collection, the
+    # fingerprint pins everything else that shapes the answer.
+    assert ctx and ctx["scope_key"].startswith("col:default#") and ctx["embedding_model"] == "mini"
+    assert len(ctx["scope_key"].split("#", 1)[1]) == 16
 
     multi = _request(messages=[
         ChatMessage(role="user", content="what is x?"),
@@ -128,7 +131,7 @@ def test_cache_context_disabled(chat_env, monkeypatch):
 
 
 def test_lookup_serves_fresh_entry(chat_env, cache, monkeypatch):
-    _store(cache)
+    _store(cache, scope=chat_env._cache_context(_request(), "default")["scope_key"])
     monkeypatch.setattr(
         chat_env, "_document_fingerprint",
         lambda cid, did: {"filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3, "content_hash": "hash-a", "sensitivity": "internal"},
@@ -139,7 +142,7 @@ def test_lookup_serves_fresh_entry(chat_env, cache, monkeypatch):
 
 
 def test_lookup_discards_entry_when_source_changed(chat_env, cache, monkeypatch):
-    _store(cache)
+    _store(cache, scope=chat_env._cache_context(_request(), "default")["scope_key"])
     # Document re-uploaded since the answer was generated
     monkeypatch.setattr(
         chat_env, "_document_fingerprint",
@@ -151,14 +154,15 @@ def test_lookup_discards_entry_when_source_changed(chat_env, cache, monkeypatch)
 
 
 def test_lookup_discards_entry_when_source_deleted(chat_env, cache, monkeypatch):
-    _store(cache)
+    _store(cache, scope=chat_env._cache_context(_request(), "default")["scope_key"])
     monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: None)
     ctx = chat_env._cache_context(_request(), "default")
     assert chat_env._cache_lookup(ctx) is None
 
 
 def test_similar_questions_do_not_reuse_a_different_answer(chat_env, cache, monkeypatch):
-    _store(cache, question="what was revenue in 2024?")
+    _store(cache, question="what was revenue in 2024?",
+           scope=chat_env._cache_context(_request(), "default")["scope_key"])
     monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: {
         "filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3,
         "content_hash": "hash-a", "sensitivity": "internal",
@@ -173,7 +177,7 @@ def test_similar_questions_do_not_reuse_a_different_answer(chat_env, cache, monk
 
 
 def test_cache_refuses_sources_without_fingerprints(chat_env, cache):
-    _store(cache, fingerprints=[])
+    _store(cache, fingerprints=[], scope=chat_env._cache_context(_request(), "default")["scope_key"])
     ctx = chat_env._cache_context(_request(), "default")
     assert chat_env._cache_lookup(ctx) is None
     assert cache.stats()["entries"] == 0
@@ -201,3 +205,55 @@ def test_store_then_lookup_roundtrip(chat_env, cache, monkeypatch):
     # URL rebuild uses the current request's host
     payload = chat_env._cached_sources(entry, "http://x")
     assert payload[0]["pdf_url"].startswith("http://x/documents/doc9/pdf?collection_id=default")
+
+
+# ── The request fingerprint (docs/PRODUCT_ASSESSMENT.md: "caching reflects
+# the entire request") ──────────────────────────────────────────────────
+
+
+def _key(chat_env, **kwargs):
+    model = kwargs.pop("model", "")
+    return chat_env._cache_context(_request(**kwargs), "default", model)["scope_key"]
+
+
+def test_fingerprint_changes_with_model_and_retrieval_settings(chat_env):
+    from models.schemas import ChatMessage, ChatRequest, SearchMode
+
+    base = _key(chat_env)
+    assert _key(chat_env) == base                       # deterministic
+    assert _key(chat_env, model="llama3.2@") != base    # different model
+    assert chat_env._cache_context(
+        ChatRequest(messages=[ChatMessage(role="user", content="what is x?")], provider="anthropic"),
+        "default",
+    )["scope_key"] != base                              # different provider
+    assert chat_env._cache_context(
+        ChatRequest(messages=[ChatMessage(role="user", content="what is x?")], provider="ollama", top_k=9),
+        "default",
+    )["scope_key"] != base                              # different top_k
+    assert chat_env._cache_context(
+        ChatRequest(messages=[ChatMessage(role="user", content="what is x?")], provider="ollama",
+                    mode=SearchMode.HYBRID),
+        "default",
+    )["scope_key"] != base                              # different mode
+    assert chat_env._cache_context(
+        ChatRequest(messages=[ChatMessage(role="user", content="what is x?")], provider="ollama",
+                    document_ids=["doc1"]),
+        "default",
+    )["scope_key"] != base                              # a source selection
+
+
+def test_fingerprint_changes_when_corpus_or_guidance_changes(chat_env, monkeypatch):
+    base = _key(chat_env)
+    monkeypatch.setattr(chat_env, "_corpus_version", lambda cid: "2:2026-09-12T00:00:00:40:0")
+    after_upload = _key(chat_env)
+    assert after_upload != base
+    monkeypatch.setattr(chat_env, "_collection_guidance_version", lambda cid: "guide-v2")
+    assert _key(chat_env) != after_upload
+
+
+def test_clearing_a_scope_drops_every_fingerprint(chat_env, cache):
+    _store(cache, scope="col:default#aaaa")
+    _store(cache, scope="col:default#bbbb", question="other?")
+    _store(cache, scope="col:other#cccc", question="third?")
+    assert cache.clear("col:default") == 2
+    assert cache.stats()["entries"] == 1

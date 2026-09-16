@@ -13,6 +13,45 @@ from typing import Any, Dict, List
 # Canonical tool list. `parameters` is JSON Schema (draft-7-compatible).
 _TOOLS: List[Dict[str, Any]] = [
     {
+        "name": "research_documents",
+        "description": (
+            "Research a comparison or multi-part question using multiple focused "
+            "queries, hybrid/keyword/literal retrieval, rank fusion and document "
+            "diversity. Returns bounded passages, coverage gaps and follow-up "
+            "context arguments. Supply subqueries for separate requirements, "
+            "exceptions or effective dates. Coverage is not answer confidence."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "subqueries": {"type": "array", "maxItems": 3, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                "collection_id": {"type": "string"},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
+                "max_per_document": {"type": "integer", "minimum": 1, "maximum": 10},
+                "max_context_chars": {"type": "integer", "minimum": 1000, "maximum": 40000,
+                                      "description": "Total excerpt characters, excluding JSON metadata."},
+                "filters": {"type": "object", "description": "Same document_ids, filenames, source_formats and upload date filters as search_documents."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "find_in_documents",
+        "description": "Find a literal phrase, policy ID or code identifier in indexed text. Preserves punctuation. Returns matching passages and chunk anchors for context; use research_documents for conceptual questions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "case_sensitive": {"type": "boolean"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                "collection_id": {"type": "string"},
+                "filters": {"type": "object", "description": "Same metadata filters as search_documents."},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
         "name": "search_documents",
         "description": (
             "Semantic / keyword / hybrid search across the active document "

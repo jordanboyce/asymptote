@@ -67,6 +67,9 @@ class DocumentMetadata(BaseModel):
     policy_status: str = Field(default="clear", description="clear | flagged | quarantined | approved")
     policy_flags: Optional[Dict[str, Any]] = Field(None, description="Content-policy scan summary when anything was found")
 
+    # v3.4: storage accounting
+    file_size: Optional[int] = Field(None, description="Bytes of the source file on disk (None when unknown)")
+
 
 class SearchResult(BaseModel):
     """A single search result."""
@@ -307,6 +310,12 @@ class ChatRequest(BaseModel):
         description="Serve a semantically matching cached answer when one exists; "
                     "false forces a fresh response (and replaces the cached one)",
     )
+    document_ids: Optional[List[str]] = Field(
+        None,
+        description="Limit this conversation to these sources (document ids in the current "
+                    "collection). Retrieval, tool calls, table queries, the overview and "
+                    "citations all stay inside the selection. Omitted = every source in scope.",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -335,6 +344,9 @@ class ArtifactRequest(BaseModel):
     top_k: int = Field(8, description="Chunks per retrieval call during generation", ge=1, le=20)
     focus: Optional[str] = Field(None, description="Optional subject to narrow the artifact to")
     custom_instructions: Optional[str] = Field(None, description="Optional extra freeform guidance")
+    document_ids: Optional[List[str]] = Field(
+        None, description="Limit the artifact to these sources (document ids in the current collection)"
+    )
 
 
 class ArtifactResponse(BaseModel):

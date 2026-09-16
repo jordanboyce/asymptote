@@ -96,6 +96,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useProviderStore } from '../stores/providerStore'
+import { useSelectionStore } from '../stores/selectionStore'
 import {
   getAPIProviderName,
   buildProviderHeaders,
@@ -105,6 +106,7 @@ import {
 marked.setOptions({ gfm: true, breaks: true })
 
 const collectionStore = useCollectionStore()
+const selectionStore = useSelectionStore()
 
 const types = ref([])
 const selectedType = ref('summary')
@@ -169,6 +171,8 @@ const generate = async () => {
         scope: 'current',
         focus: focus.value || null,
         custom_instructions: customInstructions.value || null,
+        // A report honours the same source selection as chat.
+        document_ids: selectionStore.active ? selectionStore.currentIds : null,
       }),
     })
     if (!resp.ok) {

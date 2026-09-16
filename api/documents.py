@@ -31,8 +31,9 @@ from services.form_field_extractor import (
     estimate_form_likelihood,
     is_form_like_text,
 )
-from services import audit, governance
+from services import audit, governance, storage_quota
 from services.content_policy import BlockedContentError, ContentRejectedError
+from services.storage_quota import StorageLimitExceeded
 
 from fastapi import APIRouter, Request
 from api.deps import (
@@ -69,6 +70,31 @@ def _require_ingest(collection_id: str) -> None:
 
 def _is_policy_refusal(error: Exception) -> bool:
     return isinstance(error, (BlockedContentError, ContentRejectedError))
+
+
+def _upload_size(file: UploadFile) -> int:
+    """Bytes of an upload before it is written anywhere.
+
+    Starlette records the size once the body is spooled; a streamed body
+    can leave it None, so fall back to seeking the spool.
+    """
+    size = getattr(file, "size", None)
+    if isinstance(size, int) and size >= 0:
+        return size
+    try:
+        spool = file.file
+        pos = spool.tell()
+        spool.seek(0, 2)
+        end = spool.tell()
+        spool.seek(pos)
+        return max(0, end - pos)
+    except Exception:
+        return 0
+
+
+def _storage_error(error: StorageLimitExceeded) -> HTTPException:
+    """The per-collection cap answers 413 with the numbers the UI needs."""
+    return HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=error.to_detail())
 
 
 @router.post(
@@ -130,6 +156,7 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
     indexed_docs = []
     failed_docs = []
     policy_refusals = 0
+    storage_refusals = 0
     total_pages = 0
     total_chunks = 0
     uploaded_by = get_request_user()
@@ -137,6 +164,10 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
     for file in files:
         file_path = None  # per-iteration: the except block must never see a previous file's path
         try:
+          # The cap is checked before a single byte lands in the collection,
+          # and the reservation holds until the row is committed so parallel
+          # uploads into one collection cannot jointly overshoot it.
+          with storage_quota.reserve(collection_id, _upload_size(file), file.filename):
             # Save uploaded file to collection's document directory
             # Preserve relative path context by replacing separators with underscores
             # This handles folder uploads where file.filename may be "src/utils/helper.py"
@@ -171,7 +202,10 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
             total_chunks += doc_metadata.total_chunks
 
         except Exception as e:
-            if _is_policy_refusal(e):
+            if isinstance(e, StorageLimitExceeded):
+                storage_refusals += 1
+                logger.warning(f"Refused {file.filename}: {e}")
+            elif _is_policy_refusal(e):
                 policy_refusals += 1
                 logger.warning(f"Refused {file.filename}: {e}")
             else:
@@ -195,13 +229,18 @@ def upload_documents(  # sync: extraction+embedding run in FastAPI's threadpool,
 
     # Build response message
     if failed_docs and not indexed_docs:
-        # All files failed. A policy refusal is the caller's problem, not
-        # the server's, so it reports as 422 rather than 500.
+        # All files failed. A policy or storage refusal is the caller's
+        # problem, not the server's, so it reports as 422/413 rather than 500.
         error_details = "; ".join([f"{f['filename']}: {f['error']}" for f in failed_docs])
+        if storage_refusals == len(failed_docs):
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=error_details,
+            )
         raise HTTPException(
             status_code=(
                 status.HTTP_422_UNPROCESSABLE_ENTITY
-                if policy_refusals == len(failed_docs)
+                if policy_refusals + storage_refusals == len(failed_docs)
                 else status.HTTP_500_INTERNAL_SERVER_ERROR
             ),
             detail=f"All files failed to index. Errors: {error_details}",
@@ -260,6 +299,14 @@ def stage_uploads(  # sync: disk writes run in FastAPI's threadpool
 
     document_dir = indexer_manager.get_documents_path(collection_id)
     SUPPORTED_EXTENSIONS = DocumentExtractor.SUPPORTED_EXTENSIONS
+
+    # Staging is the transfer half of a background upload: refuse the batch
+    # before writing it rather than accepting files the index job would then
+    # have to reject one by one (that job re-checks per file regardless).
+    try:
+        storage_quota.check(collection_id, sum(_upload_size(f) for f in files))
+    except StorageLimitExceeded as e:
+        raise _storage_error(e)
 
     staged = []
     failed = []
@@ -727,6 +774,7 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
 
     uploaded_by = get_request_user()
     try:
+      with storage_quota.reserve(request.collection_id, path.stat().st_size, path.name):
         if request.copy_to_library:
             # Copy file to data/documents/ directory first, then index
             document_dir = settings.data_dir / "documents"
@@ -784,6 +832,8 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
         logger.info(f"Indexed local file: {path} -> {doc_metadata.document_id} (copy={request.copy_to_library})")
         return doc_metadata
 
+    except StorageLimitExceeded as e:
+        raise _storage_error(e)
     except Exception as e:
         if _is_policy_refusal(e):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -853,6 +903,13 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
         )
 
     _require_ingest(request.collection_id)
+    try:
+        storage_quota.check(
+            request.collection_id,
+            sum(Path(fp).stat().st_size for fp in valid_paths),
+        )
+    except StorageLimitExceeded as e:
+        raise _storage_error(e)
     try:
         job_id = upload_service.start_local_index(
             file_paths=valid_paths,

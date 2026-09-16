@@ -24,6 +24,28 @@
       </button>
     </div>
 
+    <!-- Storage against the per-collection cap. Quiet by default; the bar
+         only takes on a warning tone in the last 10%, error when full. -->
+    <div
+      v-if="statsStore.storageLimitBytes > 0"
+      class="px-3 py-1.5 border-b border-base-300 flex-shrink-0"
+      :title="storageTitle"
+    >
+      <div class="flex items-baseline justify-between text-[11px] leading-none">
+        <span class="text-base-content/50">Storage</span>
+        <span class="tabular-nums" :class="storageTone === 'error' ? 'text-error font-medium' : storageTone === 'warning' ? 'text-warning font-medium' : 'text-base-content/60'">
+          {{ formatBytes(statsStore.storageBytes) }}<span class="text-base-content/40"> / {{ formatBytes(statsStore.storageLimitBytes) }}</span>
+        </span>
+      </div>
+      <progress
+        class="progress w-full h-1 mt-1.5"
+        :class="storageTone === 'error' ? 'progress-error' : storageTone === 'warning' ? 'progress-warning' : 'progress-primary'"
+        :value="Math.min(100, statsStore.storagePercent)"
+        max="100"
+        :aria-label="storageTitle"
+      ></progress>
+    </div>
+
     <!-- Scrollable body -->
     <div class="flex-1 overflow-y-auto">
 
@@ -282,7 +304,20 @@
           title="Select all sources"
           aria-label="Select all sources"
         />
-        <span class="text-xs font-semibold text-base-content/60 flex-1" id="sources-list-heading">Your Sources</span>
+        <span class="text-xs font-semibold text-base-content/60 flex-1 min-w-0 whitespace-nowrap" id="sources-list-heading">
+          <template v-if="selectedDocuments.length > 0">
+            <span class="text-base-content/80 tabular-nums">{{ selectedDocuments.length }} selected</span>
+          </template>
+          <template v-else>Your Sources</template>
+        </span>
+        <button
+          v-if="selectedDocuments.length > 0"
+          class="btn btn-ghost btn-xs px-1.5 font-normal"
+          @click="selectedDocuments = []"
+          :disabled="deleting"
+          title="Clear selection — chat goes back to every source"
+          aria-label="Clear selection"
+        >Clear</button>
         <input
           v-if="docTotal > 20 || docSearch"
           v-model="docSearch"
@@ -313,6 +348,11 @@
           <option value="__inherit__">Use collection default</option>
           <option v-for="level in userStore.sensitivityLevels" :key="level" :value="level">{{ level }}</option>
         </select>
+        <!-- What a selection means, on its own line so the row above stays one line -->
+        <p
+          v-if="selectedDocuments.length > 0"
+          class="basis-full text-[10px] leading-snug text-base-content/50"
+        >Chat and reports use only the selected sources.</p>
       </div>
 
       <!-- Loading spinner -->
@@ -686,6 +726,9 @@ import { useUserStore } from '../stores/userStore'
 import { labelBadgeClass, showLabel, policyBadge, policyFlagPages, categoryLabel } from '../utils/governance'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useExpertiseStore } from '../stores/expertiseStore'
+import { useSelectionStore } from '../stores/selectionStore'
+import { useStatsStore } from '../stores/statsStore'
+import { formatBytes, describeStorage } from '../utils/format'
 
 const emit = defineEmits(['document-deleted', 'close'])
 
@@ -725,7 +768,20 @@ const deleting = ref(false)
 const error = ref('')
 const deleteModal = ref(null)
 const documentToDelete = ref(null)
-const selectedDocuments = ref([])
+// The checkbox selection is the chat/report scope (stores/selectionStore):
+// a computed with a setter so the existing bulk-action code keeps reading
+// and assigning `selectedDocuments.value` unchanged.
+const selectionStore = useSelectionStore()
+const selectedDocuments = computed({
+  get: () => selectionStore.currentIds,
+  set: (ids) => selectionStore.set(ids),
+})
+const statsStore = useStatsStore()
+const storageTone = computed(() => {
+  const p = statsStore.storagePercent
+  return p >= 100 ? 'error' : p >= 90 ? 'warning' : 'ok'
+})
+const storageTitle = computed(() => describeStorage(statsStore.storageBytes, statsStore.storageLimitBytes))
 const chunksModal = ref(null)
 const chunkDocument = ref(null)
 const chunksLoading = ref(false)
@@ -1327,12 +1383,7 @@ const isSelected = (docId) => {
 }
 
 const toggleSelect = (docId) => {
-  const index = selectedDocuments.value.indexOf(docId)
-  if (index > -1) {
-    selectedDocuments.value.splice(index, 1)
-  } else {
-    selectedDocuments.value.push(docId)
-  }
+  selectionStore.toggle(docId)
 }
 
 const toggleSelectAll = () => {
@@ -1482,10 +1533,7 @@ const deleteDocument = async () => {
       doc => doc.document_id !== documentToDelete.value.document_id
     )
 
-    const index = selectedDocuments.value.indexOf(documentToDelete.value.document_id)
-    if (index > -1) {
-      selectedDocuments.value.splice(index, 1)
-    }
+    selectionStore.remove([documentToDelete.value.document_id])
 
     emit('document-deleted')
   } catch (err) {
@@ -1530,7 +1578,8 @@ const deleteBulk = async () => {
 // Watch for collection changes
 watch(() => collectionStore.currentCollectionId, (newId) => {
   loadDocuments()
-  selectedDocuments.value = []
+  // The selection is kept per collection (selectionStore), so switching
+  // collections shows that collection's own selection rather than wiping it.
   loadExpertise(newId)
 })
 

@@ -47,6 +47,9 @@ ACTIONS: List[str] = [
     "admin.unblock_hash",
     "admin.suspend_user",
     "admin.remove_document",    # admin removal (optionally with hash block)
+    "access.register",          # someone asked for access from /register
+    "access.approve_registration",
+    "access.deny_registration",
 ]
 
 _UNSET = object()

@@ -3,8 +3,17 @@ import { createPinia } from 'pinia'
 import './style.css'
 
 import App from './App.vue'
+import RegisterPage from './components/RegisterPage.vue'
 
-const app = createApp(App)
+// The bundle serves two entry points from one build: the workspace at "/"
+// and the public registration page at "/register" (the backend serves
+// index.html for both, and exempts the latter plus the assets from auth).
+// A router would be overkill for one extra route that shares nothing with
+// the workspace shell.
+const path = window.location.pathname.replace(/\/+$/, '')
+const Root = path === '/register' ? RegisterPage : App
+
+const app = createApp(Root)
 
 app.use(createPinia())
 

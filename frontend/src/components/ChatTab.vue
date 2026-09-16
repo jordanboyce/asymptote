@@ -74,6 +74,30 @@
         </div>
       </div>
 
+      <!-- Source scope: what this conversation is allowed to read. -->
+      <div
+        class="flex items-center gap-2 flex-shrink-0 mb-1.5 px-2.5 py-1.5 rounded-md border border-base-300 bg-base-100 text-xs"
+        role="status"
+        aria-live="polite"
+      >
+        <ListTree :size="13" class="text-primary flex-shrink-0" aria-hidden="true" />
+        <span class="flex-1 min-w-0">
+          <template v-if="scope === 'all'">
+            All accessible collections<span v-if="selectionActive"> · Your source selection does not apply.</span>
+          </template>
+          <template v-else-if="selectionActive">
+            Asking about <span class="font-semibold tabular-nums">{{ selectionStore.count }}</span>
+            <span v-if="documentCount"> of {{ documentCount.toLocaleString() }}</span>
+            selected {{ selectionStore.count === 1 ? 'source' : 'sources' }}
+            <span class="text-base-content/50">· answers stay inside the selection</span>
+          </template>
+          <template v-else>{{ collectionStore.currentCollection?.name || 'Current collection' }} · All {{ documentCount.toLocaleString() }} sources</template>
+        </span>
+        <button v-if="scope === 'all' && selectionActive" class="btn btn-ghost btn-xs h-auto py-2" @click="scope = 'current'">Use selection</button>
+        <button class="btn btn-ghost btn-xs" @click="$emit('show-sources')" title="Change the selection in the Sources panel">Sources</button>
+        <button v-if="selectionActive" class="btn btn-ghost btn-xs" @click="selectionStore.clear()" title="Use every source again" aria-label="Clear source selection">Clear</button>
+      </div>
+
       <!-- No providers configured notice (inline, always visible) -->
       <div v-if="!hasAnyProvider" class="flex items-center gap-3 rounded-lg bg-info/10 border border-info/30 px-3 py-2 flex-shrink-0">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-info shrink-0 w-4 h-4">
@@ -165,7 +189,7 @@
                 <Bot :size="20" class="text-base-content/50" aria-hidden="true" />
               </div>
               <h3 class="text-sm font-medium text-base-content/80">Ask about your documents</h3>
-              <p class="text-xs text-base-content/40">Answers are grounded in your indexed sources, with citations.</p>
+              <p class="text-sm text-base-content/70">Ask a question, then open its citations to check the evidence.</p>
             </div>
             <div class="flex flex-col gap-1.5 w-full">
               <button
@@ -214,7 +238,12 @@
                 <!-- Structured query / metric results (rendered BEFORE the prose answer
                      so the synthesized response lands at the bottom of the message,
                      where the auto-scroll anchor keeps it in view as it streams) -->
-                <div v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2">
+                <details v-if="msg.structuredResults && msg.structuredResults.length > 0" class="mt-3 space-y-2" :open="msg.streaming || msg.structuredResults.some(sr => sr.error || sr.result?.partial_failure)">
+                  <summary class="cursor-pointer text-xs text-base-content/70 py-2" aria-live="polite">
+                    Research activity · {{ msg.structuredResults.filter(sr => sr.tool !== '_thinking').length }} steps
+                    <span v-if="msg.streaming"> · Working…</span>
+                    <span v-else-if="msg.structuredResults.some(sr => sr.error || sr.result?.partial_failure)"> · Some steps failed</span>
+                  </summary>
                   <template v-for="(sr, srIdx) in msg.structuredResults" :key="srIdx">
 
                   <!-- Thinking breadcrumb: prose the agent emitted between tool calls -->
@@ -314,7 +343,13 @@
                     </div>
 
                     <!-- Document search results -->
-                    <div v-else-if="sr.tool === 'search_documents' && sr.result?.results" class="px-3 py-2 space-y-1">
+                    <div v-else-if="['search_documents', 'research_documents'].includes(sr.tool) && sr.result?.results" class="px-3 py-2 space-y-1">
+                      <p v-if="sr.result.partial_failure" class="text-xs text-warning">Some searches failed. Evidence may be incomplete.</p>
+                      <ul v-if="sr.result.coverage" class="text-xs space-y-1 pb-2">
+                        <li v-for="(item, coverageIndex) in sr.result.coverage" :key="coverageIndex">
+                          {{ item.query }} · {{ item.evidence_ids.length ? 'Passages retrieved' : item.status === 'search_failed' ? 'Search failed' : 'No selected evidence' }}
+                        </li>
+                      </ul>
                       <div class="text-xs text-base-content/50">
                         {{ sr.result.total_results }} result{{ sr.result.total_results === 1 ? '' : 's' }}
                       </div>
@@ -327,7 +362,7 @@
                           <span class="text-base-content/40 font-mono">#{{ r.rank }}</span>
                           <span class="font-medium truncate">{{ r.filename }}</span>
                           <span v-if="r.page_number" class="text-base-content/40">p.{{ r.page_number }}</span>
-                          <span class="text-base-content/40 ml-auto font-mono">{{ Number(r.similarity_score).toFixed(3) }}</span>
+                          <span v-if="r.similarity_score != null" class="text-base-content/40 ml-auto font-mono">{{ Number(r.similarity_score).toFixed(3) }}</span>
                         </li>
                       </ul>
                     </div>
@@ -368,16 +403,13 @@
                     </div>
                   </div>
                   </template>
-                </div>
+                </details>
 
                 <!-- Synthesized prose answer — streams in below the tool cards so
                      auto-scroll keeps the final response visible. -->
                 <div v-if="!msg.slashCommand && (msg.content || msg.streaming)" class="relative"
                   :class="{ 'mt-3': msg.structuredResults && msg.structuredResults.length > 0 }">
-                  <div
-                    class="prose prose-sm max-w-none text-sm chat-markdown"
-                    v-html="renderAssistantMarkdown(msg.content)"
-                  ></div>
+                  <AnswerEvidence :content="msg.content" :sources="msg.sources || []" :streaming="msg.streaming" />
                   <!-- Blinking cursor while streaming -->
                   <span
                     v-if="msg.streaming && msg.content"
@@ -430,25 +462,18 @@
                   <button
                     v-if="msg.content"
                     class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 ml-auto text-base-content/50 hover:text-base-content gap-1"
-                    :title="copiedMessageIndex === index ? 'Copied!' : 'Copy answer'"
-                    :aria-label="copiedMessageIndex === index ? 'Copied to clipboard' : 'Copy answer to clipboard'"
+                    :title="copiedMessageIndex === index ? 'Copied!' : 'Copy answer with evidence'"
+                    :aria-label="copiedMessageIndex === index ? 'Copied to clipboard' : 'Copy answer with evidence to clipboard'"
                     @click="copyMessage(msg, index)"
                   >
                     <Check v-if="copiedMessageIndex === index" :size="11" class="text-success" />
                     <Copy v-else :size="11" />
-                    <span class="text-xs">{{ copiedMessageIndex === index ? 'Copied' : 'Copy' }}</span>
+                    <span class="text-xs">{{ copiedMessageIndex === index ? 'Copied' : 'Copy with evidence' }}</span>
                   </button>
                 </div>
               </div>
             </div>
 
-            <!-- Per-message source count -->
-            <div v-if="msg.sources && msg.sources.length > 0" class="sm:ml-9">
-              <span class="flex items-center gap-1 text-xs text-base-content/40">
-                <FileText :size="12" />
-                {{ msg.sources.length }} source{{ msg.sources.length !== 1 ? 's' : '' }} retrieved
-              </span>
-            </div>
           </div>
 
         </template>
@@ -558,27 +583,15 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import http from '../utils/http'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
-
-marked.setOptions({ gfm: true, breaks: true })
-
-const renderMarkdown = (text) => {
-  if (!text) return ''
-  const html = marked.parse(String(text))
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
-}
-
-const renderAssistantMarkdown = (text) => {
-  const html = renderMarkdown(text)
-  return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ')
-}
+import AnswerEvidence from './AnswerEvidence.vue'
+import { answerWithReferences } from '../utils/answerEvidence'
 import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check, RefreshCw } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
 import { useProviderStore } from '../stores/providerStore'
 import { useStatsStore } from '../stores/statsStore'
+import { useSelectionStore } from '../stores/selectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
 import AISettingsDrawer from './AISettingsDrawer.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
@@ -599,6 +612,9 @@ const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()
 const providerStore = useProviderStore()
 const statsStore = useStatsStore()
+const selectionStore = useSelectionStore()
+// The sidebar selection scopes this conversation (see stores/selectionStore).
+const selectionActive = computed(() => selectionStore.active)
 
 // documentCount is the real "is there anything indexed" signal — CSV/XLSX
 // files live entirely in the structured SQL store and produce zero chunks,
@@ -627,7 +643,7 @@ const settingsDrawerOpen = ref(false)
 
 // Chat options (persisted)
 const topK = ref(parseInt(localStorage.getItem('chat_top_k') || '5'))
-const searchMode = ref(localStorage.getItem('chat_search_mode') || 'semantic')
+const searchMode = ref(localStorage.getItem('chat_search_mode') || 'hybrid')
 const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
 
@@ -718,9 +734,9 @@ const deleteSession = (sessionId) => {
 
 const suggestions = [
   'Summarize the key points in these documents',
-  'What are the main themes across my sources?',
-  'What questions do these documents answer?',
-  'Give me an overview of this collection',
+  'Compare the requirements in these sources and cite any conflicts.',
+  'Which deadlines and responsibilities are stated? Cite each source.',
+  'What is missing from these documents that I should verify?',
 ]
 
 // Expanded-details state for structured result cards: Set of "msgIdx:srIdx"
@@ -740,6 +756,8 @@ const isNumeric = (v) => typeof v === 'number' || (typeof v === 'string' && v !=
 
 // Map agent tool names to a renderer label, icon, and primary detail.
 const TOOL_META = {
+  research_documents:      { label: 'Researching sources',   icon: Search,   color: 'text-info' },
+  find_in_documents:       { label: 'Finding exact wording',  icon: Search,   color: 'text-info' },
   search_documents:        { label: 'Searching documents',  icon: Search,   color: 'text-info' },
   get_document_context:    { label: 'Reading document',     icon: BookOpen, color: 'text-info' },
   list_tables:             { label: 'Listing tables',       icon: ListTree, color: 'text-base-content/60' },
@@ -757,7 +775,7 @@ const toolIconClass = (name) => toolMeta(name).color
 const toolLabel = (sr) => toolMeta(sr.tool).label
 const toolDetail = (sr) => {
   const a = sr.args || {}
-  return a.query || a.identifier || a.table || a.filename || a.document_id || ''
+    return a.query || a.pattern || a.identifier || a.table || a.filename || a.document_id || ''
 }
 
 const formatCell = (v) => {
@@ -837,7 +855,7 @@ let copyResetTimer = null
 const copyMessage = async (msg, index) => {
   if (!msg?.content) return
   try {
-    await navigator.clipboard.writeText(msg.content)
+      await navigator.clipboard.writeText(answerWithReferences(msg))
     copiedMessageIndex.value = index
     if (copyResetTimer) clearTimeout(copyResetTimer)
     copyResetTimer = setTimeout(() => { copiedMessageIndex.value = null }, 1600)
@@ -994,6 +1012,10 @@ const sendMessage = async () => {
           scope: scope.value,
           rerank: rerank.value,
           use_cache: !forceFresh.value,
+          // Selected sources bound the whole turn server-side (retrieval,
+          // tool calls, tables, overview, cache). Ids belong to the current
+          // collection, so they only travel with scope=current.
+          document_ids: scope.value === 'current' && selectionStore.active ? selectionStore.currentIds : null,
         }),
       }
     )

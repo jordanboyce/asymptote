@@ -403,8 +403,15 @@
 
     <!-- ═══ Edge access (relocated from Settings) ═══ -->
     <section v-if="userStore.canInviteNewPeople" aria-labelledby="admin-access">
-      <h2 id="admin-access" class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3">Access</h2>
-      <AccessAdmin />
+      <h2 id="admin-access" class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3 flex items-center gap-2">
+        Access
+        <span
+          v-if="userStore.pendingRegistrations > 0"
+          class="badge badge-sm badge-warning normal-case tracking-normal font-medium"
+          :title="`${userStore.pendingRegistrations} registration request${userStore.pendingRegistrations === 1 ? '' : 's'} waiting`"
+        >{{ userStore.pendingRegistrations }} waiting</span>
+      </h2>
+      <AccessAdmin @pending-changed="userStore.pendingRegistrations = $event" />
     </section>
   </div>
 </template>
