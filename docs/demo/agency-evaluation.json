@@ -1,0 +1,13 @@
+{
+  "corpus": "Fictional agency demo, version 1",
+  "purpose": "Manual retrieval and citation smoke test; not a measured benchmark",
+  "cases": [
+    {"question": "Under EQ-17, when must equipment be returned?", "expect": "Five working days normally; identify the ten-day field-team exception if applicable.", "sources": ["01-equipment-policy.md", "02-equipment-amendment.md"]},
+    {"question": "Does the rule differ for field teams after July 1, 2026?", "expect": "Ten working days for assignments beginning on or after July 1; other employees still have five.", "sources": ["02-equipment-amendment.md"]},
+    {"question": "The desk note says five days. Why does the amendment say ten?", "expect": "Distinguish the earlier informal reminder from the later, scoped amendment; do not treat it as a universal change.", "sources": ["02-equipment-amendment.md", "03-equipment-desk-note.md"]},
+    {"question": "Who approved the amendment?", "expect": "Name is absent. Do not infer that the owner is the approving person.", "sources": ["02-equipment-amendment.md"]},
+    {"question": "What is the late return fee?", "expect": "No fee is specified. Do not equate missing fee information with an explicit no-fee policy.", "sources": ["01-equipment-policy.md", "03-equipment-desk-note.md"]},
+    {"question": "How many late returns occurred last year?", "expect": "The documents contain no late-return counts. Do not invent a number.", "sources": []},
+    {"question": "Can field teams keep equipment for ten days?", "selected_sources": ["01-equipment-policy.md"], "expect": "The selected original policy does not establish a field-team exception. Do not cite excluded documents.", "sources": ["01-equipment-policy.md"]}
+  ]
+}

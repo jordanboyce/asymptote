@@ -58,6 +58,30 @@ def _get_document_count_from_metadata(collection_id: str, data_dir: Path = None)
         return 0
 
 
+def _get_storage_bytes_from_metadata(collection_id: str, data_dir: Path = None) -> int:
+    """Bytes of source files in a collection, read straight from metadata.db.
+
+    Same shape as the document count above: a single aggregate over the
+    documents table, without loading the collection's vector index, so the
+    collections list can show usage against the storage cap for free.
+    """
+    if data_dir is None:
+        data_dir = settings.data_dir
+    metadata_db_path = data_dir / "collections" / collection_id / "indexes" / "metadata.db"
+    if not metadata_db_path.exists():
+        return 0
+    try:
+        with sqlite_connect(metadata_db_path) as conn:
+            try:
+                row = conn.execute("SELECT COALESCE(SUM(file_size), 0) FROM documents").fetchone()
+            except sqlite3.OperationalError:
+                return 0  # pre-v3.4 metadata.db; migrates on first open
+            return int(row[0] or 0)
+    except Exception as e:
+        logger.warning(f"Could not read storage for collection {collection_id}: {e}")
+        return 0
+
+
 class SQLiteBackend(DatabaseBackend):
     """Manages application-level persistent data in SQLite."""
 
@@ -364,6 +388,30 @@ class SQLiteBackend(DatabaseBackend):
                 )
             """)
 
+            # Online registration: people who asked for access from the
+            # public /register page. One row per address; status moves
+            # pending -> approved | denied, and a denied address that asks
+            # again is re-opened rather than duplicated.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS registration_requests (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    name TEXT,
+                    organization TEXT,
+                    note TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    requested_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    decided_by TEXT,
+                    decision_note TEXT,
+                    request_ip TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_registration_status ON registration_requests(status, requested_at DESC)"
+            )
+
             # ── Migrations for existing databases ────────────
             # Add owner_id to collections if missing
             try:
@@ -581,6 +629,7 @@ class SQLiteBackend(DatabaseBackend):
             if row:
                 collection = dict(row)
                 collection['document_count'] = _get_document_count_from_metadata(collection_id)
+                collection['storage_bytes'] = _get_storage_bytes_from_metadata(collection_id)
                 return collection
             return None
 
@@ -598,6 +647,7 @@ class SQLiteBackend(DatabaseBackend):
             for row in cursor.fetchall():
                 collection = dict(row)
                 collection['document_count'] = _get_document_count_from_metadata(collection['id'])
+                collection['storage_bytes'] = _get_storage_bytes_from_metadata(collection['id'])
                 collections.append(collection)
             return collections
 
@@ -798,6 +848,7 @@ class SQLiteBackend(DatabaseBackend):
             for row in rows:
                 coll = dict(row)
                 coll['document_count'] = _get_document_count_from_metadata(coll['id'])
+                coll['storage_bytes'] = _get_storage_bytes_from_metadata(coll['id'])
                 coll['shared'] = True
                 results.append(coll)
             return results
@@ -1352,6 +1403,102 @@ class SQLiteBackend(DatabaseBackend):
                 "SELECT * FROM blocked_hashes ORDER BY blocked_at DESC"
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Registration requests ────────────────────────────────
+
+    def upsert_registration_request(
+        self, email: str, name: str = "", organization: str = "", note: str = "",
+        request_ip: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a pending request, or re-open/refresh the address's existing row.
+
+        A pending row keeps its place in the queue (details refreshed, attempt
+        counted); a denied row goes back to pending so the admin sees it
+        again; an approved row is returned untouched.
+        """
+        email = email.strip().lower()
+        ts = datetime.utcnow().isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM registration_requests WHERE email = ?", (email,)
+            ).fetchone()
+            if row is None:
+                rid = str(uuid.uuid4())
+                conn.execute(
+                    """INSERT INTO registration_requests
+                       (id, email, name, organization, note, status, requested_at, request_ip, attempts)
+                       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 1)""",
+                    (rid, email, name or "", organization or "", note or "", ts, request_ip),
+                )
+                conn.commit()
+                return self.get_registration_request(rid)
+            if row["status"] == "approved":
+                return dict(row)
+            conn.execute(
+                """UPDATE registration_requests
+                      SET name = ?, organization = ?, note = ?, status = 'pending',
+                          requested_at = ?, decided_at = NULL, decided_by = NULL,
+                          decision_note = NULL, request_ip = ?, attempts = attempts + 1
+                    WHERE id = ?""",
+                (name or row["name"] or "", organization or row["organization"] or "",
+                 note or row["note"] or "", ts, request_ip, row["id"]),
+            )
+            conn.commit()
+            return self.get_registration_request(row["id"])
+
+    def get_registration_request(self, request_id: str) -> Optional[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM registration_requests WHERE id = ?", (request_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_registration_request_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM registration_requests WHERE email = ?", (email.strip().lower(),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_registration_requests(self, status: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM registration_requests WHERE status = ? ORDER BY requested_at DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM registration_requests ORDER BY requested_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def decide_registration_request(
+        self, request_id: str, status: str, decided_by: Optional[str], note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        ts = datetime.utcnow().isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """UPDATE registration_requests
+                      SET status = ?, decided_at = ?, decided_by = ?, decision_note = ?
+                    WHERE id = ?""",
+                (status, ts, decided_by, note or "", request_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                return None
+        return self.get_registration_request(request_id)
+
+    def count_registration_requests(self, status: str = "pending") -> int:
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM registration_requests WHERE status = ?", (status,)
+            ).fetchone()
+            return int(row[0] or 0)
 
     # ── User Preferences ─────────────────────────────────────
 

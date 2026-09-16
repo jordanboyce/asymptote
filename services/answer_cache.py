@@ -208,9 +208,15 @@ class AnswerCache:
         return entry_id
 
     def clear(self, scope_key: Optional[str] = None) -> int:
+        """Drop entries for one scope (every request fingerprint under it) or all."""
         with self._conn() as conn:
             if scope_key:
-                cur = conn.execute("DELETE FROM answer_cache WHERE scope_key = ?", (scope_key,))
+                # Keys are "<scope>#<request fingerprint>": clearing a scope
+                # must take every fingerprint with it.
+                cur = conn.execute(
+                    "DELETE FROM answer_cache WHERE scope_key = ? OR scope_key LIKE ? ESCAPE '\\'",
+                    (scope_key, scope_key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "#%"),
+                )
             else:
                 cur = conn.execute("DELETE FROM answer_cache")
             conn.commit()

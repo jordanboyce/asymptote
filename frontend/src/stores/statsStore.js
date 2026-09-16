@@ -13,6 +13,10 @@ export const useStatsStore = defineStore('stats', () => {
   const documents = ref(0)
   const pages = ref(0)
   const chunks = ref(0)
+  // Storage against the per-collection cap (limit 0 = unlimited).
+  const storageBytes = ref(0)
+  const storageLimitBytes = ref(0)
+  const storagePercent = ref(0)
   const offline = ref(false)
   const loaded = ref(false)
 
@@ -35,6 +39,9 @@ export const useStatsStore = defineStore('stats', () => {
         documents.value = statsResponse.data.total_documents || 0
         pages.value = statsResponse.data.total_pages || 0
         chunks.value = statsResponse.data.total_chunks || 0
+        storageBytes.value = statsResponse.data.storage_bytes || 0
+        storageLimitBytes.value = statsResponse.data.storage_limit_bytes || 0
+        storagePercent.value = statsResponse.data.storage_percent || 0
         offline.value = !!healthResponse.data.offline_mode
         loaded.value = true
       } catch {
@@ -53,5 +60,8 @@ export const useStatsStore = defineStore('stats', () => {
     debounceTimer = setTimeout(fetchStats, delay)
   }
 
-  return { documents, pages, chunks, offline, loaded, fetchStats, fetchStatsDebounced }
+  return {
+    documents, pages, chunks, storageBytes, storageLimitBytes, storagePercent,
+    offline, loaded, fetchStats, fetchStatsDebounced,
+  }
 })

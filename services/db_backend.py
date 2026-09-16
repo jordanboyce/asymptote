@@ -267,6 +267,38 @@ class DatabaseBackend(ABC):
     def list_blocked_hashes(self) -> List[Dict[str, Any]]:
         ...
 
+    # ── Registration requests ────────────────────────────────
+    # People who asked for access from the public /register page.
+
+    @abstractmethod
+    def upsert_registration_request(
+        self, email: str, name: str = "", organization: str = "", note: str = "",
+        request_ip: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def get_registration_request(self, request_id: str) -> Optional[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def get_registration_request_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def list_registration_requests(self, status: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def decide_registration_request(
+        self, request_id: str, status: str, decided_by: Optional[str], note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def count_registration_requests(self, status: str = "pending") -> int:
+        ...
+
     # ── Upload Jobs ──────────────────────────────────────────
 
     @abstractmethod

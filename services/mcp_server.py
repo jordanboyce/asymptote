@@ -329,6 +329,7 @@ def _serialize_result(
         "similarity_score": round(float(result.similarity_score), 4),
         "excerpt": _truncate(result.text_snippet, max_source_length),
         "document_id": result.document_id,
+        "chunk_id": getattr(result, "chunk_id", None),
         "source_format": result.source_format,
         "source_type": result.source_type,
         "source_path": result.source_path,
@@ -770,6 +771,74 @@ def list_recent_documents(
     }, "list_recent_documents")
 
 
+def research_documents_sync(
+    query: str,
+    collection_id: str | None = None,
+    subqueries: list[str] | None = None,
+    top_k: int = 8,
+    max_per_document: int = 2,
+    max_context_chars: int = 12000,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Shared research pipeline used by MCP and the in-app agent."""
+    from services.research_search import research
+
+    cid = _resolve_collection_id(collection_id)
+    profile = get_request_mcp_profile()
+    if not profile.get("include_sources", settings.mcp_include_sources):
+        raise ValueError("Research requires source excerpts. Enable include_sources or use search_collection for metadata-only results.")
+    resolved_filters = _normalize_search_filters(filters)
+    indexer = indexer_manager.get_indexer(cid)
+    collection = collection_service.get_collection(cid)
+    excerpt_limit = max(100, min(int(profile.get("max_source_length") or settings.mcp_max_source_length), 2000))
+
+    def search_branch(text, mode):
+        found = indexer.search(query=text, mode=SearchMode(mode), top_k=20,
+                               filters=resolved_filters)
+        return [{**_serialize_result(result, rank, excerpt_limit, collection), "collection_id": cid}
+                for rank, result in enumerate(found.get("results", []), 1)]
+
+    def literal_branch(pattern):
+        result = find_in_documents_sync(pattern, collection_id=cid, max_results=20,
+                                        filters=resolved_filters)
+        return [{**hit, "collection_id": cid} for hit in result["matches"]]
+
+    result = research(query, subqueries, search_branch, literal_branch, top_k=top_k,
+                      max_per_document=max_per_document, max_context_chars=max_context_chars)
+    return {"collection_id": cid, "collection_name": _mcp_safe_name(collection, cid),
+            "filters_applied": resolved_filters, **result}
+
+
+@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+async def research_documents(
+    query: str,
+    collection_id: str | None = None,
+    subqueries: list[str] | None = None,
+    top_k: int = 8,
+    max_per_document: int = 2,
+    max_context_chars: int = 12000,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Research a multi-part question in one collection with bounded evidence.
+
+    Supply up to three focused subqueries, such as rule, exception and date.
+    Combines hybrid searches, a keyword search, and literal checks for quoted
+    phrases or policy IDs using reciprocal rank fusion. Returns diverse passages,
+    stable evidence IDs, chunk anchors, query coverage, search failures and next
+    tool arguments. Coverage is retrieval coverage, not answer confidence.
+
+    top_k: 1–20 returned passages; max_per_document: 1–10, default 2.
+    max_context_chars: 1000–40000 total excerpt characters, not tokens or total
+    JSON size. At most seven retrieval branches; no hidden model calls.
+    filters: document_ids, filenames, source_formats, date_from/date_to (upload
+    dates). Numeric questions should use the structured-table tools instead.
+    """
+    return await asyncio.to_thread(research_documents_sync, query,
+        collection_id=collection_id, subqueries=subqueries, top_k=top_k,
+        max_per_document=max_per_document, max_context_chars=max_context_chars,
+        filters=filters)
+
+
 def search_collection_sync(
     query: str,
     collection_id: str | None = None,
@@ -807,6 +876,7 @@ def search_collection_sync(
 
     collection = collection_service.get_collection(resolved_collection)
     collection_name = _mcp_safe_name(collection, resolved_collection)
+    resolved_filters = _normalize_search_filters(filters)
 
     # Inline small CSV/XLSX tables before searching so we can (a) hand the
     # host LLM the full authoritative rows for numeric questions and (b)
@@ -814,9 +884,15 @@ def search_collection_sync(
     # the LLM might prefer the partial excerpts over the full data.
     structured_tables_payload: list[dict[str, Any]] = []
     inlined_filenames: set[str] = set()
-    if resolved_inline_row_threshold > 0:
+    # Inlining must honor the same selection as prose retrieval. Other metadata
+    # filters are not understood by the table inliner, so leave those tables to
+    # explicit table tools rather than leaking unrelated rows in a search result.
+    can_inline = not resolved_filters or set(resolved_filters) <= {"document_ids"}
+    if resolved_inline_row_threshold > 0 and can_inline:
         try:
-            s_tables, s_stores = collect_structured_tables([resolved_collection])
+            s_tables, s_stores = collect_structured_tables(
+                [resolved_collection], (resolved_filters or {}).get("document_ids")
+            )
             if s_tables:
                 ctx = build_structured_context(
                     s_tables,
@@ -857,8 +933,6 @@ def search_collection_sync(
                     structured_tables_payload.append(entry)
         except Exception as e:
             logger.warning(f"MCP search_collection: structured context failed: {e}")
-
-    resolved_filters = _normalize_search_filters(filters)
 
     indexer = indexer_manager.get_indexer(resolved_collection)
     search_result = indexer.search(
@@ -1154,6 +1228,8 @@ def get_document_context(
 
     joined = "\n".join(c["text"] for c in emitted)
 
+    from services.governance import effective_sensitivity
+
     return _tool_response({
         "collection_id": resolved_collection,
         "document_id": document_id,
@@ -1165,6 +1241,9 @@ def get_document_context(
         "text": joined,
         "total_chars": len(joined),
         "truncated": truncated,
+        "sensitivity": effective_sensitivity(
+            collection_service.get_collection(resolved_collection), doc_info.get("sensitivity")
+        ),
     }, "get_document_context")
 
 
@@ -1235,6 +1314,7 @@ def find_in_documents_sync(
     case_sensitive: bool = False,
     collection_id: str | None = None,
     max_results: int = 20,
+    filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Synchronous implementation of find_in_documents.
 
@@ -1259,6 +1339,10 @@ def find_in_documents_sync(
     indexer = indexer_manager.get_indexer(resolved_collection)
     metadata_store = indexer.vector_store.metadata_store
     hidden_docs = metadata_store.get_hidden_document_ids()
+    resolved_filters = _normalize_search_filters(filters)
+    allowed_chunks = metadata_store.get_filtered_chunk_ids(**resolved_filters) if resolved_filters else None
+    collection = collection_service.get_collection(resolved_collection)
+    label_cache = {}
 
     def _scan() -> tuple[list[dict[str, Any]], int]:
         # Literal ASCII patterns are prefiltered in SQL (INSTR), so only
@@ -1275,6 +1359,8 @@ def find_in_documents_sync(
         for chunk_id, document_id, filename, page_number, text in rows:
             if document_id in hidden_docs:
                 continue
+            if allowed_chunks is not None and chunk_id not in allowed_chunks:
+                continue
             scanned += 1
             text = text or ""
             if regex is not None:
@@ -1288,6 +1374,10 @@ def find_in_documents_sync(
                     continue
                 offset, excerpt = literal_hit
                 matched = pattern
+            if document_id not in label_cache:
+                from services.governance import effective_sensitivity
+                info = metadata_store.get_document_info(document_id) or {}
+                label_cache[document_id] = effective_sensitivity(collection, info.get("sensitivity"))
             matches.append({
                 "filename": filename,
                 "document_id": document_id,
@@ -1296,12 +1386,13 @@ def find_in_documents_sync(
                 "offset": offset,
                 "excerpt": excerpt,
                 "match": matched,
+                "sensitivity": label_cache[document_id],
             })
             if len(matches) >= capped:
                 break
         return matches, scanned
 
-    matches, scanned = _scan()
+    matches, scanned = ([], 0) if allowed_chunks == set() else _scan()
 
     return _tool_response({
         "collection_id": resolved_collection,
@@ -1312,6 +1403,7 @@ def find_in_documents_sync(
         "chunks_scanned": scanned,
         "truncated": len(matches) >= capped,
         "matches": matches,
+        "filters_applied": resolved_filters,
     }, "find_in_documents")
 
 
@@ -1322,6 +1414,7 @@ async def find_in_documents(
     case_sensitive: bool = False,
     collection_id: str | None = None,
     max_results: int = 20,
+    filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Exact-substring OR regex search across a collection's indexed text chunks.
 
@@ -1355,6 +1448,8 @@ async def find_in_documents(
       - max_results: Max matches to return (default 20, cap 100). One chunk
         can match at most once — if a chunk contains the pattern multiple
         times it still counts as one result.
+      - filters: Optional document_ids, filenames, source_formats and upload
+        date bounds, applied before matching or limiting the returned results.
 
     Returns a list of matches, each with:
       - filename, document_id, chunk_id, page_number
@@ -1379,6 +1474,7 @@ async def find_in_documents(
         case_sensitive=case_sensitive,
         collection_id=collection_id,
         max_results=max_results,
+        filters=filters,
     )
 
 
@@ -1955,6 +2051,12 @@ def write_document_sync(
         replaced_id = existing_id
 
     file_path = document_dir / safe_filename
+    from services import storage_quota
+    from services.storage_quota import StorageLimitExceeded
+    try:
+        storage_quota.check(resolved, len(final_content.encode("utf-8")), safe_filename)
+    except StorageLimitExceeded as e:
+        raise ValueError(str(e))
     # newline="\n": store exactly the bytes the agent sent (no CRLF
     # translation on Windows), so the content hash is platform-independent.
     file_path.write_text(final_content, encoding="utf-8", newline="\n")

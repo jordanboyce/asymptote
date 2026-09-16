@@ -25,6 +25,10 @@ breadth or source permission syncing of an enterprise search platform.
 [Deployment](docs/DEPLOYMENT.md) · [Architecture](docs/ARCHITECTURE.md) ·
 [Product assessment and priorities](docs/PRODUCT_ASSESSMENT.md) · [Roadmap](docs/ROADMAP.md)
 
+[Agentic research guide](docs/AGENTIC_RESEARCH.md): investigate multiple
+subquestions, find exact wording, inspect evidence coverage, and use the same
+research tools in chat and MCP clients.
+
 ---
 
 ## Table of Contents
@@ -77,6 +81,8 @@ That's the whole setup — the image builds the frontend, bundles OCR (Tesseract
 ### Sharing it with a team
 
 Choose an access model deliberately. In the default shared-appliance mode, everyone admitted can access the team corpus. `PRIVATE_COLLECTIONS=true` enables collection ownership and read/readwrite sharing using verified Cloudflare Access identities; configure `ADMIN_EMAILS` for operators. An arbitrary SSO proxy alone does not enable per-user collection isolation. Setup and verification: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+People can also ask for access themselves: `REGISTRATION_MODE=approval` (queue for an admin) or `open` (admit matching addresses at once) turns on a public `/register` page, with an optional email-domain allowlist and a seat cap. Each collection holds up to 5 GiB of sources by default (`COLLECTION_STORAGE_LIMIT_BYTES`); usage is shown in the Sources panel.
 
 ### Air-gapped / offline deployment
 

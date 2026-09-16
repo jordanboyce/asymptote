@@ -53,6 +53,8 @@ class PreparedDocument:
     sensitivity: Optional[str] = None
     policy_status: str = "clear"
     policy_flags: Optional[dict] = None
+    # v3.4: bytes of the source file, for the per-collection storage cap.
+    file_size: Optional[int] = None
 
 
 class ChunkBatcher:
@@ -141,6 +143,14 @@ class DocumentIndexer:
         )
 
     # ── Governance helpers ────────────────────────────────────────────
+
+    @staticmethod
+    def _file_size(document_path: Path) -> Optional[int]:
+        """Bytes on disk, or None when the path cannot be stat'ed."""
+        try:
+            return document_path.stat().st_size
+        except OSError:
+            return None
 
     def _admit(self, document_path: Path, filename: str, collection_id: str | None,
                uploaded_by: str | None) -> tuple[str, str]:
@@ -346,6 +356,7 @@ class DocumentIndexer:
             sensitivity=suggested_sensitivity,
             policy_status=policy_status,
             policy_flags=policy_flags,
+            file_size=self._file_size(document_path),
         )
         report("saving", 100, f"Saved {num_chunks} chunks")
 
@@ -367,6 +378,7 @@ class DocumentIndexer:
             sensitivity=suggested_sensitivity,
             policy_status=policy_status,
             policy_flags=policy_flags,
+            file_size=self._file_size(document_path),
         )
 
         logger.info(
@@ -426,6 +438,7 @@ class DocumentIndexer:
                 sensitivity=suggested,
                 policy_status=policy_status,
                 policy_flags=policy_flags,
+                file_size=self._file_size(document_path),
             )
 
         extraction_result = self.document_extractor.extract_text(document_path)
@@ -470,6 +483,7 @@ class DocumentIndexer:
             sensitivity=suggested,
             policy_status=policy_status,
             policy_flags=policy_flags,
+            file_size=self._file_size(document_path),
         )
 
     def index_prepared_documents(
@@ -528,6 +542,7 @@ class DocumentIndexer:
                 "sensitivity": p.sensitivity,
                 "policy_status": p.policy_status,
                 "policy_flags": p.policy_flags,
+                "file_size": p.file_size,
             }
             for p in prepared
         ])
@@ -550,6 +565,7 @@ class DocumentIndexer:
                 sensitivity=p.sensitivity,
                 policy_status=p.policy_status,
                 policy_flags=p.policy_flags,
+                file_size=p.file_size,
             )
             for p in prepared
         ]
@@ -652,6 +668,7 @@ class DocumentIndexer:
             sensitivity=suggested_sensitivity,
             policy_status=policy_status,
             policy_flags=policy_flags,
+            file_size=self._file_size(document_path),
         )
         report("saving", 100, f"Recorded {total_rows} rows")
 
@@ -671,6 +688,7 @@ class DocumentIndexer:
             sensitivity=suggested_sensitivity,
             policy_status=policy_status,
             policy_flags=policy_flags,
+            file_size=self._file_size(document_path),
         )
 
         logger.info(
@@ -756,6 +774,7 @@ class DocumentIndexer:
             sensitivity=suggested_sensitivity,
             policy_status=policy_status,
             policy_flags=policy_flags,
+            file_size=self._file_size(document_path),
         )
         report("saving", 100, f"Saved {num_chunks} chunks")
 
@@ -775,6 +794,7 @@ class DocumentIndexer:
             sensitivity=suggested_sensitivity,
             policy_status=policy_status,
             policy_flags=policy_flags,
+            file_size=self._file_size(document_path),
         )
 
         logger.info(f"Successfully indexed code file {filename}: {num_chunks} symbol chunks")

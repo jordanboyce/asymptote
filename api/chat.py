@@ -14,6 +14,8 @@ from services.ai_service import AIService, AnthropicProvider, create_provider
 from services.agent_tools import anthropic_tools, openai_tools
 from services.collection_overview import build_collection_overview as _build_collection_overview
 from services.collection_service import collection_service
+from services.chat_evidence import ChatEvidence, CITATION_INSTRUCTIONS
+from services.research_search import RESEARCH_INSTRUCTIONS
 from services.structured_chat import (
     _summarize_args as _summarize_for_log,
     build_structured_context,
@@ -59,10 +61,91 @@ router = APIRouter()
 _FINGERPRINT_FIELDS = ("filename", "upload_timestamp", "num_chunks", "content_hash", "sensitivity")
 
 
-def _cache_context(chat_request: ChatRequest, collection_id: str):
+def _selected_document_ids(chat_request: ChatRequest) -> list[str] | None:
+    """The user's source selection, normalized; only meaningful for the
+    current-collection scope (ids belong to one collection)."""
+    ids = getattr(chat_request, "document_ids", None)
+    if not ids or chat_request.scope == "all":
+        return None
+    cleaned = sorted({str(d).strip() for d in ids if str(d).strip()})
+    return cleaned or None
+
+
+def _requested_model(chat_request: ChatRequest, x_ai_model=None, x_ollama_model=None,
+                     x_anthropic_model=None, x_openai_model=None, x_ai_base_url=None) -> str:
+    """The model the request will actually run on, as the provider block
+    resolves it — folded into the cache key so a switch of model or
+    endpoint never serves the other one's answer."""
+    if chat_request.provider == "ollama":
+        model = x_ai_model or x_ollama_model or "llama3.2"
+    else:
+        model = x_ai_model or x_anthropic_model or x_openai_model or ""
+    return f"{model}@{x_ai_base_url or ''}"
+
+
+def _collection_guidance_version(collection_id: str) -> str:
+    """Guide text + attached expertise, as a short digest.
+
+    Both shape the system prompt, so a cached answer written under different
+    guidance must not be reused after either changes."""
+    import hashlib
+
+    parts = []
+    try:
+        col = collection_service.get_collection(collection_id) or {}
+        parts.append(col.get("guide") or "")
+    except Exception:
+        parts.append("")
+    try:
+        packs = expertise_store.get_packs_for_collection(collection_id)
+        parts.extend(f"{p.id}:{p.updated_at}" for p in packs)
+    except Exception:
+        pass
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def _corpus_version(collection_id: str) -> str:
+    try:
+        return get_indexer(collection_id).vector_store.metadata_store.corpus_version()
+    except Exception:
+        return "?"
+
+
+def _request_fingerprint(chat_request: ChatRequest, collection_ids: list[str], model: str) -> str:
+    """Everything besides the question that decides the answer.
+
+    Provider + model + endpoint, retrieval settings, the source selection,
+    and per collection the corpus version and guidance digest. Hashed into
+    the scope key so a cached answer is only ever reused for a request that
+    would have been built the same way — new uploads, a guide edit, an
+    attached instruction pack, a model switch or a different selection all
+    miss the cache instead of returning a stale answer.
+    """
+    import hashlib
+
+    parts = [
+        "evidence_protocol=3",
+        f"provider={chat_request.provider}",
+        f"model={model}",
+        f"mode={getattr(chat_request.mode, 'value', chat_request.mode)}",
+        f"top_k={chat_request.top_k}",
+        f"rerank={int(bool(chat_request.rerank))}",
+        "selection=" + ",".join(_selected_document_ids(chat_request) or []),
+    ]
+    for cid in collection_ids:
+        parts.append(f"{cid}:corpus={_corpus_version(cid)}:guidance={_collection_guidance_version(cid)}")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_context(chat_request: ChatRequest, collection_id: str, model: str = ""):
     """Scope key + query embedding for this request, or None when the cache
     doesn't apply (disabled, or a multi-turn conversation — follow-ups depend
-    on history a cached answer never saw)."""
+    on history a cached answer never saw).
+
+    The scope key is ``<scope>#<request fingerprint>``: the scope names the
+    collection(s), the fingerprint pins everything else that shapes the
+    answer (see _request_fingerprint). Clearing a scope drops every
+    fingerprint under it."""
     from config import settings
 
     if not settings.enable_answer_cache:
@@ -77,12 +160,14 @@ def _cache_context(chat_request: ChatRequest, collection_id: str):
             ids = sorted(c["id"] for c in collection_service.get_all_collections())
             if not ids:
                 return None
-            scope_key = "all:" + ",".join(ids)
+            scope = "all:" + ",".join(ids)
             embed_cid = "default" if "default" in ids else ids[0]
         else:
-            scope_key = f"col:{collection_id}"
+            ids = [collection_id]
+            scope = f"col:{collection_id}"
             embed_cid = collection_id
 
+        scope_key = f"{scope}#{_request_fingerprint(chat_request, ids, model)}"
         embedder = get_indexer(embed_cid).embedding_service
         question = chat_request.messages[-1].content.strip()
         return {
@@ -211,6 +296,28 @@ def _source_sensitivity(collection_id: str, result, _cache: dict) -> str:
     return effective_sensitivity(_cache[collection_id], getattr(result, "sensitivity", None))
 
 
+def _rerank_context(ai_service, query, results, collection_ids, top_k):
+    """Keep passages and provenance paired for both chat transports."""
+    if not results:
+        return results, collection_ids, None
+    try:
+        ranked = ai_service.rerank_results(query, [
+            {"index": i, "filename": r.filename, "text_snippet": r.text_snippet,
+             "similarity_score": r.similarity_score}
+            for i, r in enumerate(results)
+        ], top_k)
+        indices = list(dict.fromkeys(
+            i for i in ranked["reranked_indices"]
+            if type(i) is int and 0 <= i < len(results)
+        ))
+        if indices:
+            return [results[i] for i in indices], [collection_ids[i] for i in indices], ranked.get("usage")
+        return results, collection_ids, ranked.get("usage")
+    except Exception as exc:
+        logger.warning("Chat context reranking failed, using original order: %s", exc)
+        return results, collection_ids, None
+
+
 @router.delete("/api/chat/cache", tags=["chat"], summary="Clear the semantic answer cache")
 async def clear_answer_cache(collection_id: str = None):
     """Drop cached answers — for one collection, or all of them."""
@@ -264,7 +371,11 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         # Checked before provider construction: a cache hit needs no provider
         # (and no API key) at all. use_cache=false skips the lookup but still
         # stores the fresh answer, replacing the near-duplicate entry.
-        cache_ctx = _cache_context(chat_request, collection_id)
+        cache_ctx = _cache_context(
+            chat_request, collection_id,
+            _requested_model(chat_request, x_ai_model, x_ollama_model, x_anthropic_model,
+                             x_openai_model, x_ai_base_url),
+        )
         if cache_ctx and chat_request.use_cache:
             cache_entry = _cache_lookup(cache_ctx)
             if cache_entry:
@@ -342,6 +453,11 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         # Track which collection each result came from so URLs are correct
         context_results = []
         result_collection_ids = []  # parallel list to context_results
+        # The user's source selection constrains everything downstream:
+        # retrieval here, the tables inlined below, the overview, and every
+        # tool call the agent makes (services/structured_chat.py).
+        selected_ids = _selected_document_ids(chat_request)
+        selection_filters = {"document_ids": selected_ids} if selected_ids else None
 
         if chat_request.scope == "all":
             # Search every collection and merge results by similarity score
@@ -380,6 +496,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                 query=search_query,
                 top_k=chat_request.top_k,
                 mode=chat_request.mode,
+                filters=selection_filters,
             )
             context_results = search_result["results"]
             result_collection_ids = [collection_id] * len(context_results)
@@ -387,27 +504,9 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         # --- Optionally rerank context chunks ---
         rerank_usage = None
         if chat_request.rerank and context_results:
-            try:
-                rerank_input = [
-                    {
-                        "index": i,
-                        "filename": r.filename,
-                        "text_snippet": r.text_snippet,
-                        "similarity_score": r.similarity_score,
-                    }
-                    for i, r in enumerate(context_results)
-                ]
-                rerank_result = ai_service.rerank_results(latest_query, rerank_input, chat_request.top_k)
-                valid_indices = [
-                    i for i in rerank_result["reranked_indices"]
-                    if 0 <= i < len(context_results)
-                ]
-                if valid_indices:
-                    context_results = [context_results[i] for i in valid_indices]
-                    result_collection_ids = [result_collection_ids[i] for i in valid_indices]
-                rerank_usage = rerank_result.get("usage")
-            except Exception as e:
-                logger.warning(f"Chat context reranking failed, using original order: {e}")
+            context_results, result_collection_ids, rerank_usage = _rerank_context(
+                ai_service, latest_query, context_results, result_collection_ids, chat_request.top_k
+            )
 
         # --- Collect structured CSV/XLSX tables early so we can both inline
         # the small ones as JSONL AND know which files to drop from chunks. ---
@@ -415,7 +514,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
             overview_ids = [c["id"] for c in collection_service.get_all_collections()]
         else:
             overview_ids = [collection_id]
-        structured_tables, structured_stores = collect_structured_tables(overview_ids)
+        structured_tables, structured_stores = collect_structured_tables(overview_ids, selected_ids)
         structured_ctx = build_structured_context(structured_tables, structured_stores) \
             if structured_tables else {
                 "inline_block": "",
@@ -441,6 +540,8 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                 f"[Source {i + 1}: {result.filename}, page {result.page_number}]\n{result.text_snippet}"
             )
         context_text = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant context found."
+        evidence = ChatEvidence(filtered_results)
+        filtered_results = evidence.results
 
         history_parts = []
         for msg in chat_request.messages[:-1]:
@@ -450,12 +551,14 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
 
         # --- Build collection overview (handles meta-questions like "how many files") ---
         try:
-            collection_overview = _build_collection_overview(overview_ids)
+            collection_overview = _build_collection_overview(overview_ids, selected_ids)
         except Exception as e:
             logger.warning(f"Failed to build collection overview: {e}")
             collection_overview = "(Collection overview unavailable.)"
 
         scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
+        if selected_ids:
+            scope_note = f"the {len(selected_ids)} source(s) the user selected in the current collection"
 
         # The agent always has the full toolkit available (search, table tools,
         # etc.). Only the LARGE-table schema block is conditional on tool_tables
@@ -465,9 +568,12 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         agent_context = {
             "collection_id": collection_id,
             "scope": chat_request.scope,
+            "document_ids": selected_ids,
         }
 
         base_system_parts = [
+            RESEARCH_INSTRUCTIONS,
+            CITATION_INSTRUCTIONS,
             f"You are an analytical research assistant working over the user's "
             f"indexed sources in {scope_note}.",
             "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED "
@@ -630,6 +736,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                     for tc in tool_calls
                 ]
                 iter_results = execute_tool_calls(adapted_calls, agent_context=agent_context)
+                evidence.observe(iter_results)
                 executed_results.extend(iter_results)
 
                 # Pair each call id with its result payload for the provider.
@@ -699,6 +806,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                     response_text = raw_text.strip()
                     break
                 iter_results = execute_tool_calls(calls, agent_context=agent_context)
+                evidence.observe(iter_results)
                 executed_results.extend(iter_results)
                 suffix = (
                     (suffix + "\n\n" if suffix else "")
@@ -763,7 +871,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
             for r, col_id in filtered_results
         ]
 
-        if cache_ctx:
+        if cache_ctx and not executed_results:
             _cache_store(cache_ctx, response_text, filtered_results, chat_request.provider)
 
         record_chat_usage(
@@ -839,7 +947,11 @@ async def chat_stream_endpoint(
     cache_entry = None
     if any(m.role == "user" for m in chat_request.messages):
         try:
-            cache_ctx = await asyncio.to_thread(_cache_context, chat_request, collection_id)
+            cache_ctx = await asyncio.to_thread(
+                _cache_context, chat_request, collection_id,
+                _requested_model(chat_request, x_ai_model, x_ollama_model, x_anthropic_model,
+                                 x_openai_model, x_ai_base_url),
+            )
             if cache_ctx and chat_request.use_cache:
                 cache_entry = await asyncio.to_thread(_cache_lookup, cache_ctx)
         except Exception as e:
@@ -925,6 +1037,8 @@ async def chat_stream_endpoint(
 
             context_results = []
             result_collection_ids = []
+            selected_ids = _selected_document_ids(chat_request)
+            selection_filters = {"document_ids": selected_ids} if selected_ids else None
 
             if chat_request.scope == "all":
                 all_collections = collection_service.get_all_collections()
@@ -954,10 +1068,18 @@ async def chat_stream_endpoint(
                     yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
                     return
                 sr = await asyncio.to_thread(
-                    indexer.search, query=search_query, top_k=chat_request.top_k, mode=chat_request.mode
+                    indexer.search, query=search_query, top_k=chat_request.top_k, mode=chat_request.mode,
+                    filters=selection_filters,
                 )
                 context_results = sr["results"]
                 result_collection_ids = [collection_id] * len(context_results)
+
+            rerank_usage = None
+            if chat_request.rerank:
+                context_results, result_collection_ids, rerank_usage = await asyncio.to_thread(
+                    _rerank_context, ai_service, latest_query, context_results,
+                    result_collection_ids, chat_request.top_k,
+                )
 
             # ---------- structured tables ----------------------------------------
             overview_ids = (
@@ -966,7 +1088,7 @@ async def chat_stream_endpoint(
                 else [collection_id]
             )
             structured_tables, structured_stores = await asyncio.to_thread(
-                collect_structured_tables, overview_ids
+                collect_structured_tables, overview_ids, selected_ids
             )
             structured_ctx = build_structured_context(structured_tables, structured_stores) if structured_tables else {
                 "inline_block": "", "tool_tables": [], "inlined_filenames": set(), "inlined_document_ids": set()
@@ -983,9 +1105,11 @@ async def chat_stream_endpoint(
                 f"[Source {i+1}: {r.filename}, page {r.page_number}]\n{r.text_snippet}"
                 for i, (r, _) in enumerate(filtered_results)
             ) or "No relevant context found."
+            evidence = ChatEvidence(filtered_results)
+            filtered_results = evidence.results
 
             try:
-                collection_overview = await asyncio.to_thread(_build_collection_overview, overview_ids)
+                collection_overview = await asyncio.to_thread(_build_collection_overview, overview_ids, selected_ids)
             except Exception as e:
                 logger.warning(f"Stream chat: failed to build collection overview: {e}")
                 collection_overview = "(Collection overview unavailable.)"
@@ -994,7 +1118,11 @@ async def chat_stream_endpoint(
 
             # ---------- system prompt --------------------------------------------
             _scope_note = 'all collections' if chat_request.scope == 'all' else 'the current collection'
+            if selected_ids:
+                _scope_note = f"the {len(selected_ids)} source(s) the user selected in the current collection"
             base_system_parts = [
+                RESEARCH_INSTRUCTIONS,
+                CITATION_INSTRUCTIONS,
                 f"You are an analytical research assistant working over the user's "
                 f"indexed sources in {_scope_note}.",
                 "Ground every claim in the provided sources, cite them, and say so "
@@ -1045,10 +1173,11 @@ async def chat_stream_endpoint(
             )
 
             # ---------- agent loop -----------------------------------------------
-            agent_context = {"collection_id": collection_id, "scope": chat_request.scope}
+            agent_context = {"collection_id": collection_id, "scope": chat_request.scope,
+                             "document_ids": selected_ids}
             executed_results: list[dict] = []
-            total_input_tokens = 0
-            total_output_tokens = 0
+            total_input_tokens = (rerank_usage or {}).get("input_tokens", 0)
+            total_output_tokens = (rerank_usage or {}).get("output_tokens", 0)
             model_used = ai_service.quality_model
             response_text = ""
             max_iterations = 8
@@ -1099,6 +1228,7 @@ async def chat_stream_endpoint(
                     iter_results = await asyncio.to_thread(
                         execute_tool_calls, adapted_calls, agent_context=agent_context
                     )
+                    evidence.observe(iter_results)
                     executed_results.extend(iter_results)
 
                     # Emit tool_end for each result
@@ -1191,11 +1321,12 @@ async def chat_stream_endpoint(
                     iter_results = await asyncio.to_thread(
                         execute_tool_calls, tool_calls_react, agent_context=agent_context
                     )
+                    evidence.observe(iter_results)
                     executed_results.extend(iter_results)
                     for tc, res in zip(tool_calls_react, iter_results):
                         yield f"data: {_json.dumps({'type':'tool_end','tool':tc.get('tool','unknown'),'result':res})}\n\n"
                     result_text = _json.dumps([r.get("result") or r.get("error") for r in iter_results], default=str)
-                    suffix = f"\nTool results: {result_text}\nContinue:"
+                    suffix += f"\nTool results: {result_text}\nContinue:"
 
             # ---------- stream the final text word-by-word -----------------------
             if response_text:
@@ -1223,7 +1354,7 @@ async def chat_stream_endpoint(
             ]
             yield f"data: {_json.dumps({'type':'sources','sources':sources_data})}\n\n"
 
-            if cache_ctx:
+            if cache_ctx and not executed_results:
                 await asyncio.to_thread(
                     _cache_store, cache_ctx, response_text, filtered_results, chat_request.provider
                 )

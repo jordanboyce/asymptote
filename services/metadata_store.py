@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Current schema version - increment when making breaking changes
-SCHEMA_VERSION = "3.3"
+SCHEMA_VERSION = "3.4"
 
 # v3.3 governance columns on the documents table, in migration order.
 _GOVERNANCE_DOC_COLUMNS = [
@@ -102,7 +102,9 @@ class MetadataStore:
                     content_hash TEXT DEFAULT NULL,
                     sensitivity TEXT DEFAULT NULL,
                     policy_status TEXT DEFAULT 'clear',
-                    policy_flags TEXT DEFAULT NULL
+                    policy_flags TEXT DEFAULT NULL,
+                    -- v3.4: bytes of the source file (per-collection storage cap)
+                    file_size INTEGER DEFAULT NULL
                 )
             """)
 
@@ -164,6 +166,11 @@ class MetadataStore:
             # Migration from 3.2 to 3.3
             if current_version == "3.2":
                 self._migrate_to_v3_3(conn)
+                current_version = "3.3"
+
+            # Migration from 3.3 to 3.4
+            if current_version == "3.3":
+                self._migrate_to_v3_4(conn)
 
             # Update schema version
             conn.execute("""
@@ -278,6 +285,48 @@ class MetadataStore:
             ON documents(policy_status)
         """)
 
+    def _migrate_to_v3_4(self, conn: sqlite3.Connection):
+        """Migrate from v3.3 to v3.4 schema (per-document byte size).
+
+        The per-collection storage cap is enforced against SUM(file_size), so
+        existing rows are backfilled from the files still on disk: the stored
+        copy in the collection's documents directory, or the in-place
+        reference's source_path. A file that has since disappeared stays
+        NULL and simply does not count.
+        """
+        doc_columns = self._get_table_columns(conn, "documents")
+        if "file_size" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN file_size INTEGER DEFAULT NULL")
+            logger.info("Added column file_size to documents table")
+        self._backfill_file_sizes(conn)
+
+    def _backfill_file_sizes(self, conn: sqlite3.Connection) -> int:
+        """Fill NULL file_size rows from disk. Returns the number updated."""
+        documents_dir = self.db_path.parent.parent / "documents"
+        rows = conn.execute(
+            "SELECT document_id, filename, source_path FROM documents WHERE file_size IS NULL"
+        ).fetchall()
+        updates = []
+        for document_id, filename, source_path in rows:
+            candidates = []
+            if source_path:
+                candidates.append(Path(source_path))
+            if filename:
+                candidates.append(documents_dir / filename)
+            for candidate in candidates:
+                try:
+                    if candidate.is_file():
+                        updates.append((candidate.stat().st_size, document_id))
+                        break
+                except OSError:
+                    continue
+        if updates:
+            conn.executemany(
+                "UPDATE documents SET file_size = ? WHERE document_id = ?", updates
+            )
+            logger.info(f"Backfilled file_size for {len(updates)} document(s)")
+        return len(updates)
+
     def _ensure_v3_1_columns(self, conn: sqlite3.Connection):
         """Ensure v3.1+ columns exist (defensive migration for runtime checks)."""
         doc_columns = self._get_table_columns(conn, "documents")
@@ -293,6 +342,10 @@ class MetadataStore:
         if "policy_status" not in doc_columns:
             logger.warning("Running defensive v3.3 migration - governance columns missing")
             self._migrate_to_v3_3(conn)
+            migrated = True
+        if "file_size" not in doc_columns:
+            logger.warning("Running defensive v3.4 migration - file_size column missing")
+            self._migrate_to_v3_4(conn)
             migrated = True
         if migrated:
             conn.execute("""
@@ -578,9 +631,35 @@ class MetadataStore:
         """
         with sqlite_connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(num_pages), 0) FROM documents"
+                "SELECT COUNT(*), COALESCE(SUM(num_pages), 0), COALESCE(SUM(file_size), 0) FROM documents"
             ).fetchone()
-            return {"total_documents": row[0], "total_pages": row[1]}
+            return {"total_documents": row[0], "total_pages": row[1], "storage_bytes": row[2]}
+
+    def corpus_version(self) -> str:
+        """A cheap token that changes whenever the corpus does.
+
+        Document count, newest upload timestamp, chunk total and the number
+        of hidden (quarantined) rows — one aggregate over the small documents
+        table. Adding, replacing, deleting or quarantining a source moves at
+        least one of them, which is what the answer cache keys on.
+        """
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                """SELECT COUNT(*), COALESCE(MAX(upload_timestamp), ''), COALESCE(SUM(num_chunks), 0),
+                          COALESCE(SUM(CASE WHEN policy_status = 'quarantined' THEN 1 ELSE 0 END), 0)
+                     FROM documents"""
+            ).fetchone()
+            return f"{row[0]}:{row[1]}:{row[2]}:{row[3]}"
+
+    def get_storage_bytes(self) -> int:
+        """Bytes of source files this collection holds (SUM of file_size).
+
+        Rows indexed before v3.4 whose file has since vanished carry NULL and
+        are not counted; everything else was backfilled from disk.
+        """
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute("SELECT COALESCE(SUM(file_size), 0) FROM documents").fetchone()
+            return int(row[0] or 0)
 
     def count_documents(self, q: str = "") -> int:
         """Count documents, optionally filtered by a filename substring."""
@@ -737,7 +816,7 @@ class MetadataStore:
                      source_type: str = "upload", injection_warnings: dict = None,
                      uploaded_by: str = None, content_hash: str = None,
                      sensitivity: str = None, policy_status: str = "clear",
-                     policy_flags: dict = None):
+                     policy_flags: dict = None, file_size: int = None):
         """
         Add document metadata.
 
@@ -774,6 +853,7 @@ class MetadataStore:
             "sensitivity": sensitivity,
             "policy_status": policy_status,
             "policy_flags": policy_flags,
+            "file_size": file_size,
         }])
 
     def add_documents(self, documents: List[dict]):
@@ -800,8 +880,8 @@ class MetadataStore:
                 (document_id, filename, num_pages, num_chunks, upload_timestamp,
                  source_format, extraction_method, embedding_model, chunk_size,
                  chunk_overlap, schema_version, source_path, source_type, injection_warnings,
-                 uploaded_by, content_hash, sensitivity, policy_status, policy_flags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 uploaded_by, content_hash, sensitivity, policy_status, policy_flags, file_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     doc["document_id"],
@@ -823,6 +903,7 @@ class MetadataStore:
                     doc.get("sensitivity"),
                     doc.get("policy_status") or "clear",
                     json.dumps(doc["policy_flags"]) if doc.get("policy_flags") else None,
+                    doc.get("file_size"),
                 )
                 for doc in documents
             ])

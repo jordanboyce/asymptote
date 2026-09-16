@@ -291,6 +291,7 @@
           <ul class="space-y-0.5 font-mono">
             <li>search_all_collections</li>
             <li>search_collection</li>
+            <li>research_documents — multi-query research, diverse passages, coverage gaps</li>
             <li>list_recent_documents</li>
             <li>get_document_context</li>
             <li>find_in_documents</li>

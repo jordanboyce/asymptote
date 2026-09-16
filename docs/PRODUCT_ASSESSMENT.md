@@ -103,14 +103,36 @@ another option to revisit when pilot users need different privacy or cost polici
 - Bound Docker Compose's published port to loopback by default. **Upgrade note:**
   existing LAN users must set `BIND_ADDRESS` explicitly and protect ingress.
 
+## Follow-up (same day)
+
+- **Caching reflects the entire request.** The cache key is now
+  `<scope>#<request fingerprint>`, where the fingerprint covers provider,
+  model and endpoint, search mode, `top_k`, rerank, the source selection,
+  and — per collection in scope — a corpus version (document count, newest
+  upload, chunk total, quarantined count) plus a digest of the collection
+  guide and attached instruction packs. A new upload, a guide edit, an
+  attached pack, a model switch or a different selection therefore misses
+  the cache; the per-source fingerprint check is kept as a second guard.
+  Clearing a collection's cache drops every fingerprint under it.
+- **Selected sources are enforced end-to-end.** The sidebar checkboxes are
+  the conversation's scope: the ids travel with every chat and report
+  request, and the backend applies them to initial retrieval (document
+  filter), the structured tables it inlines, the collection overview, and
+  every tool the agent can call — search filters are intersected with the
+  selection, `get_document_context` refuses other ids, table tools refuse
+  tables from unselected sources, and `query_table` rejects SQL that names
+  one. Citations follow from retrieval, so they stay inside the selection.
+- **Online registration** at `/register` (approval or open), a
+  **5 GiB per-collection storage cap**, an installable web manifest, and a
+  typographic pass (self-hosted Inter, consistent radii and focus rings)
+  shipped alongside; see `docs/DEPLOYMENT.md`.
+
 ## Remaining priorities
 
 | Priority | Next outcome | Acceptance criteria |
 |---|---|---|
 | P0 | Measure trustworthy retrieval | A versioned corpus with answerable, unanswerable, exact-identifier, negation, date, table, and cross-user cases; report recall@k, citation correctness, abstention, and p50/p95 latency. No quality score is claimed without these measurements. |
 | P0 | Finish privacy and authorization review | Exercise every API/tool/resource with owner, reader, outsider, revoked token, and anonymous identities. Validate cloud egress across embeddings, OCR, reranking, and chat; confirm collection labels match actual policy enforcement. |
-| P0 | Make caching reflect the entire request | Invalidate on corpus additions, collection guidance, attached instructions, and model/retrieval changes. Current cited-source checks do not detect every change to the wider corpus. Disable `ENABLE_ANSWER_CACHE` for pilots where that freshness is required. |
-| P1 | Focus questions on selected sources | Source selection must constrain initial retrieval, subsequent tool calls, table queries, caches, citations, and exports end-to-end; a checkbox alone is insufficient. |
 | P1 | Ship one dependable connector | Choose from actual pilot demand (e.g. a watched folder or SharePoint). Incremental sync, deletion propagation, resumable jobs, visible failure state, and permission tests must ship together. |
 | P1 | Make deployment reproducible | Lock supported dependencies, validate the full container and Postgres path, perform backup/restore and upgrade drills, document model prerequisites and hardware-tested limits. |
 | P2 | Broaden identity and MCP authentication | Add standard OIDC and deliberately scoped/expiring service tokens if pilots require them. Existing token collection_scope only grants restricted collections; it is not an all-collection allowlist. |

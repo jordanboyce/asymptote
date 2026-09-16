@@ -5,7 +5,7 @@ Used by chat, search, ask, and MCP so LLMs can answer meta-questions like
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from services.collection_service import collection_service
 from services.indexer_manager import indexer_manager
@@ -15,14 +15,19 @@ logger = logging.getLogger(__name__)
 MAX_FILENAMES = 50
 
 
-def build_collection_overview(collection_ids: List[str]) -> str:
+def build_collection_overview(collection_ids: List[str], document_ids: Optional[List[str]] = None) -> str:
     """Build a compact, plain-text summary of one or more collections.
 
     Includes name, document count, page total, date range, and filenames so the LLM
     can answer meta-questions like "how many files are in here?" or "do you have
     anything from March?" without having to retrieve content chunks.
+
+    When ``document_ids`` is given the overview describes only those sources
+    (and says so), so a conversation limited to a selection never sees the
+    rest of the collection listed as if it were in play.
     """
     lines: List[str] = []
+    selected = set(document_ids) if document_ids else None
 
     for col_id in collection_ids:
         col = collection_service.get_collection(col_id)
@@ -35,6 +40,10 @@ def build_collection_overview(collection_ids: List[str]) -> str:
         except Exception as e:
             logger.warning(f"Overview: failed to list documents for '{col_id}': {e}")
             docs = []
+
+        total_in_collection = len(docs)
+        if selected is not None:
+            docs = [d for d in docs if d.get("document_id") in selected]
 
         doc_count = len(docs)
         page_total = sum((d.get("total_pages") or d.get("num_pages") or 0) for d in docs)
@@ -49,6 +58,11 @@ def build_collection_overview(collection_ids: List[str]) -> str:
         lines.append(f"- Collection: {col.get('name', col_id)}")
         if col.get("description"):
             lines.append(f"  Description: {col['description']}")
+        if selected is not None:
+            lines.append(
+                f"  Selected sources: {doc_count} of {total_in_collection} in this collection "
+                f"(the user limited this conversation to the selection below)"
+            )
         lines.append(f"  Documents: {doc_count}, Pages: {page_total}, Chunks: {chunk_total}")
         if date_range:
             lines.append(f"  Indexed date range: {date_range}")

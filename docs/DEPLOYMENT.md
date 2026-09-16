@@ -186,6 +186,45 @@ application-level checks — different compliance regimes, different tenants —
 run a second instance. Separate instances remain a stronger boundary than any
 in-app flag.
 
+## Online registration
+
+Admission is admin-push by default: someone shares a collection or types an
+address into Admin → Access, and the app adds it to the Cloudflare Access
+policy. `REGISTRATION_MODE` adds the pull side — a public page at
+`<your-host>/register` where a person asks for a seat:
+
+| Mode | What happens |
+|---|---|
+| `off` (default) | The page says registration is closed and points at sign-in. |
+| `approval` | The request waits in Admin → Access → *Registration requests*; approving it admits the address at the edge (and emails the person when `RESEND_API_KEY` is set). |
+| `open` | Matching addresses are admitted immediately. Anything that cannot be admitted automatically — seats full, Cloudflare error — queues for review instead of being lost. |
+
+Guard rails in every mode: `REGISTRATION_ALLOWED_DOMAINS` (comma-separated;
+empty = any domain) is enforced before a request is even recorded, and
+`REGISTRATION_MAX_SEATS` (default 50, Cloudflare's free tier; `0` = no cap)
+stops automatic admission at that many admitted addresses. The form is
+rate-limited per IP (`RATE_LIMIT_REGISTER_PER_MINUTE`, default 5), carries a
+honeypot field, records nothing for an address that already has access, and
+re-opens a denied request rather than duplicating it. Every outcome lands in
+the audit trail (`access.register`, `access.approve_registration`,
+`access.deny_registration`).
+
+**Requirements.** Edge admission must be configured (`CF_API_TOKEN`,
+`CF_ACCOUNT_ID`, `CF_ACCESS_POLICY_ID`, `ADMIN_EMAILS`): approving a request
+*is* an admission, so without them the page reports itself closed. The page
+and its API must also be reachable before sign-in, which means a Cloudflare
+Access **Bypass** on `/register`, `/api/register` (prefix; covers
+`/api/register/config`), `/assets` (the hashed SPA bundle) and the brand
+files. `scripts/provision_cloudflare.py` creates that app on its next run;
+the app itself exempts exactly the same paths from its own auth
+(`_PUBLIC_PATHS` in `main.py`) and nothing under them reveals deployment
+data — the bundle is static, and the two endpoints answer only whether
+registration is open and the result of one submission.
+
+The person still signs in through Cloudflare Access (one-time PIN or your
+IdP). Nothing here mints a session or stores a password; an approved address
+is exactly as admitted as one an admin typed by hand.
+
 ## Content governance
 
 Once several people can add sources, two questions follow: *who put this
@@ -292,6 +331,8 @@ What protects the deployment when many people share it:
 | `RATE_LIMIT_DEFAULT_PER_MINUTE` | 120 | Everything else under `/api` |
 | `CHAT_DAILY_TOKEN_BUDGET` | 0 (off) | Provider tokens one identity may spend on chat per UTC day. Cached answers stay free once capped. |
 | `MAX_CONCURRENT_INDEX_JOBS` | 2 | Indexing jobs across all collections |
+| `COLLECTION_STORAGE_LIMIT_BYTES` | 5 GiB | Most a single collection may hold, as the sum of its source files. Every ingest path (upload, staged upload, local/repo index jobs, `write_document` over MCP) refuses a file that would cross it with a **413** carrying the numbers; the Sources panel and the collections overview show usage. `0` = unlimited. |
+| `RATE_LIMIT_REGISTER_PER_MINUTE` | 5 | Per-IP submissions to the public `/api/register` form |
 | `SEARCH_HISTORY_RETENTION_DAYS` | 30 | Search log (stores result snippets) |
 | `USAGE_RETENTION_DAYS` | 180 | Per-turn chat usage rows |
 

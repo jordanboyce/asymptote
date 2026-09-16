@@ -235,6 +235,9 @@ class Settings(BaseSettings):
     rate_limit_chat_per_minute: int = 6
     rate_limit_search_per_minute: int = 30
     rate_limit_default_per_minute: int = 120
+    # The public /api/register form has no identity to key on, so its
+    # budget is per IP and deliberately small.
+    rate_limit_register_per_minute: int = 5
 
     # Provider tokens (input+output) one identity may spend on chat per UTC
     # day. 0 = unlimited. Cached answers are free and still served once the
@@ -245,6 +248,34 @@ class Settings(BaseSettings):
     # job funnels through one process-wide embedding lock anyway, so more
     # parallel jobs mostly shuffle the queue while starving live search.
     max_concurrent_index_jobs: int = 2
+
+    # Storage a single collection may hold, in bytes, measured as the sum of
+    # its indexed source files (uploads, staged copies, in-place references
+    # and agent-written sources alike). Every ingest path checks it before
+    # accepting a file, so one collection cannot fill the disk or the
+    # embedding queue for everyone else. 0 = unlimited. Default 5 GiB.
+    collection_storage_limit_bytes: int = 5 * 1024 * 1024 * 1024
+
+    # ── Online registration ──────────────────────────────────────────────
+    # Lets a person ask for access from a public page (/register) instead of
+    # waiting for an admin to type their address in. Requires edge admission
+    # (CF_API_TOKEN / CF_ACCOUNT_ID / CF_ACCESS_POLICY_ID) because approving
+    # a request *is* an admission at the Cloudflare Access edge, and the
+    # /register page plus /api/register must be exempted from Access
+    # (scripts/provision_cloudflare.py adds the bypass; see
+    # docs/DEPLOYMENT.md).
+    #   off      — the page says registration is closed.
+    #   approval — requests queue for an admin (Admin → Access → Requests).
+    #   open     — matching requests are admitted immediately.
+    registration_mode: Literal["off", "approval", "open"] = "off"
+    # Comma-separated email domains allowed to register (e.g.
+    # "example.com, partner.org"). Empty = any domain. Enforced in both
+    # modes; a domain miss is refused before it ever reaches the queue.
+    registration_allowed_domains: str = ""
+    # Refuse new registrations once this many addresses are admitted at the
+    # edge. Defaults to Cloudflare Zero Trust's free tier so a public form
+    # cannot quietly turn into a bill. 0 = no cap beyond Cloudflare's own.
+    registration_max_seats: int = 50
 
     # Retention (days). search_history stores result snippets, so it is a
     # privacy liability with no expiry; chat_usage is small but unbounded.

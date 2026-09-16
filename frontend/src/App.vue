@@ -456,6 +456,11 @@
                       <span class="text-[15px] font-medium text-base-content/75">{{ collection.document_count || 0 }}</span>
                       <span class="text-[10px] uppercase tracking-wider text-base-content/35">{{ (collection.document_count || 0) === 1 ? 'doc' : 'docs' }}</span>
                     </span>
+                    <span
+                      class="hidden sm:inline tabular-nums text-[12px] w-16 text-right"
+                      :class="storageClass(collection)"
+                      :title="storageTitle(collection)"
+                    >{{ formatBytes(collection.storage_bytes || 0) }}</span>
 
                     <div class="flex items-center gap-0.5 hover-reveal">
                       <button
@@ -546,9 +551,12 @@
                   <div v-else class="flex-1"></div>
 
                   <div class="flex items-center justify-between pt-1 border-t border-base-300/40 -mx-1 px-1">
-                    <span class="tabular-nums flex items-baseline gap-1">
-                      <span class="text-[15px] font-medium text-base-content/75">{{ collection.document_count || 0 }}</span>
-                      <span class="text-[10px] uppercase tracking-wider text-base-content/35">{{ (collection.document_count || 0) === 1 ? 'doc' : 'docs' }}</span>
+                    <span class="tabular-nums flex items-baseline gap-2">
+                      <span class="flex items-baseline gap-1">
+                        <span class="text-[15px] font-medium text-base-content/75">{{ collection.document_count || 0 }}</span>
+                        <span class="text-[10px] uppercase tracking-wider text-base-content/35">{{ (collection.document_count || 0) === 1 ? 'doc' : 'docs' }}</span>
+                      </span>
+                      <span class="text-[12px]" :class="storageClass(collection)" :title="storageTitle(collection)">{{ formatBytes(collection.storage_bytes || 0) }}</span>
                     </span>
                     <div class="flex items-center gap-0.5 hover-reveal">
                       <button
@@ -1161,6 +1169,7 @@ const WelcomeOnboarding = defineAsyncComponent(() => import('./components/Welcom
 const AdminTab = defineAsyncComponent(() => import('./components/AdminTab.vue'))
 const AcceptableUseModal = defineAsyncComponent(() => import('./components/AcceptableUseModal.vue'))
 import { SENSITIVITY_HELP, labelBadgeClass, showLabel } from './utils/governance'
+import { formatBytes, describeStorage } from './utils/format'
 import Toaster from './components/Toaster.vue'
 import {
   getConfiguredProviderIds,
@@ -1367,6 +1376,19 @@ const startResizeAnalysis = (e) => {
 }
 
 // True when the user is on the all-collections overview — sidebars hide here.
+// Storage against the per-collection cap, on the overview rows.
+function storageRatio(collection) {
+  const limit = userStore.collectionStorageLimitBytes
+  return limit ? (collection.storage_bytes || 0) / limit : 0
+}
+function storageClass(collection) {
+  const r = storageRatio(collection)
+  return r >= 1 ? 'text-error font-medium' : r >= 0.9 ? 'text-warning font-medium' : 'text-base-content/45'
+}
+function storageTitle(collection) {
+  return describeStorage(collection.storage_bytes || 0, userStore.collectionStorageLimitBytes)
+}
+
 const isCollectionsView = computed(() => activeTab.value === 'collections')
 const isWorkspaceView = computed(() => ['chat', 'search'].includes(activeTab.value))
 const navigateMobile = (tab) => {

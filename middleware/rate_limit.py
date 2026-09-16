@@ -48,6 +48,10 @@ def _classify(path: str) -> Optional[str]:
         return "chat"
     if path.startswith("/api/search"):
         return "search"
+    # The public registration form is reachable without any credential, so
+    # it gets its own tight budget keyed on IP (no identity exists yet).
+    if path == "/api/register" or path.startswith("/api/register/"):
+        return "register"
     return "default"
 
 
@@ -58,8 +62,8 @@ class RateLimiter:
         self._lock = threading.Lock()
         # (class, key) -> [tokens, last_refill_monotonic]
         self._buckets: Dict[Tuple[str, str], list] = {}
-        self._allowed = {"chat": 0, "search": 0, "default": 0}
-        self._rejected = {"chat": 0, "search": 0, "default": 0}
+        self._allowed = {"chat": 0, "search": 0, "default": 0, "register": 0}
+        self._rejected = {"chat": 0, "search": 0, "default": 0, "register": 0}
 
     @staticmethod
     def _limit_for(cls: str) -> int:
@@ -67,6 +71,7 @@ class RateLimiter:
             "chat": settings.rate_limit_chat_per_minute,
             "search": settings.rate_limit_search_per_minute,
             "default": settings.rate_limit_default_per_minute,
+            "register": settings.rate_limit_register_per_minute,
         }[cls]
 
     def check(self, cls: str, key: str) -> Optional[int]:
