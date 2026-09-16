@@ -139,8 +139,11 @@ class Settings(BaseSettings):
     enable_mcp: bool = True
     mcp_server_id: str = "asymptote"
     mcp_default_collection: str = "default"
-    mcp_top_k: int = 5
-    mcp_mode: Literal["semantic", "keyword", "hybrid"] = "semantic"
+    # Single-shot search defaults for agents. Hybrid with 8 passages: an agent
+    # that reaches for search_collection instead of research_documents still
+    # sees enough to notice when the corpus disagrees with its first guess.
+    mcp_top_k: int = 8
+    mcp_mode: Literal["semantic", "keyword", "hybrid"] = "hybrid"
     mcp_semantic_weight: float = 0.7
     mcp_include_sources: bool = True
     mcp_max_source_length: int = 500
@@ -238,6 +241,32 @@ class Settings(BaseSettings):
     # The public /api/register form has no identity to key on, so its
     # budget is per IP and deliberately small.
     rate_limit_register_per_minute: int = 5
+    # /mcp is unlimited by default: an agent turn fans out several tool calls
+    # at once and handles 429s badly (immediate retry or abandoning the
+    # question). Set a per-token budget only for abuse protection on a shared
+    # deployment; it is keyed on the personal token, not the IP.
+    rate_limit_mcp_per_minute: int = 0
+
+    # research_documents runs up to seven retrieval branches against the
+    # vector index and metadata store. Parallel research calls compete for
+    # CPU on large collections, so callers queue for a slot instead of
+    # slowing each other down; a call that waits longer than the timeout is
+    # refused with a retryable error. 0 = no gate.
+    research_max_concurrent: int = 3
+    research_queue_timeout_seconds: float = 60.0
+    # /mcp is unlimited by default: an agent turn fans out several tool calls
+    # at once and handles 429s badly (immediate retry or abandoning the
+    # question). Set a per-token budget only for abuse protection on a shared
+    # deployment; it is keyed on the personal token, not the IP.
+    rate_limit_mcp_per_minute: int = 0
+
+    # research_documents runs up to seven retrieval branches against the
+    # vector index and metadata store. Parallel research calls compete for
+    # CPU on large collections, so callers queue for a slot instead of
+    # slowing each other down; a call that waits longer than the timeout is
+    # refused with a retryable error. 0 = no gate.
+    research_max_concurrent: int = 3
+    research_queue_timeout_seconds: float = 60.0
 
     # Provider tokens (input+output) one identity may spend on chat per UTC
     # day. 0 = unlimited. Cached answers are free and still served once the

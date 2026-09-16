@@ -33,6 +33,23 @@ def limits():
 # ── Classification ──────────────────────────────────────────────────────────
 
 
+def test_mcp_class_is_separate_and_unlimited_by_default():
+    assert _classify("/mcp") == "mcp"
+    assert _classify("/mcp/") == "mcp"
+    assert _classify("/mcp/anything") == "mcp"
+    limiter = RateLimiter()
+    for _ in range(500):
+        assert limiter.check("mcp", "mcp-token:abc") is None
+
+
+def test_pinned_rate_limit_key_wins_over_identity():
+    from types import SimpleNamespace
+    from middleware.rate_limit import resolve_limit_key
+    request = SimpleNamespace(state=SimpleNamespace(auth_identity="jordan@example.com", rate_limit_key="mcp-token:t1"),
+                              headers={}, client=None)
+    assert resolve_limit_key(request) == "mcp-token:t1"
+
+
 def test_classify():
     assert _classify("/api/chat") == "chat"
     assert _classify("/api/chat/stream") == "chat"

@@ -347,7 +347,7 @@
                       <p v-if="sr.result.partial_failure" class="text-xs text-warning">Some searches failed. Evidence may be incomplete.</p>
                       <ul v-if="sr.result.coverage" class="text-xs space-y-1 pb-2">
                         <li v-for="(item, coverageIndex) in sr.result.coverage" :key="coverageIndex">
-                          {{ item.query }} · {{ item.evidence_ids.length ? 'Passages retrieved' : item.status === 'search_failed' ? 'Search failed' : 'No selected evidence' }}
+                          {{ item.query }} · {{ item.status === 'weak_evidence' ? 'Weak evidence only' : item.evidence_ids.length ? 'Passages retrieved' : item.status === 'search_failed' ? 'Search failed' : 'No selected evidence' }}
                         </li>
                       </ul>
                       <div class="text-xs text-base-content/50">

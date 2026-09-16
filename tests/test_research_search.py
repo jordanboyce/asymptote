@@ -50,6 +50,76 @@ def test_literal_branches_also_come_from_subqueries_and_stay_capped():
     assert literals == ["five working days", "field team"]
 
 
+def test_weak_evidence_is_flagged_per_passage_and_per_query():
+    # "agree" is found by two branches; "stray" only by the keyword branch at rank 6.
+    def search(query, mode):
+        if mode == "hybrid":
+            return [hit("agree")]
+        return [hit("agree")] + [hit(f"pad{i}") for i in range(4)] + [hit("stray")]
+    result = research("rule", ["exception"], search, lambda _: [])
+    by_chunk = {r["chunk_id"]: r for r in result["results"]}
+    assert by_chunk["agree"]["evidence_strength"] == "strong"
+    assert by_chunk["stray"]["evidence_strength"] == "weak"
+    assert by_chunk["pad0"]["evidence_strength"] == "strong"   # rank 2 of one branch is still a real hit
+    assert by_chunk["pad2"]["evidence_strength"] == "weak"    # rank 4 of one branch: padding
+    original, exception = result["coverage"]
+    assert original["status"] == "retrieved"
+    assert by_chunk["agree"]["evidence_id"] in original["strong_evidence_ids"]
+    assert by_chunk["stray"]["evidence_id"] in original["evidence_ids"]
+    assert by_chunk["stray"]["evidence_id"] not in original["strong_evidence_ids"]
+    # The subquery matched "agree" through its hybrid branch at rank 1 → strong.
+    assert exception["status"] == "retrieved"
+
+
+def test_query_backed_only_by_weak_passages_reports_weak_evidence():
+    # The subquery's only usable passage sits at rank 4 of a single branch; the
+    # three above it have no excerpt and are skipped, but they still hold ranks.
+    def search(query, mode):
+        if query == "exception" and mode == "hybrid":
+            return [{**hit(f"empty{i}"), "excerpt": ""} for i in range(3)] + [hit("lone")]
+        return [hit("main")]
+    result = research("rule", ["exception"], search, lambda _: [], top_k=20, max_per_document=10)
+    exception = result["coverage"][1]
+    assert exception["status"] == "weak_evidence"
+    assert exception["evidence_ids"] and exception["strong_evidence_ids"] == []
+    assert any(step["tool"] == "get_document_context" and "weak" in step["reason"] for step in result["suggested_next"])
+
+
+def test_weak_evidence_is_flagged_per_passage_and_per_query():
+    # "agree" is found by two branches; "stray" only by the keyword branch at rank 6.
+    def search(query, mode):
+        if mode == "hybrid":
+            return [hit("agree")]
+        return [hit("agree")] + [hit(f"pad{i}") for i in range(4)] + [hit("stray")]
+    result = research("rule", ["exception"], search, lambda _: [])
+    by_chunk = {r["chunk_id"]: r for r in result["results"]}
+    assert by_chunk["agree"]["evidence_strength"] == "strong"
+    assert by_chunk["stray"]["evidence_strength"] == "weak"
+    assert by_chunk["pad0"]["evidence_strength"] == "strong"   # rank 2 of one branch is still a real hit
+    assert by_chunk["pad2"]["evidence_strength"] == "weak"    # rank 4 of one branch: padding
+    original, exception = result["coverage"]
+    assert original["status"] == "retrieved"
+    assert by_chunk["agree"]["evidence_id"] in original["strong_evidence_ids"]
+    assert by_chunk["stray"]["evidence_id"] in original["evidence_ids"]
+    assert by_chunk["stray"]["evidence_id"] not in original["strong_evidence_ids"]
+    # The subquery matched "agree" through its hybrid branch at rank 1 → strong.
+    assert exception["status"] == "retrieved"
+
+
+def test_query_backed_only_by_weak_passages_reports_weak_evidence():
+    # The subquery's only usable passage sits at rank 4 of a single branch; the
+    # three above it have no excerpt and are skipped, but they still hold ranks.
+    def search(query, mode):
+        if query == "exception" and mode == "hybrid":
+            return [{**hit(f"empty{i}"), "excerpt": ""} for i in range(3)] + [hit("lone")]
+        return [hit("main")]
+    result = research("rule", ["exception"], search, lambda _: [], top_k=20, max_per_document=10)
+    exception = result["coverage"][1]
+    assert exception["status"] == "weak_evidence"
+    assert exception["evidence_ids"] and exception["strong_evidence_ids"] == []
+    assert any(step["tool"] == "get_document_context" and "weak" in step["reason"] for step in result["suggested_next"])
+
+
 def test_duplicate_hits_in_one_branch_do_not_boost_ranking():
     result = research("rules", [], lambda *a: [hit("a"), hit("a"), hit("b")], lambda _: [])
     assert result["candidate_count"] == 2
@@ -139,6 +209,60 @@ def test_empty_filters_result_and_denied_scope_do_not_search(mcp_env, monkeypatc
     with pytest.raises(ValueError, match="not found"):
         mcp.research_documents_sync("EQ-17", "private")
     indexer.search.assert_not_called()
+
+
+def test_research_concurrency_gate_queues_then_refuses(mcp_env, monkeypatch):
+    import threading
+    mcp, indexer, _ = mcp_env
+    monkeypatch.setattr(mcp.settings, "research_max_concurrent", 1)
+    monkeypatch.setattr(mcp.settings, "research_queue_timeout_seconds", 0.2)
+    mcp._research_gate_reset()
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_search(*a, **k):
+        started.set()
+        release.wait(5)
+        return {"results": []}
+    indexer.search = slow_search
+    worker = threading.Thread(target=lambda: mcp.research_documents_sync("EQ-17", "ops"))
+    worker.start()
+    assert started.wait(2)
+    with pytest.raises(ValueError, match="busy"):
+        mcp.research_documents_sync("EQ-17", "ops")
+    release.set()
+    worker.join(5)
+    mcp._research_gate_reset()
+    # Once the slot is free, research runs again (the literal branch still finds the fixture rows).
+    indexer.search = Mock(return_value={"results": []})
+    assert "results" in mcp.research_documents_sync("EQ-17", "ops")
+
+
+def test_research_concurrency_gate_queues_then_refuses(mcp_env, monkeypatch):
+    import threading
+    mcp, indexer, _ = mcp_env
+    monkeypatch.setattr(mcp.settings, "research_max_concurrent", 1)
+    monkeypatch.setattr(mcp.settings, "research_queue_timeout_seconds", 0.2)
+    mcp._research_gate_reset()
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_search(*a, **k):
+        started.set()
+        release.wait(5)
+        return {"results": []}
+    indexer.search = slow_search
+    worker = threading.Thread(target=lambda: mcp.research_documents_sync("EQ-17", "ops"))
+    worker.start()
+    assert started.wait(2)
+    with pytest.raises(ValueError, match="busy"):
+        mcp.research_documents_sync("EQ-17", "ops")
+    release.set()
+    worker.join(5)
+    mcp._research_gate_reset()
+    # Once the slot is free, research runs again (the literal branch still finds the fixture rows).
+    indexer.search = Mock(return_value={"results": []})
+    assert "results" in mcp.research_documents_sync("EQ-17", "ops")
 
 
 def test_mcp_registration_and_async_tool_return_structured_results(mcp_env):

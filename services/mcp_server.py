@@ -790,6 +790,44 @@ def list_recent_documents(
     }, "list_recent_documents")
 
 
+import threading as _threading
+
+_research_gate: _threading.BoundedSemaphore | None = None
+_research_gate_size = 0
+_research_gate_lock = _threading.Lock()
+
+
+def _research_gate_reset() -> None:
+    """Drop the gate so the next call rebuilds it from settings (tests, config reload)."""
+    global _research_gate, _research_gate_size
+    with _research_gate_lock:
+        _research_gate, _research_gate_size = None, 0
+
+
+def _acquire_research_slot() -> _threading.BoundedSemaphore | None:
+    """Block for a research slot; None when the gate is disabled.
+
+    Concurrency, not rate, is what protects a large collection: a research
+    call is several searches, and parallel calls from one agent turn would
+    otherwise all slow down together. Queueing keeps them fast and orderly;
+    a bounded wait keeps a stuck caller from pinning everyone.
+    """
+    global _research_gate, _research_gate_size
+    size = int(settings.research_max_concurrent or 0)
+    if size <= 0:
+        return None
+    with _research_gate_lock:
+        if _research_gate is None or _research_gate_size != size:
+            _research_gate, _research_gate_size = _threading.BoundedSemaphore(size), size
+        gate = _research_gate
+    if not gate.acquire(timeout=float(settings.research_queue_timeout_seconds)):
+        raise ValueError(
+            f"Research is busy: {size} research calls are already running and none finished "
+            f"within {settings.research_queue_timeout_seconds:g}s. Retry shortly, or use "
+            "search_collection for a single quick lookup.")
+    return gate
+
+
 def research_documents_sync(
     query: str,
     collection_id: str | None = None,
@@ -799,7 +837,25 @@ def research_documents_sync(
     max_context_chars: int = 12000,
     filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Shared research pipeline used by MCP and the in-app agent."""
+    """Shared research pipeline used by MCP and the in-app agent (gated)."""
+    gate = _acquire_research_slot()
+    try:
+        return _research_documents_impl(query, collection_id, subqueries, top_k,
+                                        max_per_document, max_context_chars, filters)
+    finally:
+        if gate is not None:
+            gate.release()
+
+
+def _research_documents_impl(
+    query: str,
+    collection_id: str | None,
+    subqueries: list[str] | None,
+    top_k: int,
+    max_per_document: int,
+    max_context_chars: int,
+    filters: dict[str, Any] | None,
+) -> dict[str, Any]:
     from services.research_search import research
 
     cid = _resolve_collection_id(collection_id)
@@ -844,7 +900,11 @@ async def research_documents(
     Combines hybrid searches, a keyword search, and literal checks for quoted
     phrases or policy IDs using reciprocal rank fusion. Returns diverse passages,
     stable evidence IDs, chunk anchors, query coverage, search failures and next
-    tool arguments. Coverage is retrieval coverage, not answer confidence.
+    tool arguments. Coverage is retrieval coverage, not answer confidence:
+    `retrieved` means at least one strong passage (agreement between branches
+    or a top-ranked hit); `weak_evidence` means only single-branch, low-ranked
+    passages — verify with get_document_context before relying on them.
+    Each result carries `evidence_strength` ("strong" | "weak").
 
     top_k: 1–20 returned passages; max_per_document: 1–10, default 2.
     max_context_chars: 1000–40000 total excerpt characters, not tokens or total
