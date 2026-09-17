@@ -223,6 +223,10 @@ class PostgresBackend(DatabaseBackend):
                 cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS collection_scope TEXT")
                 # Per-token write grant (write_document); existing tokens stay read-only.
                 cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS can_write BOOLEAN NOT NULL DEFAULT FALSE")
+                # Token hygiene (expiry, allowlist scoping, use counter) — mirrors SQLite.
+                cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS expires_at TEXT")
+                cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS allowlist BOOLEAN NOT NULL DEFAULT FALSE")
+                cur.execute("ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS use_count INTEGER NOT NULL DEFAULT 0")
 
                 # Content governance — mirrors the SQLite backend.
                 cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS sensitivity TEXT DEFAULT 'internal'")
@@ -1112,12 +1116,17 @@ class PostgresBackend(DatabaseBackend):
         elif not raw:
             row["collection_scope"] = None
         row["can_write"] = bool(row.get("can_write"))
+        row["allowlist"] = bool(row.get("allowlist"))
+        row["use_count"] = int(row.get("use_count") or 0)
+        row.setdefault("expires_at", None)
         return row
 
     def create_mcp_token(
         self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
         collection_scope: Optional[List[str]] = None,
         can_write: bool = False,
+        expires_at: Optional[str] = None,
+        allowlist: bool = False,
     ) -> Dict[str, Any]:
         token_id = str(uuid.uuid4())
         ts = datetime.utcnow().isoformat()
@@ -1126,9 +1135,11 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope, can_write)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (token_id, user_id, name, token_hash, token_prefix, ts, scope_json, bool(can_write)),
+                    """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at,
+                                               collection_scope, can_write, expires_at, allowlist, use_count)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)""",
+                    (token_id, user_id, name, token_hash, token_prefix, ts, scope_json,
+                     bool(can_write), expires_at, bool(allowlist)),
                 )
             conn.commit()
             return {
@@ -1141,6 +1152,9 @@ class PostgresBackend(DatabaseBackend):
                 "revoked_at": None,
                 "collection_scope": list(collection_scope) if collection_scope else None,
                 "can_write": bool(can_write),
+                "expires_at": expires_at,
+                "allowlist": bool(allowlist),
+                "use_count": 0,
             }
         finally:
             self._put(conn)
@@ -1150,7 +1164,8 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 cur.execute(
-                    """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope, can_write
+                    """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at,
+                              collection_scope, can_write, expires_at, allowlist, use_count
                        FROM mcp_tokens WHERE user_id IS NOT DISTINCT FROM %s
                        ORDER BY created_at DESC""",
                     (user_id,),
@@ -1449,7 +1464,7 @@ class PostgresBackend(DatabaseBackend):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE mcp_tokens SET last_used_at = %s WHERE id = %s",
+                    "UPDATE mcp_tokens SET last_used_at = %s, use_count = COALESCE(use_count, 0) + 1 WHERE id = %s",
                     (datetime.utcnow().isoformat(), token_id),
                 )
             conn.commit()

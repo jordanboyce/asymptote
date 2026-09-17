@@ -49,7 +49,7 @@ describe('MCP client setup', () => {
     await wrapper.findAll('button').find(button => button.text() === 'Generate token').trigger('click')
     await flushPromises()
     expect(http.post).toHaveBeenCalledWith('/api/mcp/tokens', {
-      name: 'AnythingLLM', collection_scope: [], can_write: false,
+      name: 'AnythingLLM', collection_scope: [], can_write: false, expires_in_days: 90, allowlist: false,
     })
     expect(exportedServer(wrapper).headers.Authorization).toBe('Bearer test-only-secret')
     await wrapper.get('#mcp-export-token').setValue('existing')

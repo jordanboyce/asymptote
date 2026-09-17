@@ -437,6 +437,18 @@ class SQLiteBackend(DatabaseBackend):
                 conn.execute("ALTER TABLE mcp_tokens ADD COLUMN can_write INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
+            # Token hygiene: optional expiry, allowlist scoping (the scope is
+            # the *only* set of collections the token may see, not merely a
+            # restricted-collection grant) and a use counter so the Settings
+            # table can show which agents are actually active. Existing
+            # tokens keep their behaviour: no expiry, grant semantics.
+            for col in ("expires_at TEXT",
+                        "allowlist INTEGER NOT NULL DEFAULT 0",
+                        "use_count INTEGER NOT NULL DEFAULT 0"):
+                try:
+                    conn.execute(f"ALTER TABLE mcp_tokens ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
 
             # Add MCP display name/description (optional aliases for MCP output)
             for col in ["mcp_display_name TEXT", "mcp_display_description TEXT"]:
@@ -1207,21 +1219,28 @@ class SQLiteBackend(DatabaseBackend):
         elif not raw:
             row["collection_scope"] = None
         row["can_write"] = bool(row.get("can_write"))
+        row["allowlist"] = bool(row.get("allowlist"))
+        row["use_count"] = int(row.get("use_count") or 0)
+        row.setdefault("expires_at", None)
         return row
 
     def create_mcp_token(
         self, user_id: Optional[str], name: str, token_hash: str, token_prefix: str,
         collection_scope: Optional[List[str]] = None,
         can_write: bool = False,
+        expires_at: Optional[str] = None,
+        allowlist: bool = False,
     ) -> Dict[str, Any]:
         token_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().isoformat()
         scope_json = json.dumps(list(collection_scope)) if collection_scope else None
         with sqlite_connect(self.db_path) as conn:
             conn.execute(
-                """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at, collection_scope, can_write)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (token_id, user_id, name, token_hash, token_prefix, timestamp, scope_json, 1 if can_write else 0),
+                """INSERT INTO mcp_tokens (id, user_id, name, token_hash, token_prefix, created_at,
+                                           collection_scope, can_write, expires_at, allowlist, use_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                (token_id, user_id, name, token_hash, token_prefix, timestamp, scope_json,
+                 1 if can_write else 0, expires_at, 1 if allowlist else 0),
             )
             conn.commit()
         return {
@@ -1234,13 +1253,17 @@ class SQLiteBackend(DatabaseBackend):
             "revoked_at": None,
             "collection_scope": list(collection_scope) if collection_scope else None,
             "can_write": bool(can_write),
+            "expires_at": expires_at,
+            "allowlist": bool(allowlist),
+            "use_count": 0,
         }
 
     def list_mcp_tokens(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
         with sqlite_connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at, collection_scope, can_write
+                """SELECT id, user_id, name, token_prefix, created_at, last_used_at, revoked_at,
+                          collection_scope, can_write, expires_at, allowlist, use_count
                    FROM mcp_tokens WHERE user_id IS ? ORDER BY created_at DESC""",
                 (user_id,),
             ).fetchall()
@@ -1266,7 +1289,7 @@ class SQLiteBackend(DatabaseBackend):
     def touch_mcp_token(self, token_id: str) -> None:
         with sqlite_connect(self.db_path) as conn:
             conn.execute(
-                "UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?",
+                "UPDATE mcp_tokens SET last_used_at = ?, use_count = COALESCE(use_count, 0) + 1 WHERE id = ?",
                 (datetime.utcnow().isoformat(), token_id),
             )
             conn.commit()

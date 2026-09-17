@@ -288,8 +288,9 @@ Use **Connect** in the UI to:
 - Keep MCP in search-only mode (recommended) to avoid duplicate model usage
 - Optionally enable Ollama-backed synthesis for MCP when you explicitly want server-side answering
 - **Generate a personal access token** — a self-serve bearer credential scoped to `/mcp` only, so
-  connecting a client never requires editing `.env` or provisioning anything in Cloudflare. Revoke
-  it from the same screen when a machine is retired.
+  connecting a client never requires editing `.env` or provisioning anything in Cloudflare. Pick an
+  expiry (90 days by default, or never), optionally limit the token to specific collections, and
+  revoke it from the same screen when a machine is retired; the table shows last use and call counts.
 - **Let agents write back** — tick *Allow adding and updating sources* on a token and the agent gets
   a `write_document` tool: it can save markdown notes, summaries, JSON, or CSV into a collection
   (`create`, `replace`, or `append`), indexed like any upload and subject to the same content policy,

@@ -79,11 +79,30 @@ identifier, and inspect the relevant implementation or runbook context.
   the personal token and unlimited (0) by default, because agents fan out
   tool calls and handle 429s badly.
 
-Research currently operates within one collection per call. Source excerpts must
-be enabled for the MCP profile. Numeric aggregation should continue to use the
-structured table tools. Automatically inlined tables in ordinary document search
-now respect document selection; inlining is skipped for other metadata filters
-that the table collector cannot enforce.
+Research works in one collection per call by default. Over MCP, `collection_ids`
+(up to eight ids or names, or `["*"]` for every collection the credential can
+see) fans the same branches out across several collections and fuses them into
+one ranked list: score-ranked for the hybrid and keyword branches, interleaved
+for literal matches. Each result names its `collection_id`; the response lists
+each collection with its `corpus_version`; a collection whose index fails is
+named in `failed_collections` rather than silently dropped. The in-app agent
+stays within the conversation's collection and source selection. Source
+excerpts must be enabled for the MCP profile. Numeric aggregation should
+continue to use the structured table tools. Automatically inlined tables in
+ordinary document search now respect document selection; inlining is skipped
+for other metadata filters that the table collector cannot enforce.
+
+`corpus_version` (also on `search_collection` and `get_collection_info`) is an
+opaque token that changes whenever a collection's sources change — add,
+replace, delete or quarantine. An agent that holds evidence from an earlier
+call can compare the two values and re-verify before citing; it is not a
+content hash of any one passage.
+
+The server also publishes three MCP prompts — `research_question`,
+`find_exact_reference` and `collection_overview` — that clients with prompt
+support (Claude Desktop, Claude Code, Cursor) surface as slash commands. Each
+one only spells out which tools to call and in what order; authorization is
+still enforced per tool.
 
 ## What coverage means
 

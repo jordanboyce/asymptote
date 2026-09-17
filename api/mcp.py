@@ -26,6 +26,11 @@ class MCPTokenRequest(BaseModel):
     name: str = Field("", max_length=200)
     collection_scope: list[str] = Field(default_factory=list, max_length=100)
     can_write: StrictBool = False
+    # Days until the token stops working; omit for a non-expiring token.
+    expires_in_days: Optional[int] = Field(None, ge=1, le=mcp_tokens.MAX_EXPIRY_DAYS)
+    # When true, collection_scope is the ONLY set of collections the token
+    # may see over MCP (any sensitivity), not merely a restricted grant.
+    allowlist: StrictBool = False
 
 
 @router.get(
@@ -84,6 +89,11 @@ async def create_mcp_token(body: MCPTokenRequest, user_id: Optional[str] = Depen
             Only collections the caller can already access are accepted.
         can_write: optional bool (default false). Lets agents holding this
             token add and update sources via the write_document tool.
+        expires_in_days: optional lifetime; the token stops verifying after
+            it. Omitted means the token never expires.
+        allowlist: optional bool (default false). Makes collection_scope the
+            only collections the token may see over MCP, whatever their
+            sensitivity. Requires a non-empty scope.
     """
     from services import audit
     from services.collection_service import collection_service
@@ -97,15 +107,20 @@ async def create_mcp_token(body: MCPTokenRequest, user_id: Optional[str] = Depen
         cid = str(cid).strip()
         if cid and cid not in visible:
             raise HTTPException(status_code=404, detail=f"Collection '{cid}' not found")
-        if cid:
+        if cid and cid not in scope:
             scope.append(cid)
 
-    record = mcp_tokens.generate_token(
-        user_id, name, collection_scope=scope or None, can_write=can_write,
-    )
+    try:
+        record = mcp_tokens.generate_token(
+            user_id, name, collection_scope=scope or None, can_write=can_write,
+            expires_in_days=body.expires_in_days, allowlist=body.allowlist,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     audit.record("mcp_token.create", actor=user_id, target=record.get("id"),
                  detail={"name": record.get("name"), "collection_scope": scope or None,
-                         "can_write": can_write})
+                         "can_write": can_write, "expires_at": record.get("expires_at"),
+                         "allowlist": bool(body.allowlist)})
     return record
 
 

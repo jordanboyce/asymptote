@@ -169,8 +169,6 @@ def research(query, subqueries, search, find, *, top_k=8, max_per_document=2,
         next_steps.append({"tool": "research_documents", "reason": "Some questions lack selected evidence. Rephrase those questions or narrow the source filters; do not assume the answer."})
     elif any(c["status"] == "weak_evidence" for c in coverage):
         next_steps.append({"tool": "get_document_context", "reason": "Some questions have only weak evidence (one branch, low rank). Read the passage in context before relying on it, or rephrase the question."})
-    elif any(c["status"] == "weak_evidence" for c in coverage):
-        next_steps.append({"tool": "get_document_context", "reason": "Some questions have only weak evidence (one branch, low rank). Read the passage in context before relying on it, or rephrase the question."})
     return {"queries": queries, "results": selected, "total_results": len(selected),
             "candidate_count": len(candidates), "searches": trace, "coverage": coverage,
             "partial_failure": any(s["status"] == "failed" for s in trace),

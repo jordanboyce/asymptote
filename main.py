@@ -299,6 +299,8 @@ async def require_auth(request, call_next):
             # Restricted collections are only reachable over MCP through
             # a token explicitly scoped to them (services/governance.py).
             request.state.mcp_token_scope = token_record.get("collection_scope") or None
+            # An allowlisted token sees ONLY its scoped collections.
+            request.state.mcp_token_allowlist = bool(token_record.get("allowlist"))
             # Adding/updating sources over MCP is opt-in per token.
             request.state.mcp_token_can_write = bool(token_record.get("can_write"))
             # Any MCP rate budget is per token, not per identity or IP.
