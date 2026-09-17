@@ -20,12 +20,12 @@ Asymptote owns the trustworthy data layer; the intelligence layer lives upstream
 
 ## Toolbox — extensibility
 
-- **MCP expansion** — let external agents trigger re-indexing and metadata updates, not just read documents (`write_document` shipped 2026-09-11; re-index and metadata edits remain).
+- **MCP expansion** — let external agents trigger re-indexing and metadata updates, not just read documents (`write_document` shipped 2026-09-11; cross-collection `research_documents`, `corpus_version` freshness tokens and MCP prompts shipped 2026-09-17; re-index and metadata edits remain). Progress notifications during long research calls need the streamable transport switched from JSON responses to SSE, which is a deployment-affecting change to make deliberately.
 - **PWA** — a web manifest and theme-color meta shipped 2026-09-12 (installable from the browser menu); an offline service worker is the remaining step.
 
 ## Access & limits
 
-- **Online registration** — shipped 2026-09-12: `/register` (approval or open mode, domain allowlist, seat cap). Next: OIDC as an alternative identity source, expiring service tokens.
+- **Online registration** — shipped 2026-09-12: `/register` (approval or open mode, domain allowlist, seat cap). Expiring, collection-limited personal MCP tokens shipped 2026-09-17. Next: OIDC as an alternative identity source; OAuth 2.1 on `/mcp` so hosted MCP clients (claude.ai and ChatGPT custom connectors) can connect without a pasted bearer token.
 - **Per-collection storage cap** — shipped 2026-09-12 (5 GiB default, `COLLECTION_STORAGE_LIMIT_BYTES`). Next: per-user totals across collections, and an admin view of storage by collection.
 
 ## From the September 2026 product assessment (docs/PRODUCT_ASSESSMENT.md)

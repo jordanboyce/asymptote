@@ -56,6 +56,33 @@ def get_request_mcp_token_scope() -> list[str] | None:
     return _request_mcp_token_scope.get(None)
 
 
+# Whether the token's scope is an allowlist: the ONLY collections the request
+# may see, not merely a grant into restricted ones. Defaults to False so every
+# non-token caller (SSO session, password, in-process chat) keeps full access.
+_request_mcp_token_allowlist: ContextVar[bool] = ContextVar(
+    "asymptote_request_mcp_token_allowlist", default=False
+)
+
+
+def get_request_mcp_token_allowlist() -> bool:
+    return _request_mcp_token_allowlist.get(False)
+
+
+def _token_permits(collection: dict[str, Any] | None) -> bool:
+    """Both token-level gates in one place: the restricted-collection grant
+    (governance.mcp_can_expose) and, when the token is allowlisted, the
+    scope as a hard boundary. Every enumeration and resolution path over MCP
+    funnels through here so the two rules cannot drift apart."""
+    from services.governance import mcp_can_expose
+
+    scope = get_request_mcp_token_scope()
+    if get_request_mcp_token_allowlist():
+        cid = (collection or {}).get("id")
+        if not (cid and scope and cid in scope):
+            return False
+    return mcp_can_expose(collection, scope)
+
+
 # Whether the current MCP request may add or update sources. A personal
 # token carries its own flag (read-only unless minted with writes enabled);
 # every other caller — an SSO session, the shared password, an Access
@@ -106,12 +133,14 @@ _SERVER_INSTRUCTIONS = (
     "the collections this credential may see; authorization is enforced server-"
     "side and cannot be widened by arguments. Start with list_collections when "
     "the question names a collection, project, or archive. Use research_documents "
-    "for multi-part questions, search_collection for one quick lookup, "
-    "find_in_documents for exact strings, and get_document_context to read the "
-    "surrounding text before quoting. For counts, sums, filters, or rankings over "
-    "CSV/XLSX data use list_tables and the table tools, never passage search. "
-    "Cite filename and page from the results and say what the sources do not "
-    "establish. " + _RESEARCH_INSTRUCTIONS
+    "for multi-part questions (pass collection_ids to span several collections), "
+    "search_collection for one quick lookup, find_in_documents for exact strings, "
+    "and get_document_context to read the surrounding text before quoting. For "
+    "counts, sums, filters, or rankings over CSV/XLSX data use list_tables and the "
+    "table tools, never passage search. Cite filename and page from the results "
+    "and say what the sources do not establish. Responses carry a corpus_version "
+    "per collection; if it changes between calls, evidence fetched earlier may be "
+    "stale. " + _RESEARCH_INSTRUCTIONS
 )
 
 _asymptote_mcp = FastMCP(
@@ -298,10 +327,9 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
             )
 
     # A restricted collection is invisible to agents unless this request
-    # carries a personal token scoped to it — in every deployment mode.
-    from services.governance import mcp_can_expose
-
-    if not mcp_can_expose(collection_service.get_collection(candidate), get_request_mcp_token_scope()):
+    # carries a personal token scoped to it — in every deployment mode —
+    # and an allowlisted token sees nothing outside its scope at all.
+    if not _token_permits(collection_service.get_collection(candidate)):
         raise ValueError(
             f"Collection '{candidate}' not found. Call list_collections() to "
             f"see available collections."
@@ -312,15 +340,27 @@ def _resolve_collection_id(explicit: str | None = None) -> str:
 def _visible_collections() -> list[dict[str, Any]]:
     """Collections an MCP request may enumerate: the caller's accessible
     set (private-collections aware), minus restricted ones the token is not
-    scoped to. Every fan-out and listing tool uses this, never the raw
-    collection list."""
-    from services.governance import mcp_can_expose
-
-    scope = get_request_mcp_token_scope()
+    scoped to, and — for an allowlisted token — only the scoped ones. Every
+    fan-out and listing tool uses this, never the raw collection list."""
     return [
         c for c in collection_service.get_all_collections()
-        if mcp_can_expose(c, scope)
+        if _token_permits(c)
     ]
+
+
+def _corpus_version(collection_id: str) -> str | None:
+    """Cheap change token for a collection's sources (MetadataStore.corpus_version).
+
+    Surfaced on research, search and collection-info responses so an agent
+    can tell that evidence it fetched earlier predates a change to the
+    corpus. It is an opaque string: compare for equality, never parse. None
+    when the collection's index is unavailable — the tool result itself is
+    still valid, only the freshness signal is missing.
+    """
+    try:
+        return indexer_manager.get_indexer(collection_id).vector_store.metadata_store.corpus_version()
+    except Exception:
+        return None
 
 
 def _visible_documents(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -504,6 +544,11 @@ def get_collection_info(
     context you cannot recover from the files alone. A short summary is also
     travelled inline in every `search_collection` response; `get_collection_info`
     returns the full guide.
+
+    `corpus_version` is an opaque token that changes whenever the collection's
+    sources change (add, replace, delete, quarantine). Compare it with the
+    value on earlier results to detect that evidence may be stale; do not
+    parse it.
     """
 
     resolved_collection = _resolve_collection_id(collection_id)
@@ -541,6 +586,7 @@ def get_collection_info(
         "collection_name": _mcp_safe_name(collection, resolved_collection),
         "description": _mcp_safe_description(collection, ""),
         "guide": guide_text,
+        "corpus_version": _corpus_version(resolved_collection),
         "total_documents": stats.get("total_documents", 0),
         "total_chunks": stats.get("total_chunks", 0),
         "total_pages": stats.get("total_pages", 0),
@@ -828,6 +874,12 @@ def _acquire_research_slot() -> _threading.BoundedSemaphore | None:
     return gate
 
 
+# Upper bound on collections one research call may span. Each collection
+# multiplies the retrieval branches (up to seven per collection), and the call
+# holds a single concurrency slot for its whole duration.
+_RESEARCH_MAX_COLLECTIONS = 8
+
+
 def research_documents_sync(
     query: str,
     collection_id: str | None = None,
@@ -836,15 +888,48 @@ def research_documents_sync(
     max_per_document: int = 2,
     max_context_chars: int = 12000,
     filters: dict[str, Any] | None = None,
+    collection_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Shared research pipeline used by MCP and the in-app agent (gated)."""
     gate = _acquire_research_slot()
     try:
         return _research_documents_impl(query, collection_id, subqueries, top_k,
-                                        max_per_document, max_context_chars, filters)
+                                        max_per_document, max_context_chars, filters,
+                                        collection_ids=collection_ids)
     finally:
         if gate is not None:
             gate.release()
+
+
+def _resolve_research_targets(collection_id: str | None, collection_ids: list[str] | None) -> list[str]:
+    """The ordered, de-duplicated, authorised set of collections a research
+    call spans. Every id goes through `_resolve_collection_id`, so a name is
+    accepted in place of an id and an invisible collection answers exactly
+    like a missing one. `["*"]` means every collection the caller may see."""
+    if not collection_ids:
+        return [_resolve_collection_id(collection_id)]
+    if not isinstance(collection_ids, list):
+        raise ValueError("collection_ids must be a list of collection ids, or [\"*\"] for every visible collection.")
+    requested: list[str] = []
+    if any(str(c).strip() == "*" for c in collection_ids):
+        requested = [c["id"] for c in _visible_collections() if c.get("id")]
+        if not requested:
+            raise ValueError("No collections available to research.")
+    else:
+        requested = [str(c).strip() for c in collection_ids if str(c).strip()]
+    if collection_id and str(collection_id).strip() not in requested:
+        requested.insert(0, str(collection_id).strip())
+    targets: list[str] = []
+    for raw in requested:
+        cid = _resolve_collection_id(raw)
+        if cid not in targets:
+            targets.append(cid)
+    if len(targets) > _RESEARCH_MAX_COLLECTIONS:
+        raise ValueError(
+            f"research_documents spans at most {_RESEARCH_MAX_COLLECTIONS} collections per call "
+            f"({len(targets)} requested). Narrow collection_ids, or call search_all_collections "
+            "first to find which collections matter.")
+    return targets
 
 
 def _research_documents_impl(
@@ -855,33 +940,90 @@ def _research_documents_impl(
     max_per_document: int,
     max_context_chars: int,
     filters: dict[str, Any] | None,
+    collection_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     from services.research_search import research
 
-    cid = _resolve_collection_id(collection_id)
+    targets = _resolve_research_targets(collection_id, collection_ids)
     profile = get_request_mcp_profile()
     if not profile.get("include_sources", settings.mcp_include_sources):
         raise ValueError("Research requires source excerpts. Enable include_sources or use search_collection for metadata-only results.")
     resolved_filters = _normalize_search_filters(filters)
-    indexer = indexer_manager.get_indexer(cid)
-    collection = collection_service.get_collection(cid)
     excerpt_limit = max(100, min(int(profile.get("max_source_length") or settings.mcp_max_source_length), 2000))
+    stores = {cid: (indexer_manager.get_indexer(cid), collection_service.get_collection(cid)) for cid in targets}
+    multi = len(targets) > 1
+    # Collections whose index raised inside a branch. One broken collection
+    # must not turn a whole branch into a failure for the others; it is
+    # reported by name instead so the agent knows where coverage is missing.
+    failed_collections: dict[str, str] = {}
+
+    def _per_collection(fn):
+        """Run `fn(cid, indexer, collection)` for every target; a collection
+        that raises is recorded and skipped, unless every collection raised —
+        then the branch itself fails, as it would for a single collection."""
+        out, errors = [], 0
+        for cid, (indexer, collection) in stores.items():
+            try:
+                out.append((cid, fn(cid, indexer, collection)))
+            except Exception as exc:
+                errors += 1
+                if multi:
+                    failed_collections[cid] = type(exc).__name__
+                else:
+                    raise
+        if errors and errors == len(stores):
+            raise RuntimeError("every collection failed")
+        return out
 
     def search_branch(text, mode):
-        found = indexer.search(query=text, mode=SearchMode(mode), top_k=20,
-                               filters=resolved_filters)
-        return [{**_serialize_result(result, rank, excerpt_limit, collection), "collection_id": cid}
-                for rank, result in enumerate(found.get("results", []), 1)]
+        per = _per_collection(lambda cid, indexer, collection: [
+            {**_serialize_result(r, 0, excerpt_limit, collection), "collection_id": cid}
+            for r in indexer.search(query=text, mode=SearchMode(mode), top_k=20,
+                                    filters=resolved_filters).get("results", [])])
+        merged = [hit for _, hits in per for hit in hits]
+        if multi:
+            # One retrieval method, one embedding model: scores are comparable
+            # across collections, so a single ranked list is meaningful. Ties
+            # fall back to the order the caller listed the collections in.
+            merged.sort(key=lambda h: -float(h.get("similarity_score") or 0.0))
+        for rank, hit in enumerate(merged, 1):
+            hit["rank"] = rank
+        return merged
 
     def literal_branch(pattern):
-        result = find_in_documents_sync(pattern, collection_id=cid, max_results=20,
-                                        filters=resolved_filters)
-        return [{**hit, "collection_id": cid} for hit in result["matches"]]
+        per = _per_collection(lambda cid, indexer, collection: [
+            {**hit, "collection_id": cid}
+            for hit in find_in_documents_sync(pattern, collection_id=cid, max_results=20,
+                                              filters=resolved_filters)["matches"]])
+        if not multi:
+            return per[0][1] if per else []
+        # Literal hits carry no score: interleave so no collection monopolises
+        # the top ranks just because it was listed first.
+        merged, queues = [], [list(hits) for _, hits in per]
+        while any(queues):
+            for q in queues:
+                if q:
+                    merged.append(q.pop(0))
+        return merged
 
     result = research(query, subqueries, search_branch, literal_branch, top_k=top_k,
                       max_per_document=max_per_document, max_context_chars=max_context_chars)
-    return {"collection_id": cid, "collection_name": _mcp_safe_name(collection, cid),
-            "filters_applied": resolved_filters, **result}
+    collections = [{"collection_id": cid, "collection_name": _mcp_safe_name(collection, cid),
+                    "corpus_version": _corpus_version(cid)}
+                   for cid, (_, collection) in stores.items()]
+    payload: dict[str, Any] = {
+        "collection_id": targets[0] if not multi else None,
+        "collection_name": collections[0]["collection_name"] if not multi else None,
+        "corpus_version": collections[0]["corpus_version"] if not multi else None,
+        "collection_ids": targets,
+        "collections": collections,
+        "filters_applied": resolved_filters,
+        **result,
+    }
+    if failed_collections:
+        payload["failed_collections"] = failed_collections
+        payload["partial_failure"] = True
+    return payload
 
 
 @_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
@@ -893,8 +1035,9 @@ async def research_documents(
     max_per_document: int = 2,
     max_context_chars: int = 12000,
     filters: dict[str, Any] | None = None,
+    collection_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Research a multi-part question in one collection with bounded evidence.
+    """Research a multi-part question with bounded, cited evidence.
 
     Supply up to three focused subqueries, such as rule, exception and date.
     Combines hybrid searches, a keyword search, and literal checks for quoted
@@ -906,16 +1049,27 @@ async def research_documents(
     passages — verify with get_document_context before relying on them.
     Each result carries `evidence_strength` ("strong" | "weak").
 
+    Scope: one collection by default (collection_id, or the server default).
+    Pass collection_ids — up to 8 ids from list_collections, or ["*"] for every
+    collection you can see — to research across several at once; each result
+    then names its collection_id, and `collections` lists each one with its
+    `corpus_version`. A collection whose index fails is reported in
+    `failed_collections` rather than silently dropped. Prefer
+    search_all_collections first when you do not know where the answer lives.
+
+    `corpus_version` changes whenever a collection's sources change; if it
+    differs from an earlier call, re-verify evidence before citing it.
+
     top_k: 1–20 returned passages; max_per_document: 1–10, default 2.
     max_context_chars: 1000–40000 total excerpt characters, not tokens or total
-    JSON size. At most seven retrieval branches; no hidden model calls.
-    filters: document_ids, filenames, source_formats, date_from/date_to (upload
-    dates). Numeric questions should use the structured-table tools instead.
+    JSON size. At most seven retrieval branches per collection; no hidden model
+    calls. filters: document_ids, filenames, source_formats, date_from/date_to
+    (upload dates). Numeric questions should use the structured-table tools.
     """
     return await asyncio.to_thread(research_documents_sync, query,
         collection_id=collection_id, subqueries=subqueries, top_k=top_k,
         max_per_document=max_per_document, max_context_chars=max_context_chars,
-        filters=filters)
+        filters=filters, collection_ids=collection_ids)
 
 
 def search_collection_sync(
@@ -1047,6 +1201,7 @@ def search_collection_sync(
         "query": normalized_query,
         "collection_id": resolved_collection,
         "collection_name": collection_name,
+        "corpus_version": _corpus_version(resolved_collection),
         "collection_summary": collection_summary,
         "mode": resolved_mode.value,
         "top_k": resolved_top_k,
@@ -2568,6 +2723,90 @@ def resource_table(id: str) -> dict[str, Any]:
     }, "resource_table")
 
 
+# ── Prompts ─────────────────────────────────────────────────────────────
+# Reusable workflows a client can surface as slash commands (Claude Desktop,
+# Claude Code, Cursor). They only tell the model which tools to call and in
+# what order; every tool still enforces collection visibility server-side.
+
+
+def _prompt_scope_line(collection: str) -> str:
+    collection = (collection or "").strip()
+    if collection:
+        return (f"Work only in the collection \"{collection}\" (pass it as collection_id; "
+                "a name is accepted in place of an id). ")
+    return ("Start with list_collections to see what is available, pick the collection(s) "
+            "the question refers to, and say which you chose. ")
+
+
+@_asymptote_mcp.prompt(
+    name="research_question",
+    title="Research a question in the documents",
+    description="Investigate a question with bounded, cited evidence and an explicit list of what the sources do not establish.",
+)
+def prompt_research_question(question: str, collection: str = "") -> str:
+    """question: what to investigate. collection: optional id or name."""
+    return (
+        f"Research this question using only the indexed documents: {question.strip()}\n\n"
+        + _prompt_scope_line(collection) +
+        "Call research_documents with up to three focused subqueries (for example the "
+        "rule, its exceptions, and effective dates). Read the coverage field: treat "
+        "weak_evidence and no_selected_evidence as gaps, rephrase those subqueries once, "
+        "and do not repeat a search that already succeeded. Before quoting a passage, "
+        "call get_document_context on it to check the surrounding wording, dates and "
+        "exceptions. For counts, sums, or rankings over CSV/XLSX data use list_tables and "
+        "the table tools instead of passages.\n\n"
+        "Answer with: (1) the finding, citing filename and page for every claim; "
+        "(2) conflicting or superseded passages, if any; (3) what the sources do not "
+        "establish. Do not fill gaps from general knowledge."
+    )
+
+
+@_asymptote_mcp.prompt(
+    name="find_exact_reference",
+    title="Find every mention of an identifier or phrase",
+    description="Locate a literal identifier, code, or quoted phrase across the documents and report each occurrence in context.",
+)
+def prompt_find_exact_reference(identifier: str, collection: str = "") -> str:
+    """identifier: the exact string to find. collection: optional id or name."""
+    return (
+        f"Find every occurrence of the exact string \"{identifier.strip()}\" in the indexed documents.\n\n"
+        + _prompt_scope_line(collection) +
+        "Call find_in_documents with the string verbatim (punctuation intact). For each "
+        "match, call get_document_context with the returned document_id and chunk_id to "
+        "read the surrounding text. If there are no matches, try one case-insensitive "
+        "variant and one plausible spacing or hyphenation variant, then stop.\n\n"
+        "Report a list of occurrences: filename, page, and a one-sentence summary of how "
+        "the string is used there. State clearly if it does not occur."
+    )
+
+
+@_asymptote_mcp.prompt(
+    name="collection_overview",
+    title="Orient in a collection before asking questions",
+    description="Summarise what a collection contains, how it is organised, and which tools suit it, before doing any research.",
+)
+def prompt_collection_overview(collection: str = "") -> str:
+    """collection: optional id or name; omitted means list and describe all."""
+    if (collection or "").strip():
+        return (
+            f"Give an overview of the collection \"{collection.strip()}\".\n\n"
+            "Call get_collection_info (a name is accepted as collection_id). Read the guide "
+            "field first — it is the owner's own brief. Then call list_tables to see which "
+            "sources are structured tables. Do not search yet.\n\n"
+            "Report: what the collection covers, the file types and rough size, the tables "
+            "and what each seems to hold, any conventions from the guide, and the "
+            "corpus_version so later answers can be checked for staleness. End with two or "
+            "three example questions this collection could answer well."
+        )
+    return (
+        "Give an overview of the collections available to you.\n\n"
+        "Call list_collections, then get_collection_info with detail=\"counts\" for each "
+        "one. Do not search yet.\n\n"
+        "Report one line per collection: name, what it appears to cover, document count "
+        "and file types. Then suggest which collection to use for what kind of question."
+    )
+
+
 class ToggleableMCPApp:
     """Return HTTP 503 when MCP is disabled instead of exposing tools."""
 
@@ -2613,6 +2852,7 @@ class ToggleableMCPApp:
         # and write flag ride on request.state from main.py's auth middleware.
         state = scope.get("state", {}) if scope["type"] == "http" else {}
         scope_token = _request_mcp_token_scope.set(state.get("mcp_token_scope") or None)
+        allowlist_token = _request_mcp_token_allowlist.set(bool(state.get("mcp_token_allowlist", False)))
         write_token = _request_mcp_can_write.set(bool(state.get("mcp_token_can_write", True)))
         # Bind the verified identity for private-collections scoping. The auth
         # middleware in main.py verifies the Access JWT and records the result
@@ -2633,6 +2873,7 @@ class ToggleableMCPApp:
 
                 reset_request_user(user_token)
             _request_mcp_can_write.reset(write_token)
+            _request_mcp_token_allowlist.reset(allowlist_token)
             _request_mcp_token_scope.reset(scope_token)
             _request_mcp_profile.reset(token)
 

@@ -126,6 +126,15 @@ wrinkle: **MCP clients authenticate as a token, not as a person.**
   tool (save notes, summaries, markdown into a collection). A write still
   needs write permission on the collection, passes the content policy scan,
   is attributed to the token's owner, and lands in the audit trail.
+  Two more knobs at mint time: an **expiry** (30 days, 90 days, a year, or
+  never — the form defaults to 90 days; an expired token is refused exactly
+  like a revoked one) and **Limit this token to specific collections**,
+  which makes the ticked collections the *only* ones the agent can see over
+  MCP, whatever their sensitivity — the right shape for a client that works
+  on one project. Without that limit a token sees everything its owner can,
+  plus any restricted collections it was explicitly granted. The table shows
+  each token's expiry, last use and call count, so idle or runaway agents are
+  easy to spot and revoke.
 - With `AUTH_PASSWORD` alone (no personal token), clients send
   `Authorization: Bearer <password>` and work normally, but anonymously —
   see below.

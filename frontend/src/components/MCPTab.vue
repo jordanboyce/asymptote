@@ -83,10 +83,44 @@
             </span>
           </label>
 
+          <!-- Lifetime: "never" stays a deliberate choice, not the silent default
+               of a form that has no other option. -->
+          <div class="form-control max-w-xs">
+            <label class="label p-0 pb-1" for="mcp-token-expiry"><span class="label-text font-medium">Expires</span></label>
+            <select id="mcp-token-expiry" v-model="newTokenExpiryDays" class="select select-bordered select-sm w-full">
+              <option v-for="opt in expiryOptions" :key="String(opt.value)" :value="opt.value">{{ opt.label }}</option>
+            </select>
+          </div>
+
+          <!-- Allowlist scoping: the token sees ONLY the ticked collections,
+               whatever their sensitivity. Off, it sees everything its owner can
+               (plus any restricted grants below). -->
+          <label class="flex items-start gap-2.5 max-w-xl cursor-pointer">
+            <input id="mcp-token-allowlist" v-model="newTokenAllowlist" type="checkbox" class="checkbox checkbox-sm mt-0.5" />
+            <span>
+              <span class="block text-sm font-medium">Limit this token to specific collections</span>
+              <span class="block text-xs text-base-content/55">
+                The agent will only see the collections you tick, nothing else. Use this for a client
+                that should work on one project or archive.
+              </span>
+            </span>
+          </label>
+          <div v-if="newTokenAllowlist" class="rounded-lg border border-base-300 bg-base-100 p-3 max-w-xl">
+            <p class="text-xs font-medium">Collections this token may see</p>
+            <p v-if="!newTokenScope.length" class="text-[11px] text-warning mt-0.5">Tick at least one collection.</p>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+              <label v-for="c in mcpCollections" :key="c.id" class="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input v-model="newTokenScope" type="checkbox" class="checkbox checkbox-xs" :value="c.id" />
+                {{ c.name }}
+                <span v-if="c.sensitivity === 'restricted'" class="badge badge-xs badge-error badge-outline">restricted</span>
+              </label>
+            </div>
+          </div>
+
           <!-- Restricted collections are invisible to every MCP client unless
                a token is explicitly scoped to them: the grant is made here,
                per token, and shows in the table so it can be revoked knowingly. -->
-          <div v-if="restrictedCollections.length" class="rounded-lg border border-error/30 bg-error/5 p-3 max-w-xl">
+          <div v-if="!newTokenAllowlist && restrictedCollections.length" class="rounded-lg border border-error/30 bg-error/5 p-3 max-w-xl">
             <p class="text-xs font-medium flex items-center gap-1.5">
               <ShieldAlert :size="13" class="text-error" aria-hidden="true" />
               Grant this token access to restricted collections
@@ -109,14 +143,15 @@
                   <th>Name</th>
                   <th>Token</th>
                   <th>Access</th>
-                  <th>Restricted access</th>
+                  <th>Collections</th>
                   <th>Created</th>
+                  <th>Expires</th>
                   <th>Last used</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="t in tokens" :key="t.id" :class="{ 'opacity-50': t.revoked_at }">
+                <tr v-for="t in tokens" :key="t.id" :class="{ 'opacity-50': t.revoked_at || isExpired(t) }">
                   <td>{{ t.name }}</td>
                   <td class="font-mono text-xs text-base-content/60">{{ t.token_prefix }}…</td>
                   <td class="text-xs whitespace-nowrap">
@@ -124,13 +159,26 @@
                     <span v-else class="text-base-content/40">read-only</span>
                   </td>
                   <td class="text-xs">
-                    <span v-if="!t.collection_scope || !t.collection_scope.length" class="text-base-content/40">none</span>
+                    <span v-if="t.allowlist" class="flex flex-wrap gap-1">
+                      <span class="badge badge-xs badge-outline">only</span>
+                      <span v-for="cid in t.collection_scope || []" :key="cid" class="badge badge-xs badge-outline">{{ collectionName(cid) }}</span>
+                    </span>
+                    <span v-else-if="!t.collection_scope || !t.collection_scope.length" class="text-base-content/40">all visible</span>
                     <span v-else class="flex flex-wrap gap-1">
+                      <span class="text-base-content/40">all visible +</span>
                       <span v-for="cid in t.collection_scope" :key="cid" class="badge badge-xs badge-error badge-outline">{{ collectionName(cid) }}</span>
                     </span>
                   </td>
                   <td class="text-xs text-base-content/60">{{ formatDate(t.created_at) }}</td>
-                  <td class="text-xs text-base-content/60">{{ t.last_used_at ? formatDate(t.last_used_at) : 'Never' }}</td>
+                  <td class="text-xs whitespace-nowrap">
+                    <span v-if="!t.expires_at" class="text-base-content/40">Never</span>
+                    <span v-else-if="isExpired(t)" class="badge badge-xs badge-error badge-outline">Expired</span>
+                    <span v-else class="text-base-content/60">{{ formatDate(t.expires_at) }}</span>
+                  </td>
+                  <td class="text-xs text-base-content/60 whitespace-nowrap">
+                    <template v-if="t.last_used_at">{{ formatDate(t.last_used_at) }}<span v-if="t.use_count" class="text-base-content/40"> · {{ t.use_count }} {{ t.use_count === 1 ? 'call' : 'calls' }}</span></template>
+                    <template v-else>Never</template>
+                  </td>
                   <td class="text-right">
                     <span v-if="t.revoked_at" class="badge badge-ghost badge-sm">Revoked</span>
                     <button v-else class="btn btn-xs btn-ghost text-error" @click="revokeToken(t)">Revoke</button>
@@ -291,7 +339,7 @@
           <ul class="space-y-0.5 font-mono">
             <li>search_all_collections</li>
             <li>search_collection</li>
-            <li>research_documents — multi-query research, diverse passages, coverage gaps</li>
+            <li>research_documents — multi-query research, diverse passages, coverage gaps; collection_ids spans several collections</li>
             <li>list_recent_documents</li>
             <li>get_document_context</li>
             <li>find_in_documents</li>
@@ -326,7 +374,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ShieldAlert } from 'lucide-vue-next'
 import http from '../utils/http'
 import { useUserStore } from '../stores/userStore'
@@ -346,6 +394,15 @@ const tokens = ref([])
 const newTokenName = ref('')
 const newTokenScope = ref([])
 const newTokenCanWrite = ref(false)
+const newTokenAllowlist = ref(false)
+// null = never expires; otherwise days until the token stops working.
+const newTokenExpiryDays = ref(90)
+const expiryOptions = [
+  { value: 30, label: '30 days' },
+  { value: 90, label: '90 days' },
+  { value: 365, label: '1 year' },
+  { value: null, label: 'Never' },
+]
 const newTokenPlaintext = ref('')
 const tokenCreating = ref(false)
 const exportTokenId = ref('')
@@ -376,6 +433,20 @@ const restrictedCollections = computed(() =>
   mcpCollections.value.filter((c) => c.sensitivity === 'restricted')
 )
 const collectionName = (cid) => mcpCollections.value.find((c) => c.id === cid)?.name || cid
+
+// Timestamps from the app database are naive UTC; without a zone suffix the
+// browser would read them as local time and misjudge expiry by the offset.
+const parseUtc = (iso) => new Date(/[zZ]|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`)
+const isExpired = (t) => Boolean(t.expires_at) && parseUtc(t.expires_at) <= new Date()
+
+// Leaving allowlist mode drops the non-restricted picks: in grant mode only
+// restricted collections mean anything in the scope.
+watch(newTokenAllowlist, (on) => {
+  if (!on) {
+    const restricted = new Set(restrictedCollections.value.map((c) => c.id))
+    newTokenScope.value = newTokenScope.value.filter((cid) => restricted.has(cid))
+  }
+})
 
 const serverId = computed(() => sanitizeServerId(`asymptote-${exportCollectionId.value}`))
 const serverUrl = computed(() =>
@@ -479,16 +550,23 @@ const createToken = async () => {
   tokenCreating.value = true
   mcpError.value = ''
   try {
+    if (newTokenAllowlist.value && !newTokenScope.value.length) {
+      mcpError.value = 'Tick at least one collection for a limited token.'
+      return
+    }
     const response = await http.post('/api/mcp/tokens', {
       name: newTokenName.value,
       collection_scope: newTokenScope.value,
       can_write: newTokenCanWrite.value,
+      expires_in_days: newTokenExpiryDays.value,
+      allowlist: newTokenAllowlist.value,
     })
     newTokenPlaintext.value = response.data.token
     lastCreatedTokenId.value = response.data.id
     newTokenName.value = ''
     newTokenScope.value = []
     newTokenCanWrite.value = false
+    newTokenAllowlist.value = false
     await loadTokens()
     exportTokenId.value = response.data.id
   } catch (error) {
