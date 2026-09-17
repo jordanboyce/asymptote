@@ -321,6 +321,10 @@ Use **Connect** in the UI to:
 - Choose the default collection and retrieval settings used by MCP
 - Keep MCP in search-only mode (recommended) to avoid duplicate model usage
 - Optionally enable Ollama-backed synthesis for MCP when you explicitly want server-side answering
+- **Sign in from the client** — with an OIDC identity provider configured (`IDENTITY_PROVIDER=oidc`,
+  `MCP_PUBLIC_URL`), Claude Desktop, claude.ai, ChatGPT and `claude mcp login` attach with the
+  endpoint URL alone: the app is the OAuth 2.1 resource server and your IdP signs people in
+  ([docs/IDENTITY.md](docs/IDENTITY.md#oauth-for-mcp-clients)).
 - **Generate a personal access token** — a self-serve bearer credential scoped to `/mcp` only, so
   connecting a client never requires editing `.env` or provisioning anything in Cloudflare. Pick an
   expiry (90 days by default, or never), optionally limit the token to specific collections, and

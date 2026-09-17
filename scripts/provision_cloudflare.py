@@ -59,7 +59,10 @@ PUBLIC_BYPASS_POLICY_NAME = "public-registration"
 # form per IP; nothing under these paths reveals deployment data.
 PUBLIC_PATHS = ("/register", "/api/register", "/assets", "/favicon.ico",
                 "/manifest.webmanifest", "/icon_black.svg", "/icon_white.svg",
-                "/logo_black.svg", "/logo_white.svg")
+                "/logo_black.svg", "/logo_white.svg",
+                # RFC 9728 metadata an OAuth MCP client reads before it has any
+                # credential (only served when MCP_OAUTH_ISSUER names an IdP).
+                "/.well-known/oauth-protected-resource")
 API = "https://api.cloudflare.com/client/v4"
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 

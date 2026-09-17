@@ -25,7 +25,7 @@ Asymptote owns the trustworthy data layer; the intelligence layer lives upstream
 
 ## Access & limits
 
-- **Online registration** — shipped 2026-09-12: `/register` (approval or open mode, domain allowlist, seat cap). Expiring, collection-limited personal MCP tokens shipped 2026-09-17. Pluggable identity shipped 2026-09-17: `IDENTITY_PROVIDER=oidc` (your own IdP) or `trusted_header` (an authenticating proxy) alongside Cloudflare Access, plus `MCP_AUDIT_TOOL_CALLS` for auditing agent reads. Next: OAuth 2.1 on `/mcp` so hosted MCP clients (Claude Desktop, claude.ai and ChatGPT custom connectors) can connect without a pasted bearer token.
+- **Online registration** — shipped 2026-09-12: `/register` (approval or open mode, domain allowlist, seat cap). Expiring, collection-limited personal MCP tokens shipped 2026-09-17. Pluggable identity shipped 2026-09-17: `IDENTITY_PROVIDER=oidc` (your own IdP) or `trusted_header` (an authenticating proxy) alongside Cloudflare Access, plus `MCP_AUDIT_TOOL_CALLS` for auditing agent reads. OAuth 2.1 on `/mcp` shipped 2026-09-17: RFC 9728 metadata and the Bearer challenge delegate to the site's IdP, so Claude Desktop, claude.ai, ChatGPT and `claude mcp login` attach with the endpoint URL alone (`MCP_PUBLIC_URL`, optional `MCP_OAUTH_SCOPE`, or `MCP_OAUTH_ISSUER` for a Cloudflare deployment). Next: per-tool token scopes, group-derived collection access, an admin token fleet view, and ChatGPT `search`/`fetch` aliases.
 - **Per-collection storage cap** — shipped 2026-09-12 (5 GiB default, `COLLECTION_STORAGE_LIMIT_BYTES`). Next: per-user totals across collections, and an admin view of storage by collection.
 
 ## From the September 2026 product assessment (docs/PRODUCT_ASSESSMENT.md)

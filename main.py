@@ -285,6 +285,10 @@ def _is_public_path(path: str) -> bool:
         or path in _PUBLIC_STATIC
         or path.startswith("/assets/")
         or path.startswith("/icons/")
+        # RFC 9728 protected-resource metadata: an MCP client reads it
+        # before it has any credential. It names the authorization server
+        # and nothing else (services/mcp_oauth.py).
+        or path.startswith("/.well-known/oauth-protected-resource")
     )
 
 
@@ -307,12 +311,25 @@ async def require_auth(request, call_next):
     # ...but only for a request that actually carries one: has_candidate is a
     # cheap header look, so a password-authenticated call never spends a
     # threadpool slot to discover it has no assertion.
-    from services.identity import get_identity_verifier
-    verifier = get_identity_verifier()
+    # On /mcp the verifier also covers OAuth bearer tokens from the
+    # authorization server the endpoint advertises (services/mcp_oauth.py).
+    from services.identity import InsufficientScope, get_identity_verifier, is_mcp_path
+    verifier = get_identity_verifier(request.url.path)
     if verifier is not None and verifier.has_candidate(request.headers):
-        who = await asyncio.to_thread(
-            verifier.verify_request, request.headers, _client_ip(request)
-        )
+        try:
+            who = await asyncio.to_thread(
+                verifier.verify_request, request.headers, _client_ip(request)
+            )
+        except InsufficientScope as exc:
+            # A token that is valid for this app but not for /mcp. 403 with
+            # the scope named, per the MCP authorization spec, so the client
+            # can step up instead of looping on a 401 it cannot satisfy.
+            from services.mcp_oauth import challenge
+            return JSONResponse(
+                {"detail": f"This token lacks the scope '{exc.scope}' required for the MCP endpoint."},
+                status_code=403,
+                headers={"WWW-Authenticate": challenge(request, error="insufficient_scope")},
+            )
         if who:
             request.state.auth_identity = who
             request.state.auth_via = verifier.via
@@ -360,10 +377,20 @@ async def require_auth(request, call_next):
     ):
         return await call_next(request)
 
+    # Browsers get the Basic challenge so the native prompt still works. The
+    # /mcp subtree gets the Bearer challenge of the MCP authorization spec:
+    # with an authorization server configured it carries the RFC 9728
+    # resource_metadata URL an OAuth client discovers from, otherwise a
+    # plain Bearer realm for bearer-header clients.
+    if is_mcp_path(request.url.path):
+        from services.mcp_oauth import challenge
+        www_authenticate = challenge(request, error="invalid_token" if presented else None)
+    else:
+        www_authenticate = 'Basic realm="Asymptote"'
     return JSONResponse(
         {"detail": "Not authenticated"},
         status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="Asymptote"'},
+        headers={"WWW-Authenticate": www_authenticate},
     )
 
 async def _call_with_user_context(request, call_next):

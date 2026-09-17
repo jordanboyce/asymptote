@@ -195,8 +195,12 @@ touched — see [IDENTITY.md](IDENTITY.md).
 
 Clients that take a bearer header (Claude Code, Codex, VS Code, AnythingLLM)
 attach with the config generated in Settings → MCP. Connector-style clients
-(Claude Desktop, claude.ai, ChatGPT) speak OAuth instead, which this release
-does not implement.
+(Claude Desktop, claude.ai, ChatGPT, and Claude Code without a token) sign
+in at your IdP instead: with `IDENTITY_PROVIDER=oidc` set
+`MCP_PUBLIC_URL=https://asymptote.internal/mcp` and hand people that URL.
+The app is only the OAuth resource server; the IdP does the sign-in and
+registers the clients. Setup per IdP, the scope option and what is
+verified: [IDENTITY.md](IDENTITY.md#oauth-for-mcp-clients).
 
 ## Upgrading
 

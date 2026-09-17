@@ -154,6 +154,16 @@ wrinkle: **MCP clients authenticate as a token, not as a person.**
 - With `AUTH_PASSWORD` alone (no personal token), clients send
   `Authorization: Bearer <password>` and work normally, but anonymously —
   see below.
+- **Sign in from the client (OAuth).** Claude Desktop, claude.ai, ChatGPT
+  and Claude Code (`claude mcp login`) can attach with just the endpoint
+  URL and a browser sign-in at your identity provider — no token to paste
+  or revoke. It needs an authorization server for `/mcp`: an `oidc`
+  deployment has one already (set `MCP_PUBLIC_URL`); a Cloudflare Access
+  deployment names one with `MCP_OAUTH_ISSUER` + `MCP_OAUTH_AUDIENCE`, and
+  the edge must let `/mcp` and `/.well-known/oauth-protected-resource`
+  through (the provisioning script does). The token resolves to the same
+  person a browser session would. Details, per-IdP client registration and
+  the optional required scope: [IDENTITY.md](IDENTITY.md#oauth-for-mcp-clients).
 - With an SSO proxy and no personal token, a headless MCP client has no
   browser to complete the login in. Either use a proxy that issues service
   tokens (Cloudflare Access does — see `docs/REMOTE-ACCESS.md` for a script

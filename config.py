@@ -427,6 +427,35 @@ class Settings(BaseSettings):
     # that hostname here. Localhost stays allowed either way.
     mcp_allowed_hosts: str = ""
 
+    # ── OAuth 2.1 on /mcp (docs/IDENTITY.md "OAuth for MCP clients") ─────
+    # Connector-style MCP clients (Claude Desktop, claude.ai, ChatGPT, and
+    # Claude Code without a pasted token) discover an authorization server
+    # from the /mcp 401 challenge and RFC 9728 metadata, sign the person in
+    # there, and present the resulting bearer JWT. The app is only ever the
+    # resource server: the site's own IdP is the authorization server, and
+    # the JWT is verified by the same OIDC backend a browser session uses,
+    # so private-collection scoping and the audit actor follow for free.
+    #
+    # With IDENTITY_PROVIDER=oidc nothing else is required - OIDC_ISSUER /
+    # OIDC_AUDIENCE are advertised and enforced on /mcp as they are
+    # everywhere. The MCP_OAUTH_* values below override them for /mcp only,
+    # which is how a Cloudflare Access deployment (whose browser identity
+    # is not a bearer JWT) names an IdP for its MCP clients.
+    #
+    # MCP_PUBLIC_URL is the canonical URL clients reach the endpoint at,
+    # e.g. https://asymptote.agency.gov/mcp. It is the RFC 9728 `resource`,
+    # and a token whose audience is exactly that URL is accepted on /mcp
+    # (RFC 8707 resource indicators). Empty = derived from MCP_ALLOWED_HOSTS,
+    # else from the request; set it explicitly for anything but localhost.
+    mcp_public_url: str = ""
+    mcp_oauth_issuer: str = ""        # empty = OIDC_ISSUER when IDENTITY_PROVIDER=oidc
+    mcp_oauth_audience: str = ""      # comma-separated; required with MCP_OAUTH_ISSUER
+    mcp_oauth_jwks_url: str = ""
+    # A scope the token must carry (space-separated `scope` claim, or `scp`)
+    # to be accepted on /mcp, advertised as scopes_supported and in the 401
+    # challenge. Empty = any token valid for the app is valid for /mcp.
+    mcp_oauth_scope: str = ""
+
     # OCR configuration — deliberately minimal: an on/off switch and an engine.
     # Scanned pages either go through a vision-capable LLM (best quality) or the
     # free local engine (Docling/Tesseract) when no provider is set. Rendering
