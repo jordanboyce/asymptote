@@ -174,10 +174,10 @@ wrong one for a multi-tenant service. Pick one:
   site already runs). Keep `BIND_ADDRESS=127.0.0.1` so the proxy is the only
   route in.
 - **`PRIVATE_COLLECTIONS=true`** for per-person ownership and sharing. It
-  needs a verified identity on every request, which today means Cloudflare
-  Access (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`) in front of the
-  deployment; the app refuses to start with the flag on and no identity
-  source. See [DEPLOYMENT.md](DEPLOYMENT.md).
+  needs a verified identity on every request: point `IDENTITY_PROVIDER` at
+  your own IdP (`oidc` — Keycloak, Entra ID, Okta, PingFederate) or at the
+  proxy that already authenticates for you (`trusted_header`, which is how
+  mTLS and Kerberos front ends attach). See [IDENTITY.md](IDENTITY.md).
 
 ## Agents over MCP
 
@@ -188,7 +188,10 @@ localhost, list it in `MCP_ALLOWED_HOSTS` — the MCP SDK's DNS-rebinding
 protection trusts only localhost otherwise.
 
 A token carries the identity of whoever minted it, so under
-`PRIVATE_COLLECTIONS` an agent sees exactly that person's collections.
+`PRIVATE_COLLECTIONS` an agent sees exactly that person's collections. Set
+`MCP_AUDIT_TOOL_CALLS=true` where reads have to be accountable: every tool
+call is then recorded with the credential, collection and documents it
+touched — see [IDENTITY.md](IDENTITY.md).
 
 Clients that take a bearer header (Claude Code, Codex, VS Code, AnythingLLM)
 attach with the config generated in Settings → MCP. Connector-style clients

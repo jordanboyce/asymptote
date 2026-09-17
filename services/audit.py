@@ -42,6 +42,7 @@ ACTIONS: List[str] = [
     "share.revoke",
     "mcp_token.create",
     "mcp_token.revoke",
+    "mcp.tool_call",            # one agent tool call (MCP_AUDIT_TOOL_CALLS)
     "aup.accept",
     "admin.block_hash",
     "admin.unblock_hash",
