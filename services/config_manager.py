@@ -12,7 +12,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
-from config import Settings, settings
+from config import ALL_AI_PROVIDERS, Settings, settings
 from services.app_database import app_db
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 VALID_CONFIG_FIELDS = {
     "embedding_model", "embedding_provider", "ollama_base_url", "remote_embedding_model",
     "embedding_base_url", "embedding_api_key", "ollama_cloud_api_key",
+    # Deployment default LLM (on-prem private endpoints). Persisted here as
+    # well as in .env so a container recreated without its env file keeps
+    # pointing at the operator's model instead of falling back to nothing.
+    "ai_provider", "ai_base_url", "ai_model", "ai_api_key", "ai_provider_label",
     "chunk_size", "chunk_overlap",
     "default_top_k", "max_top_k",
     "enable_ocr",
@@ -46,7 +50,8 @@ VALID_CONFIG_FIELDS = {
 # place of the stored value, and an update carrying MASKED_SECRET back is
 # treated as "leave unchanged" — so a client can round-trip the config without
 # either seeing the secret or wiping it.
-SECRET_CONFIG_FIELDS = {"vision_ocr_api_key", "ollama_cloud_api_key", "embedding_api_key"}
+SECRET_CONFIG_FIELDS = {"vision_ocr_api_key", "ollama_cloud_api_key", "embedding_api_key",
+                        "ai_api_key"}
 MASKED_SECRET = "********"
 
 # Field names that older builds persisted; read and written as their current
@@ -86,6 +91,12 @@ class ConfigManager:
             "embedding_base_url": settings.embedding_base_url,
             "embedding_api_key": settings.embedding_api_key,
             "ollama_cloud_api_key": settings.ollama_cloud_api_key,
+            # Deployment default LLM
+            "ai_provider": settings.ai_provider,
+            "ai_base_url": settings.ai_base_url,
+            "ai_model": settings.ai_model,
+            "ai_api_key": settings.ai_api_key,
+            "ai_provider_label": settings.ai_provider_label,
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
             "default_top_k": settings.default_top_k,
@@ -202,6 +213,27 @@ class ConfigManager:
                 )
                 result["success"] = False
                 return result
+
+        if "ai_provider" in updates:
+            candidate = (updates["ai_provider"] or "").strip()
+            if candidate and candidate not in ALL_AI_PROVIDERS:
+                result["errors"].append(
+                    f"Unknown AI provider: {candidate}. Use one of "
+                    f"{', '.join(ALL_AI_PROVIDERS)}."
+                )
+                result["success"] = False
+                return result
+            # openai_compatible is defined by its endpoint; without one the
+            # provider cannot be built at all, and the failure would surface
+            # later as a broken chat rather than here as a rejected save.
+            if candidate == "openai_compatible":
+                base_url = updates.get("ai_base_url", settings.ai_base_url)
+                if not (base_url or "").strip():
+                    result["errors"].append(
+                        "ai_base_url is required when ai_provider is openai_compatible."
+                    )
+                    result["success"] = False
+                    return result
 
         if "content_policy_action" in updates:
             if updates["content_policy_action"] not in ("off", "flag", "quarantine", "reject"):

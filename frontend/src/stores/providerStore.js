@@ -1,8 +1,10 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  fetchDeploymentDefault,
   fetchServerProviderIds,
   getConfiguredProviderIds,
+  getDeploymentDefault,
   getProviderDisplayName,
   onProviderChange,
   resolveProvider,
@@ -52,8 +54,17 @@ export const useProviderStore = defineStore('provider', () => {
     return resolveProvider(surface)
   }
 
+  // The provider the deployment itself configured (on-prem private model).
+  // Reading version keeps consumers reactive across loadServerProviders().
+  const deploymentDefault = computed(() => {
+    version.value
+    return getDeploymentDefault()
+  })
+
   async function loadServerProviders() {
-    await fetchServerProviderIds()
+    // Both describe "what is already configured for you" and both feed
+    // getConfiguredProviderIds(), so they load together and touch once.
+    await Promise.all([fetchServerProviderIds(), fetchDeploymentDefault()])
     touch()
   }
 
@@ -63,6 +74,7 @@ export const useProviderStore = defineStore('provider', () => {
     configuredIds,
     activeProviderId,
     activeProviderName,
+    deploymentDefault,
     resolveFor,
     loadServerProviders,
   }

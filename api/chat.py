@@ -1525,6 +1525,59 @@ def list_provider_models(  # sync: provider round-trip runs in the threadpool
 
 
 @router.get(
+    "/api/ai/deployment",
+    summary="The AI provider this deployment configured for everyone",
+    tags=["ai"],
+)
+async def get_deployment_ai_default():
+    """
+    What AI_PROVIDER / AI_BASE_URL / AI_MODEL describe: the model an operator
+    wired into this deployment, so a browser that has configured nothing can
+    still chat. The frontend lists it as an already-connected provider and
+    sends no credentials for it — the server fills them in.
+
+    Never returns AI_API_KEY, only whether one is on file. The base URL is
+    returned: it is what the UI shows people so they can see which endpoint
+    their questions go to, and on an on-prem install it is an internal
+    hostname the caller is already inside the network of.
+    """
+    from config import settings
+
+    provider = (settings.ai_provider or "").strip()
+    if not provider:
+        return {"configured": False, "offline_mode": settings.offline_mode}
+
+    base_url = settings.ai_base_url or (
+        settings.ollama_base_url if provider == "ollama" else ""
+    )
+    return {
+        "configured": True,
+        "provider": provider,
+        "label": settings.ai_provider_label or _DEFAULT_PROVIDER_LABELS.get(provider, provider),
+        "model": settings.ai_model,
+        "base_url": base_url,
+        "key_configured": bool(settings.ai_api_key),
+        "offline_mode": settings.offline_mode,
+    }
+
+
+# Shown when AI_PROVIDER_LABEL is unset. "openai_compatible" is an interop
+# shape, not a product name, so a private endpoint gets a neutral label
+# rather than a vendor's.
+_DEFAULT_PROVIDER_LABELS = {
+    "openai_compatible": "Private endpoint",
+    "ollama": "Ollama",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google": "Google Gemini",
+    "grok": "Grok (xAI)",
+    "github": "GitHub Models",
+    "openrouter": "OpenRouter",
+    "ollama_cloud": "Ollama Cloud",
+}
+
+
+@router.get(
     "/api/agent/config",
     summary="Get agent API configuration",
     tags=["agent"],

@@ -69,6 +69,36 @@ class Settings(BaseSettings):
     )
     ollama_base_url: str = "http://localhost:11434"   # used for embeddings and inference
 
+    # ── Deployment default AI provider ───────────────────────────────────
+    # The LLM this deployment uses when a caller does not bring its own.
+    # Without it, every person configures a provider in their own browser
+    # (keys and endpoint URLs live in localStorage) — workable for a laptop
+    # install, wrong for an on-prem appliance where the operator owns the
+    # model and nobody should be typing an internal URL into a settings
+    # form. Set these and chat, artifacts, vision OCR, schema inference and
+    # the content-policy reviewer all reach the same endpoint out of the
+    # box; the frontend offers it as an already-connected provider.
+    #
+    #   AI_PROVIDER=openai_compatible   any OpenAI-shaped server you run —
+    #                                   vLLM, LM Studio, llama.cpp, TGI,
+    #                                   Ollama's /v1, LiteLLM, a gateway
+    #   AI_PROVIDER=ollama              an Ollama daemon (AI_BASE_URL or
+    #                                   OLLAMA_BASE_URL)
+    #   AI_PROVIDER=anthropic|openai|…  a cloud provider, key in AI_API_KEY
+    #
+    # AI_BASE_URL is required for openai_compatible (the app refuses to
+    # start without it) and optional elsewhere. AI_API_KEY may be empty for
+    # endpoints that need no auth. A per-request X-AI-* header still wins,
+    # so a person can bring their own key on a deployment that has one.
+    ai_provider: str = ""
+    ai_base_url: str = ""
+    ai_model: str = ""
+    ai_api_key: str = ""
+    # What the UI calls it. Empty falls back to the provider id, which reads
+    # badly for a private endpoint ("openai_compatible" is not a product
+    # anyone recognises); name it after the thing people know.
+    ai_provider_label: str = ""
+
     # Semantic answer cache: single-turn chat questions that closely match a
     # previously answered one are candidate cache hits. The chat layer also
     # requires matching question text and currently accessible sources. Query
@@ -254,19 +284,6 @@ class Settings(BaseSettings):
     # refused with a retryable error. 0 = no gate.
     research_max_concurrent: int = 3
     research_queue_timeout_seconds: float = 60.0
-    # /mcp is unlimited by default: an agent turn fans out several tool calls
-    # at once and handles 429s badly (immediate retry or abandoning the
-    # question). Set a per-token budget only for abuse protection on a shared
-    # deployment; it is keyed on the personal token, not the IP.
-    rate_limit_mcp_per_minute: int = 0
-
-    # research_documents runs up to seven retrieval branches against the
-    # vector index and metadata store. Parallel research calls compete for
-    # CPU on large collections, so callers queue for a slot instead of
-    # slowing each other down; a call that waits longer than the timeout is
-    # refused with a retryable error. 0 = no gate.
-    research_max_concurrent: int = 3
-    research_queue_timeout_seconds: float = 60.0
 
     # Provider tokens (input+output) one identity may spend on chat per UTC
     # day. 0 = unlimited. Cached answers are free and still served once the
@@ -411,8 +428,11 @@ class Settings(BaseSettings):
     # v3.0: Schema version (for data persistence)
     schema_version: str = "3.0"
 
+    # The env file is overridable so the test suite can run against the
+    # shipped defaults instead of whatever .env sits next to the checkout
+    # (a developer's real deployment posture). Not a documented knob.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.environ.get("ASYMPTOTE_ENV_FILE", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

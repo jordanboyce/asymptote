@@ -1,0 +1,6 @@
+# Shell scripts must keep LF endings whatever a clone's core.autocrlf says:
+# a CRLF entrypoint.sh fails inside the container with "no such file or
+# directory" (the \r becomes part of the interpreter path), which is a
+# baffling way to discover a line-ending problem.
+*.sh text eol=lf
+docker/entrypoint.sh text eol=lf

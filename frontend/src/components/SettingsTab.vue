@@ -157,6 +157,37 @@
           <!-- Provider table -->
           <div class="rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
 
+            <!-- Deployment provider: configured on the server (AI_PROVIDER),
+                 shared by everyone, not editable from a browser. -->
+            <div v-if="deploymentDefault.configured" class="px-4 py-3">
+              <div class="flex items-center gap-3">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-medium text-sm">{{ deploymentDefault.label }}</span>
+                    <span class="badge badge-neutral badge-xs badge-outline">this server</span>
+                  </div>
+                  <div class="text-xs text-base-content/50 mt-0.5 truncate">
+                    {{ deploymentDefault.model || 'server-chosen model' }}
+                    <template v-if="deploymentDefault.base_url"> · {{ deploymentDefault.base_url }}</template>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <span v-if="deploymentIsDefault" class="badge badge-primary badge-xs">Default</span>
+                  <button
+                    v-else
+                    class="btn btn-ghost btn-xs"
+                    @click="setDefaultProvider(deploymentDefault.provider)"
+                  >Use as default</button>
+                  <span class="badge badge-success badge-xs">Connected</span>
+                </div>
+              </div>
+              <p class="text-xs text-base-content/45 mt-2 max-w-[60ch]">
+                Configured on this server by whoever runs it — no key or URL to enter here, and
+                your questions go to that endpoint. Add your own provider below only if you want
+                to use a different one.
+              </p>
+            </div>
+
             <!-- Built-in provider rows -->
             <div v-for="def in visibleProviderDefs" :key="def.id">
               <div
@@ -1005,6 +1036,7 @@ import {
   fetchProviderModels,
   invalidateModelCache,
   testProviderConnection,
+  fetchDeploymentDefault,
   fetchServerProviderIds,
   migrateLegacySettings,
   isRemoteDeployment,
@@ -1663,6 +1695,18 @@ const ensureDefaultProvider = (id) => {
 const serverProviderIds = ref([])
 const isServerProvider = (id) => serverProviderIds.value.includes(id)
 
+// The provider this deployment configured for everyone (on-prem private
+// model). Read-only here: it lives in the server's environment.
+const deploymentDefault = ref({ configured: false })
+
+// It carries the "Default" badge when it is what the resolution chain lands
+// on — which includes the common on-prem case of a browser that has chosen
+// nothing, since the deployment's provider is first in the configured list.
+const deploymentIsDefault = computed(() =>
+  deploymentDefault.value.configured &&
+  (activeProviderId.value === deploymentDefault.value.provider || !activeProviderId.value)
+)
+
 // Ids of all currently-configured providers
 const configuredProviderIds = computed(() => {
   configVersion.value // reactivity hook
@@ -1972,6 +2016,12 @@ onMounted(() => {
   // Which providers have a server-stored team key ("Team key" badge)
   fetchServerProviderIds().then((ids) => {
     serverProviderIds.value = ids
+    bumpConfig()
+  })
+
+  // The deployment's own provider, shown as an already-connected row
+  fetchDeploymentDefault().then((info) => {
+    deploymentDefault.value = info
     bumpConfig()
   })
 

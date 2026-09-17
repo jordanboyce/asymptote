@@ -37,19 +37,27 @@ def _truncate_tool_result(payload_json: str) -> str:
 def resolve_ai_key(provider: str, header_key: str | None) -> str:
     """Resolve the API key for a cloud provider request.
 
-    A per-request X-AI-Key header always wins (user brought their own key).
-    Otherwise fall back to the server-stored team key configured via
-    /api/agent/config — this is what lets a hosted instance serve coworkers
-    who never enter a key themselves.
+    In order: a per-request X-AI-Key header (the user brought their own key);
+    the server-stored team key from /api/agent/config, which is what lets a
+    hosted instance serve coworkers who never enter a key themselves; and
+    finally the deployment default key (AI_API_KEY) when the request names
+    the deployment's own provider — how an on-prem appliance serves a private
+    endpoint nobody holds individual credentials for.
     """
     if header_key:
         return header_key
+    stored = ""
     if provider in CLOUD_AI_PROVIDERS:
         try:
             from services.app_database import app_db
-            return app_db.get_agent_api_key(provider) or ""
+            stored = app_db.get_agent_api_key(provider) or ""
         except Exception:
-            return ""
+            stored = ""
+    if stored:
+        return stored
+    from config import settings
+    if provider and provider == (settings.ai_provider or "").strip():
+        return settings.ai_api_key or ""
     return ""
 
 

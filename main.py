@@ -88,6 +88,29 @@ def _check_security_posture() -> None:
             "docs/DEPLOYMENT.md."
         )
 
+    # Deployment default LLM (on-prem private endpoints). A typo here would
+    # otherwise surface as a failed chat hours later, on someone else's
+    # screen, so it fails at startup like the other deployment-shape flags.
+    if settings.ai_provider:
+        from config import ALL_AI_PROVIDERS
+        if settings.ai_provider not in ALL_AI_PROVIDERS:
+            raise RuntimeError(
+                f"AI_PROVIDER={settings.ai_provider!r} is not a provider this "
+                f"app knows. Use one of: {', '.join(ALL_AI_PROVIDERS)}."
+            )
+        if settings.ai_provider == "openai_compatible" and not settings.ai_base_url:
+            raise RuntimeError(
+                "AI_PROVIDER=openai_compatible needs AI_BASE_URL - the "
+                "OpenAI-style endpoint to call, e.g. "
+                "http://vllm.internal:8000/v1. See docs/ONPREM.md."
+            )
+        logger.info(
+            "Deployment AI provider: %s%s%s",
+            settings.ai_provider,
+            f" at {settings.ai_base_url}" if settings.ai_base_url else "",
+            f" (model {settings.ai_model})" if settings.ai_model else "",
+        )
+
     if settings.host not in _LOOPBACK_HOSTS and not settings.auth_password:
         logger.warning(
             "SECURITY: bound to %s (reachable from the network) with no "

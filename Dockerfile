@@ -1,5 +1,12 @@
 # Asymptote — single production Dockerfile.
 # Start with: docker compose up -d
+#
+# The result is meant to be PORTABLE: build once, `docker save` it, carry it
+# into a customer's network or an air gap, and configure it there. Nothing
+# site-specific is baked in — the model endpoint, credentials, CA
+# certificates and data all arrive at run time (see docs/ONPREM.md). The only
+# build-time choices are which optional model weights to include
+# (OFFLINE_BUNDLE, WITH_DOCLING), because those are downloads, not config.
 
 # ── Stage 1: build the Vue frontend ──
 # (debian-based node image: the pinned rollup/esbuild natives are glibc builds)
@@ -89,6 +96,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Corporate CA certificates again, this time for outbound TLS at runtime
 # (AI providers, Ollama, HuggingFace) — the trust store is not part of the venv.
+#
+# This is the BUILD-time path, for a site that builds its own image. A
+# prebuilt image can't use it, so docker/entrypoint.sh installs certificates
+# mounted at /certs/ca on every start as well; either path works, and a site
+# that uses neither pays nothing.
 COPY certs/ca/ /tmp/ca/
 RUN if ls /tmp/ca/*.crt 1>/dev/null 2>&1; then \
       cp /tmp/ca/*.crt /usr/local/share/ca-certificates/ && \
@@ -134,6 +146,18 @@ COPY --from=frontend /build/dist ./frontend/dist
 
 RUN mkdir -p /app/data/documents /app/data/indexes
 
+# Runtime setup that cannot be baked: site CA certificates and the data dirs.
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Provenance for an image that travels as a file. `docker inspect` on the
+# other side of an air gap is the only way to tell what was loaded, so the
+# version and commit go in as labels rather than living in a build log.
+ARG APP_VERSION=dev
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.title="Asymptote"       org.opencontainers.image.description="Private document indexing, grounded chat and MCP access"       org.opencontainers.image.source="https://github.com/jordanboyce/asymptote"       org.opencontainers.image.licenses="Apache-2.0"       org.opencontainers.image.version="${APP_VERSION}"       org.opencontainers.image.revision="${VCS_REF}"
+ENV ASYMPTOTE_VERSION=${APP_VERSION}
+
 EXPOSE 8473
 
 # HOST is 0.0.0.0 here (the app defaults to loopback) because the container
@@ -144,6 +168,8 @@ EXPOSE 8473
 ENV PYTHONUNBUFFERED=1 \
     DATA_DIR=/app/data \
     HOST=0.0.0.0
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # PaaS platforms (Railway, Render, Heroku-style) inject PORT and expect the
 # app to listen on it; fall back to the documented default otherwise.
