@@ -1,4 +1,4 @@
-# Asymptote — single production Dockerfile.
+# Clio — single production Dockerfile.
 # Start with: docker compose up -d
 #
 # The result is meant to be PORTABLE: build once, `docker save` it, carry it
@@ -155,8 +155,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # version and commit go in as labels rather than living in a build log.
 ARG APP_VERSION=dev
 ARG VCS_REF=unknown
-LABEL org.opencontainers.image.title="Asymptote"       org.opencontainers.image.description="Private document indexing, grounded chat and MCP access"       org.opencontainers.image.source="https://github.com/jordanboyce/asymptote"       org.opencontainers.image.licenses="Apache-2.0"       org.opencontainers.image.version="${APP_VERSION}"       org.opencontainers.image.revision="${VCS_REF}"
-ENV ASYMPTOTE_VERSION=${APP_VERSION}
+LABEL org.opencontainers.image.title="Clio"       org.opencontainers.image.description="Private document indexing, grounded chat and MCP access"       org.opencontainers.image.source="https://github.com/jordanboyce/clio"       org.opencontainers.image.licenses="Apache-2.0"       org.opencontainers.image.version="${APP_VERSION}"       org.opencontainers.image.revision="${VCS_REF}"
+ENV CLIO_VERSION=${APP_VERSION}
 
 EXPOSE 8473
 

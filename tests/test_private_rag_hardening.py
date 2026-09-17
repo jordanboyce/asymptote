@@ -40,7 +40,7 @@ def test_cached_fingerprint_tracks_content_and_effective_label(monkeypatch):
 
 
 def test_mcp_tools_advertise_read_and_write_semantics():
-    tools = asyncio.run(mcp_server._asymptote_mcp.list_tools())
+    tools = asyncio.run(mcp_server._clio_mcp.list_tools())
     assert tools
     for tool in tools:
         assert tool.annotations is not None

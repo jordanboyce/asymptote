@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build a portable Asymptote image and package it for a machine that cannot
+    Build a portable Clio image and package it for a machine that cannot
     build one (air gap, customer site, appliance). Windows counterpart of
     scripts/package_image.sh — same output, same instructions.
 
@@ -22,7 +22,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
-$image = "asymptote:$Tag"
+$image = "clio:$Tag"
 $vcsRef = "unknown"
 try { $vcsRef = (git rev-parse --short HEAD).Trim() } catch { }
 
@@ -44,7 +44,7 @@ $buildArgs += @("-t", $image, ".")
 if ($LASTEXITCODE -ne 0) { throw "docker build failed" }
 
 if (-not (Test-Path $Out)) { New-Item -ItemType Directory -Path $Out | Out-Null }
-$tar = Join-Path $Out "asymptote-$Tag.tar"
+$tar = Join-Path $Out "clio-$Tag.tar"
 $archive = "$tar.gz"
 
 # `docker save -o` rather than a pipeline: PowerShell pipes text, and would
@@ -63,23 +63,23 @@ Remove-Item $tar
 Write-Host "==> Checksumming"
 $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
 # sha256sum format, so the receiving Linux host can verify with `sha256sum -c`.
-"$hash  asymptote-$Tag.tar.gz" | Out-File -FilePath "$archive.sha256" -Encoding ascii
+"$hash  clio-$Tag.tar.gz" | Out-File -FilePath "$archive.sha256" -Encoding ascii
 
 Write-Host "==> Copying deployment files"
 Copy-Item docker-compose.onprem.yml, .env.onprem.example, docs\ONPREM.md, docs\AIRGAP.md $Out
 
 $built = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 @"
-Asymptote $Tag - offline install bundle
+Clio $Tag - offline install bundle
 built $built from $vcsRef
 offline model bundle: $offline   docling OCR: $docling
 
 On the target machine:
 
-  sha256sum -c asymptote-$Tag.tar.gz.sha256
-  docker load < asymptote-$Tag.tar.gz
+  sha256sum -c clio-$Tag.tar.gz.sha256
+  docker load < clio-$Tag.tar.gz
   cp .env.onprem.example .env      # then edit: model endpoint, AUTH_PASSWORD
-  # set ASYMPTOTE_IMAGE=asymptote:$Tag in .env
+  # set CLIO_IMAGE=clio:$Tag in .env
   docker compose -f docker-compose.onprem.yml up -d
 
 Then open http://<host>:8473. Full guide: ONPREM.md (air gap: AIRGAP.md).

@@ -18,7 +18,7 @@ This module is the seam. One verifier per deployment, chosen by
                      (Keycloak, Entra ID, Okta, PingFederate). Signature,
                      issuer, audience and expiry are verified against the
                      issuer's JWKS; an optional claim requirement narrows
-                     admission further (e.g. groups=asymptote-users).
+                     admission further (e.g. groups=clio-users).
   trusted_header     An authenticating reverse proxy (mTLS terminator, SSO
                      proxy, SPNEGO/Kerberos front end) has already
                      authenticated the caller and passes the result in a
@@ -342,7 +342,7 @@ class OIDCIdentity:
 
 
 def _parse_required_claims(spec: str) -> list[tuple[str, str]]:
-    """Parse "groups=asymptote-users, dept=research" into pairs."""
+    """Parse "groups=clio-users, dept=research" into pairs."""
     pairs: list[tuple[str, str]] = []
     for clause in (spec or "").split(","):
         clause = clause.strip()
@@ -713,7 +713,7 @@ def _validate_mcp_oauth() -> None:
                 f"MCP_PUBLIC_URL={public!r} is not a usable resource URL. It "
                 "must be the absolute http(s) URL MCP clients reach the "
                 "endpoint at, with no query or fragment, e.g. "
-                "https://asymptote.agency.gov/mcp."
+                "https://clio.agency.gov/mcp."
             )
         if parts.scheme == "http" and not _is_loopback_host(parts.hostname or ""):
             logger.warning(
@@ -736,7 +736,7 @@ def _validate_mcp_oauth() -> None:
                 "OAuth on /mcp: MCP_PUBLIC_URL is empty, so the resource URL "
                 "in the metadata is derived from each request's Host header "
                 "and is NOT accepted as a token audience. Set MCP_PUBLIC_URL "
-                "(e.g. https://asymptote.agency.gov/mcp) for a deployment "
+                "(e.g. https://clio.agency.gov/mcp) for a deployment "
                 "reachable under a hostname."
             )
         logger.info(

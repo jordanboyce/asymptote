@@ -92,7 +92,7 @@ class BM25Index:
                 """)
             except sqlite3.OperationalError as e:
                 raise RuntimeError(
-                    "This SQLite build lacks FTS5, which Asymptote's keyword "
+                    "This SQLite build lacks FTS5, which Clio's keyword "
                     "search requires. Use a standard CPython build (3.9+)."
                 ) from e
 

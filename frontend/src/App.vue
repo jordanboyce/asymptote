@@ -10,10 +10,10 @@
         :class="{ 'bg-base-200': activeTab === 'collections' }"
         @click="activeTab = 'collections'"
         title="View all collections"
-        aria-label="Asymptote — view all collections"
+        aria-label="Clio — view all collections"
       >
         <img src="/icon_black.svg" alt="" class="logo-header h-5 w-5 flex-shrink-0">
-        <span class="font-bold text-sm tracking-tight hidden sm:inline">Asymptote</span>
+        <span class="font-bold text-sm tracking-tight hidden sm:inline">Clio</span>
       </button>
 
       <!-- Current collection indicator -->
@@ -116,7 +116,7 @@
         </button>
         <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-50 w-56 p-2 shadow border border-base-300">
           <li>
-            <a href="https://github.com/jordanboyce/asymptote#readme" target="_blank" rel="noopener">
+            <a href="https://github.com/jordanboyce/clio#readme" target="_blank" rel="noopener">
               <BookOpen :size="14" />
               Documentation
             </a>
@@ -193,7 +193,7 @@
           </template>
           <li class="menu-title pt-2"><span class="text-xs">Help</span></li>
           <li>
-            <a href="https://github.com/jordanboyce/asymptote#readme" target="_blank" rel="noopener">
+            <a href="https://github.com/jordanboyce/clio#readme" target="_blank" rel="noopener">
               <BookOpen :size="14" />
               Documentation
             </a>
@@ -1416,7 +1416,7 @@ const handleSendToChat = (prompt) => {
   activeTab.value = 'chat'
   // Wait one tick so ChatTab is mounted before we deliver the prompt.
   setTimeout(() => {
-    window.dispatchEvent(new CustomEvent('asymptote:prefill-chat', { detail: { prompt } }))
+    window.dispatchEvent(new CustomEvent('clio:prefill-chat', { detail: { prompt } }))
   }, 50)
 }
 

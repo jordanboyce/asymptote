@@ -1,8 +1,8 @@
-# Asymptote
+# Clio
 
 **Ask your sources. Check the evidence. Connect your AI tools.**
 
-Asymptote is a self-hosted knowledge workspace for individuals, teams, and
+Clio is a self-hosted knowledge workspace for individuals, teams, and
 organisations that want to keep their documents on their own infrastructure.
 Add documents to a collection, ask questions with citations, or find the exact
 passage you need. Expose the same knowledge to the AI clients you already use —
@@ -10,6 +10,11 @@ Claude Desktop, claude.ai, ChatGPT, Claude Code, Codex, VS Code — over MCP.
 Local embeddings work out of the box; answer generation uses a model you
 configure, from a hosted API to a model running on your own hardware. Hosted
 providers receive the text they process.
+
+Clio is part of the DOE **Prometheus** ecosystem: Prometheus brings the fire
+(compute, models); Clio keeps the record (grounded, citable knowledge). The
+name — Clio, Muse of history, daughter of Mnemosyne — leaves room for a future
+family of related tools under the Mnemosyne umbrella.
 
 The everyday workspace has three destinations:
 
@@ -135,7 +140,7 @@ there. Nothing site-specific is baked in.
 #   Windows:  .\scripts\package_image.ps1 -Tag 1.0.0 -Out D:\transfer
 
 # on the target host
-docker load < asymptote-1.0.0.tar.gz
+docker load < clio-1.0.0.tar.gz
 cp .env.onprem.example .env      # model endpoint, auth, data path
 docker compose -f docker-compose.onprem.yml up -d
 ```
@@ -155,12 +160,12 @@ OCR and the content-policy reviewer all use that endpoint, and the UI shows
 it as connected. A per-request key still overrides it, so an individual can
 bring their own provider. Endpoints with a private CA are handled by
 dropping the `.crt` into `certs/ca/` — trusted at container start, no
-rebuild. Registry users can `docker pull ghcr.io/jordanboyce/asymptote`
+rebuild. Registry users can `docker pull ghcr.io/jordanboyce/clio`
 instead of carrying a file. Full guide: [docs/ONPREM.md](docs/ONPREM.md).
 
 ### Air-gapped / offline deployment
 
-Asymptote runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, limiting supported provider paths to the local or self-hosted endpoints you configure. Enforce a network egress policy for a verifiable no-egress deployment. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
+Clio runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, limiting supported provider paths to the local or self-hosted endpoints you configure. Enforce a network egress policy for a verifiable no-egress deployment. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
 
 ### Hosting on a PaaS (Railway, Render, Fly.io, Coolify, …)
 
@@ -198,7 +203,7 @@ API and MCP clients then authenticate with `Authorization: Bearer <AUTH_PASSWORD
 
 ## What It Does
 
-Asymptote lets you:
+Clio lets you:
 
 1. **Upload Documents** - Drop in PDFs, Office docs, spreadsheets, code, audio, or images (books, papers, manuals, data, photos of whiteboards)
 2. **Hybrid Search** - Combine semantic understanding with keyword precision in one retrieval workflow
@@ -340,7 +345,7 @@ python main.py
 ```
 INFO - Loading embedding model: all-MiniLM-L6-v2
 INFO - Initializing vector store (metadata: json)
-INFO - Asymptote API ready
+INFO - Clio API ready
 INFO - Uvicorn running on http://127.0.0.1:8473
 ```
 
@@ -354,7 +359,7 @@ unauthenticated until you set `AUTH_PASSWORD`.
 
 ### MCP Integration
 
-Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
+Clio now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
 
 Use **Connect** in the UI to:
 - Enable or disable the MCP server without restarting
@@ -379,7 +384,7 @@ Use **Connect** in the UI to:
 
 For AnythingLLM, merge the entry into its storage `plugins/anythingllm_mcp_servers.json`
 and reload MCP servers in AnythingLLM. The export uses its `streamable` transport.
-Use an Asymptote URL reachable from the AnythingLLM host or container; a container's
+Use an Clio URL reachable from the AnythingLLM host or container; a container's
 `localhost` points to itself. See [AnythingLLM's MCP setup](https://docs.anythingllm.com/mcp-compatibility/overview).
 
 ### Step 4: Verify Setup
@@ -482,7 +487,7 @@ PORT=8473
 
 ### AI Features (Optional)
 
-Asymptote supports optional AI integration for enhanced search results:
+Clio supports optional AI integration for enhanced search results:
 
 **Features:**
 - **Result Reranking**: AI re-orders search results by semantic relevance
@@ -503,7 +508,7 @@ Asymptote supports optional AI integration for enhanced search results:
 - Compare responses side-by-side from both models
 - Selection preference persists between searches
 
-**Security Note:** API keys are stored only in your browser's localStorage and are sent directly to the AI providers. The Asymptote server never sees or stores your API keys.
+**Security Note:** API keys are stored only in your browser's localStorage and are sent directly to the AI providers. The Clio server never sees or stores your API keys.
 
 **Get API Keys:**
 - **Anthropic**: https://console.anthropic.com/
@@ -536,7 +541,7 @@ fine). `docker-compose.onprem.yml` mounts `certs/ca` already:
 
 ```bash
 cp /path/to/your/cert.crt certs/ca/
-docker compose -f docker-compose.onprem.yml restart asymptote
+docker compose -f docker-compose.onprem.yml restart clio
 ```
 
 **Important Notes:**
@@ -834,11 +839,11 @@ echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env
 **Solution:**
 ```bash
 # Check logs
-docker-compose logs asymptote
+docker-compose logs clio
 
 # Increase memory limit in docker-compose.yml
 services:
-  asymptote:
+  clio:
     mem_limit: 4g
 ```
 
@@ -863,7 +868,7 @@ chmod -R 777 ./data
 
 ```bash
 # Check what's wrong
-docker-compose logs -f asymptote
+docker-compose logs -f clio
 
 # Common fix: Remove old containers
 docker-compose down
@@ -1060,12 +1065,12 @@ data/indexes/sqlite/metadata.db
 **Backup script:**
 ```bash
 #!/bin/bash
-tar -czf asymptote-backup-$(date +%Y%m%d).tar.gz data/
+tar -czf clio-backup-$(date +%Y%m%d).tar.gz data/
 ```
 
 **Restore:**
 ```bash
-tar -xzf asymptote-backup-20240203.tar.gz
+tar -xzf clio-backup-20240203.tar.gz
 python main.py
 ```
 
@@ -1074,7 +1079,7 @@ python main.py
 ## Project Structure
 
 ```
-asymptote/
+clio/
 ├── main.py                    # App assembly: middleware, lifespan, routers, frontend serving
 ├── config.py                  # Settings from .env
 ├── requirements.txt           # Python dependencies
@@ -1235,4 +1240,4 @@ This is a reference implementation. Feel free to fork and adapt for your needs.
 
 ---
 
-**Asymptote** - Always approaching understanding, never quite reaching it.
+**Clio** — The record remembers.

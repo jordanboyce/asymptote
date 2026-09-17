@@ -130,8 +130,8 @@ def test_metadata_is_public_before_any_credential(app):
 
 
 def test_metadata_advertises_the_required_scope(app, oidc_mcp):
-    oidc_mcp.mcp_oauth_scope = "asymptote:mcp"
-    assert app.get("/.well-known/oauth-protected-resource/mcp").json()["scopes_supported"] == ["asymptote:mcp"]
+    oidc_mcp.mcp_oauth_scope = "clio:mcp"
+    assert app.get("/.well-known/oauth-protected-resource/mcp").json()["scopes_supported"] == ["clio:mcp"]
 
 
 def test_metadata_is_absent_when_no_authorization_server_applies(identity_settings, fake_idp):
@@ -146,7 +146,7 @@ def test_metadata_is_absent_when_no_authorization_server_applies(identity_settin
         assert client.get("/.well-known/oauth-protected-resource/mcp").status_code == 404
         r = client.post("/mcp/")
         assert r.status_code == 401
-        assert r.headers["WWW-Authenticate"] == 'Bearer realm="Asymptote"'
+        assert r.headers["WWW-Authenticate"] == 'Bearer realm="Clio"'
     finally:
         importlib.reload(main)
 
@@ -154,17 +154,17 @@ def test_metadata_is_absent_when_no_authorization_server_applies(identity_settin
 def test_resource_url_is_derived_from_the_request_only_when_unconfigured(app, oidc_mcp):
     oidc_mcp.mcp_public_url = ""
     doc = app.get("/.well-known/oauth-protected-resource/mcp",
-                  headers={"host": "asymptote.agency.test", "x-forwarded-proto": "https"}).json()
-    assert doc["resource"] == "https://asymptote.agency.test/mcp"
+                  headers={"host": "clio.agency.test", "x-forwarded-proto": "https"}).json()
+    assert doc["resource"] == "https://clio.agency.test/mcp"
     # ...but a derived resource is never an accepted audience.
     verifier = identity_service.get_mcp_oauth_verifier()
-    assert "https://asymptote.agency.test/mcp" not in verifier.audiences
+    assert "https://clio.agency.test/mcp" not in verifier.audiences
 
 
 def test_resource_url_falls_back_to_mcp_allowed_hosts(oidc_mcp):
     oidc_mcp.mcp_public_url = ""
-    oidc_mcp.mcp_allowed_hosts = "asymptote.internal, other.internal"
-    assert identity_service.mcp_public_url() == "https://asymptote.internal/mcp"
+    oidc_mcp.mcp_allowed_hosts = "clio.internal, other.internal"
+    assert identity_service.mcp_public_url() == "https://clio.internal/mcp"
     oidc_mcp.mcp_allowed_hosts = "localhost:8473"
     assert identity_service.mcp_public_url() == "http://localhost:8473/mcp"
 
@@ -180,15 +180,15 @@ def test_mcp_401_carries_the_bearer_challenge_and_browsers_keep_basic(app):
     assert 'resource_metadata="http://localhost:8473/.well-known/oauth-protected-resource/mcp"' in www
     assert "error=" not in www  # nothing was presented, so nothing was invalid
 
-    assert app.get("/api/collections").headers["WWW-Authenticate"] == 'Basic realm="Asymptote"'
+    assert app.get("/api/collections").headers["WWW-Authenticate"] == 'Basic realm="Clio"'
 
 
 def test_challenge_names_the_scope_and_flags_a_refused_token(app, oidc_mcp):
-    oidc_mcp.mcp_oauth_scope = "asymptote:mcp"
+    oidc_mcp.mcp_oauth_scope = "clio:mcp"
     r = app.post("/mcp/", headers={"Authorization": "Bearer not.a.jwt"})
     assert r.status_code == 401
     www = r.headers["WWW-Authenticate"]
-    assert 'scope="asymptote:mcp"' in www
+    assert 'scope="clio:mcp"' in www
     assert 'error="invalid_token"' in www
 
 
@@ -260,38 +260,38 @@ def test_hs256_with_a_known_kid_is_refused(app, fake_idp):
 
 
 def test_token_valid_for_the_app_but_lacking_the_mcp_scope_gets_403(app, oidc_mcp, fake_idp):
-    oidc_mcp.mcp_oauth_scope = "asymptote:mcp"
+    oidc_mcp.mcp_oauth_scope = "clio:mcp"
     _, result = _auth("/mcp/", _mint(fake_idp, scope="openid profile"))
     assert result.status_code == 403
     www = result.headers["WWW-Authenticate"]
     assert 'error="insufficient_scope"' in www
-    assert 'scope="asymptote:mcp"' in www
+    assert 'scope="clio:mcp"' in www
     assert "resource_metadata=" in www
 
 
 @pytest.mark.parametrize("claims", [
-    {"scope": "openid asymptote:mcp"},
-    {"scp": "asymptote:mcp"},
-    {"scp": ["openid", "asymptote:mcp"]},
+    {"scope": "openid clio:mcp"},
+    {"scp": "clio:mcp"},
+    {"scp": ["openid", "clio:mcp"]},
 ])
 def test_scope_is_accepted_however_the_idp_spells_it(app, oidc_mcp, fake_idp, claims):
-    oidc_mcp.mcp_oauth_scope = "asymptote:mcp"
+    oidc_mcp.mcp_oauth_scope = "clio:mcp"
     _, result = _auth("/mcp/", _mint(fake_idp, **claims))
     assert result == "downstream"
 
 
 def test_scope_is_only_demanded_on_mcp(app, oidc_mcp, fake_idp):
     """The same token, without the scope, is still a fine browser session."""
-    oidc_mcp.mcp_oauth_scope = "asymptote:mcp"
+    oidc_mcp.mcp_oauth_scope = "clio:mcp"
     request, result = _auth("/api/collections", _mint(fake_idp, scope="openid"))
     assert result == "downstream"
     assert request.state.auth_via == "oidc"
 
 
 def test_scope_check_never_rescues_an_otherwise_invalid_token(app, oidc_mcp, keypair, fake_idp):
-    oidc_mcp.mcp_oauth_scope = "asymptote:mcp"
+    oidc_mcp.mcp_oauth_scope = "clio:mcp"
     _, impostor = keypair
-    _, result = _auth("/mcp/", _mint(impostor, scope="asymptote:mcp"))
+    _, result = _auth("/mcp/", _mint(impostor, scope="clio:mcp"))
     assert result.status_code == 401
 
 
@@ -320,7 +320,7 @@ def separate_issuer(identity_settings, fake_idp):
     names an IdP for its MCP clients only."""
     identity_settings.identity_provider = ""
     identity_settings.mcp_oauth_issuer = MCP_ISSUER
-    identity_settings.mcp_oauth_audience = "asymptote-mcp"
+    identity_settings.mcp_oauth_audience = "clio-mcp"
     identity_settings.mcp_oauth_scope = ""
     identity_settings.mcp_public_url = PUBLIC_URL
     identity_settings.auth_password = "hunter2"
@@ -334,7 +334,7 @@ def separate_issuer(identity_settings, fake_idp):
 
 def test_mcp_issuer_tokens_are_admitted_on_mcp_and_confined_to_it(separate_issuer, fake_idp):
     main_module, _ = separate_issuer
-    token = _mint(fake_idp, iss=MCP_ISSUER, aud="asymptote-mcp")
+    token = _mint(fake_idp, iss=MCP_ISSUER, aud="clio-mcp")
 
     request, result = _auth("/mcp/", token, main_module)
     assert result == "downstream"
@@ -391,18 +391,18 @@ def test_mcp_issuer_without_an_audience_refuses_to_start(identity_settings):
 
 def test_plaintext_mcp_issuer_refuses_to_start(identity_settings):
     identity_settings.mcp_oauth_issuer = "http://sso.other.test/realms/mcp"
-    identity_settings.mcp_oauth_audience = "asymptote-mcp"
+    identity_settings.mcp_oauth_audience = "clio-mcp"
     with pytest.raises(RuntimeError, match="must be https"):
         identity_service.validate_config()
 
 
 def test_scope_without_an_authorization_server_refuses_to_start(identity_settings):
-    identity_settings.mcp_oauth_scope = "asymptote:mcp"
+    identity_settings.mcp_oauth_scope = "clio:mcp"
     with pytest.raises(RuntimeError, match="MCP_OAUTH_SCOPE"):
         identity_service.validate_config()
 
 
-@pytest.mark.parametrize("bad", ["asymptote.agency.test/mcp", "https://x.test/mcp?x=1", "ftp://x.test/mcp"])
+@pytest.mark.parametrize("bad", ["clio.agency.test/mcp", "https://x.test/mcp?x=1", "ftp://x.test/mcp"])
 def test_unusable_public_url_refuses_to_start(identity_settings, bad):
     identity_settings.mcp_public_url = bad
     with pytest.raises(RuntimeError, match="MCP_PUBLIC_URL"):
@@ -413,11 +413,11 @@ def test_oidc_deployment_needs_nothing_else_to_offer_oauth_on_mcp(identity_setti
     identity_settings.identity_provider = "oidc"
     identity_settings.oidc_issuer = ISSUER
     identity_settings.oidc_audience = AUDIENCE
-    identity_settings.mcp_public_url = "https://asymptote.agency.test/mcp"
+    identity_settings.mcp_public_url = "https://clio.agency.test/mcp"
     identity_service.validate_config()  # must not raise
     config = identity_service.mcp_oauth_config()
     assert config.issuer == ISSUER
-    assert set(config.audiences) == {AUDIENCE, "https://asymptote.agency.test/mcp"}
+    assert set(config.audiences) == {AUDIENCE, "https://clio.agency.test/mcp"}
 
 
 def test_status_endpoint_tells_the_ui_what_to_paste(app):

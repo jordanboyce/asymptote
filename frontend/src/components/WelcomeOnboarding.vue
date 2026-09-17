@@ -191,7 +191,7 @@
 
       <!-- Trust copy footer -->
       <div class="mt-8 text-center text-[11px] text-base-content/45 leading-relaxed">
-        Sources are stored on your Asymptote server. Hosted AI and embedding providers receive the text they process.
+        Sources are stored on your Clio server. Hosted AI and embedding providers receive the text they process.
       </div>
     </div>
   </div>

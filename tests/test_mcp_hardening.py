@@ -291,9 +291,9 @@ def test_research_collection_cap_and_invisible_collections(multi_env, monkeypatc
 
 def test_registered_tool_accepts_collection_ids(multi_env):
     mcp, _ = multi_env
-    tool = next(t for t in asyncio.run(mcp._asymptote_mcp.list_tools()) if t.name == "research_documents")
+    tool = next(t for t in asyncio.run(mcp._clio_mcp.list_tools()) if t.name == "research_documents")
     assert "collection_ids" in tool.inputSchema["properties"]
-    _, structured = asyncio.run(mcp._asymptote_mcp.call_tool(
+    _, structured = asyncio.run(mcp._clio_mcp.call_tool(
         "research_documents", {"query": "EQ-17", "collection_ids": ["ops", "hr"]}))
     assert structured["collection_ids"] == ["ops", "hr"]
 
@@ -303,20 +303,20 @@ def test_registered_tool_accepts_collection_ids(multi_env):
 def test_prompts_are_registered_and_render_tool_workflows():
     from services import mcp_server as mcp
 
-    prompts = {p.name: p for p in asyncio.run(mcp._asymptote_mcp.list_prompts())}
+    prompts = {p.name: p for p in asyncio.run(mcp._clio_mcp.list_prompts())}
     assert set(prompts) == {"research_question", "find_exact_reference", "collection_overview"}
     assert [a.name for a in prompts["research_question"].arguments] == ["question", "collection"]
     assert next(a for a in prompts["research_question"].arguments if a.name == "question").required is True
 
-    scoped = asyncio.run(mcp._asymptote_mcp.get_prompt(
+    scoped = asyncio.run(mcp._clio_mcp.get_prompt(
         "research_question", {"question": "When must EQ-17 gear be returned?", "collection": "ops"}))
     text = scoped.messages[0].content.text
     assert "research_documents" in text and "get_document_context" in text
     assert '"ops"' in text and "do not establish" in text
 
-    unscoped = asyncio.run(mcp._asymptote_mcp.get_prompt("find_exact_reference", {"identifier": "EQ-17"}))
+    unscoped = asyncio.run(mcp._clio_mcp.get_prompt("find_exact_reference", {"identifier": "EQ-17"}))
     text = unscoped.messages[0].content.text
     assert "find_in_documents" in text and "list_collections" in text and '"EQ-17"' in text
 
-    overview = asyncio.run(mcp._asymptote_mcp.get_prompt("collection_overview", {}))
+    overview = asyncio.run(mcp._clio_mcp.get_prompt("collection_overview", {}))
     assert "get_collection_info" in overview.messages[0].content.text

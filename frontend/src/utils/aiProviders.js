@@ -244,7 +244,7 @@ export function setActiveProviderLS(id) {
 // this chain — no surface keeps its own independent provider state:
 //
 //   1. Explicit per-surface override, stored under
-//      `asymptote_provider_override_<surface>` (only honored while that
+//      `clio_provider_override_<surface>` (only honored while that
 //      provider is still configured). Set from the surface's own picker
 //      (e.g. Chat's settings drawer); empty/absent means "follow global".
 //   2. Global active provider — `ai_settings.provider`, set via the
@@ -259,7 +259,7 @@ export function setActiveProviderLS(id) {
 // resolveProvider() below is the function that implements it; the chain is
 // pinned down in utils/__tests__/aiProviders.test.js.
 
-const OVERRIDE_KEY_PREFIX = 'asymptote_provider_override_'
+const OVERRIDE_KEY_PREFIX = 'clio_provider_override_'
 
 /** The stored per-surface override, or '' when the surface follows global. */
 export function getProviderOverride(surface) {

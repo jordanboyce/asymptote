@@ -66,16 +66,16 @@ describe('OAuth sign-in from the client', () => {
       '/api/mcp/config': { enable_mcp: true },
       '/api/mcp/tokens': { tokens: [] },
       '/api/mcp/oauth': {
-        enabled: true, resource: 'https://asymptote.agency.test/mcp',
-        authorization_server: 'https://sso.agency.test/realms/main', scope: 'asymptote:mcp',
+        enabled: true, resource: 'https://clio.agency.test/mcp',
+        authorization_server: 'https://sso.agency.test/realms/main', scope: 'clio:mcp',
       },
     }[path] }))
     const wrapper = mount(MCPTab, { global: { plugins: [createPinia()] } })
     await flushPromises()
     const panel = wrapper.get('[data-testid="mcp-oauth"]')
-    expect(panel.get('#mcp-oauth-url').text()).toBe('https://asymptote.agency.test/mcp')
+    expect(panel.get('#mcp-oauth-url').text()).toBe('https://clio.agency.test/mcp')
     expect(panel.text()).toContain('sso.agency.test')
-    expect(panel.text()).toContain('asymptote:mcp')
+    expect(panel.text()).toContain('clio:mcp')
     expect(panel.text()).not.toContain('PASTE_YOUR_TOKEN')
     expect(wrapper.text()).toContain('Claude Desktop, claude.ai, ChatGPT')
     wrapper.unmount()

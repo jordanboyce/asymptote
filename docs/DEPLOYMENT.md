@@ -1,6 +1,6 @@
-# Deploying Asymptote for a Team
+# Deploying Clio for a Team
 
-By default Asymptote is a **shared team appliance**. Everyone who can reach it
+By default Clio is a **shared team appliance**. Everyone who can reach it
 sees the whole corpus — every collection, every document, every table, and the
 same `/mcp` knowledge surface (subject to restricted-source handling). This
 default does not isolate users. Choose private collections when users should
@@ -14,7 +14,7 @@ sharing, enforced at every entry point against the verified Access identity.
 
 The app has no login of its own. Access is controlled at the edge by whatever
 you put in front of it, and the app is bound so that the edge is the only route
-in. Nothing else is required — no accounts to provision inside Asymptote, no
+in. Nothing else is required — no accounts to provision inside Clio, no
 password resets, no per-user configuration.
 
 | Setting | Default | What it controls |
@@ -53,12 +53,12 @@ Good options: **Cloudflare Access**, **Tailscale** (with `tailscale serve`),
 The critical part is step 2 — the proxy must be the *only* route in. A proxy
 you can walk around protects nothing.
 
-**1. Keep Asymptote off the public network.** With compose, drop the `ports:`
+**1. Keep Clio off the public network.** With compose, drop the `ports:`
 mapping so the container is reachable only on the internal Docker network:
 
 ```yaml
 services:
-  asymptote:
+  clio:
     # ports:              # ← removed: no direct access from the host
     #   - "8473:8473"
     expose:
@@ -67,7 +67,7 @@ services:
       - HOST=0.0.0.0      # inside the container; the network is the boundary
 ```
 
-**2. Put the proxy on that network** and point it at `http://asymptote:8473`.
+**2. Put the proxy on that network** and point it at `http://clio:8473`.
 Only the proxy publishes a port.
 
 **3. Verify the bypass is actually closed.** From another machine, try to reach
@@ -352,7 +352,7 @@ place; removal is a separate, reviewable decision.
 
 ## Capacity & scaling
 
-Asymptote is **one process by design**: the FAISS indexes, background-job
+Clio is **one process by design**: the FAISS indexes, background-job
 registry, and SSE progress queues all live in the process's memory, so
 `uvicorn --workers N` or multiple replicas would silently diverge. Scale
 **vertically** (more CPU/RAM on one host), and run a **second independent

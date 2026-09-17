@@ -1,4 +1,4 @@
-# Asymptote — docker compose deployment.
+# Clio — docker compose deployment.
 #
 #   docker compose up -d
 #   open http://localhost:8473
@@ -10,13 +10,13 @@
 # (see .env.example). Documents and indexes persist in ./data.
 
 services:
-  asymptote:
+  clio:
     # A fixed name, so the image can be saved, carried and loaded elsewhere
     # under a name that does not depend on this directory's name:
-    #   docker compose build && docker save asymptote:local | gzip > a.tar.gz
-    # Point ASYMPTOTE_IMAGE at a prebuilt or registry image to run that
+    #   docker compose build && docker save clio:local | gzip > a.tar.gz
+    # Point CLIO_IMAGE at a prebuilt or registry image to run that
     # instead — docker-compose.onprem.yml does exactly that.
-    image: ${ASYMPTOTE_IMAGE:-asymptote:local}
+    image: ${CLIO_IMAGE:-clio:local}
     build:
       context: .
       # Air-gapped deployments: bake ALL runtime models (reranker, Whisper,
@@ -25,7 +25,7 @@ services:
       # and `docker load` it inside the air gap — see docs/AIRGAP.md.
       # args:
       #   OFFLINE_BUNDLE: "1"
-    container_name: asymptote
+    container_name: clio
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:8473:8473"
     env_file:

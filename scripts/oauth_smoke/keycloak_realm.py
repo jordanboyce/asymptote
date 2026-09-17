@@ -7,12 +7,12 @@ Run against a local dev-mode Keycloak:
       quay.io/keycloak/keycloak:26.3 start-dev
     python scripts/oauth_smoke/keycloak_realm.py
 
-It creates realm `asymptote` with:
+It creates realm `clio` with:
 
   * user `analyst` / `analyst` (analyst@agency.test);
-  * a default client scope that puts `asymptote` in every token's `aud`,
-    so OIDC_AUDIENCE=asymptote verifies;
-  * an optional client scope `asymptote-mcp` for trying MCP_OAUTH_SCOPE, carrying
+  * a default client scope that puts `clio` in every token's `aud`,
+    so OIDC_AUDIENCE=clio verifies;
+  * an optional client scope `clio-mcp` for trying MCP_OAUTH_SCOPE, carrying
     the same audience mapper plus the email claim (a dynamically registered
     client that asks only for this scope gets only this scope);
   * anonymous dynamic client registration allowed (the realm's default
@@ -23,8 +23,8 @@ It creates realm `asymptote` with:
 
 Then start the app with:
 
-    IDENTITY_PROVIDER=oidc OIDC_ISSUER=http://localhost:8080/realms/asymptote
-    OIDC_AUDIENCE=asymptote MCP_PUBLIC_URL=http://localhost:8473/mcp
+    IDENTITY_PROVIDER=oidc OIDC_ISSUER=http://localhost:8080/realms/clio
+    OIDC_AUDIENCE=clio MCP_PUBLIC_URL=http://localhost:8473/mcp
 
 and see README.md in this directory for the client runs. Local throwaway
 only: plaintext http and a known admin password are fine for a laptop and
@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 
 KC = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080"
-REALM = "asymptote"
+REALM = "clio"
 
 
 def call(method, path, body=None, token=None, form=None):
@@ -70,7 +70,7 @@ def main():
     status, _ = call("GET", f"/admin/realms/{REALM}", token=admin)
     if status == 404:
         status, out = call("POST", "/admin/realms", body={
-            "realm": REALM, "enabled": True, "displayName": "Asymptote test realm",
+            "realm": REALM, "enabled": True, "displayName": "Clio test realm",
         }, token=admin)
         assert status == 201, (status, out)
         print("realm created")
@@ -115,9 +115,9 @@ def main():
         return sid
 
     audience_mapper = {
-        "name": "asymptote-audience", "protocol": "openid-connect",
+        "name": "clio-audience", "protocol": "openid-connect",
         "protocolMapper": "oidc-audience-mapper",
-        "config": {"included.custom.audience": "asymptote", "access.token.claim": "true",
+        "config": {"included.custom.audience": "clio", "access.token.claim": "true",
                    "id.token.claim": "false"},
     }
     email_mapper = {
@@ -126,12 +126,12 @@ def main():
         "config": {"user.attribute": "email", "claim.name": "email", "jsonType.label": "String",
                    "access.token.claim": "true", "id.token.claim": "true", "userinfo.token.claim": "true"},
     }
-    ensure_scope("asymptote", [audience_mapper])
+    ensure_scope("clio", [audience_mapper])
     # A client that registers itself with only the challenged scope (which is
     # what Claude Code does when MCP_OAUTH_SCOPE is set) gets ONLY this scope,
     # so the scope itself must carry the audience and the identity claim or
     # the token is (correctly) refused: no aud, no email.
-    ensure_scope("asymptote-mcp", [audience_mapper, email_mapper], default=False)
+    ensure_scope("clio-mcp", [audience_mapper, email_mapper], default=False)
 
     policy_type = "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy"
     status, comps = call("GET", f"/admin/realms/{REALM}/components?type={policy_type}", token=admin)
@@ -150,8 +150,8 @@ def main():
             "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
             "redirectUris": ["http://localhost:8123/callback", "http://127.0.0.1:8123/callback"],
             "attributes": {"pkce.code.challenge.method": "S256"},
-            "defaultClientScopes": ["profile", "email", "asymptote"],
-            "optionalClientScopes": ["asymptote-mcp"],
+            "defaultClientScopes": ["profile", "email", "clio"],
+            "optionalClientScopes": ["clio-mcp"],
         }, token=admin)
         assert status == 201, (status, out)
         print("pre-registered client claude-code created")

@@ -2,9 +2,9 @@
   <div class="min-h-dvh bg-base-200 text-base-content flex flex-col">
     <!-- Brand bar -->
     <header class="px-5 sm:px-8 h-14 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2.5 no-underline text-base-content" aria-label="Asymptote home">
+      <a href="/" class="flex items-center gap-2.5 no-underline text-base-content" aria-label="Clio home">
         <img :src="brandIcon" alt="" class="h-6 w-6 brand-mark" />
-        <span class="font-semibold tracking-tight">Asymptote</span>
+        <span class="font-semibold tracking-tight">Clio</span>
       </a>
       <a href="/" class="btn btn-ghost btn-sm normal-case font-medium">
         Sign in
@@ -198,7 +198,7 @@ const state = ref('loading') // loading | unreachable | closed | form | done
 const busy = ref(false)
 const error = ref('')
 const fieldError = ref(false)
-const config = reactive({ enabled: false, mode: 'off', allowed_domains: [], product: 'Asymptote' })
+const config = reactive({ enabled: false, mode: 'off', allowed_domains: [], product: 'Clio' })
 const form = reactive({ name: '', email: '', organization: '', note: '', website: '' })
 const result = reactive({ status: '', message: '', email: '' })
 
@@ -260,7 +260,7 @@ async function submit() {
 }
 
 onMounted(() => {
-  document.title = 'Request access · Asymptote'
+  document.title = 'Request access · Clio'
   loadConfig()
 })
 </script>

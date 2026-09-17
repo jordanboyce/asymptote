@@ -1,10 +1,10 @@
 # Roadmap
 
-Forward-looking work for the general-purpose (`master`) Asymptote tool. Shipped items are not listed — check the git log. Financial-analysis roadmap items live on the `fintech` branch.
+Forward-looking work for the general-purpose (`master`) Clio tool. Shipped items are not listed — check the git log. Financial-analysis roadmap items live on the `fintech` branch.
 
 ## Guiding frame
 
-Asymptote owns the trustworthy data layer; the intelligence layer lives upstream in whatever LLM the user trusts. Our job: make a user's own documents and tabular data faithfully agent-queryable, and never be silently wrong. Reached through Asymptote's own chat UI by default, or an external MCP client when the user prefers one.
+Clio owns the trustworthy data layer; the intelligence layer lives upstream in whatever LLM the user trusts. Our job: make a user's own documents and tabular data faithfully agent-queryable, and never be silently wrong. Reached through Clio's own chat UI by default, or an external MCP client when the user prefers one.
 
 ## Library — ingestion & context
 
@@ -39,5 +39,5 @@ Shipped 2026-09-12: the answer cache keys on the whole request (corpus version, 
 
 ## Always-on constraints
 
-- Raw data passes through by default; semantic layers exist only where Asymptote itself must act deterministically (aggregations, type coercion).
+- Raw data passes through by default; semantic layers exist only where Clio itself must act deterministically (aggregations, type coercion).
 - When inference fails, degrade to raw-data tools and let the LLM handle semantics — never guess and pretend.

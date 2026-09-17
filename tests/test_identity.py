@@ -27,7 +27,7 @@ from services.identity import (
 )
 
 ISSUER = "https://sso.agency.test/realms/main"
-AUDIENCE = "asymptote"
+AUDIENCE = "clio"
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -216,10 +216,10 @@ def test_required_claims_gate_admission(keypair, monkeypatch):
         issuer=ISSUER,
         audiences=[AUDIENCE],
         jwks_url=f"{ISSUER}/certs",
-        required_claims="groups=asymptote-users",
+        required_claims="groups=clio-users",
     )
     # List claim: membership counts.
-    ok = _mint(key, groups=["other-team", "asymptote-users"])
+    ok = _mint(key, groups=["other-team", "clio-users"])
     assert verifier.verify_request(_headers(ok), None) == "analyst@agency.test"
     # Present but wrong, and absent entirely, are both refused.
     assert verifier.verify_request(_headers(_mint(key, groups=["other-team"])), None) is None

@@ -66,7 +66,7 @@ async def main():
     provider = OAuthClientProvider(
         server_url=SERVER,
         client_metadata=OAuthClientMetadata(
-            client_name="Asymptote OAuth smoke client",
+            client_name="Clio OAuth smoke client",
             redirect_uris=["http://localhost:8765/callback"],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],

@@ -15,7 +15,7 @@ monkeypatch.setenv), which still wins.
 import os
 import pathlib
 
-os.environ["ASYMPTOTE_ENV_FILE"] = str(
+os.environ["CLIO_ENV_FILE"] = str(
     pathlib.Path(__file__).resolve().parent / ".env.does-not-exist"
 )
 os.environ["PRIVATE_COLLECTIONS"] = "false"

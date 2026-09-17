@@ -72,7 +72,7 @@ def protected_resource_metadata(request: Request) -> Optional[dict[str, Any]]:
         authorization_servers=[AnyHttpUrl(config.issuer)],
         scopes_supported=[config.scope] if config.scope else None,
         bearer_methods_supported=["header"],
-        resource_name="Asymptote",
+        resource_name="Clio",
     )
     return metadata.model_dump(mode="json", exclude_none=True)
 
@@ -95,7 +95,7 @@ def challenge(
     config = mcp_oauth_config()
     parts: list[str] = []
     if config is None:
-        parts.append('realm="Asymptote"')
+        parts.append('realm="Clio"')
     else:
         parts.append(f'resource_metadata="{metadata_url(request, config)}"')
         if config.scope:

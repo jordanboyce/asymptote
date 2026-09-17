@@ -425,8 +425,8 @@ const searchSettingsOpen = ref(false)
 const configuredProviderIds = ref([])
 
 // Selected providers for this search session
-const PROVIDER_SELECTION_KEY = 'asymptote_selected_providers'
-const PROVIDER_MODEL_OVERRIDES_KEY = 'asymptote_search_model_overrides'
+const PROVIDER_SELECTION_KEY = 'clio_selected_providers'
+const PROVIDER_MODEL_OVERRIDES_KEY = 'clio_search_model_overrides'
 const selectedProviders = ref([])
 
 // Per-search model overrides: { providerId: 'model-id' | '' }

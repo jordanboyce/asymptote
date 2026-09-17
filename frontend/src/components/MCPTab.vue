@@ -64,8 +64,8 @@
               Settings → Apps &amp; Connectors → Developer mode → Create → paste the URL, authentication OAuth.
             </li>
             <li>
-              <span class="font-medium text-base-content/80">Claude Code:</span> <code class="font-mono">claude mcp add --transport http asymptote {{ oauth.resource }}</code>,
-              then <code class="font-mono">claude mcp login asymptote</code>.
+              <span class="font-medium text-base-content/80">Claude Code:</span> <code class="font-mono">claude mcp add --transport http clio {{ oauth.resource }}</code>,
+              then <code class="font-mono">claude mcp login clio</code>.
             </li>
           </ul>
           <p v-if="oauth.scope" class="text-xs text-base-content/50">
@@ -483,7 +483,7 @@ const configTabs = [
 // Client configs are generated locally — the server URL plus a collection_id
 // query param is all a client needs; server defaults cover the rest.
 const sanitizeServerId = (value) =>
-  (value.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^[-_]+|[-_]+$/g, '')) || 'asymptote'
+  (value.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^[-_]+|[-_]+$/g, '')) || 'clio'
 
 const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at))
 const restrictedCollections = computed(() =>
@@ -505,7 +505,7 @@ watch(newTokenAllowlist, (on) => {
   }
 })
 
-const serverId = computed(() => sanitizeServerId(`asymptote-${exportCollectionId.value}`))
+const serverId = computed(() => sanitizeServerId(`clio-${exportCollectionId.value}`))
 const serverUrl = computed(() =>
   `${window.location.origin}/mcp/?collection_id=${encodeURIComponent(exportCollectionId.value)}`
 )

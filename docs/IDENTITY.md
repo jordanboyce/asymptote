@@ -1,6 +1,6 @@
 # Identity: who a request is
 
-Asymptote has two separate questions, and they are often confused:
+Clio has two separate questions, and they are often confused:
 
 - **Can this caller in at all?** `AUTH_PASSWORD`, or nothing on a closed
   network. See [DEPLOYMENT.md](DEPLOYMENT.md).
@@ -38,7 +38,7 @@ The on-prem answer. Tokens your IdP already issues become identities here.
 ```bash
 IDENTITY_PROVIDER=oidc
 OIDC_ISSUER=https://sso.agency.gov/realms/main
-OIDC_AUDIENCE=asymptote               # the client id / API audience
+OIDC_AUDIENCE=clio               # the client id / API audience
 OIDC_IDENTITY_CLAIM=email             # default; preferred_username and sub are fallbacks
 PRIVATE_COLLECTIONS=true
 ```
@@ -56,7 +56,7 @@ anyone can use.
 ### Narrowing admission by claim
 
 ```bash
-OIDC_REQUIRED_CLAIMS=groups=asymptote-users
+OIDC_REQUIRED_CLAIMS=groups=clio-users
 ```
 
 Comma-separated `name=value` pairs, all required. Each matches a scalar
@@ -172,7 +172,7 @@ follow the MCP authorization spec: they treat `/mcp` as an OAuth 2.1
 metadata, send the person through a browser sign-in there, and present the
 bearer token they get back.
 
-Asymptote implements exactly the resource-server half. **The authorization
+Clio implements exactly the resource-server half. **The authorization
 server is your IdP.** There is deliberately no embedded one: an agency
 already runs an IdP, an embedded authorization server would be a second
 copy of every identity, and it is precisely the component a security review
@@ -184,7 +184,7 @@ rejects.
 clients reach the endpoint at:
 
 ```bash
-MCP_PUBLIC_URL=https://asymptote.agency.gov/mcp
+MCP_PUBLIC_URL=https://clio.agency.gov/mcp
 ```
 
 That is the RFC 9728 `resource`. Clients always ask the IdP for a token
@@ -232,7 +232,7 @@ pre-registered id, so nothing here depends on the IdP supporting more.
 Where the client id goes: Claude Desktop / claude.ai — *Add custom
 connector → Advanced settings*; ChatGPT — the OAuth client fields of the
 connector; Claude Code — `claude mcp add --transport http --client-id <id>
-[--callback-port <port>] asymptote https://…/mcp`. Redirect URIs the clients
+[--callback-port <port>] clio https://…/mcp`. Redirect URIs the clients
 use (confirm in the client's docs, they change): Claude Code
 `http://localhost:<port>/callback` (random port unless `--callback-port`),
 claude.ai / Claude Desktop `https://claude.ai/api/mcp/auth_callback`,
@@ -243,7 +243,7 @@ and the IdP must be reachable from the internet for them.
 ### Requiring a scope
 
 ```bash
-MCP_OAUTH_SCOPE=asymptote-mcp
+MCP_OAUTH_SCOPE=clio-mcp
 ```
 
 Then a token must carry that scope (`scope` or `scp` claim, string or
@@ -273,9 +273,9 @@ for `/mcp` only:
 
 ```bash
 MCP_OAUTH_ISSUER=https://sso.agency.gov/realms/main    # or Access for SaaS (OIDC)
-MCP_OAUTH_AUDIENCE=asymptote-mcp
+MCP_OAUTH_AUDIENCE=clio-mcp
 MCP_OAUTH_JWKS_URL=                                    # optional, skips discovery
-MCP_PUBLIC_URL=https://asymptote.agency.gov/mcp
+MCP_PUBLIC_URL=https://clio.agency.gov/mcp
 ```
 
 Tokens from that issuer are accepted on `/mcp` and nowhere else, and the
@@ -298,10 +298,10 @@ resource, a token without the required scope (403, above). At startup:
 ### Checking it
 
 ```bash
-curl -si -X POST https://asymptote.agency.gov/mcp | grep -i www-authenticate
-curl -s https://asymptote.agency.gov/.well-known/oauth-protected-resource/mcp
-claude mcp add --transport http asymptote https://asymptote.agency.gov/mcp
-claude mcp login asymptote          # opens the browser at your IdP
+curl -si -X POST https://clio.agency.gov/mcp | grep -i www-authenticate
+curl -s https://clio.agency.gov/.well-known/oauth-protected-resource/mcp
+claude mcp add --transport http clio https://clio.agency.gov/mcp
+claude mcp login clio          # opens the browser at your IdP
 ```
 
 Settings → MCP shows the same URL and per-client steps whenever an

@@ -5,11 +5,11 @@ import { useCollectionStore } from './collectionStore'
 export const useSearchStore = defineStore('search', () => {
   // Search state
   const query = ref('')
-  const topK = ref(parseInt(localStorage.getItem('asymptote_default_top_k')) || 10)
+  const topK = ref(parseInt(localStorage.getItem('clio_default_top_k')) || 10)
   // Match settings persist like topK: the Find tab unmounts when the user
   // switches tabs, so component-local state would silently reset.
-  const MODE_KEY = 'asymptote_search_mode'
-  const WEIGHT_KEY = 'asymptote_search_semantic_weight'
+  const MODE_KEY = 'clio_search_mode'
+  const WEIGHT_KEY = 'clio_search_semantic_weight'
   const savedMode = localStorage.getItem(MODE_KEY)
   const searchMode = ref(['semantic', 'keyword', 'hybrid'].includes(savedMode) ? savedMode : 'hybrid')
   const savedWeight = Number(localStorage.getItem(WEIGHT_KEY))
@@ -25,7 +25,7 @@ export const useSearchStore = defineStore('search', () => {
   const aiResponses = ref([])  // Array of {provider, synthesis, aiUsage}
 
   // Search cache - now collection-aware
-  const CACHE_KEY = 'asymptote_search_cache_v2'  // New key to avoid conflicts with old cache
+  const CACHE_KEY = 'clio_search_cache_v2'  // New key to avoid conflicts with old cache
   const MAX_CACHE_SIZE = 20
   const cacheCount = ref(0) // Reactive cache count for UI updates
   const cache = ref({}) // Reactive cache data for UI updates - keyed by collection_id

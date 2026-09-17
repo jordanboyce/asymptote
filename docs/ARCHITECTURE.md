@@ -1,6 +1,6 @@
 # Architecture
 
-Asymptote is a privacy-focused tool for indexing your own documents and data, chatting with them through a grounded, citation-first assistant, and exposing them to external agents over MCP. Think "NotebookLM for files you own" — the intelligence lives in whatever LLM you trust; Asymptote owns the trustworthy data layer in front of it.
+Clio is a privacy-focused tool for indexing your own documents and data, chatting with them through a grounded, citation-first assistant, and exposing them to external agents over MCP. Think "NotebookLM for files you own" — the intelligence lives in whatever LLM you trust; Clio owns the trustworthy data layer in front of it.
 
 > The `master` branch is this general-purpose tool. Domain-specific financial-analysis features (brokerage ingest profiles, portfolio metrics, market-data tools, meeting briefs) live on the **`fintech`** branch, which is a superset of `master`.
 

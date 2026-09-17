@@ -1,6 +1,6 @@
 """Cloudflare Access JWT verification.
 
-When Asymptote runs behind Cloudflare Access, every request the edge forwards
+When Clio runs behind Cloudflare Access, every request the edge forwards
 carries a ``Cf-Access-Jwt-Assertion`` header: an RS256 JWT signed by the
 team's keys, minted only after Access authenticated the requester (browser
 SSO or a service token). Verifying that signature is strictly stronger auth

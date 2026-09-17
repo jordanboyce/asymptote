@@ -1,5 +1,5 @@
 """
-Asymptote — privacy-focused document indexing, grounded chat, and MCP access.
+Clio — privacy-focused document indexing, grounded chat, and MCP access.
 
 This module only assembles the app: middleware, lifespan, routers, and
 frontend serving. Endpoints live in `api/` (one router module per domain);
@@ -141,7 +141,7 @@ def _check_security_posture() -> None:
 async def lifespan(app: FastAPI):
     """Application lifespan manager - initialize and cleanup services."""
     async with mcp_server_lifespan():
-        logger.info("Initializing Asymptote API...")
+        logger.info("Initializing Clio API...")
 
         # Initialize default collection's indexer to pre-load embedding model
         logger.info("Loading default collection indexer...")
@@ -184,14 +184,14 @@ async def lifespan(app: FastAPI):
         from services.retention import retention_loop
         retention_task = asyncio.create_task(retention_loop())
 
-        logger.info("Asymptote API ready")
+        logger.info("Clio API ready")
         logger.info(f"Data directory: {settings.data_dir}")
         logger.info(f"Embedded MCP server: {'enabled' if settings.enable_mcp else 'disabled'}")
 
         yield
 
         # Cleanup on shutdown
-        logger.info("Shutting down Asymptote API...")
+        logger.info("Shutting down Clio API...")
         retention_task.cancel()
         indexer_manager.save_all()
         logger.info("Shutdown complete")
@@ -200,7 +200,7 @@ async def lifespan(app: FastAPI):
 _check_security_posture()
 
 app = FastAPI(
-    title="Asymptote API",
+    title="Clio API",
     description="Privacy-focused document indexing, grounded chat, and MCP access",
     version="0.1.0",
     lifespan=lifespan,
@@ -386,7 +386,7 @@ async def require_auth(request, call_next):
         from services.mcp_oauth import challenge
         www_authenticate = challenge(request, error="invalid_token" if presented else None)
     else:
-        www_authenticate = 'Basic realm="Asymptote"'
+        www_authenticate = 'Basic realm="Clio"'
     return JSONResponse(
         {"detail": "Not authenticated"},
         status_code=401,
@@ -452,7 +452,7 @@ def _spa_response() -> HTMLResponse:
         )
     return HTMLResponse(
         content=(
-            "<h1>Asymptote API</h1>"
+            "<h1>Clio API</h1>"
             "<p>Frontend build not found — run <code>cd frontend && npm run build</code>, "
             "or visit <a href='/docs'>/docs</a> for API documentation.</p>"
         ),

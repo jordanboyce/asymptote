@@ -672,7 +672,7 @@ const refreshProviders = () => {
 
 // Per-provider model overrides for chat: { providerId: modelId | '' }.
 // '' / absent means the provider's configured default model.
-const CHAT_MODEL_OVERRIDES_KEY = 'asymptote_chat_model_overrides'
+const CHAT_MODEL_OVERRIDES_KEY = 'clio_chat_model_overrides'
 const chatModelOverrides = ref((() => {
   try { return JSON.parse(localStorage.getItem(CHAT_MODEL_OVERRIDES_KEY) || '{}') } catch { return {} }
 })())
@@ -1126,12 +1126,12 @@ const handlePrefill = (e) => {
 
 // Re-resolve providers whenever any surface changes provider config —
 // providerStore.version bumps on every write (replaces the old window
-// 'asymptote:provider-changed' event).
+// 'clio:provider-changed' event).
 watch(() => providerStore.version, refreshProviders)
 
 onMounted(async () => {
   scrollToBottom()
-  window.addEventListener('asymptote:prefill-chat', handlePrefill)
+  window.addEventListener('clio:prefill-chat', handlePrefill)
 
   // Pick up providers whose key lives on the server (team deployments):
   // they become selectable without the user ever entering a key.
@@ -1140,7 +1140,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('asymptote:prefill-chat', handlePrefill)
+  window.removeEventListener('clio:prefill-chat', handlePrefill)
   if (autoScrollTimer) {
     clearTimeout(autoScrollTimer)
     autoScrollTimer = null

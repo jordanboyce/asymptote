@@ -19,19 +19,19 @@ python scripts/oauth_smoke/keycloak_realm.py     # realm, user, scopes, DCR, one
 Its own data directory, never a real one.
 
 ```bash
-IDENTITY_PROVIDER=oidc OIDC_ISSUER=http://localhost:8080/realms/asymptote OIDC_AUDIENCE=asymptote \
+IDENTITY_PROVIDER=oidc OIDC_ISSUER=http://localhost:8080/realms/clio OIDC_AUDIENCE=clio \
 MCP_PUBLIC_URL=http://localhost:8473/mcp MCP_ALLOWED_HOSTS=localhost PRIVATE_COLLECTIONS=true \
 MCP_AUDIT_TOOL_CALLS=true AUTH_PASSWORD= CF_ACCESS_TEAM_DOMAIN= CF_ACCESS_AUD= DATA_DIR=/tmp/asy-oauth \
 python main.py
 ```
 
-Expect at startup: `OAuth on /mcp: authorization server http://localhost:8080/realms/asymptote, resource http://localhost:8473/mcp`.
+Expect at startup: `OAuth on /mcp: authorization server http://localhost:8080/realms/clio, resource http://localhost:8473/mcp`.
 
 ```bash
 curl -si -X POST localhost:8473/mcp/ | grep -i www-authenticate
 #  Bearer resource_metadata="http://localhost:8473/.well-known/oauth-protected-resource/mcp"
 curl -s localhost:8473/.well-known/oauth-protected-resource/mcp
-#  {"resource":"http://localhost:8473/mcp","authorization_servers":["http://localhost:8080/realms/asymptote"],...}
+#  {"resource":"http://localhost:8473/mcp","authorization_servers":["http://localhost:8080/realms/clio"],...}
 ```
 
 ## 3. Clients
@@ -60,9 +60,9 @@ python scripts/oauth_smoke/sdk_client.py
 Then check the trail: Admin → Audit, or the `audit_events` table in the
 app database, shows `mcp.tool_call` rows with `actor = analyst@agency.test`.
 
-**Required scope, step-up.** Restart the app with `MCP_OAUTH_SCOPE=asymptote-mcp`.
+**Required scope, step-up.** Restart the app with `MCP_OAUTH_SCOPE=clio-mcp`.
 The stored token lacks the scope, so the next call answers
-`403 ... error="insufficient_scope", scope="asymptote-mcp"`; `claude mcp login asy-oauth`
+`403 ... error="insufficient_scope", scope="clio-mcp"`; `claude mcp login asy-oauth`
 again requests the scope (it is in the challenge) and calls succeed.
 
 ## 4. Clean up
@@ -75,9 +75,9 @@ docker rm -f asy-keycloak
 ## Keycloak note
 
 Keycloak parses `name:value` scopes as *dynamic scopes*, so a scope called
-`asymptote:mcp` requested together with a scope called `asymptote` is
+`clio:mcp` requested together with a scope called `clio` is
 rejected as `invalid_scope`. Name the MCP scope without a colon
-(`asymptote-mcp`) when the realm also has a scope named `asymptote`.
+(`clio-mcp`) when the realm also has a scope named `clio`.
 
 ## What this does not cover
 

@@ -50,7 +50,7 @@ def send_share_email(
     perm_label = "read and write" if permission == "readwrite" else "read-only"
     expiry_line = f"This invitation expires on {expires_at[:10]}." if expires_at else ""
 
-    subject = f"{shared_by} shared \"{collection_name}\" with you on Asymptote"
+    subject = f"{shared_by} shared \"{collection_name}\" with you on Clio"
     text = (
         f"{shared_by} shared the collection \"{collection_name}\" with you "
         f"({perm_label} access).\n\n"
