@@ -1,27 +1,59 @@
 <template>
   <div class="flex flex-col h-full">
 
-    <!-- Header bar -->
-    <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Sources">
-      <Library :size="15" class="text-base-content/60 flex-shrink-0" aria-hidden="true" />
-      <span class="font-semibold text-sm flex-1">Sources</span>
-      <span v-if="docTotal > 0" class="badge badge-xs badge-neutral" :aria-label="`${docTotal} source${docTotal === 1 ? '' : 's'}`">{{ docTotal.toLocaleString() }}</span>
+    <!-- Control rail. Bare icon buttons, no heading bar: the panel names
+         itself through the section labels below, the way every other
+         document sidebar does. -->
+    <div class="side-rail border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Sources">
+      <!-- No collapse button here: the header toggle sits directly above this
+           rail at every width, and a second copy of it read as duplication. -->
       <button
-        class="btn btn-ghost btn-xs btn-circle"
+        class="side-icon-btn text-base-content/55 hover:text-base-content"
+        :class="{ 'is-active': filterOpen || docSearch }"
+        :aria-pressed="filterOpen || !!docSearch"
+        @click="toggleFilter"
+        title="Filter sources  ( / )"
+        aria-label="Filter sources"
+      >
+        <Search :size="16" />
+      </button>
+      <button
+        class="side-icon-btn text-base-content/55 hover:text-base-content"
         @click="loadDocuments"
         title="Refresh sources"
         aria-label="Refresh sources list"
       >
-        <RefreshCw :size="13" :class="loading ? 'animate-spin' : ''" />
+        <RefreshCw :size="15" :class="loading ? 'animate-spin' : ''" />
       </button>
-      <button
-        class="btn btn-ghost btn-xs btn-circle"
-        @click="$emit('close')"
-        title="Close sidebar"
-        aria-label="Close sources sidebar"
-      >
-        <X :size="13" />
-      </button>
+      <div class="flex-1"></div>
+      <span
+        v-if="docTotal > 0"
+        class="side-kbd tabular-nums text-base-content/40 pr-1.5"
+        :aria-label="`${docTotal} source${docTotal === 1 ? '' : 's'}`"
+      >{{ docTotal.toLocaleString() }}</span>
+    </div>
+
+    <!-- Filter field: opens from the rail (or `/`), Esc puts it away again -->
+    <div v-show="filterOpen || docSearch" class="px-2 pt-2 pb-1.5 border-b border-base-300 flex-shrink-0">
+      <div class="side-field">
+        <Search :size="13" class="text-base-content/40 flex-shrink-0" aria-hidden="true" />
+        <input
+          ref="filterInput"
+          v-model="docSearch"
+          type="search"
+          placeholder="Filter sources…"
+          aria-label="Filter sources by filename"
+          @keydown.esc.prevent="closeFilter"
+        />
+        <button
+          v-if="docSearch"
+          class="side-icon-btn side-icon-btn-sm text-base-content/50 hover:text-base-content"
+          @click="docSearch = ''"
+          aria-label="Clear filter"
+        >
+          <X :size="12" />
+        </button>
+      </div>
     </div>
 
     <!-- Storage against the per-collection cap. Quiet by default; the bar
@@ -51,15 +83,19 @@
 
       <!-- Add Sources section (collapsible) -->
       <div class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          :class="{ 'animate-pulse bg-primary/10': ui.highlightAddSources }"
-          @click="addSectionOpen = !addSectionOpen; ui.highlightAddSources = false"
-        >
-          <Plus :size="13" class="text-primary flex-shrink-0" />
-          <span class="text-xs font-semibold text-primary flex-1">Add Sources</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="addSectionOpen ? 'rotate-180' : ''" />
-        </button>
+        <div class="p-1.5">
+          <button
+            class="side-row font-medium text-base-content/80 hover:text-base-content"
+            :class="{ 'is-active': addSectionOpen, 'animate-pulse': ui.highlightAddSources }"
+            :aria-expanded="addSectionOpen"
+            @click="addSectionOpen = !addSectionOpen; ui.highlightAddSources = false"
+          >
+            <Plus :size="15" class="flex-shrink-0" aria-hidden="true" />
+            <span class="flex-1">Add sources</span>
+            <span v-if="!addSectionOpen" class="side-kbd text-base-content/35">{{ modKeyLabel }} U</span>
+            <ChevronDown v-else :size="13" class="flex-shrink-0 text-base-content/35" aria-hidden="true" />
+          </button>
+        </div>
 
         <!-- Read-only share: say so instead of offering controls that 403 -->
         <div
@@ -235,16 +271,20 @@
 
       <!-- Applied Expertise section (collapsible) -->
       <div class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="expertiseSectionOpen = !expertiseSectionOpen"
-          aria-label="Toggle Applied Expertise section"
-        >
-          <BookOpen :size="13" class="text-accent flex-shrink-0" aria-hidden="true" />
-          <span class="text-xs font-semibold text-accent flex-1">Applied Expertise</span>
-          <span v-if="attachedPackIds.length > 0" class="badge badge-xs badge-accent">{{ attachedPackIds.length }}</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="expertiseSectionOpen ? 'rotate-180' : ''" />
-        </button>
+        <div class="p-1.5">
+          <button
+            class="side-row text-base-content/75 hover:text-base-content"
+            :class="{ 'is-active': expertiseSectionOpen }"
+            :aria-expanded="expertiseSectionOpen"
+            aria-label="Toggle Applied Expertise section"
+            @click="expertiseSectionOpen = !expertiseSectionOpen"
+          >
+            <BookOpen :size="15" class="flex-shrink-0" aria-hidden="true" />
+            <span class="flex-1">Applied expertise</span>
+            <span v-if="attachedPackIds.length > 0" class="side-kbd tabular-nums text-base-content/40">{{ attachedPackIds.length }}</span>
+            <ChevronDown :size="13" class="flex-shrink-0 text-base-content/35 transition-transform" :class="expertiseSectionOpen ? 'rotate-180' : ''" aria-hidden="true" />
+          </button>
+        </div>
 
         <div v-show="expertiseSectionOpen" class="px-3 pb-3 space-y-2">
           <!-- Attached packs -->
@@ -299,13 +339,14 @@
         </div>
       </div>
 
-      <!-- Document list header (wraps on narrow panels so the filter and
-           bulk controls never push each other out of view) -->
-      <div class="flex items-center flex-wrap gap-x-2 gap-y-1.5 px-3 py-2 border-b border-base-300 flex-shrink-0">
+      <!-- List header: a quiet label whose controls only appear on hover,
+           which turns into the bulk bar once sources are selected. -->
+      <div class="group flex items-center flex-wrap gap-x-1.5 gap-y-1.5 px-2.5 pt-2.5 pb-1 flex-shrink-0">
         <input
           v-if="documents.length > 0"
           type="checkbox"
           class="checkbox checkbox-xs flex-shrink-0"
+          :class="{ 'hover-reveal': selectedDocuments.length === 0 }"
           :checked="isAllSelected"
           :indeterminate="selectedDocuments.length > 0 && !isAllSelected"
           @change="toggleSelectAll"
@@ -313,11 +354,11 @@
           title="Select all sources"
           aria-label="Select all sources"
         />
-        <span class="text-xs font-semibold text-base-content/60 flex-1 min-w-0 whitespace-nowrap" id="sources-list-heading">
+        <span class="side-label text-base-content/45 flex-1 min-w-0 whitespace-nowrap" id="sources-list-heading">
           <template v-if="selectedDocuments.length > 0">
             <span class="text-base-content/80 tabular-nums">{{ selectedDocuments.length }} selected</span>
           </template>
-          <template v-else>Your Sources</template>
+          <template v-else>Sources</template>
         </span>
         <button
           v-if="selectedDocuments.length > 0"
@@ -327,14 +368,25 @@
           title="Clear selection — chat goes back to every source"
           aria-label="Clear selection"
         >Clear</button>
-        <input
-          v-if="docTotal > 20 || docSearch"
-          v-model="docSearch"
-          type="search"
-          placeholder="Filter…"
-          class="input input-bordered input-xs w-28"
-          aria-label="Filter sources by filename"
-        />
+        <template v-if="selectedDocuments.length === 0">
+          <button
+            class="side-icon-btn side-icon-btn-sm hover-reveal text-base-content/50 hover:text-base-content"
+            @click="openAddSources"
+            title="Add sources"
+            aria-label="Add sources"
+          >
+            <Plus :size="14" />
+          </button>
+          <button
+            class="side-icon-btn side-icon-btn-sm hover-reveal text-base-content/50 hover:text-base-content"
+            :class="{ 'is-active': filterOpen || docSearch }"
+            @click="toggleFilter"
+            title="Filter sources"
+            aria-label="Filter sources"
+          >
+            <ListFilter :size="14" />
+          </button>
+        </template>
         <button
           v-if="selectedDocuments.length > 0"
           class="btn btn-xs btn-error gap-1"
@@ -380,12 +432,12 @@
       </div>
 
       <!-- Document list -->
-      <div v-else class="divide-y divide-base-300/60">
+      <div v-else class="px-1.5 pb-2">
         <div
           v-for="doc in documents"
           :key="doc.document_id"
-          class="flex items-start gap-2 px-3 py-2.5 hover:bg-base-200/60 transition-colors"
-          :class="{ 'bg-primary/5': isSelected(doc.document_id) }"
+          class="group flex items-start gap-2 px-2 py-2 rounded-lg transition-colors hover:bg-base-content/5"
+          :class="{ 'bg-base-content/[0.07]': isSelected(doc.document_id) }"
         >
           <!-- Checkbox -->
           <input
@@ -454,10 +506,10 @@
             >by {{ doc.uploaded_by }}</div>
           </div>
 
-          <!-- Action buttons -->
-          <div class="flex items-center flex-shrink-0 gap-0.5">
+          <!-- Action buttons (revealed on hover; always shown on touch) -->
+          <div class="flex items-center flex-shrink-0 gap-0.5 hover-reveal">
             <button
-              class="btn btn-ghost btn-xs btn-circle"
+              class="side-icon-btn side-icon-btn-sm text-base-content/50 hover:text-base-content"
               @click="openChunks(doc)"
               :disabled="deleting"
               title="View indexed chunks"
@@ -469,14 +521,14 @@
               :href="`/documents/${doc.document_id}/pdf?collection_id=${collectionStore.currentCollectionId}`"
               target="_blank"
               rel="noopener"
-              class="btn btn-ghost btn-xs btn-circle"
+              class="side-icon-btn side-icon-btn-sm text-base-content/50 hover:text-base-content"
               title="Open source document"
               :aria-label="`Open source document ${doc.filename} in a new tab`"
             >
               <Eye :size="12" />
             </a>
             <button
-              class="btn btn-ghost btn-xs btn-circle"
+              class="side-icon-btn side-icon-btn-sm text-base-content/50 hover:text-base-content"
               @click="openReport(doc)"
               :disabled="deleting"
               title="Report this source to an administrator"
@@ -485,7 +537,7 @@
               <Flag :size="12" />
             </button>
             <button
-              class="btn btn-ghost btn-xs btn-circle text-error"
+              class="side-icon-btn side-icon-btn-sm text-error/70 hover:text-error"
               @click="confirmDelete(doc)"
               :disabled="deleting || !collectionStore.canEditCurrent"
               :title="collectionStore.canEditCurrent ? 'Delete source' : 'This collection is shared with you read-only'"
@@ -726,9 +778,9 @@
 </template>
 
 <script setup>
-import { ref, computed, markRaw, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, markRaw, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import http from '../utils/http'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen, Flag, Copy } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen, Flag, Copy, Search, ListFilter } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useUiStore } from '../stores/uiStore'
 import { useUserStore } from '../stores/userStore'
@@ -739,7 +791,7 @@ import { useSelectionStore } from '../stores/selectionStore'
 import { useStatsStore } from '../stores/statsStore'
 import { formatBytes, describeStorage } from '../utils/format'
 
-const emit = defineEmits(['document-deleted', 'close', 'background-job-started', 'clone-collection'])
+const emit = defineEmits(['document-deleted', 'open', 'background-job-started', 'clone-collection'])
 
 const collectionStore = useCollectionStore()
 const ui = useUiStore()
@@ -750,6 +802,11 @@ const expertiseStore = useExpertiseStore()
 // Sidebar-specific state
 const addSectionOpen = ref(true)
 const expertiseSectionOpen = ref(false)
+// Rail state: the filter field is hidden until asked for, so the panel head
+// is nothing but icons at rest.
+const filterOpen = ref(false)
+const filterInput = ref(null)
+const modKeyLabel = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? '⌘' : 'Ctrl' 
 const expertiseLoading = ref(false)
 
 // Server capability flags (fetched on mount); native_file_picker=false → Docker/headless mode
@@ -1453,6 +1510,47 @@ watch(docSearch, () => {
   _docSearchTimer = setTimeout(loadDocuments, 250)
 })
 
+// ── Rail controls ────────────────────────────────────────────────────────
+// Each of these can be reached while the panel is collapsed (the component
+// stays mounted at width 0), so they ask the shell to open it first.
+const openFilter = async () => {
+  emit('open')
+  filterOpen.value = true
+  await nextTick()
+  filterInput.value?.focus()
+}
+const closeFilter = () => {
+  filterOpen.value = false
+  docSearch.value = ''
+}
+const toggleFilter = () => {
+  if (filterOpen.value || docSearch.value) closeFilter()
+  else openFilter()
+}
+const openAddSources = () => {
+  emit('open')
+  addSectionOpen.value = true
+  ui.highlightAddSources = false
+}
+
+// `/` focuses the filter and Ctrl/⌘+U opens Add sources — the two things
+// this panel is for. Neither fires while the caret is in a field.
+const onSidebarKeydown = (e) => {
+  const el = e.target
+  const typing = el instanceof HTMLElement && (
+    el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+  )
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'u') {
+    e.preventDefault()
+    openAddSources()
+    return
+  }
+  if (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault()
+    openFilter()
+  }
+}
+
 const openChunks = async (doc) => {
   chunkDocument.value = doc
   chunksLoading.value = true
@@ -1687,6 +1785,7 @@ onMounted(async () => {
   loadDocuments()
   loadExpertise()
   window.addEventListener('beforeunload', beforeUnloadHandler)
+  window.addEventListener('keydown', onSidebarKeydown)
   try {
     const resp = await http.get('/api/capabilities')
     capabilities.value = resp.data
@@ -1697,6 +1796,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
+  window.removeEventListener('keydown', onSidebarKeydown)
   if (isRecording.value) {
     cancelled = true
     try { mediaRecorder?.stop() } catch (_) { /* ignore */ }

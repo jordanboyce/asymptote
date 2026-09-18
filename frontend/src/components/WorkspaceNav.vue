@@ -1,8 +1,26 @@
 <template>
-  <nav :class="mobile ? 'flex items-stretch' : 'flex items-center gap-1'" aria-label="Workspace">
+  <nav :class="mobile ? 'flex items-stretch' : 'flex items-center gap-1.5'" aria-label="Workspace">
+    <!-- Ask and Find are one choice, not two destinations, so on desktop they
+         ride in a switch. The phone tab bar keeps them flat: a recessed track
+         inside a row of tabs would read as a control, not a destination. -->
+    <div v-if="!mobile && modeTabs.length > 1" class="segmented" role="group" aria-label="Workspace mode">
+      <button
+        v-for="tab in modeTabs"
+        :key="tab.id"
+        data-nav="primary"
+        class="segment"
+        :class="activeTab === tab.id ? 'is-on text-base-content' : 'text-base-content/60 hover:text-base-content'"
+        :aria-current="activeTab === tab.id ? 'page' : undefined"
+        @click="$emit('navigate', tab.id)"
+      >
+        <component :is="tab.icon" :size="14" aria-hidden="true" />
+        <span>{{ tab.label }}</span>
+      </button>
+    </div>
     <button
-      v-for="tab in primaryTabs"
+      v-for="tab in looseTabs"
       :key="tab.id"
+      data-nav="primary"
       :class="[buttonClass, activeTab === tab.id ? 'bg-base-200 font-semibold text-base-content' : 'text-base-content/65']"
       :aria-current="activeTab === tab.id ? 'page' : undefined"
       @click="$emit('navigate', tab.id)"
@@ -47,6 +65,12 @@ const primaryTabs = computed(() => [
   { id: 'search', label: 'Find', icon: Search },
   { id: 'mcp', label: 'Connect', icon: Plug },
 ])
+// The two ways of asking the same corpus a question; the switch only earns
+// its track when both are there (search-only deployments get a plain button).
+const modeTabs = computed(() => primaryTabs.value.filter(tab => tab.id === 'chat' || tab.id === 'search'))
+const looseTabs = computed(() => (props.mobile || modeTabs.value.length < 2)
+  ? primaryTabs.value
+  : primaryTabs.value.filter(tab => !modeTabs.value.includes(tab)))
 const secondaryTabs = computed(() => [
   { id: 'generate', label: 'Reports', icon: FileText },
   { id: 'expertise', label: 'Saved instructions', icon: BookOpen },

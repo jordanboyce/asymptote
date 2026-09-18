@@ -1,17 +1,19 @@
 <template>
   <div class="flex flex-col h-full">
 
-    <!-- Header bar -->
-    <div class="flex items-center gap-2 px-3 py-2.5 border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Notes and tools">
-      <Sparkles :size="15" class="text-base-content/60 flex-shrink-0" aria-hidden="true" />
-      <span class="font-semibold text-sm flex-1">Notes and tools</span>
+    <!-- Control rail (mirrors the sources panel: icons, no heading bar) -->
+    <div class="side-rail border-b border-base-300 flex-shrink-0 bg-base-100" role="region" aria-label="Notes and tools">
+      <span class="side-label text-base-content/45 flex-1 min-w-0 truncate pl-1.5">Notes and tools</span>
+      <!-- Phones have no notes toggle in the header, so the sheet carries its
+           own dismiss there; on desktop the header toggle is the only one. -->
       <button
-        class="btn btn-ghost btn-xs btn-circle"
+        v-if="overlay"
+        class="side-icon-btn text-base-content/55 hover:text-base-content"
         @click="$emit('close')"
-        title="Close notes and tools"
-        aria-label="Close notes and tools"
+        title="Hide notes and tools"
+        aria-label="Hide notes and tools"
       >
-        <X :size="13" />
+        <PanelRightClose :size="16" />
       </button>
     </div>
 
@@ -20,15 +22,18 @@
 
       <!-- Generate -->
       <section class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="open.generate = !open.generate"
-          :aria-expanded="open.generate"
-        >
-          <FileText :size="13" class="text-primary flex-shrink-0" />
-          <span class="text-xs font-semibold flex-1">Generate</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="open.generate ? 'rotate-180' : ''" />
-        </button>
+        <div class="p-1.5">
+          <button
+            class="side-row text-base-content/75 hover:text-base-content"
+            :class="{ 'is-active': open.generate }"
+            @click="open.generate = !open.generate"
+            :aria-expanded="open.generate"
+          >
+            <FileText :size="15" class="flex-shrink-0" aria-hidden="true" />
+            <span class="flex-1">Generate</span>
+            <ChevronDown :size="13" class="flex-shrink-0 text-base-content/35 transition-transform" :class="open.generate ? 'rotate-180' : ''" aria-hidden="true" />
+          </button>
+        </div>
         <div v-show="open.generate" class="px-3 pb-3 space-y-1.5">
           <p class="text-[11px] text-base-content/50 leading-snug">
             Turn this collection into a source-grounded document — review the citations before sharing.
@@ -48,15 +53,18 @@
 
       <!-- Structured Tables -->
       <section class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="open.tables = !open.tables"
-          :aria-expanded="open.tables"
-        >
-          <Table2 :size="13" class="text-primary flex-shrink-0" />
-          <span class="text-xs font-semibold flex-1">Structured Tables</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="open.tables ? 'rotate-180' : ''" />
-        </button>
+        <div class="p-1.5">
+          <button
+            class="side-row text-base-content/75 hover:text-base-content"
+            :class="{ 'is-active': open.tables }"
+            @click="open.tables = !open.tables"
+            :aria-expanded="open.tables"
+          >
+            <Table2 :size="15" class="flex-shrink-0" aria-hidden="true" />
+            <span class="flex-1">Structured tables</span>
+            <ChevronDown :size="13" class="flex-shrink-0 text-base-content/35 transition-transform" :class="open.tables ? 'rotate-180' : ''" aria-hidden="true" />
+          </button>
+        </div>
         <div v-show="open.tables" class="px-3 pb-3 space-y-1.5">
           <p class="text-[11px] text-base-content/50 leading-snug">
             Query a CSV/Excel table loaded into this collection in plain English.
@@ -76,16 +84,19 @@
 
       <!-- Notes -->
       <section class="border-b border-base-300">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="open.notes = !open.notes"
-          :aria-expanded="open.notes"
-        >
-          <StickyNote :size="13" class="text-primary flex-shrink-0" />
-          <span class="text-xs font-semibold flex-1">Notes</span>
-          <span v-if="notes.trim()" class="badge badge-xs badge-neutral">{{ noteCount }}</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="open.notes ? 'rotate-180' : ''" />
-        </button>
+        <div class="p-1.5">
+          <button
+            class="side-row text-base-content/75 hover:text-base-content"
+            :class="{ 'is-active': open.notes }"
+            @click="open.notes = !open.notes"
+            :aria-expanded="open.notes"
+          >
+            <StickyNote :size="15" class="flex-shrink-0" aria-hidden="true" />
+            <span class="flex-1">Notes</span>
+            <span v-if="notes.trim()" class="side-kbd tabular-nums text-base-content/40">{{ noteCount }}</span>
+            <ChevronDown :size="13" class="flex-shrink-0 text-base-content/35 transition-transform" :class="open.notes ? 'rotate-180' : ''" aria-hidden="true" />
+          </button>
+        </div>
         <div v-show="open.notes" class="px-3 pb-3 space-y-1.5">
           <p class="text-[11px] text-base-content/50 leading-snug">
             Scratch pad scoped to this collection. Saved locally.
@@ -100,15 +111,18 @@
 
       <!-- Export -->
       <section>
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-base-200 transition-colors text-left"
-          @click="open.export = !open.export"
-          :aria-expanded="open.export"
-        >
-          <Download :size="13" class="text-primary flex-shrink-0" />
-          <span class="text-xs font-semibold flex-1">Export</span>
-          <ChevronDown :size="12" class="text-base-content/40 transition-transform" :class="open.export ? 'rotate-180' : ''" />
-        </button>
+        <div class="p-1.5">
+          <button
+            class="side-row text-base-content/75 hover:text-base-content"
+            :class="{ 'is-active': open.export }"
+            @click="open.export = !open.export"
+            :aria-expanded="open.export"
+          >
+            <Download :size="15" class="flex-shrink-0" aria-hidden="true" />
+            <span class="flex-1">Export</span>
+            <ChevronDown :size="13" class="flex-shrink-0 text-base-content/35 transition-transform" :class="open.export ? 'rotate-180' : ''" aria-hidden="true" />
+          </button>
+        </div>
         <div v-show="open.export" class="px-3 pb-3 space-y-1.5">
           <button class="btn btn-outline btn-xs w-full gap-1" @click="exportNotes">
             <FileText :size="11" />
@@ -123,11 +137,12 @@
 <script setup>
 import { ref, reactive, computed, watch } from 'vue'
 import {
-  X, ChevronDown, Table2, StickyNote,
+  ChevronDown, Table2, StickyNote, PanelRightClose,
   Download, Sparkles, FileText, List, Eye, MessageSquare,
 } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 
+defineProps({ overlay: { type: Boolean, default: false } })
 const emit = defineEmits(['close', 'send-to-chat', 'switch-tab'])
 const collectionStore = useCollectionStore()
 

@@ -4,46 +4,17 @@
     <!-- ── Header ── -->
     <header class="flex items-center gap-2 px-3 h-11 bg-base-100 border-b border-base-300 flex-shrink-0 z-50">
 
-      <!-- Logo + title (click to view collections) -->
+      <!-- The panel toggle is the first thing in the window and never moves,
+           on every tab — no label, no brand competing with it for the corner. -->
       <button
-        class="btn btn-ghost btn-xs gap-1.5 normal-case h-7 min-h-0 px-1.5"
-        :class="{ 'bg-base-200': activeTab === 'collections' }"
-        @click="activeTab = 'collections'"
-        title="View all collections"
-        aria-label="Clio — view all collections"
+        class="side-icon-btn text-base-content/60 hover:text-base-content"
+        :class="{ 'is-active': sourcesPanelShown }"
+        @click="toggleSources"
+        :title="sourcesPanelShown ? 'Hide sources panel' : 'Show sources panel'"
+        :aria-label="sourcesPanelShown ? 'Hide sources panel' : 'Show sources panel'"
+        :aria-pressed="sourcesPanelShown"
       >
-        <span class="brand-art brand-art-mark h-5 w-5 flex-shrink-0" aria-hidden="true"></span>
-        <span class="font-bold text-sm tracking-tight hidden sm:inline">Clio</span>
-      </button>
-
-      <!-- Current collection indicator -->
-      <button
-        class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-7 min-h-0"
-        @click="activeTab = 'collections'"
-        title="View all collections"
-        :aria-label="`Current collection: ${collectionStore.currentCollection?.name || 'Default'}. Click to view all collections.`"
-      >
-        <div
-          class="w-2 h-2 rounded-full flex-shrink-0"
-          :style="{ backgroundColor: collectionStore.currentCollection?.color || '#3b82f6' }"
-        ></div>
-        <span class="max-w-32 truncate text-xs">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
-      </button>
-
-      <div class="w-px h-5 bg-base-300 mx-0.5 flex-shrink-0"></div>
-
-      <!-- Sources toggle (hidden on collections overview) -->
-      <button
-        v-if="isWorkspaceView"
-        class="btn btn-xs btn-ghost gap-1"
-        :class="sourcesSidebarOpen ? 'btn-active' : ''"
-        @click="sourcesSidebarOpen = !sourcesSidebarOpen"
-        title="Toggle sources panel"
-        aria-label="Toggle sources panel"
-        :aria-pressed="sourcesSidebarOpen"
-      >
-        <Library :size="14" />
-        <span class="hidden md:inline text-xs">Sources</span>
+        <component :is="sourcesPanelShown ? PanelLeftClose : PanelLeft" :size="16" />
       </button>
 
       <WorkspaceNav
@@ -74,6 +45,24 @@
         :aria-label="`Background jobs — ${backgroundJobsStore.activeJobCount} active`"
       >
         <Loader2 :size="16" class="animate-spin text-warning" aria-hidden="true" />
+      </button>
+
+      <!-- Current collection: a selector, so it sits with the other things
+           you set rather than with the things you navigate. -->
+      <button
+        class="btn btn-xs btn-ghost gap-1.5 normal-case font-normal h-7 min-h-0 border border-base-300 rounded-full px-2.5"
+        :class="{ 'bg-base-200': isCollectionsView }"
+        @click="activeTab = 'collections'"
+        title="View all collections"
+        :aria-label="`Current collection: ${collectionStore.currentCollection?.name || 'Default'}. Click to view all collections.`"
+      >
+        <span
+          class="w-2 h-2 rounded-full flex-shrink-0"
+          :style="{ backgroundColor: collectionStore.currentCollection?.color || '#3b82f6' }"
+          aria-hidden="true"
+        ></span>
+        <span class="max-w-32 truncate text-xs">{{ collectionStore.currentCollection?.name || 'Default' }}</span>
+        <ChevronDown :size="10" class="text-base-content/40 flex-shrink-0" aria-hidden="true" />
       </button>
 
       <!-- Global AI provider pill: app-wide default + click-to-switch menu -->
@@ -108,6 +97,21 @@
           <li class="menu-title pt-1"><span class="text-xs font-normal text-base-content/50">Chat can override this per conversation.</span></li>
         </ul>
       </div>
+
+      <!-- Notes panel toggle: the right-hand twin of the sources one -->
+      <!-- v-if, not `hidden md:inline-flex`: .side-icon-btn sets display in
+           the unlayered stylesheet, which beats Tailwind's layered utility. -->
+      <button
+        v-if="!isCompact"
+        class="side-icon-btn text-base-content/60 hover:text-base-content"
+        :class="{ 'is-active': notesPanelShown }"
+        @click="toggleNotes"
+        :title="notesPanelShown ? 'Hide notes and tools' : 'Show notes and tools'"
+        :aria-label="notesPanelShown ? 'Hide notes and tools' : 'Show notes and tools'"
+        :aria-pressed="notesPanelShown"
+      >
+        <component :is="notesPanelShown ? PanelRightClose : PanelRight" :size="16" />
+      </button>
 
       <!-- Help menu (desktop; phones get it in the overflow menu) -->
       <div class="dropdown dropdown-end hidden md:block">
@@ -243,7 +247,7 @@
             @document-deleted="handleDocumentDeleted"
             @background-job-started="showJobsDrawer = true"
             @clone-collection="collectionStore.currentCollection && startClone(collectionStore.currentCollection)"
-            @close="sourcesSidebarOpen = false"
+            @open="sourcesSidebarOpen = true"
           />
         </div>
 
@@ -285,6 +289,10 @@
             <div v-if="activeTab === 'collections'" class="pt-2 md:pt-4">
               <header class="flex items-end justify-between gap-6 flex-wrap pb-5 mb-4 border-b border-base-300/60">
                 <div class="min-w-0">
+                  <div class="flex items-center gap-2 mb-3">
+                    <span class="brand-art brand-art-mark h-6 w-6 flex-shrink-0" aria-hidden="true"></span>
+                    <span class="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/45">Clio</span>
+                  </div>
                   <h1 class="text-[22px] leading-none font-semibold tracking-tight">Collections</h1>
                   <p class="mt-2 text-xs text-base-content/50">
                     <span class="tabular-nums font-medium text-base-content/70">{{ collectionStore.sortedCollections.length }}</span>
@@ -651,6 +659,7 @@
 
         <div class="h-full flex flex-col" :style="{ width: effectiveAnalysisWidth + 'px' }">
           <StudioSidebar
+            :overlay="isCompact"
             @close="analysisSidebarOpen = false"
             @send-to-chat="handleSendToChat"
             @switch-tab="switchTab"
@@ -665,6 +674,12 @@
       role="contentinfo"
       aria-label="Background jobs status"
     >
+      <span class="flex items-center gap-1.5 text-base-content/45 flex-shrink-0">
+        <span class="brand-art brand-art-mark h-3.5 w-3.5" aria-hidden="true"></span>
+        <span class="font-medium tracking-tight">Clio</span>
+      </span>
+      <span class="w-px h-3 bg-base-300" aria-hidden="true"></span>
+
       <button
         class="flex items-center gap-1.5 hover:text-base-content transition-colors"
         @click="showJobsDrawer = true"
@@ -1198,10 +1213,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
-import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, Library, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search, Copy } from 'lucide-vue-next'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
+import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search, Copy, PanelLeft, PanelLeftClose, PanelRight, PanelRightClose } from 'lucide-vue-next'
 import http from './utils/http'
 import { useModal } from './composables/useModal'
+import { lazyView } from './utils/lazyView'
 
 const chatTabEnabled = ref(true)
 
@@ -1212,15 +1228,17 @@ import StudioSidebar from './components/StudioSidebar.vue'
 import WorkspaceNav from './components/WorkspaceNav.vue'
 import ChatTab from './components/ChatTab.vue'
 
-const SearchTab = defineAsyncComponent(() => import('./components/SearchTab.vue'))
-const ArtifactsTab = defineAsyncComponent(() => import('./components/ArtifactsTab.vue'))
-const SettingsTab = defineAsyncComponent(() => import('./components/SettingsTab.vue'))
-const MCPTab = defineAsyncComponent(() => import('./components/MCPTab.vue'))
-const ShareModal = defineAsyncComponent(() => import('./components/ShareModal.vue'))
-const ExpertiseLibrary = defineAsyncComponent(() => import('./components/ExpertiseLibrary.vue'))
-const WelcomeOnboarding = defineAsyncComponent(() => import('./components/WelcomeOnboarding.vue'))
-const AdminTab = defineAsyncComponent(() => import('./components/AdminTab.vue'))
-const AcceptableUseModal = defineAsyncComponent(() => import('./components/AcceptableUseModal.vue'))
+// Every tab but Ask lives in its own chunk; lazyView keeps a chunk that has
+// gone missing (deploy under an open tab) from rendering as an empty pane.
+const SearchTab = lazyView(() => import('./components/SearchTab.vue'))
+const ArtifactsTab = lazyView(() => import('./components/ArtifactsTab.vue'))
+const SettingsTab = lazyView(() => import('./components/SettingsTab.vue'))
+const MCPTab = lazyView(() => import('./components/MCPTab.vue'))
+const ShareModal = lazyView(() => import('./components/ShareModal.vue'))
+const ExpertiseLibrary = lazyView(() => import('./components/ExpertiseLibrary.vue'))
+const WelcomeOnboarding = lazyView(() => import('./components/WelcomeOnboarding.vue'))
+const AdminTab = lazyView(() => import('./components/AdminTab.vue'))
+const AcceptableUseModal = lazyView(() => import('./components/AcceptableUseModal.vue'))
 import { SENSITIVITY_HELP, labelBadgeClass, showLabel } from './utils/governance'
 import { formatBytes, describeStorage } from './utils/format'
 import Toaster from './components/Toaster.vue'
@@ -1456,6 +1474,22 @@ const navigateMobile = (tab) => {
 const openNotes = () => {
   if (!isWorkspaceView.value) switchTab(chatTabEnabled.value ? 'chat' : 'search')
   analysisSidebarOpen.value = true
+}
+// The header toggles live outside the workspace tabs, so off a workspace tab
+// they mean "take me back there with this panel open" rather than nothing.
+const sourcesPanelShown = computed(() => isWorkspaceView.value && sourcesSidebarOpen.value)
+const notesPanelShown = computed(() => isWorkspaceView.value && analysisSidebarOpen.value)
+const toggleSources = () => {
+  if (!isWorkspaceView.value) {
+    switchTab(chatTabEnabled.value ? 'chat' : 'search')
+    sourcesSidebarOpen.value = true
+    return
+  }
+  sourcesSidebarOpen.value = !sourcesSidebarOpen.value
+}
+const toggleNotes = () => {
+  if (notesPanelShown.value) analysisSidebarOpen.value = false
+  else openNotes()
 }
 
 // Most recent active job, surfaced inline in the footer.
