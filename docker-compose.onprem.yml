@@ -1,0 +1,73 @@
+# Asymptote — on-premises deployment from a prebuilt image.
+#
+#   docker compose -f docker-compose.onprem.yml up -d
+#   open http://<this-host>:8473
+#
+# Unlike docker-compose.yml this file never builds: it runs an image that was
+# built elsewhere and loaded here (`docker load < asymptote-image.tar.gz`) or
+# pulled from an internal registry. That is the shape an on-prem install
+# usually needs — the host may have no compiler, no internet, and no business
+# running a 20-minute build.
+#
+# One-time setup:
+#   1. cp .env.onprem.example .env     and fill it in (model endpoint, auth)
+#   2. drop your organisation's root/intermediate CA .crt files into certs/ca/
+#      if your model endpoint uses TLS signed by a private CA
+#   3. docker compose -f docker-compose.onprem.yml up -d
+#
+# Everything site-specific lives in .env and certs/ca — the image stays the
+# same bytes everywhere, which is what makes it auditable. Full walkthrough:
+# docs/ONPREM.md.
+
+services:
+  asymptote:
+    # No build: an image built once, carried in, and pinned by tag or digest.
+    # Pin a digest (asymptote@sha256:...) if you must prove that what runs is
+    # what was reviewed.
+    image: ${ASYMPTOTE_IMAGE:-asymptote:local}
+    pull_policy: ${ASYMPTOTE_PULL_POLICY:-never}
+    container_name: asymptote
+    # Default is loopback — anything else is a deliberate choice that should
+    # come with AUTH_PASSWORD or an authenticating reverse proxy in front.
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8473}:8473"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATA_DIR=/app/data
+      - HOST=0.0.0.0
+      - PORT=8473
+      # Search embeddings stay on this machine. The picker in Settings can
+      # switch to a hosted API, which OFFLINE_MODE then refuses.
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-local}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      # No cloud AI, no model downloads. Only the endpoints configured below
+      # are ever contacted. Set OFFLINE_MODE=false in .env if this deployment
+      # is allowed to reach hosted providers.
+      - OFFLINE_MODE=${OFFLINE_MODE:-1}
+      # The deployment's own model — every person gets it with no per-browser
+      # setup. Configure in .env; see .env.onprem.example.
+      - AI_PROVIDER=${AI_PROVIDER:-}
+      - AI_BASE_URL=${AI_BASE_URL:-}
+      - AI_MODEL=${AI_MODEL:-}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_PROVIDER_LABEL=${AI_PROVIDER_LABEL:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # Corporate proxies, when outbound traffic has to go through one.
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-}
+    volumes:
+      - ${DATA_PATH:-./data}:/app/data
+      # Private CA certificates, trusted at container start (entrypoint.sh).
+      # Read-only, and empty by default — this mount is a no-op until you put
+      # a .crt in it.
+      - ./certs/ca:/certs/ca:ro
+    extra_hosts:
+      # Lets AI_BASE_URL point at a service on the Docker host itself.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    # Shutdown flushes every loaded index to disk; Docker's 10s default can
+    # SIGKILL that mid-write on a large corpus.
+    stop_grace_period: 60s

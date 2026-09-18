@@ -11,6 +11,12 @@
 
 services:
   asymptote:
+    # A fixed name, so the image can be saved, carried and loaded elsewhere
+    # under a name that does not depend on this directory's name:
+    #   docker compose build && docker save asymptote:local | gzip > a.tar.gz
+    # Point ASYMPTOTE_IMAGE at a prebuilt or registry image to run that
+    # instead — docker-compose.onprem.yml does exactly that.
+    image: ${ASYMPTOTE_IMAGE:-asymptote:local}
     build:
       context: .
       # Air-gapped deployments: bake ALL runtime models (reranker, Whisper,
@@ -38,7 +44,16 @@ services:
       - EMBEDDING_PROVIDER=local
       - EMBEDDING_MODEL=all-MiniLM-L6-v2
       # Reach an Ollama instance on the docker host, if you run one
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # The LLM this deployment uses for everyone, so nobody configures a
+      # model in their own browser. Leave unset for the bring-your-own-key
+      # behaviour; set it for an on-prem private endpoint (vLLM, LM Studio,
+      # llama.cpp, TGI, a gateway) — see docs/ONPREM.md.
+      # - AI_PROVIDER=openai_compatible
+      # - AI_BASE_URL=http://vllm.internal:8000/v1
+      # - AI_MODEL=llama-3.3-70b-instruct
+      # - AI_API_KEY=
+      # - AI_PROVIDER_LABEL=Acme Internal LLM
       # Air-gapped mode: disables cloud AI providers and every HuggingFace
       # download — the container makes no outbound connections beyond the
       # Ollama/self-hosted endpoints you configure. See docs/AIRGAP.md.

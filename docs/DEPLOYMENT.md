@@ -97,6 +97,16 @@ Tailscale, WireGuard, or a corporate VPN. The network is the boundary: bind to
 the private interface and skip `AUTH_PASSWORD` entirely. Simplest option if
 everyone is already on the VPN, though you get no per-request audit trail.
 
+### C2. On-premises appliance, own models
+
+Shape C plus a model you run: the image is loaded from a file or an internal
+registry, `AI_PROVIDER` / `AI_BASE_URL` / `AI_MODEL` point the whole
+deployment at your endpoint, and nobody configures a provider in a browser.
+Combine with `OFFLINE_MODE=1` when the deployment must not reach the
+internet at all. Use `docker-compose.onprem.yml`; the walkthrough is
+[ONPREM.md](ONPREM.md), and the disconnected specialisation is
+[AIRGAP.md](AIRGAP.md).
+
 ### D. Public URL with a shared password
 
 `AUTH_PASSWORD` alone, no proxy. Browsers prompt natively (HTTP Basic, any

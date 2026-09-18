@@ -1213,7 +1213,11 @@ const providerPill = computed(() => {
     configured,
     teamIds: getServerProviderIds(),
     name: id ? getProviderDisplayName(id) : '',
-    model: (id && getProviderConfig(id)?.model) || '',
+    // The deployment's own provider has no local config to read a model
+    // from — the server picked it, so the server is what names it.
+    model: (id && getProviderConfig(id)?.model)
+      || (id === providerStore.deploymentDefault.provider ? providerStore.deploymentDefault.model : '')
+      || '',
   }
 })
 

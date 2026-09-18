@@ -786,6 +786,36 @@ class OpenAICompatibleProvider(OpenAIProvider):
             return False
 
 
+def apply_deployment_defaults(provider_name: str, api_key, kwargs: dict):
+    """Fill in the deployment's configured model/endpoint/key.
+
+    Applies only when the requested provider IS the deployment default
+    (AI_PROVIDER), and only to values the caller left empty. That keeps two
+    properties an on-prem install depends on:
+
+    - A browser that has configured nothing still chats, against the
+      operator's endpoint, with no per-user setup.
+    - A caller that brings its own key, model or base URL overrides the
+      default rather than silently talking to someone else's endpoint.
+
+    Returns the (api_key, kwargs) to build with.
+    """
+    from config import settings
+
+    default = (settings.ai_provider or "").strip()
+    if not default or provider_name != default:
+        return api_key, kwargs
+
+    kwargs = dict(kwargs)
+    if not kwargs.get("base_url") and settings.ai_base_url:
+        kwargs["base_url"] = settings.ai_base_url
+    if not kwargs.get("model") and settings.ai_model:
+        kwargs["model"] = settings.ai_model
+    if not api_key and settings.ai_api_key:
+        api_key = settings.ai_api_key
+    return api_key, kwargs
+
+
 def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProvider:
     """Create an AI provider instance.
 
@@ -797,6 +827,10 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
             base_url      – custom base URL (for openai, openai_compatible, ollama)
             region        – AWS region (for bedrock)
             aws_access_key, aws_secret_key – explicit AWS creds (for bedrock; omit to use the default chain)
+
+    Anything the caller leaves out is filled from the deployment default
+    (AI_PROVIDER / AI_BASE_URL / AI_MODEL / AI_API_KEY) when it names this
+    same provider — see apply_deployment_defaults below.
     """
     # Air-gap enforcement: this factory is the single chokepoint every AI
     # surface goes through (chat, artifacts, vision OCR, schema inference,
@@ -810,6 +844,12 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
             f"offline (air-gapped) mode. Use 'ollama' or a self-hosted "
             f"'openai_compatible' endpoint, or unset OFFLINE_MODE."
         )
+
+    # Deployment defaults: an on-prem operator configures the model once in
+    # the environment instead of every person configuring it in their own
+    # browser. Only fills what the caller omitted, so a per-request header
+    # (bring-your-own key or a different model) still wins.
+    api_key, kwargs = apply_deployment_defaults(provider_name, api_key, kwargs)
 
     if provider_name == "anthropic":
         if not api_key:
@@ -841,8 +881,13 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
             model=kwargs.get("model", "default"),
         )
     elif provider_name == "ollama":
+        # The fallback is the configured daemon, not a hardcoded localhost:
+        # inside a container "localhost" is the container itself, and the
+        # browser only sends X-AI-Base-URL when it differs from the default,
+        # so a Docker deployment pointed at host.docker.internal used to get
+        # its own loopback here.
         return OllamaProvider(
-            base_url=kwargs.get("base_url", "http://localhost:11434"),
+            base_url=kwargs.get("base_url") or settings.ollama_base_url,
             model=kwargs.get("model", "llama3.2"),
             num_ctx=kwargs.get("num_ctx"),
         )

@@ -1,5 +1,10 @@
 # Air-Gapped Deployment Guide
 
+> Running on-prem against your own model endpoint, with or without a network?
+> Start with **[ONPREM.md](ONPREM.md)** — it covers packaging the image,
+> pointing the deployment at a private endpoint, and private CAs. This guide
+> is the disconnected-network specialisation of it.
+
 Asymptote is designed to run entirely inside a disconnected network: documents
 are indexed, searched, and chatted with locally, and no data ever leaves the
 environment. This guide covers preparing a deployment on a connected machine,
@@ -56,17 +61,24 @@ docker load < asymptote-image.tar.gz
 
 ### 3. Run inside the air gap
 
-Copy `docker-compose.yml` alongside the loaded image, point compose at the
-image instead of building (replace the `build:` block with
-`image: asymptote-asymptote`), and set in the `environment:` section or a
-`.env` file:
+Use `docker-compose.onprem.yml`, which never builds — it runs the image you
+loaded — and copy `.env.onprem.example` to `.env`:
 
 ```bash
+ASYMPTOTE_IMAGE=asymptote:local
 OFFLINE_MODE=1
 AUTH_PASSWORD=<a-strong-shared-secret>
+AI_PROVIDER=openai_compatible          # your model server, see below
+AI_BASE_URL=http://vllm.internal:8000/v1
+AI_MODEL=llama-3.3-70b-instruct
 ```
 
-Then `docker compose up -d` and open `http://<host>:8473`.
+Then `docker compose -f docker-compose.onprem.yml up -d` and open
+`http://<host>:8473`.
+
+`scripts/package_image.sh --offline-bundle` does steps 1–2 and assembles the
+compose file, the example `.env` and these guides into one directory to
+carry across.
 
 ## Option B — Bare metal
 
@@ -93,10 +105,15 @@ Then `docker compose up -d` and open `http://<host>:8473`.
    and start with `python main.py` (do not re-run the bootstrap scripts — they
    try to reinstall dependencies).
 
-## Local LLM for chat (Ollama)
+## Local LLM for chat
 
-Grounded chat needs an LLM. Inside an air gap, run Ollama on a host the
-Asymptote machine can reach:
+Grounded chat needs an LLM; search, indexing and the MCP tools do not. Any
+OpenAI-compatible server on your network works — vLLM, llama.cpp,
+LM Studio, TGI, a gateway — configured deployment-wide with `AI_PROVIDER` /
+`AI_BASE_URL` / `AI_MODEL` so nobody sets it up per browser
+([ONPREM.md](ONPREM.md)).
+
+With Ollama specifically:
 
 1. On a connected machine: `ollama pull llama3.1:8b` (or your chosen model,
    plus `nomic-embed-text` if you want Ollama-served embeddings).

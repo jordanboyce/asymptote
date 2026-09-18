@@ -84,6 +84,40 @@ Choose an access model deliberately. In the default shared-appliance mode, every
 
 People can also ask for access themselves: `REGISTRATION_MODE=approval` (queue for an admin) or `open` (admit matching addresses at once) turns on a public `/register` page, with an optional email-domain allowlist and a seat cap. Each collection holds up to 5 GiB of sources by default (`COLLECTION_STORAGE_LIMIT_BYTES`); usage is shown in the Sources panel.
 
+### On-premises with your own models
+
+The image is portable by design: build it once, carry it in, configure it
+there. Nothing site-specific is baked in.
+
+```bash
+# on a connected machine
+./scripts/package_image.sh --tag 1.0.0 --out /media/transfer
+#   Windows:  .\scripts\package_image.ps1 -Tag 1.0.0 -Out D:\transfer
+
+# on the target host
+docker load < asymptote-1.0.0.tar.gz
+cp .env.onprem.example .env      # model endpoint, auth, data path
+docker compose -f docker-compose.onprem.yml up -d
+```
+
+Point the whole deployment at a model you run — vLLM, Ollama, llama.cpp,
+LM Studio, TGI, LiteLLM, or any OpenAI-compatible gateway:
+
+```bash
+AI_PROVIDER=openai_compatible
+AI_BASE_URL=http://vllm.internal:8000/v1
+AI_MODEL=llama-3.3-70b-instruct
+AI_PROVIDER_LABEL=Acme Internal LLM
+```
+
+Then nobody configures a model in their browser: chat, report generation,
+OCR and the content-policy reviewer all use that endpoint, and the UI shows
+it as connected. A per-request key still overrides it, so an individual can
+bring their own provider. Endpoints with a private CA are handled by
+dropping the `.crt` into `certs/ca/` — trusted at container start, no
+rebuild. Registry users can `docker pull ghcr.io/jordanboyce/asymptote`
+instead of carrying a file. Full guide: [docs/ONPREM.md](docs/ONPREM.md).
+
 ### Air-gapped / offline deployment
 
 Asymptote runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, limiting supported provider paths to the local or self-hosted endpoints you configure. Enforce a network egress policy for a verifiable no-egress deployment. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
@@ -380,6 +414,14 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2        # model for the local provider
 REMOTE_EMBEDDING_MODEL=                 # model for any other provider (blank = its recommended one)
 EMBEDDING_API_KEY=                      # blank = reuse the matching AI Providers key
 
+# The LLM the whole deployment uses (optional — leave empty and each person
+# connects their own provider in Settings). See docs/ONPREM.md.
+AI_PROVIDER=                            # openai_compatible | ollama | anthropic | openai | ...
+AI_BASE_URL=                            # required for openai_compatible, e.g. http://vllm.internal:8000/v1
+AI_MODEL=                               # e.g. llama-3.3-70b-instruct
+AI_API_KEY=                             # optional; empty for an endpoint needing no auth
+AI_PROVIDER_LABEL=                      # what the UI calls it
+
 # Text chunking
 CHUNK_SIZE=600                          # Characters per chunk
 CHUNK_OVERLAP=100                       # Overlap between chunks
@@ -437,6 +479,20 @@ Place your corporate CA certificate(s) — `.crt` files — into the `certs/ca/`
 ```bash
 cp /path/to/your/cert.crt certs/ca/
 docker compose up -d --build
+```
+
+**Option 1b: Docker, no rebuild (prebuilt or air-gapped images)**
+
+An image you loaded from a file or pulled from a registry can't have your CA
+baked in, so the entrypoint installs whatever is mounted at `/certs/ca` on
+every start — into the system trust store *and* certifi's bundle, which is
+what the Python HTTP clients actually use (a CA in the system store alone
+still gives `CERTIFICATE_VERIFY_FAILED` from an endpoint `curl` reaches
+fine). `docker-compose.onprem.yml` mounts `certs/ca` already:
+
+```bash
+cp /path/to/your/cert.crt certs/ca/
+docker compose -f docker-compose.onprem.yml restart asymptote
 ```
 
 **Important Notes:**

@@ -149,6 +149,36 @@ export function getServerProviderIds() {
   return _serverProviderIds
 }
 
+// The provider an operator wired into the deployment itself (AI_PROVIDER /
+// AI_BASE_URL / AI_MODEL in the server's environment). On an on-prem install
+// the model belongs to the organisation, not to each person's browser, so
+// this counts as configured for everyone and nobody types an internal URL
+// into a settings form. Shape: { configured, provider, label, model,
+// base_url, key_configured } — never the key itself.
+let _deploymentDefault = { configured: false }
+
+/** Fetch the deployment's own provider. Cached per page load. */
+export async function fetchDeploymentDefault() {
+  try {
+    const { default: axios } = await import('axios')
+    const resp = await axios.get('/api/ai/deployment')
+    _deploymentDefault = resp.data?.configured ? resp.data : { configured: false }
+  } catch {
+    _deploymentDefault = { configured: false }
+  }
+  return _deploymentDefault
+}
+
+/** The deployment's provider (call fetchDeploymentDefault() first). */
+export function getDeploymentDefault() {
+  return _deploymentDefault
+}
+
+/** True when this id is the deployment's own provider. */
+export function isDeploymentProvider(id) {
+  return !!_deploymentDefault.configured && _deploymentDefault.provider === id
+}
+
 /** Return all provider configs (built-in + custom) from localStorage. */
 export function getProvidersConfig() {
   try {
@@ -219,12 +249,15 @@ export function setActiveProviderLS(id) {
 //      (e.g. Chat's settings drawer); empty/absent means "follow global".
 //   2. Global active provider — `ai_settings.provider`, set via the
 //      "Use as default" control in Settings or the top-bar provider pill.
-//   3. First configured provider, where "configured" includes server-stored
-//      team keys (call fetchServerProviderIds() first so those count).
+//   3. First configured provider, where "configured" includes the
+//      deployment's own provider (AI_PROVIDER on the server — listed first,
+//      so an on-prem browser that configured nothing lands on the
+//      organisation's model) and server-stored team keys. Call
+//      loadServerProviders() — or fetchDeploymentDefault() and
+//      fetchServerProviderIds() — first so both count.
 //
-// There is no frontend JS test setup in this repo (no vitest/jest), so this
-// comment is the normative documentation of the chain. If a test runner is
-// ever added, resolveProvider() below is the function to pin down.
+// resolveProvider() below is the function that implements it; the chain is
+// pinned down in utils/__tests__/aiProviders.test.js.
 
 const OVERRIDE_KEY_PREFIX = 'asymptote_provider_override_'
 
@@ -287,6 +320,12 @@ export function getConfiguredProviderIds() {
   const configs = getProvidersConfig()
   const result = []
 
+  // First, so a browser that has configured nothing resolves to the
+  // deployment's own model (resolveProvider falls back to configured[0]).
+  // An explicit choice in this browser still wins — that is step 1/2 of the
+  // chain, which runs before this fallback.
+  if (_deploymentDefault.configured) result.push(_deploymentDefault.provider)
+
   for (const def of PROVIDER_DEFS) {
     const cfg = configs.find(c => c.id === def.id)
     if (def.type === 'local') {
@@ -301,7 +340,7 @@ export function getConfiguredProviderIds() {
     if (cfg.isCustom && cfg.baseUrl) result.push(cfg.id)
   }
 
-  return result
+  return [...new Set(result)]
 }
 
 /**
@@ -312,7 +351,15 @@ export function getConfiguredProviderIds() {
 export function buildProviderHeaders(providerId, modelOverride = null) {
   const cfg = getProviderConfig(providerId)
   const headers = {}
-  if (!cfg) return headers
+  if (!cfg) {
+    // No local config. For the deployment's own provider that is the normal
+    // case: the server holds the endpoint and key, and sending nothing is
+    // what makes it pick them up. A model override still travels, so someone
+    // can switch models on an endpoint that serves several.
+    const model = (modelOverride || '').trim()
+    if (model && isDeploymentProvider(providerId)) headers['X-AI-Model'] = model
+    return headers
+  }
 
   const resolvedModel = (modelOverride && modelOverride.trim()) ? modelOverride.trim() : (cfg.model || '')
 
@@ -348,6 +395,11 @@ export function getAPIProviderName(providerId) {
 
 /** Human-readable display name for a provider id. */
 export function getProviderDisplayName(providerId) {
+  // The deployment's label wins over the generic provider name: on-prem it
+  // is "Acme Internal LLM", not "Ollama".
+  if (isDeploymentProvider(providerId) && _deploymentDefault.label) {
+    return _deploymentDefault.label
+  }
   const def = PROVIDER_DEFS.find(d => d.id === providerId)
   if (def) return def.name
   const cfg = getProviderConfig(providerId)

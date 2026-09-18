@@ -1,0 +1,85 @@
+# Publish the deployable image to GitHub Container Registry.
+#
+# This is how a site that is allowed to reach the internet installs without
+# building: `docker pull ghcr.io/<owner>/asymptote:<tag>`. A site that is not
+# gets the same image as a file — see scripts/package_image.sh.
+#
+# Runs on a version tag (v1.2.3) and on demand. Not on every push: the build
+# compiles a torch/faiss dependency set and takes tens of minutes.
+name: Publish image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (default: the commit SHA)"
+        required: false
+      offline_bundle:
+        description: "Bake every model into the image (~1 GB larger)"
+        type: boolean
+        default: false
+      arm64:
+        description: "Also build linux/arm64 (slow — emulated)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        if: inputs.arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Lowercased by the action — a registry path cannot carry the
+          # capitals a GitHub owner name may have.
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: ${{ inputs.arm64 && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            OFFLINE_BUNDLE=${{ inputs.offline_bundle && '1' || '0' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Published"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo "Pull it on the target host, or carry it in with"
+            echo '`scripts/package_image.sh` for a network with no registry access.'
+          } >> "$GITHUB_STEP_SUMMARY"
