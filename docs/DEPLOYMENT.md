@@ -218,6 +218,35 @@ What changes when it is on:
   optional expiry) from the collection's ⋮ menu; the recipient pastes the
   token in the same dialog to accept. Shares are revocable, and deletion
   stays owner-only.
+- **Three tiers, not two.** `owner` decides how a collection is *built*:
+  re-indexing, chunk size, embedding model, the guide, the sensitivity
+  label, publishing and deletion. `readwrite` is a *contributor* — it adds
+  and removes sources, and nothing else; re-indexing on an owner's behalf
+  would rewrite their index under them, so that authority never leaves the
+  owner. `read` consumes: search, chat, MCP. The gate is
+  `api/deps.require_collection_access(..., write=True | owner=True)`; a new
+  endpoint that reconfigures a collection must pass `owner=True`.
+- **Publishing releases a reviewed collection to everyone, read-only.** An
+  owner ticks "Share with everyone, read-only" in the collection's edit
+  dialog. From then on every signed-in person can search it, ask about it
+  and reach it from their AI tools over MCP, while the owner alone keeps
+  the ability to add sources or change how it is built. This is the shape
+  for material that has been reviewed and released — a handbook, a policy
+  set, a reference corpus — where wide reach and a single accountable
+  maintainer both matter. Two refusals guard it: a `restricted` sensitivity
+  label is a boundary (the same rule that blocks sharing), and a *team*
+  collection cannot be published, because it has no single owner to keep
+  that authority — publishing it would lock it with nobody able to unlock
+  it. An explicit share still wins over publication, so a collaborator with
+  a readwrite share keeps it.
+- **Anyone who can read a collection can clone it.** `POST
+  /api/collections/{id}/clone` copies its sources into a new collection
+  owned by the caller, inheriting chunk size, embedding model, guide and
+  sensitivity, and starts a background indexing job. The copy is never
+  published. This is the answer to "I need this corpus chunked differently":
+  take your own copy rather than edit someone else's. The copy counts
+  against the caller's storage cap, and the whole transfer is checked
+  before any bytes move.
 - **MCP clients map to identities.** A personal access token (see
   [MCP clients](#mcp-clients)) carries the identity of whoever generated it —
   no separate name to share collections to. An Access service token instead

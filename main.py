@@ -267,8 +267,9 @@ _PUBLIC_PATHS = {"/health", "/register", "/api/register", "/api/register/config"
 # SPA, so its hashed assets and brand files must load before sign-in. The
 # bundle holds no secrets — every fact about the deployment comes from the
 # API, which stays gated.
-_PUBLIC_STATIC = {"/favicon.ico", "/manifest.webmanifest", "/icon_black.svg", "/icon_white.svg",
-                  "/logo_black.svg", "/logo_white.svg"}
+_PUBLIC_STATIC = {"/favicon.ico", "/manifest.webmanifest", "/apple-touch-icon.png",
+                  "/clio-mark.png", "/clio-mark-dark.png", "/clio-icon-maskable.png",
+                  "/clio-og.png"}
 
 
 def _client_ip(request) -> str | None:

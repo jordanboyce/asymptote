@@ -9,7 +9,8 @@
     <div class="max-w-lg w-full my-auto">
       <!-- Logo + welcome -->
       <div class="text-center mb-6">
-        <img src="/icon_black.svg" alt="" class="w-14 h-14 mx-auto mb-5 opacity-90" />
+        <span class="brand-art brand-art-mark block w-16 h-16 mx-auto mb-3" role="img" aria-label="Clio"></span>
+        <p class="text-[11px] uppercase tracking-[0.22em] font-semibold text-base-content/40 mb-4">Clio</p>
         <h1 id="welcome-title" class="text-2xl font-semibold tracking-tight">
           Answers from your sources
         </h1>

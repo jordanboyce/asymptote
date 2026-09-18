@@ -12,7 +12,7 @@
         title="View all collections"
         aria-label="Clio — view all collections"
       >
-        <img src="/icon_black.svg" alt="" class="logo-header h-5 w-5 flex-shrink-0">
+        <span class="brand-art brand-art-mark h-5 w-5 flex-shrink-0" aria-hidden="true"></span>
         <span class="font-bold text-sm tracking-tight hidden sm:inline">Clio</span>
       </button>
 
@@ -242,6 +242,7 @@
           <SourcesSidebar
             @document-deleted="handleDocumentDeleted"
             @background-job-started="showJobsDrawer = true"
+            @clone-collection="collectionStore.currentCollection && startClone(collectionStore.currentCollection)"
             @close="sourcesSidebarOpen = false"
           />
         </div>
@@ -438,6 +439,10 @@
                         class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                       >Team</span>
                       <span
+                        v-else-if="userStore.privateCollections && collection.published"
+                        class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                      >{{ collection.permission === 'owner' ? 'Shared with everyone' : 'Read-only' }}</span>
+                      <span
                         v-else-if="userStore.privateCollections"
                         class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                       >Private</span>
@@ -473,11 +478,21 @@
                         <Share2 :size="13" />
                       </button>
                       <button
+                        @click.stop="startClone(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Make my own copy"
+                        :aria-label="`Make my own copy of ${collection.name}`"
+                        :disabled="cloningId === collection.id"
+                      >
+                        <span v-if="cloningId === collection.id" class="loading loading-spinner loading-xs"></span>
+                        <Copy v-else :size="13" />
+                      </button>
+                      <button
+                        v-if="collectionStore.canConfigure(collection)"
                         @click.stop="openEditCollectionModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Edit collection"
                         :aria-label="`Edit collection ${collection.name}`"
-                        :disabled="collection.shared && collection.permission === 'read'"
                       >
                         <Pencil :size="13" />
                       </button>
@@ -531,6 +546,10 @@
                           class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                         >Team</span>
                         <span
+                          v-else-if="userStore.privateCollections && collection.published"
+                          class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
+                        >{{ collection.permission === 'owner' ? 'Shared with everyone' : 'Read-only' }}</span>
+                        <span
                           v-else-if="userStore.privateCollections"
                           class="text-[10px] uppercase tracking-[0.14em] text-base-content/40"
                         >Private</span>
@@ -569,11 +588,21 @@
                         <Share2 :size="13" />
                       </button>
                       <button
+                        @click.stop="startClone(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Make my own copy"
+                        :aria-label="`Make my own copy of ${collection.name}`"
+                        :disabled="cloningId === collection.id"
+                      >
+                        <span v-if="cloningId === collection.id" class="loading loading-spinner loading-xs"></span>
+                        <Copy v-else :size="13" />
+                      </button>
+                      <button
+                        v-if="collectionStore.canConfigure(collection)"
                         @click.stop="openEditCollectionModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Edit collection"
                         :aria-label="`Edit collection ${collection.name}`"
-                        :disabled="collection.shared && collection.permission === 'read'"
                       >
                         <Pencil :size="13" />
                       </button>
@@ -588,7 +617,7 @@
             <ExpertiseLibrary v-if="activeTab === 'expertise'" />
             <MCPTab v-if="activeTab === 'mcp'" />
             <AdminTab v-if="activeTab === 'admin'" />
-            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="statsStore.fetchStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" />
+            <SettingsTab v-if="activeTab === 'settings'" @data-cleared="handleDataCleared" @stats-updated="statsStore.fetchStats" @switch-tab="switchTab" @chat-tab-toggled="onChatTabToggled" @clone-collection="collectionStore.currentCollection && startClone(collectionStore.currentCollection)" />
           </div>
         </div>
 
@@ -882,6 +911,30 @@
           </p>
         </div>
 
+        <!-- Release to everyone. Read-only for them, unchanged for you: the
+             one way a collection reaches the whole deployment while staying
+             yours to rebuild. -->
+        <div v-if="canPublishEditing" class="form-control w-full mb-4">
+          <label class="flex items-start gap-3 cursor-pointer">
+            <input
+              v-model="editCollectionPublished"
+              type="checkbox"
+              class="toggle toggle-primary toggle-sm mt-0.5 flex-shrink-0"
+              :disabled="editCollectionSensitivity === 'restricted'"
+            />
+            <span class="min-w-0">
+              <span class="label-text font-medium">Share with everyone, read-only</span>
+              <span class="block text-xs opacity-70 mt-1">
+                Anyone signed in can search it, ask about it and reach it from their AI tools.
+                Only you can add sources, change its settings or re-index it.
+              </span>
+              <span v-if="editCollectionSensitivity === 'restricted'" class="block text-xs text-warning mt-1">
+                Restricted collections cannot be released. Change the sensitivity label first.
+              </span>
+            </span>
+          </label>
+        </div>
+
         <div class="form-control w-full mb-4">
           <label class="label" for="edit-collection-color">
             <span class="label-text">Color</span>
@@ -1146,7 +1199,7 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed, defineAsyncComponent } from 'vue'
-import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, Library, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search } from 'lucide-vue-next'
+import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, Library, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search, Copy } from 'lucide-vue-next'
 import http from './utils/http'
 import { useModal } from './composables/useModal'
 
@@ -1437,6 +1490,14 @@ const editCollectionDescription = ref('')
 const editCollectionColor = ref('#3b82f6')
 const editCollectionGuide = ref('')
 const editCollectionSensitivity = ref('internal')
+const editCollectionPublished = ref(false)
+// Publishing needs one accountable owner, so it is offered on collections
+// you own — never on team collections, which belong to everybody and would
+// end up locked with nobody able to unlock them (see api/collections).
+const canPublishEditing = computed(() => {
+  const c = collectionStore.collections.find(x => x.id === editingCollectionId.value)
+  return userStore.privateCollections && !!c && c.permission === 'owner' && !c.team
+})
 const updatingCollection = ref(false)
 
 // Delete confirmation modal
@@ -1627,6 +1688,7 @@ const openEditCollectionModal = (collection) => {
   editCollectionColor.value = collection.color || '#3b82f6'
   editCollectionGuide.value = collection.guide || ''
   editCollectionSensitivity.value = collection.sensitivity || 'internal'
+  editCollectionPublished.value = !!collection.published
   editModal.open()
 }
 
@@ -1641,12 +1703,32 @@ const updateCollection = async () => {
       color: editCollectionColor.value,
       guide: editCollectionGuide.value,
       sensitivity: editCollectionSensitivity.value,
+      published: canPublishEditing.value ? editCollectionPublished.value : undefined,
     })
     editModal.close()
   } catch (err) {
     ui.toastError(err, 'Failed to update collection')
   } finally {
     updatingCollection.value = false
+  }
+}
+
+// Cloning is a background indexing job, so the jobs drawer is where the
+// progress lives; switch to the copy straight away so the person lands in
+// the collection they now own rather than the one they could only read.
+const cloningId = ref('')
+const startClone = async (collection) => {
+  if (cloningId.value) return
+  cloningId.value = collection.id
+  try {
+    const clone = await collectionStore.cloneCollection(collection.id)
+    collectionStore.setCurrentCollection(clone.id)
+    showJobsDrawer.value = true
+    ui.notify(`Copying ${collection.name} — indexing in the background.`, 'success')
+  } catch (err) {
+    ui.toastError(err, 'Could not copy this collection')
+  } finally {
+    cloningId.value = ''
   }
 }
 

@@ -205,23 +205,23 @@ h1, h2, h3 { letter-spacing: -0.01em; }
 /* App shell: no rubber-band / pull-to-refresh fighting the scroll panes. */
 html, body { overscroll-behavior-y: none; }
 
-/* Header logo - uses currentColor via CSS filter trick */
-/* The logo inherits the text color from its container (primary-content) */
-.logo-header {
-  /* Make the black SVG take on the currentColor (primary-content) */
-  filter: brightness(0) saturate(100%);
-  /* This creates a mask effect - the SVG becomes the same color as text */
+/* Brand artwork.
+   The Clio mark is a gradient, so it can't be recoloured with the filter trick
+   the old monochrome mark used - the navy end would sit at ~1.6:1 on a dark
+   base. Two variants ship instead (see scripts/build_brand_assets.py) and the
+   theme picks one. Size the element with utility classes at the call site. */
+.brand-art {
+  background: center / contain no-repeat var(--brand-art-light);
+}
+[data-theme="dark"] .brand-art,
+[data-theme="dracula"] .brand-art {
+  background-image: var(--brand-art-dark);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .brand-art { background-image: var(--brand-art-dark); }
 }
 
-/* For light primary-content (dark primary backgrounds) - invert to white */
-.bg-primary .logo-header {
-  filter: brightness(0) invert(1);
-  opacity: 0.9;
-}
-
-/* For themes with light primary backgrounds where primary-content is dark */
-[data-theme="cupcake"] .bg-primary .logo-header,
-[data-theme="nord"] .bg-primary .logo-header {
-  filter: brightness(0);
-  opacity: 0.8;
+.brand-art-mark {
+  --brand-art-light: url("/clio-mark.png");
+  --brand-art-dark: url("/clio-mark-dark.png");
 }

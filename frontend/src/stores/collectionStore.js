@@ -38,9 +38,26 @@ export const useCollectionStore = defineStore('collection', () => {
     return c?.permission || 'owner'
   })
 
+  // Two gates, not one. canEdit is the *contributor* gate — may this person
+  // add and remove sources. canConfigure is the *owner* gate — may they
+  // change how the collection is built (chunking, embedding model, guide,
+  // re-indexing, publishing, deleting). A read-write collaborator clears the
+  // first and not the second, mirroring api/deps.require_collection_access.
+  // Everything a reader cannot do is hidden rather than shown disabled: the
+  // point of the reader view is that it is small, not that it is greyed out.
   const canEditCurrent = computed(() => {
     return currentPermission.value === 'owner' || currentPermission.value === 'readwrite'
   })
+
+  const canConfigureCurrent = computed(() => currentPermission.value === 'owner')
+
+  const isReadOnlyCurrent = computed(() => currentPermission.value === 'read')
+
+  const currentIsPublished = computed(() => !!currentCollection.value?.published)
+
+  function canConfigure(collection) {
+    return (collection?.permission || 'owner') === 'owner'
+  }
 
   // Actions. CRUD failures throw the http client's normalized error —
   // callers decide how to present them. loadCollections is fire-and-forget
@@ -80,8 +97,27 @@ export const useCollectionStore = defineStore('collection', () => {
       const response = await http.put(`/api/collections/${collectionId}`, updates)
       const index = collections.value.findIndex(c => c.id === collectionId)
       if (index !== -1) {
-        collections.value[index] = response.data
+        // PUT answers with the stored row, which carries no permission/share
+        // flags — merging rather than replacing keeps the ones the list
+        // resolved, so an edit can't silently promote a reader to owner.
+        const { permission, team, shared } = collections.value[index]
+        collections.value[index] = { permission, team, shared, ...response.data }
       }
+      return response.data
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // Clone: read access is enough. This is the way out of a collection you
+  // can read but not configure — you get your own copy, unpublished, with
+  // the build settings inherited and a background job indexing it.
+  async function cloneCollection(collectionId, name = null) {
+    loading.value = true
+    try {
+      const response = await http.post(`/api/collections/${collectionId}/clone`,
+        name ? { name } : {})
+      await loadCollections()
       return response.data
     } finally {
       loading.value = false
@@ -145,10 +181,15 @@ export const useCollectionStore = defineStore('collection', () => {
     sharedCollections,
     currentPermission,
     canEditCurrent,
+    canConfigureCurrent,
+    isReadOnlyCurrent,
+    currentIsPublished,
+    canConfigure,
     // Actions
     loadCollections,
     createCollection,
     updateCollection,
+    cloneCollection,
     deleteCollection,
     setCurrentCollection,
   }

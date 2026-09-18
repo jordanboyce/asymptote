@@ -3,7 +3,7 @@
     <!-- Brand bar -->
     <header class="px-5 sm:px-8 h-14 flex items-center justify-between">
       <a href="/" class="flex items-center gap-2.5 no-underline text-base-content" aria-label="Clio home">
-        <img :src="brandIcon" alt="" class="h-6 w-6 brand-mark" />
+        <span class="brand-art brand-art-mark h-6 w-6 flex-shrink-0" aria-hidden="true"></span>
         <span class="font-semibold tracking-tight">Clio</span>
       </a>
       <a href="/" class="btn btn-ghost btn-sm normal-case font-medium">
@@ -190,10 +190,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { AlertTriangle, ArrowRight, Check } from 'lucide-vue-next'
 import http from '../utils/http'
 
-// Bound rather than a literal src so the SFC compiler leaves the public
-// asset path alone (a literal is rewritten to an import, which breaks
-// under the test runner).
-const brandIcon = '/icon_black.svg'
 const state = ref('loading') // loading | unreachable | closed | form | done
 const busy = ref(false)
 const error = ref('')
@@ -266,13 +262,6 @@ onMounted(() => {
 </script>
 
 <style scoped>
-/* The brand mark is a black SVG; let it follow the text color in dark themes. */
-.brand-mark { filter: brightness(0); opacity: 0.9; }
-[data-theme="dark"] .brand-mark,
-[data-theme="dracula"] .brand-mark { filter: brightness(0) invert(1); }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .brand-mark { filter: brightness(0) invert(1); }
-}
 /* Honeypot: off-canvas, not display:none (some bots skip hidden fields). */
 .hp { position: absolute; left: -10000px; top: auto; width: 1px; height: 1px; overflow: hidden; }
 </style>

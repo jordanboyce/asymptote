@@ -58,8 +58,9 @@ PUBLIC_BYPASS_POLICY_NAME = "public-registration"
 # same paths from its own auth (main.py _PUBLIC_PATHS) and rate-limits the
 # form per IP; nothing under these paths reveals deployment data.
 PUBLIC_PATHS = ("/register", "/api/register", "/assets", "/favicon.ico",
-                "/manifest.webmanifest", "/icon_black.svg", "/icon_white.svg",
-                "/logo_black.svg", "/logo_white.svg",
+                "/manifest.webmanifest", "/apple-touch-icon.png",
+                "/clio-mark.png", "/clio-mark-dark.png", "/clio-icon-maskable.png",
+                "/clio-og.png",
                 # RFC 9728 metadata an OAuth MCP client reads before it has any
                 # credential (only served when MCP_OAUTH_ISSUER names an IdP).
                 "/.well-known/oauth-protected-resource")

@@ -81,6 +81,109 @@ class CollectionService:
     def get_collection(self, collection_id: str) -> Optional[Dict[str, Any]]:
         return app_db.get_collection(collection_id)
 
+    def source_file_paths(self, collection_id: str) -> List[Path]:
+        """Every source file behind a collection, as paths on disk.
+
+        Uploaded and agent-written sources live in the collection's documents
+        directory; local references live wherever they were indexed from. Same
+        two cases reindex_service walks, resolved here because cloning needs
+        the file list and not the index.
+        """
+        from services.indexer_manager import indexer_manager
+
+        documents_dir = indexer_manager.get_documents_path(collection_id)
+        paths: List[Path] = []
+        seen: set = set()
+        indexer = indexer_manager.get_indexer(collection_id)
+        for doc in indexer.vector_store.metadata_store.list_documents():
+            source_path = doc.get("source_path")
+            if (doc.get("source_type") or "upload") == "local_reference" and source_path:
+                path = Path(source_path)
+            else:
+                path = documents_dir / (doc.get("filename") or "")
+            key = str(path)
+            if key in seen or not path.is_file():
+                continue
+            seen.add(key)
+            paths.append(path)
+        return paths
+
+    def clone_collection(
+        self,
+        source_id: str,
+        owner_id: str,
+        name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Copy a collection's sources into a new collection owned by ``owner_id``.
+
+        A clone is how someone works with a published collection on their own
+        terms: they get their own copy, with the build settings inherited, and
+        can reindex or rechunk it without touching the original. The copy is
+        never published — releasing it is the new owner's decision.
+
+        Returns the new collection with a ``job_id`` for the indexing job.
+        Raises StorageLimitExceeded if the sources do not fit the caller's cap,
+        and ValueError if the source has nothing to copy.
+        """
+        from services import storage_quota
+        from services.upload_service import upload_service
+
+        source = app_db.get_collection(source_id)
+        if not source:
+            raise ValueError(f"Collection '{source_id}' not found")
+
+        paths = self.source_file_paths(source_id)
+        if not paths:
+            raise ValueError("This collection has no sources to copy.")
+
+        clone = self.create_collection(
+            name=name or f"Copy of {source.get('name') or source_id}",
+            description=source.get("description") or "",
+            color=source.get("color") or "#3b82f6",
+            chunk_size=source.get("chunk_size") or 500,
+            chunk_overlap=source.get("chunk_overlap") or 50,
+            embedding_model=source.get("embedding_model"),
+            owner_id=owner_id,
+        )
+
+        # The bulk job reserves per file, which would leave a half-copied
+        # collection behind when the cap bites mid-run. Check the whole
+        # transfer up front so an oversized clone is refused before any
+        # bytes move, and drop the empty collection if it is.
+        total = sum(p.stat().st_size for p in paths)
+        try:
+            storage_quota.check(clone["id"], total)
+        except Exception:
+            self.delete_collection(clone["id"])
+            raise
+
+        # The guide is part of how the collection answers, so it travels with
+        # the copy; the governance label does too, because a clone holds the
+        # same material as its source.
+        if source.get("guide") or source.get("sensitivity"):
+            self.update_collection(
+                collection_id=clone["id"],
+                guide=source.get("guide"),
+                sensitivity=source.get("sensitivity"),
+            )
+
+        job_id = upload_service.start_local_index(
+            file_paths=[str(p) for p in paths],
+            collection_id=clone["id"],
+            copy_to_library=True,
+            uploaded_by=owner_id,
+        )
+
+        clone = app_db.get_collection(clone["id"])
+        clone["job_id"] = job_id
+        clone["cloned_from"] = source_id
+        clone["permission"] = "owner"
+        logger.info(
+            f"Cloned collection {source_id} -> {clone['id']} "
+            f"({len(paths)} sources, job {job_id}) owner={owner_id}"
+        )
+        return clone
+
     def get_all_collections(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all collections visible to a user.
 
@@ -109,6 +212,10 @@ class CollectionService:
                 c['team'] = True
             elif user_id and owner == user_id:
                 c['permission'] = 'owner'
+            elif c.get('published'):
+                # Reviewed and released: everyone may read it and reach it
+                # over MCP, nobody but its owner may change how it is built.
+                c['permission'] = 'read'
             else:
                 continue
             visible.append(c)
@@ -120,6 +227,14 @@ class CollectionService:
                     c['permission'] = c.get('permission', 'read')
                     visible.append(c)
                     seen.add(c['id'])
+                else:
+                    # Already visible because it is published — but an explicit
+                    # share may carry write, so take the stronger permission.
+                    for existing in visible:
+                        if existing['id'] == c['id'] and existing.get('permission') == 'read':
+                            existing['permission'] = c.get('permission', 'read')
+                            existing['shared'] = True
+                            break
 
         return visible
 
@@ -134,6 +249,7 @@ class CollectionService:
         embedding_model: Optional[str] = None,
         guide: Optional[str] = None,
         sensitivity: Optional[str] = None,
+        published: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         app_db.update_collection(
             collection_id=collection_id,
@@ -145,6 +261,7 @@ class CollectionService:
             embedding_model=embedding_model,
             guide=guide,
             sensitivity=sensitivity,
+            published=published,
         )
         return app_db.get_collection(collection_id)
 
