@@ -76,16 +76,23 @@ def _check_security_posture() -> None:
             "behind Cloudflare Access - see docs/DEPLOYMENT.md."
         )
 
-    if settings.private_collections and not (
-        settings.cf_access_team_domain and settings.cf_access_aud
-    ):
+    # Identity source (Cloudflare Access, your own OIDC provider, or an
+    # authenticating reverse proxy). Validated whether or not private
+    # collections are on: a deployment that configured an identity source at
+    # all should learn immediately that it is wrong.
+    from services import identity as identity_service
+
+    identity_service.validate_config()
+
+    if settings.private_collections and not identity_service.active_provider():
         raise RuntimeError(
-            "PRIVATE_COLLECTIONS requires a verified identity source: set "
-            "CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD (Cloudflare Access) so "
-            "every request carries a signed identity. Without one, ownership "
-            "would be enforced against an identity anyone can forge, which is "
-            "the half-boundary this app refuses to ship. See "
-            "docs/DEPLOYMENT.md."
+            "PRIVATE_COLLECTIONS requires a verified identity source. Set "
+            "IDENTITY_PROVIDER to one of: cloudflare_access (CF_ACCESS_* - "
+            "internet-facing), oidc (OIDC_ISSUER + OIDC_AUDIENCE - your own "
+            "IdP, the on-prem answer), or trusted_header (an authenticating "
+            "reverse proxy). Without one, ownership would be enforced against "
+            "an identity anyone can forge, which is the half-boundary this "
+            "app refuses to ship. See docs/IDENTITY.md."
         )
 
     # Deployment default LLM (on-prem private endpoints). A typo here would
@@ -264,6 +271,14 @@ _PUBLIC_STATIC = {"/favicon.ico", "/manifest.webmanifest", "/icon_black.svg", "/
                   "/logo_black.svg", "/logo_white.svg"}
 
 
+def _client_ip(request) -> str | None:
+    """Peer address as the server sees it, for the identity layer's optional
+    CIDR check. Deliberately NOT read from X-Forwarded-For here — a value the
+    caller supplies cannot guard anything (services/identity.py explains why
+    even this one is defence in depth only)."""
+    return request.client.host if request.client else None
+
+
 def _is_public_path(path: str) -> bool:
     return (
         path in _PUBLIC_PATHS
@@ -283,21 +298,25 @@ async def require_auth(request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
-    # Cloudflare Access trust: a valid signed assertion from the edge is
-    # stronger auth than the shared password (per-identity, revocable),
-    # and accepting it removes the browser's second login prompt after
-    # SSO. Signature/issuer/audience/expiry are all verified — a spoofed
-    # header without the team's private key gets nowhere.
-    from services.access_jwt import get_verifier
-    verifier = get_verifier()
-    if verifier is not None:
-        assertion = request.headers.get("cf-access-jwt-assertion", "")
-        if assertion:
-            claims = await asyncio.to_thread(verifier.verify, assertion)
-            if claims is not None:
-                request.state.auth_identity = verifier.identity_from_claims(claims)
-                request.state.auth_via = "cloudflare-access"
-                return await _call_with_user_context(request, call_next)
+    # Verified identity: a Cloudflare Access assertion, a bearer JWT from the
+    # site's own IdP, or a header an authenticating proxy already vouched for
+    # (services/identity.py). Any of these is stronger auth than the shared
+    # password — per-identity and revocable at the source — and accepting one
+    # removes the browser's second login prompt after SSO. Verification runs
+    # in a thread: it can hit the network for a JWKS refresh.
+    # ...but only for a request that actually carries one: has_candidate is a
+    # cheap header look, so a password-authenticated call never spends a
+    # threadpool slot to discover it has no assertion.
+    from services.identity import get_identity_verifier
+    verifier = get_identity_verifier()
+    if verifier is not None and verifier.has_candidate(request.headers):
+        who = await asyncio.to_thread(
+            verifier.verify_request, request.headers, _client_ip(request)
+        )
+        if who:
+            request.state.auth_identity = who
+            request.state.auth_via = verifier.via
+            return await _call_with_user_context(request, call_next)
 
     presented = _password_from_auth_header(request.headers.get("authorization", ""))
 
@@ -326,6 +345,9 @@ async def require_auth(request, call_next):
             request.state.mcp_token_allowlist = bool(token_record.get("allowlist"))
             # Adding/updating sources over MCP is opt-in per token.
             request.state.mcp_token_can_write = bool(token_record.get("can_write"))
+            # Which credential made the call, for the MCP audit trail. The
+            # id, never the token — the plaintext is unrecoverable by design.
+            request.state.mcp_token_id = token_record.get("id")
             # Any MCP rate budget is per token, not per identity or IP.
             request.state.rate_limit_key = f"mcp-token:{token_record.get('id')}"
             return await _call_with_user_context(request, call_next)

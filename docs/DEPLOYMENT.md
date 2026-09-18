@@ -107,6 +107,12 @@ internet at all. Use `docker-compose.onprem.yml`; the walkthrough is
 [ONPREM.md](ONPREM.md), and the disconnected specialisation is
 [AIRGAP.md](AIRGAP.md).
 
+For per-person ownership here — no Cloudflare in the path — set
+`IDENTITY_PROVIDER=oidc` against your own IdP, or `trusted_header` behind the
+proxy that already authenticates ([IDENTITY.md](IDENTITY.md)). Shape C's "no
+per-request audit trail" caveat goes away with it: events get a real actor,
+and `MCP_AUDIT_TOOL_CALLS=true` extends that to what agents read.
+
 ### D. Public URL with a shared password
 
 `AUTH_PASSWORD` alone, no proxy. Browsers prompt natively (HTTP Basic, any
@@ -168,12 +174,23 @@ on any `collection_id` unchecked — advertised an isolation boundary without
 being one. That flag still refuses to start; this mode is the real version of
 what it pretended to be.
 
-**It requires Cloudflare Access** (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`,
-deployment shape **B**). Ownership enforced against an identity anyone can
-forge is worthless, so the app refuses to start with the flag on and no
-verified identity source configured. The Access JWT the edge attaches to every
-request is the identity: a person's email for SSO logins, a service token's
-name for MCP clients.
+**It requires a verified identity source.** Ownership enforced against an
+identity anyone can forge is worthless, so the app refuses to start with the
+flag on and no source configured. Set `IDENTITY_PROVIDER` to one of:
+
+- `cloudflare_access` — `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`, deployment
+  shape **B**. The Access JWT the edge attaches to every request is the
+  identity: a person's email for SSO logins, a service token's name for MCP
+  clients. Selected automatically when those two are set.
+- `oidc` — a bearer JWT from your own identity provider (Keycloak, Entra ID,
+  Okta, PingFederate). The answer for shapes **C** and **C2**, where there is
+  no Cloudflare in the path.
+- `trusted_header` — an authenticating reverse proxy (mTLS terminator,
+  Kerberos front end, site SSO proxy) has already established who the caller
+  is and passes it in a header.
+
+Full configuration, and the guards each one needs, in
+[IDENTITY.md](IDENTITY.md).
 
 What changes when it is on:
 

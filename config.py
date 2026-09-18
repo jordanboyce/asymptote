@@ -180,6 +180,17 @@ class Settings(BaseSettings):
     mcp_ai_provider: str = "none"   # AI provider for MCP synthesis: "none" | "anthropic" | "openai" | "ollama"
     mcp_ollama_model: str = ""      # Ollama model to use when mcp_ai_provider = "ollama"
 
+    # Record every MCP tool call in the audit trail, not just writes. Off by
+    # default: on a personal or small-team appliance it is noise that grows
+    # the audit table for no accountability gain. Turn it ON for any
+    # deployment that has to answer "which credential read which document,
+    # when" — the AU-family control every regulated or government install is
+    # measured against. Recorded per call: tool, credential, collection,
+    # document ids and result counts. Never the passage text or the query's
+    # results, so the trail cannot itself become a copy of the corpus.
+    # AUDIT_RETENTION_DAYS applies as it does to every other audit row.
+    mcp_audit_tool_calls: bool = False
+
     # Database backend for app metadata (collections, shares, jobs, usage).
     # "postgresql" moves ONLY app.db — per-collection vector/BM25/metadata
     # stores, structured tables, the answer cache, and faiss.index all stay
@@ -200,10 +211,10 @@ class Settings(BaseSettings):
 
     # Private collections: per-person ownership and sharing, enforced at every
     # entry point that takes a collection_id (search, documents, chat, /mcp).
-    # Requires Cloudflare Access (CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD below)
-    # so every request carries a cryptographically verified identity — the app
-    # refuses to start with this flag on and no identity source configured,
-    # because without one the boundary would be cosmetic.
+    # Requires a verified identity source — IDENTITY_PROVIDER below, which is
+    # Cloudflare Access, your own OIDC provider, or an authenticating reverse
+    # proxy. The app refuses to start with this flag on and no identity source
+    # configured, because without one the boundary would be cosmetic.
     #
     # Semantics when on:
     #   - Collections owned by a person are visible only to the owner and to
@@ -221,6 +232,50 @@ class Settings(BaseSettings):
     # `Authorization: Bearer <password>`. Browsers prompt natively, so no login
     # UI is needed. Required whenever the server is reachable beyond loopback.
     auth_password: str = ""
+
+    # ── Verified identity (services/identity.py) ─────────────────────────
+    # Which source establishes *who* a request is. Only this decides identity;
+    # AUTH_PASSWORD above decides whether an anonymous caller gets in at all.
+    #
+    #   ""                 auto — cloudflare_access when CF_ACCESS_* are set,
+    #                      otherwise no verified identity (team appliance).
+    #   cloudflare_access  Cf-Access-Jwt-Assertion from the edge.
+    #   oidc               a bearer JWT from your own IdP (Keycloak, Entra ID,
+    #                      Okta, PingFederate). The on-prem / air-gapped answer.
+    #   trusted_header     a header set by an authenticating reverse proxy —
+    #                      mTLS terminator, SSO proxy, Kerberos front end.
+    #
+    # See docs/IDENTITY.md. Misconfiguration is a startup failure, never a
+    # silent downgrade to "everyone is anonymous".
+    identity_provider: str = ""
+
+    # OIDC (IDENTITY_PROVIDER=oidc). OIDC_AUDIENCE is not optional: without
+    # it, any token the IdP ever issued for any application would be accepted
+    # here. OIDC_JWKS_URL skips discovery for an install that cannot reach the
+    # issuer's .well-known document. OIDC_REQUIRED_CLAIMS narrows admission
+    # further, e.g. "groups=asymptote-users" — comma-separated name=value
+    # pairs, each matching a scalar claim or a member of a list claim.
+    oidc_issuer: str = ""            # e.g. "https://sso.agency.gov/realms/main"
+    oidc_audience: str = ""          # comma-separated client ids / API audiences
+    oidc_jwks_url: str = ""
+    oidc_identity_claim: str = "email"
+    oidc_required_claims: str = ""
+
+    # Trusted reverse-proxy header (IDENTITY_PROVIDER=trusted_header). The
+    # header is forgeable by anything that can reach the port directly, so
+    # the app refuses to start without a guard that holds: either HOST is
+    # loopback (your proxy is the only route in) or TRUSTED_HEADER_SECRET is
+    # set, so the proxy proves the identity with HMAC-SHA256 over the value,
+    # hex-encoded, in TRUSTED_HEADER_SIGNATURE_NAME.
+    #
+    # TRUSTED_HEADER_PROXIES is defence in depth, never the sole guard:
+    # uvicorn rewrites the peer address from X-Forwarded-For for connections
+    # from FORWARDED_ALLOW_IPS, so the address checked is not always the real
+    # socket peer. See docs/IDENTITY.md.
+    trusted_header_name: str = "X-Forwarded-User"
+    trusted_header_proxies: str = ""  # comma-separated CIDRs or addresses
+    trusted_header_secret: str = ""
+    trusted_header_signature_name: str = "X-Forwarded-User-Signature"
 
     # Trust Cloudflare Access authentication. When both are set, a request
     # carrying a valid Cf-Access-Jwt-Assertion (signed by the team's keys,

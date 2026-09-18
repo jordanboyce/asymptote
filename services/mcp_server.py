@@ -94,6 +94,28 @@ _request_mcp_can_write: ContextVar[bool] = ContextVar("asymptote_request_mcp_can
 def get_request_mcp_can_write() -> bool:
     return _request_mcp_can_write.get(True)
 
+
+# Which personal token made this call, for the audit trail. None for every
+# other caller (SSO session, shared password, in-process chat), whose
+# identity the audit layer already resolves from the user contextvar.
+_request_mcp_token_id: ContextVar[str | None] = ContextVar(
+    "asymptote_request_mcp_token_id", default=None
+)
+
+
+def get_request_mcp_token_id() -> str | None:
+    return _request_mcp_token_id.get(None)
+
+
+# The verified identity behind this MCP call, for the audit trail only. Read
+# separately from the user contextvar because that one carries ownership
+# semantics and reads back as default_user_id when private collections are
+# off — which is exactly the deployment shape where the audit still needs to
+# name the real principal (an OIDC subject, an Access email) or nobody.
+_request_mcp_identity: ContextVar[str | None] = ContextVar(
+    "asymptote_request_mcp_identity", default=None
+)
+
 MCP_CONFIG_FIELDS = (
     "enable_mcp",
     "mcp_server_id",
@@ -154,13 +176,85 @@ _asymptote_mcp = FastMCP(
 
 
 def _tool_response(response: dict[str, Any], tool_name: str) -> dict[str, Any]:
-    """Return an MCP tool response unchanged.
+    """Return an MCP tool response unchanged, auditing the call when asked.
 
-    Retained as the single seam every tool result passes through, in case
-    post-processing is needed later. `tool_name` identifies the producing
-    tool for callers and diagnostics.
+    The single seam every tool result passes through, which is what makes it
+    the right place to answer "which credential read which document, when" —
+    the accountability question a regulated deployment has to answer and that
+    the write-only audit could not. Off unless MCP_AUDIT_TOOL_CALLS is set;
+    see config.py for why that is the default.
+
+    `tool_name` identifies the producing tool for callers and diagnostics.
     """
+    if settings.mcp_audit_tool_calls:
+        _audit_tool_call(tool_name, response)
     return response
+
+
+# Result keys that carry document identity, in the shapes the tools return.
+# Filename first: an operator investigating an incident searches for the name
+# they know. The stable document_id still lands in the row's own column for
+# the single-document tools, which is where it matters for a rename.
+_AUDIT_DOC_KEYS = ("filename", "source", "document_id", "id")
+
+# Most distinct sources named in one audit row; the rest are counted, not
+# listed, so a wide research call stays a readable row.
+_AUDIT_DOC_LIMIT = 25
+
+
+def _audit_tool_call(tool_name: str, response: dict[str, Any]) -> None:
+    """Record one MCP tool call. Metadata only — never passage text.
+
+    The trail must not become a second copy of the corpus: an audit row is
+    read by more people, and kept longer, than the documents it describes.
+    So this records what was touched and how much came back, never what it
+    said. Never raises — audit.record already swallows its own failures, and
+    a summarisation bug must not turn a good tool call into an error.
+    """
+    try:
+        detail: dict[str, Any] = {"tool": tool_name}
+        token_id = get_request_mcp_token_id()
+        if token_id:
+            detail["token_id"] = token_id
+
+        documents: list[str] = []
+        counts: dict[str, int] = {}
+        for key, value in response.items():
+            if isinstance(value, list):
+                counts[key] = len(value)
+                for item in value:
+                    if isinstance(item, dict):
+                        for doc_key in _AUDIT_DOC_KEYS:
+                            name = item.get(doc_key)
+                            if name and str(name) not in documents:
+                                documents.append(str(name))
+                                break
+        if counts:
+            detail["counts"] = counts
+        if documents:
+            detail["documents"] = documents[:_AUDIT_DOC_LIMIT]
+            if len(documents) > _AUDIT_DOC_LIMIT:
+                detail["documents_truncated"] = len(documents) - _AUDIT_DOC_LIMIT
+
+        direct_doc = response.get("document_id") or response.get("filename")
+        collection_id = response.get("collection_id")
+        if not collection_id:
+            ids = response.get("collection_ids")
+            if isinstance(ids, list) and ids:
+                detail["collection_ids"] = [str(c) for c in ids[:25]]
+
+        from services import audit
+
+        audit.record(
+            "mcp.tool_call",
+            actor=_request_mcp_identity.get(None),
+            collection_id=str(collection_id) if collection_id else None,
+            document_id=str(direct_doc) if direct_doc else None,
+            target=tool_name,
+            detail=detail,
+        )
+    except Exception as e:  # pragma: no cover - defensive by design
+        logger.warning(f"MCP tool call {tool_name} could not be audited: {e}")
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -2854,6 +2948,8 @@ class ToggleableMCPApp:
         scope_token = _request_mcp_token_scope.set(state.get("mcp_token_scope") or None)
         allowlist_token = _request_mcp_token_allowlist.set(bool(state.get("mcp_token_allowlist", False)))
         write_token = _request_mcp_can_write.set(bool(state.get("mcp_token_can_write", True)))
+        token_id_token = _request_mcp_token_id.set(state.get("mcp_token_id") or None)
+        identity_token = _request_mcp_identity.set(state.get("auth_identity") or None)
         # Bind the verified identity for private-collections scoping. The auth
         # middleware in main.py verifies the Access JWT and records the result
         # on the ASGI scope's state before this mount runs; MCP service tokens
@@ -2872,6 +2968,8 @@ class ToggleableMCPApp:
                 from middleware.user_context import reset_request_user
 
                 reset_request_user(user_token)
+            _request_mcp_identity.reset(identity_token)
+            _request_mcp_token_id.reset(token_id_token)
             _request_mcp_can_write.reset(write_token)
             _request_mcp_token_allowlist.reset(allowlist_token)
             _request_mcp_token_scope.reset(scope_token)
