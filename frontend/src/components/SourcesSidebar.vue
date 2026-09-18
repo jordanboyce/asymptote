@@ -27,7 +27,7 @@
     <!-- Storage against the per-collection cap. Quiet by default; the bar
          only takes on a warning tone in the last 10%, error when full. -->
     <div
-      v-if="statsStore.storageLimitBytes > 0"
+      v-if="statsStore.storageLimitBytes > 0 && collectionStore.canEditCurrent"
       class="px-3 py-1.5 border-b border-base-300 flex-shrink-0"
       :title="storageTitle"
     >
@@ -64,10 +64,19 @@
         <!-- Read-only share: say so instead of offering controls that 403 -->
         <div
           v-if="addSectionOpen && !collectionStore.canEditCurrent"
-          class="px-3 pb-3 text-xs text-base-content/55 flex items-start gap-2"
+          class="px-3 pb-3 text-xs text-base-content/55 space-y-2"
         >
-          <Eye :size="12" class="mt-0.5 flex-shrink-0" aria-hidden="true" />
-          <span>This collection is shared with you read-only. Its owner manages the sources.</span>
+          <div class="flex items-start gap-2">
+            <Eye :size="12" class="mt-0.5 flex-shrink-0" aria-hidden="true" />
+            <span v-if="collectionStore.currentIsPublished">
+              This collection has been shared with everyone to read. Its owner keeps it up to date.
+            </span>
+            <span v-else>This collection is shared with you read-only. Its owner manages the sources.</span>
+          </div>
+          <button class="btn btn-outline btn-xs w-full gap-1" @click="$emit('clone-collection')">
+            <Copy :size="11" aria-hidden="true" />
+            Make my own copy
+          </button>
         </div>
 
         <div v-show="addSectionOpen && collectionStore.canEditCurrent" class="px-3 pb-3 space-y-2">
@@ -719,7 +728,7 @@
 <script setup>
 import { ref, computed, markRaw, onMounted, onBeforeUnmount, watch } from 'vue'
 import http from '../utils/http'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen, Flag } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Library, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen, Flag, Copy } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useUiStore } from '../stores/uiStore'
 import { useUserStore } from '../stores/userStore'
@@ -730,7 +739,7 @@ import { useSelectionStore } from '../stores/selectionStore'
 import { useStatsStore } from '../stores/statsStore'
 import { formatBytes, describeStorage } from '../utils/format'
 
-const emit = defineEmits(['document-deleted', 'close'])
+const emit = defineEmits(['document-deleted', 'close', 'background-job-started', 'clone-collection'])
 
 const collectionStore = useCollectionStore()
 const ui = useUiStore()

@@ -1,6 +1,6 @@
-# Deploying Asymptote for a Team
+# Deploying Clio for a Team
 
-By default Asymptote is a **shared team appliance**. Everyone who can reach it
+By default Clio is a **shared team appliance**. Everyone who can reach it
 sees the whole corpus — every collection, every document, every table, and the
 same `/mcp` knowledge surface (subject to restricted-source handling). This
 default does not isolate users. Choose private collections when users should
@@ -14,7 +14,7 @@ sharing, enforced at every entry point against the verified Access identity.
 
 The app has no login of its own. Access is controlled at the edge by whatever
 you put in front of it, and the app is bound so that the edge is the only route
-in. Nothing else is required — no accounts to provision inside Asymptote, no
+in. Nothing else is required — no accounts to provision inside Clio, no
 password resets, no per-user configuration.
 
 | Setting | Default | What it controls |
@@ -53,12 +53,12 @@ Good options: **Cloudflare Access**, **Tailscale** (with `tailscale serve`),
 The critical part is step 2 — the proxy must be the *only* route in. A proxy
 you can walk around protects nothing.
 
-**1. Keep Asymptote off the public network.** With compose, drop the `ports:`
+**1. Keep Clio off the public network.** With compose, drop the `ports:`
 mapping so the container is reachable only on the internal Docker network:
 
 ```yaml
 services:
-  asymptote:
+  clio:
     # ports:              # ← removed: no direct access from the host
     #   - "8473:8473"
     expose:
@@ -67,7 +67,7 @@ services:
       - HOST=0.0.0.0      # inside the container; the network is the boundary
 ```
 
-**2. Put the proxy on that network** and point it at `http://asymptote:8473`.
+**2. Put the proxy on that network** and point it at `http://clio:8473`.
 Only the proxy publishes a port.
 
 **3. Verify the bypass is actually closed.** From another machine, try to reach
@@ -106,6 +106,12 @@ Combine with `OFFLINE_MODE=1` when the deployment must not reach the
 internet at all. Use `docker-compose.onprem.yml`; the walkthrough is
 [ONPREM.md](ONPREM.md), and the disconnected specialisation is
 [AIRGAP.md](AIRGAP.md).
+
+For per-person ownership here — no Cloudflare in the path — set
+`IDENTITY_PROVIDER=oidc` against your own IdP, or `trusted_header` behind the
+proxy that already authenticates ([IDENTITY.md](IDENTITY.md)). Shape C's "no
+per-request audit trail" caveat goes away with it: events get a real actor,
+and `MCP_AUDIT_TOOL_CALLS=true` extends that to what agents read.
 
 ### D. Public URL with a shared password
 
@@ -148,6 +154,16 @@ wrinkle: **MCP clients authenticate as a token, not as a person.**
 - With `AUTH_PASSWORD` alone (no personal token), clients send
   `Authorization: Bearer <password>` and work normally, but anonymously —
   see below.
+- **Sign in from the client (OAuth).** Claude Desktop, claude.ai, ChatGPT
+  and Claude Code (`claude mcp login`) can attach with just the endpoint
+  URL and a browser sign-in at your identity provider — no token to paste
+  or revoke. It needs an authorization server for `/mcp`: an `oidc`
+  deployment has one already (set `MCP_PUBLIC_URL`); a Cloudflare Access
+  deployment names one with `MCP_OAUTH_ISSUER` + `MCP_OAUTH_AUDIENCE`, and
+  the edge must let `/mcp` and `/.well-known/oauth-protected-resource`
+  through (the provisioning script does). The token resolves to the same
+  person a browser session would. Details, per-IdP client registration and
+  the optional required scope: [IDENTITY.md](IDENTITY.md#oauth-for-mcp-clients).
 - With an SSO proxy and no personal token, a headless MCP client has no
   browser to complete the login in. Either use a proxy that issues service
   tokens (Cloudflare Access does — see `docs/REMOTE-ACCESS.md` for a script
@@ -168,12 +184,23 @@ on any `collection_id` unchecked — advertised an isolation boundary without
 being one. That flag still refuses to start; this mode is the real version of
 what it pretended to be.
 
-**It requires Cloudflare Access** (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`,
-deployment shape **B**). Ownership enforced against an identity anyone can
-forge is worthless, so the app refuses to start with the flag on and no
-verified identity source configured. The Access JWT the edge attaches to every
-request is the identity: a person's email for SSO logins, a service token's
-name for MCP clients.
+**It requires a verified identity source.** Ownership enforced against an
+identity anyone can forge is worthless, so the app refuses to start with the
+flag on and no source configured. Set `IDENTITY_PROVIDER` to one of:
+
+- `cloudflare_access` — `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`, deployment
+  shape **B**. The Access JWT the edge attaches to every request is the
+  identity: a person's email for SSO logins, a service token's name for MCP
+  clients. Selected automatically when those two are set.
+- `oidc` — a bearer JWT from your own identity provider (Keycloak, Entra ID,
+  Okta, PingFederate). The answer for shapes **C** and **C2**, where there is
+  no Cloudflare in the path.
+- `trusted_header` — an authenticating reverse proxy (mTLS terminator,
+  Kerberos front end, site SSO proxy) has already established who the caller
+  is and passes it in a header.
+
+Full configuration, and the guards each one needs, in
+[IDENTITY.md](IDENTITY.md).
 
 What changes when it is on:
 
@@ -191,6 +218,35 @@ What changes when it is on:
   optional expiry) from the collection's ⋮ menu; the recipient pastes the
   token in the same dialog to accept. Shares are revocable, and deletion
   stays owner-only.
+- **Three tiers, not two.** `owner` decides how a collection is *built*:
+  re-indexing, chunk size, embedding model, the guide, the sensitivity
+  label, publishing and deletion. `readwrite` is a *contributor* — it adds
+  and removes sources, and nothing else; re-indexing on an owner's behalf
+  would rewrite their index under them, so that authority never leaves the
+  owner. `read` consumes: search, chat, MCP. The gate is
+  `api/deps.require_collection_access(..., write=True | owner=True)`; a new
+  endpoint that reconfigures a collection must pass `owner=True`.
+- **Publishing releases a reviewed collection to everyone, read-only.** An
+  owner ticks "Share with everyone, read-only" in the collection's edit
+  dialog. From then on every signed-in person can search it, ask about it
+  and reach it from their AI tools over MCP, while the owner alone keeps
+  the ability to add sources or change how it is built. This is the shape
+  for material that has been reviewed and released — a handbook, a policy
+  set, a reference corpus — where wide reach and a single accountable
+  maintainer both matter. Two refusals guard it: a `restricted` sensitivity
+  label is a boundary (the same rule that blocks sharing), and a *team*
+  collection cannot be published, because it has no single owner to keep
+  that authority — publishing it would lock it with nobody able to unlock
+  it. An explicit share still wins over publication, so a collaborator with
+  a readwrite share keeps it.
+- **Anyone who can read a collection can clone it.** `POST
+  /api/collections/{id}/clone` copies its sources into a new collection
+  owned by the caller, inheriting chunk size, embedding model, guide and
+  sensitivity, and starts a background indexing job. The copy is never
+  published. This is the answer to "I need this corpus chunked differently":
+  take your own copy rather than edit someone else's. The copy counts
+  against the caller's storage cap, and the whole transfer is checked
+  before any bytes move.
 - **MCP clients map to identities.** A personal access token (see
   [MCP clients](#mcp-clients)) carries the identity of whoever generated it —
   no separate name to share collections to. An Access service token instead
@@ -325,7 +381,7 @@ place; removal is a separate, reviewable decision.
 
 ## Capacity & scaling
 
-Asymptote is **one process by design**: the FAISS indexes, background-job
+Clio is **one process by design**: the FAISS indexes, background-job
 registry, and SSE progress queues all live in the process's memory, so
 `uvicorn --workers N` or multiple replicas would silently diverge. Scale
 **vertically** (more CPU/RAM on one host), and run a **second independent

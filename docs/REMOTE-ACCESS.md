@@ -1,9 +1,9 @@
-# Remote Access: Asymptote behind Cloudflare Tunnel + Access
+# Remote Access: Clio behind Cloudflare Tunnel + Access
 
 This is the concrete recipe for deployment shape **B** from
-[DEPLOYMENT.md](DEPLOYMENT.md): host Asymptote on any Docker machine (a home
+[DEPLOYMENT.md](DEPLOYMENT.md): host Clio on any Docker machine (a home
 box, a VPS, a lab server) and reach it securely from anywhere at
-`https://asymptote.<your-domain>` — browser access via SSO, headless MCP
+`https://clio.<your-domain>` — browser access via SSO, headless MCP
 clients via service tokens. The host needs **no open inbound ports**; the
 tunnel dials out to Cloudflare.
 
@@ -29,13 +29,13 @@ free tier covers up to 50 users).
 > equivalent.
 
 1. **Create the tunnel.** Zero Trust dashboard → *Networks → Tunnels →
-   Create a tunnel* (Cloudflared connector). Name it `asymptote`. Copy the
+   Create a tunnel* (Cloudflared connector). Name it `clio`. Copy the
    token from the install command — that's `TUNNEL_TOKEN`.
 2. **Route the hostname.** In the tunnel's *Public Hostname* tab, add
-   `asymptote.<your-domain>` → service `http://asymptote:8473`
+   `clio.<your-domain>` → service `http://clio:8473`
    (the compose service name; cloudflared runs on the same Docker network).
 3. **Gate it with Access.** Zero Trust → *Access → Applications → Add an
-   application* (Self-hosted), domain `asymptote.<your-domain>`.
+   application* (Self-hosted), domain `clio.<your-domain>`.
    - **Browser policy** (Allow): include your email(s) or your IdP group.
    - **MCP/agent policy** (Service Auth): create a service token under
      *Access → Service Auth → Service Tokens*, then add a policy with action
@@ -44,7 +44,7 @@ free tier covers up to 50 users).
      placed *below* the Service Auth policy: action **Bypass**, include
      *Everyone*. Access cannot verify a token the app minted, so without this
      every personal-token client is refused at the edge with a 403 before
-     Asymptote sees the request. Cloudflare evaluates Service Auth and Bypass
+     Clio sees the request. Cloudflare evaluates Service Auth and Bypass
      top-down, so service-token clients still get their signed identity, and
      everyone else falls through to the app, which answers 401 unless the
      request carries a valid personal token or `AUTH_PASSWORD`. The browser
@@ -59,7 +59,7 @@ free tier covers up to 50 users).
 # .env next to docker-compose.yml:
 #   TUNNEL_TOKEN=<from step 1>
 #   AUTH_PASSWORD=<long random string, e.g. `openssl rand -base64 33`>
-#   MCP_ALLOWED_HOSTS=asymptote.<your-domain>
+#   MCP_ALLOWED_HOSTS=clio.<your-domain>
 docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d --build
 ```
 
@@ -76,19 +76,19 @@ curl -sS --max-time 5 http://<host-ip>:8473/health && echo "REACHABLE — fix th
 
 # 2. The public URL without credentials must redirect to the Access login,
 #    not reach the app:
-curl -sS -o /dev/null -w "%{http_code}\n" https://asymptote.<your-domain>/api/collections
+curl -sS -o /dev/null -w "%{http_code}\n" https://clio.<your-domain>/api/collections
 # expect 302 (Access login), never 200/401 from the app itself
 
 # 3. With the service token + app password, the MCP handshake must succeed
 #    (the token is scoped to /mcp — it will NOT open /health or the UI):
-curl -sS -X POST https://asymptote.<your-domain>/mcp/ \
+curl -sS -X POST https://clio.<your-domain>/mcp/ \
   -H "CF-Access-Client-Id: <token-id>.access" \
   -H "CF-Access-Client-Secret: <token-secret>" \
   -H "Authorization: Bearer <AUTH_PASSWORD>" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"verify","version":"0"}}}'
-# expect a JSON-RPC result with "serverInfo": {"name": "Asymptote", ...}
+# expect a JSON-RPC result with "serverInfo": {"name": "Clio", ...}
 ```
 
 ## Pointing MCP clients at it
@@ -113,7 +113,7 @@ password. For clients that support custom headers (Claude Code, most MCP
 SDKs), configure the `/mcp` endpoint with:
 
 ```
-URL:     https://asymptote.<your-domain>/mcp/
+URL:     https://clio.<your-domain>/mcp/
 Headers: CF-Access-Client-Id: <token-id>.access
          CF-Access-Client-Secret: <token-secret>
          Authorization: Bearer <AUTH_PASSWORD>
@@ -122,7 +122,7 @@ Headers: CF-Access-Client-Id: <token-id>.access
 For example, from Claude Code:
 
 ```bash
-claude mcp add --transport http asymptote https://asymptote.<your-domain>/mcp/ \
+claude mcp add --transport http clio https://clio.<your-domain>/mcp/ \
   -H "CF-Access-Client-Id: <token-id>.access" \
   -H "CF-Access-Client-Secret: <token-secret>" \
   -H "Authorization: Bearer <AUTH_PASSWORD>"
@@ -138,12 +138,12 @@ With the JWT trust settings the script writes (`CF_ACCESS_TEAM_DOMAIN`,
 restart: new collections become private to whoever created them (your Access
 SSO email), shareable via read/readwrite links, while everything that already
 existed stays in a team tier everyone sees. The MCP service token is an
-identity too (`asymptote-mcp`) — share a collection to that name to grant
+identity too (`clio-mcp`) — share a collection to that name to grant
 agents access; to accept on the token's behalf, call the accept endpoint with
 its credentials:
 
 ```bash
-curl -sS -X POST https://asymptote.<your-domain>/api/shares/<share-token>/accept \
+curl -sS -X POST https://clio.<your-domain>/api/shares/<share-token>/accept \
   -H "CF-Access-Client-Id: <token-id>.access" \
   -H "CF-Access-Client-Secret: <token-secret>"
 ```
@@ -151,7 +151,7 @@ curl -sS -X POST https://asymptote.<your-domain>/api/shares/<share-token>/accept
 Note the service token is admitted only by the `/mcp` Access app; the accept
 endpoint sits under the root app, so this call works only after you add a
 Service Auth policy for the token to the root application as well (Zero Trust
-→ Access → Applications → Asymptote → Policies). If you'd rather not widen
+→ Access → Applications → Clio → Policies). If you'd rather not widen
 the root app, skip sharing to agents and keep what they need in the team
 tier.
 
@@ -159,7 +159,7 @@ Full semantics: [DEPLOYMENT.md](DEPLOYMENT.md#private-collections).
 
 ## Browser access
 
-Just open `https://asymptote.<your-domain>` — Access sends you through your
+Just open `https://clio.<your-domain>` — Access sends you through your
 IdP once, then sets its own cookie. Because Access already authenticated the
 person, you can have Access inject the app password so nobody types it:
 in the Access application's settings, add an HTTP request header
@@ -171,7 +171,7 @@ extra native password prompt (any username) after SSO.
 By default, adding someone is two steps in two places: you add their email to
 the Access policy in the Cloudflare dashboard, *then* share a collection to
 them in the app. Miss the first and the invitation dead-ends — they click the
-emailed link, hit the Access login, and are refused before Asymptote ever sees
+emailed link, hit the Access login, and are refused before Clio ever sees
 their share token.
 
 Set these four in `.env` and the app does the first step itself:
@@ -184,7 +184,7 @@ ADMIN_EMAILS=you@your-domain
 ```
 
 Now emailing an invitation from the share dialog also adds that address to the
-reusable `asymptote-invited` Access policy, so the link works on arrival. The
+reusable `clio-invited` Access policy, so the link works on arrival. The
 provisioning script also enables the **one-time PIN** login method, which means
 an invited guest needs no account in your identity provider at all — Cloudflare
 emails them a code, they sign in, and the `?share_token=` deep link is applied
@@ -228,7 +228,7 @@ Three things worth knowing before you turn it on:
 
 ## Alternative: Tailscale
 
-If everything that needs Asymptote (laptops, phone, agent hosts) can join
+If everything that needs Clio (laptops, phone, agent hosts) can join
 your tailnet, `tailscale serve https / http://localhost:8473` on the host is
 simpler: no public hostname at all, TLS handled for you, and `AUTH_PASSWORD`
 optional. The trade-off is that nothing outside the tailnet — e.g. a cloud

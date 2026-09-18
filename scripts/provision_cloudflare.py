@@ -1,15 +1,15 @@
-"""Provision Cloudflare Tunnel + Access for Asymptote (docs/REMOTE-ACCESS.md).
+"""Provision Cloudflare Tunnel + Access for Clio (docs/REMOTE-ACCESS.md).
 
 One idempotent run creates everything deployment shape B needs:
 
-  1. a remotely-managed tunnel named `asymptote`
-  2. tunnel ingress:  <hostname> -> http://asymptote:8473
+  1. a remotely-managed tunnel named `clio`
+  2. tunnel ingress:  <hostname> -> http://clio:8473
   3. a proxied CNAME  <hostname> -> <tunnel-id>.cfargotunnel.com
   4. Access app on the root hostname   (Allow: the reusable policy below)
   5. Access app on <hostname>/mcp      (Service Auth: the token below,
                                         plus Bypass so personal tokens reach the app)
   6. an Access service token for headless MCP clients
-  7. a reusable Access policy `asymptote-invited` holding the admitted
+  7. a reusable Access policy `clio-invited` holding the admitted
      addresses, plus the one-time PIN login method so invited guests need
      no account in your identity provider
   8. Access app on <hostname>/register (+ /api/register, /assets and the
@@ -44,13 +44,13 @@ import urllib.error
 import urllib.request
 
 ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "71a9952ea49acb57979b8707f6666463")
-HOSTNAME = os.environ.get("ASYMPTOTE_HOSTNAME", "asymptote.cyberlion.dev")
-ALLOW_EMAIL = os.environ.get("ASYMPTOTE_ALLOW_EMAIL", "jordan.boyce@cyberlion.dev")
-TUNNEL_NAME = "asymptote"
-SERVICE_TOKEN_NAME = "asymptote-mcp"
+HOSTNAME = os.environ.get("CLIO_HOSTNAME", "clio.cyberlion.dev")
+ALLOW_EMAIL = os.environ.get("CLIO_ALLOW_EMAIL", "jordan.boyce@cyberlion.dev")
+TUNNEL_NAME = "clio"
+SERVICE_TOKEN_NAME = "clio-mcp"
 MCP_BYPASS_POLICY_NAME = "mcp-app-token-gate"
-INVITE_POLICY_NAME = "asymptote-invited"
-PUBLIC_APP_NAME = "Asymptote public (registration)"
+INVITE_POLICY_NAME = "clio-invited"
+PUBLIC_APP_NAME = "Clio public (registration)"
 PUBLIC_BYPASS_POLICY_NAME = "public-registration"
 # Everything the registration page needs before anyone is signed in: the
 # page, its two API paths (prefix match covers /api/register/config), the
@@ -58,8 +58,12 @@ PUBLIC_BYPASS_POLICY_NAME = "public-registration"
 # same paths from its own auth (main.py _PUBLIC_PATHS) and rate-limits the
 # form per IP; nothing under these paths reveals deployment data.
 PUBLIC_PATHS = ("/register", "/api/register", "/assets", "/favicon.ico",
-                "/manifest.webmanifest", "/icon_black.svg", "/icon_white.svg",
-                "/logo_black.svg", "/logo_white.svg")
+                "/manifest.webmanifest", "/apple-touch-icon.png",
+                "/clio-mark.png", "/clio-mark-dark.png", "/clio-icon-maskable.png",
+                "/clio-og.png",
+                # RFC 9728 metadata an OAuth MCP client reads before it has any
+                # credential (only served when MCP_OAUTH_ISSUER names an IdP).
+                "/.well-known/oauth-protected-resource")
 API = "https://api.cloudflare.com/client/v4"
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 
@@ -151,17 +155,17 @@ def main():
     # 2. Ingress: hostname -> the compose service ---------------------------
     cf("PUT", f"/accounts/{ACCOUNT_ID}/cfd_tunnel/{tid}/configurations", {
         "config": {"ingress": [
-            {"hostname": HOSTNAME, "service": "http://asymptote:8473"},
+            {"hostname": HOSTNAME, "service": "http://clio:8473"},
             {"service": "http_status:404"},
         ]}
     })
-    print(f"ingress: {HOSTNAME} -> http://asymptote:8473")
+    print(f"ingress: {HOSTNAME} -> http://clio:8473")
 
     # 3. DNS ----------------------------------------------------------------
     target = f"{tid}.cfargotunnel.com"
     recs = cf("GET", f"/zones/{zone_id}/dns_records?name={HOSTNAME}")
     body = {"type": "CNAME", "name": HOSTNAME, "content": target, "proxied": True,
-            "comment": "Asymptote tunnel (scripts/provision_cloudflare.py)"}
+            "comment": "Clio tunnel (scripts/provision_cloudflare.py)"}
     if recs:
         cf("PUT", f"/zones/{zone_id}/dns_records/{recs[0]['id']}", body)
     else:
@@ -216,7 +220,7 @@ def main():
         print(f"reusable policy '{INVITE_POLICY_NAME}': exists ({n} address(es))")
     policy_id = invite_policy["id"]
 
-    ui_app = ensure_app(HOSTNAME, "Asymptote", {
+    ui_app = ensure_app(HOSTNAME, "Clio", {
         "name": "owner", "decision": "allow", "precedence": 1,
         "include": [{"email": {"email": ALLOW_EMAIL}}],
     })
@@ -242,7 +246,7 @@ def main():
         )
         cf("PUT", f"/accounts/{ACCOUNT_ID}/access/apps/{ui_app['id']}", body)
         print(f"reusable policy attached to '{HOSTNAME}'")
-    mcp_app = ensure_app(f"{HOSTNAME}/mcp", "Asymptote MCP", {
+    mcp_app = ensure_app(f"{HOSTNAME}/mcp", "Clio MCP", {
         "name": "mcp-service-tokens", "decision": "non_identity", "precedence": 1,
         "include": [{"service_token": {"token_id": st_id}}],
     })
@@ -250,7 +254,7 @@ def main():
     # 5c. Let personal access tokens (Settings -> MCP) through the edge.
     # Access has no way to check an app-minted bearer token, so a Service
     # Auth-only app rejects every personal-token client with a 403 before
-    # the request reaches Asymptote. A Bypass policy *below* the Service
+    # the request reaches Clio. A Bypass policy *below* the Service
     # Auth one fixes that: Cloudflare evaluates Service Auth and Bypass
     # top-down, so a client presenting the service token still gets its
     # JWT, and everything else falls through to the app's own gate, which

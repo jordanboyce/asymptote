@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-const STORAGE_KEY = 'asymptote_chat_history_v2'
-const LEGACY_STORAGE_KEY = 'asymptote_chat_history_v1'
+const STORAGE_KEY = 'clio_chat_history_v2'
+const LEGACY_STORAGE_KEY = 'clio_chat_history_v1'
 const MAX_MESSAGES_PER_SESSION = 100
 const MAX_SESSIONS_PER_COLLECTION = 50
 

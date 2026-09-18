@@ -253,7 +253,7 @@ def test_async_tool_wraps_sync_and_is_registered(indexer):
     result = asyncio.run(mcp.write_document("via-tool.md", NOTES, collection_id="default"))
     assert result["status"] == "created"
 
-    names = {t.name for t in mcp._asymptote_mcp._tool_manager.list_tools()}
+    names = {t.name for t in mcp._clio_mcp._tool_manager.list_tools()}
     assert "write_document" in names
     assert not any(n.startswith("delete") for n in names)
 

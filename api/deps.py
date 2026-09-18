@@ -100,13 +100,21 @@ def require_admin(action: str = "change deployment settings") -> str | None:
 
 
 def require_collection_access(
-    collection_id: str, user_id: str | None, write: bool = False
+    collection_id: str, user_id: str | None, write: bool = False, owner: bool = False
 ) -> str:
     """Raise unless the user can access the collection; return the permission.
 
     404 both for a missing collection and for one the user cannot see, so
     collection ids can't be probed. 403 when a read-only share tries to write.
     No-ops (returns 'owner') when private collections mode is off.
+
+    Three tiers, not two. ``write=True`` is the *contributor* gate: may this
+    caller add and remove sources. ``owner=True`` is the *configuration*
+    gate: may this caller change how the collection is built — reindex it,
+    change its chunking or embedding model, publish it, delete it. A
+    read-write share deliberately clears the first and not the second: a
+    collaborator contributes material, but reindexing rewrites the owner's
+    index under them, so that authority stays with the owner alone.
     """
     from services.sharing_service import sharing_service
 
@@ -114,6 +122,14 @@ def require_collection_access(
     if access is None:
         raise HTTPException(
             status_code=404, detail=f"Collection '{collection_id}' not found"
+        )
+    if owner and access != "owner":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the collection's owner can change how it is set up. "
+                "Clone it to get a copy you control."
+            ),
         )
     if write and access == "read":
         raise HTTPException(

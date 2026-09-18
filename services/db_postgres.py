@@ -230,6 +230,8 @@ class PostgresBackend(DatabaseBackend):
 
                 # Content governance — mirrors the SQLite backend.
                 cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS sensitivity TEXT DEFAULT 'internal'")
+                # Published collections — mirrors the SQLite backend.
+                cur.execute("ALTER TABLE collections ADD COLUMN IF NOT EXISTS published BOOLEAN NOT NULL DEFAULT FALSE")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS audit_events (
                         id SERIAL PRIMARY KEY,
@@ -443,6 +445,7 @@ class PostgresBackend(DatabaseBackend):
                 cur.execute("SELECT * FROM collections WHERE id = %s", (collection_id,))
                 coll = self._fetchone_dict(cur)
                 if coll:
+                    coll['published'] = bool(coll.get('published'))
                     coll['document_count'] = _get_document_count_from_metadata(collection_id)
                     coll['storage_bytes'] = _get_storage_bytes_from_metadata(collection_id)
                 return coll
@@ -459,6 +462,7 @@ class PostgresBackend(DatabaseBackend):
                     cur.execute("SELECT * FROM collections ORDER BY created_at ASC")
                 colls = self._fetchall_dict(cur)
                 for c in colls:
+                    c['published'] = bool(c.get('published'))
                     c['document_count'] = _get_document_count_from_metadata(c['id'])
                     c['storage_bytes'] = _get_storage_bytes_from_metadata(c['id'])
                 return colls
@@ -468,14 +472,15 @@ class PostgresBackend(DatabaseBackend):
     def update_collection(self, collection_id: str, name=None, description=None, color=None,
                           chunk_size=None, chunk_overlap=None, embedding_model=None,
                           mcp_display_name=None, mcp_display_description=None,
-                          guide=None, sensitivity=None):
+                          guide=None, sensitivity=None, published=None):
         updates, params = [], []
         for field, val in [("name", name), ("description", description), ("color", color),
                            ("chunk_size", chunk_size), ("chunk_overlap", chunk_overlap),
                            ("embedding_model", embedding_model),
                            ("mcp_display_name", mcp_display_name),
                            ("mcp_display_description", mcp_display_description),
-                           ("guide", guide), ("sensitivity", sensitivity)]:
+                           ("guide", guide), ("sensitivity", sensitivity),
+                           ("published", None if published is None else bool(published))]:
             if val is not None:
                 updates.append(f"{field} = %s")
                 params.append(val)
@@ -680,6 +685,7 @@ class PostgresBackend(DatabaseBackend):
                 )
                 results = self._fetchall_dict(cur)
                 for c in results:
+                    c['published'] = bool(c.get('published'))
                     c['document_count'] = _get_document_count_from_metadata(c['id'])
                     c['storage_bytes'] = _get_storage_bytes_from_metadata(c['id'])
                     c['shared'] = True

@@ -122,5 +122,5 @@ def test_garbage_token_rejected(verifier):
 
 def test_service_token_identity(verifier, keypair):
     key, _ = keypair
-    claims = verifier.verify(_mint(key, email=None, common_name="asymptote-mcp"))
-    assert AccessJWTVerifier.identity_from_claims(claims) == "asymptote-mcp"
+    claims = verifier.verify(_mint(key, email=None, common_name="clio-mcp"))
+    assert AccessJWTVerifier.identity_from_claims(claims) == "clio-mcp"

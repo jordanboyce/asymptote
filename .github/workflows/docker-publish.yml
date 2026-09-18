@@ -1,7 +1,7 @@
 # Publish the deployable image to GitHub Container Registry.
 #
 # This is how a site that is allowed to reach the internet installs without
-# building: `docker pull ghcr.io/<owner>/asymptote:<tag>`. A site that is not
+# building: `docker pull ghcr.io/<owner>/clio:<tag>`. A site that is not
 # gets the same image as a file — see scripts/package_image.sh.
 #
 # Runs on a version tag (v1.2.3) and on demand. Not on every push: the build

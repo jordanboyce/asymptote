@@ -77,6 +77,40 @@ describe('collectionStore permissions', () => {
     expect(store.canEditCurrent).toBe(expected)
   })
 
+  // The contributor/owner split: a read-write share may add sources but may
+  // not change how the collection is built. Mirrors api/deps.require_collection_access.
+  it.each([
+    ['owner', true],
+    ['readwrite', false],
+    ['read', false],
+    [undefined, true], // no permission field = owner (shared appliance)
+  ])('permission %s → canConfigureCurrent %s', (permission, expected) => {
+    const store = useCollectionStore()
+    store.collections = [{ id: 'c1', name: 'C1', permission }]
+    store.currentCollectionId = 'c1'
+    expect(store.canConfigureCurrent).toBe(expected)
+    expect(store.canConfigure(store.currentCollection)).toBe(expected)
+  })
+
+  it('flags a published collection a reader is looking at', () => {
+    const store = useCollectionStore()
+    store.collections = [{ id: 'pub', name: 'Handbook', permission: 'read', published: true }]
+    store.currentCollectionId = 'pub'
+    expect(store.isReadOnlyCurrent).toBe(true)
+    expect(store.currentIsPublished).toBe(true)
+    expect(store.canEditCurrent).toBe(false)
+    expect(store.canConfigureCurrent).toBe(false)
+  })
+
+  it("keeps the owner's own published collection fully editable", () => {
+    const store = useCollectionStore()
+    store.collections = [{ id: 'pub', name: 'Handbook', permission: 'owner', published: true }]
+    store.currentCollectionId = 'pub'
+    expect(store.currentIsPublished).toBe(true)
+    expect(store.isReadOnlyCurrent).toBe(false)
+    expect(store.canConfigureCurrent).toBe(true)
+  })
+
   it('groups shared collections after owned ones', () => {
     const store = useCollectionStore()
     store.collections = [

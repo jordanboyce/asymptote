@@ -347,7 +347,7 @@ def report_document(
         from services.share_email import send_plain_email, share_email_enabled
 
         if share_email_enabled():
-            subject = f"[Asymptote] Document reported: {doc_info.get('filename')}"
+            subject = f"[Clio] Document reported: {doc_info.get('filename')}"
             body = (
                 f"{actor or 'An anonymous user'} reported a document for review.\n\n"
                 f"File: {doc_info.get('filename')}\n"

@@ -1,10 +1,10 @@
 # Roadmap
 
-Forward-looking work for the general-purpose (`master`) Asymptote tool. Shipped items are not listed — check the git log. Financial-analysis roadmap items live on the `fintech` branch.
+Forward-looking work for the general-purpose (`master`) Clio tool. Shipped items are not listed — check the git log. Financial-analysis roadmap items live on the `fintech` branch.
 
 ## Guiding frame
 
-Asymptote owns the trustworthy data layer; the intelligence layer lives upstream in whatever LLM the user trusts. Our job: make a user's own documents and tabular data faithfully agent-queryable, and never be silently wrong. Reached through Asymptote's own chat UI by default, or an external MCP client when the user prefers one.
+Clio owns the trustworthy data layer; the intelligence layer lives upstream in whatever LLM the user trusts. Our job: make a user's own documents and tabular data faithfully agent-queryable, and never be silently wrong. Reached through Clio's own chat UI by default, or an external MCP client when the user prefers one.
 
 ## Library — ingestion & context
 
@@ -25,7 +25,7 @@ Asymptote owns the trustworthy data layer; the intelligence layer lives upstream
 
 ## Access & limits
 
-- **Online registration** — shipped 2026-09-12: `/register` (approval or open mode, domain allowlist, seat cap). Expiring, collection-limited personal MCP tokens shipped 2026-09-17. Next: OIDC as an alternative identity source; OAuth 2.1 on `/mcp` so hosted MCP clients (claude.ai and ChatGPT custom connectors) can connect without a pasted bearer token.
+- **Online registration** — shipped 2026-09-12: `/register` (approval or open mode, domain allowlist, seat cap). Expiring, collection-limited personal MCP tokens shipped 2026-09-17. Pluggable identity shipped 2026-09-17: `IDENTITY_PROVIDER=oidc` (your own IdP) or `trusted_header` (an authenticating proxy) alongside Cloudflare Access, plus `MCP_AUDIT_TOOL_CALLS` for auditing agent reads. OAuth 2.1 on `/mcp` shipped 2026-09-17: RFC 9728 metadata and the Bearer challenge delegate to the site's IdP, so Claude Desktop, claude.ai, ChatGPT and `claude mcp login` attach with the endpoint URL alone (`MCP_PUBLIC_URL`, optional `MCP_OAUTH_SCOPE`, or `MCP_OAUTH_ISSUER` for a Cloudflare deployment). Next: per-tool token scopes, group-derived collection access, an admin token fleet view, and ChatGPT `search`/`fetch` aliases.
 - **Per-collection storage cap** — shipped 2026-09-12 (5 GiB default, `COLLECTION_STORAGE_LIMIT_BYTES`). Next: per-user totals across collections, and an admin view of storage by collection.
 
 ## From the September 2026 product assessment (docs/PRODUCT_ASSESSMENT.md)
@@ -39,5 +39,5 @@ Shipped 2026-09-12: the answer cache keys on the whole request (corpus version, 
 
 ## Always-on constraints
 
-- Raw data passes through by default; semantic layers exist only where Asymptote itself must act deterministically (aggregations, type coercion).
+- Raw data passes through by default; semantic layers exist only where Clio itself must act deterministically (aggregations, type coercion).
 - When inference fails, degrade to raw-data tools and let the LLM handle semantics — never guess and pretend.

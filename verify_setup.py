@@ -1,5 +1,5 @@
 """
-Setup verification script for Asymptote API
+Setup verification script for Clio API
 
 Run this script to verify your installation is working correctly.
 """
@@ -113,7 +113,7 @@ def test_import():
 def main():
     """Run all verification checks"""
     print("=" * 60)
-    print("Asymptote API - Setup Verification")
+    print("Clio API - Setup Verification")
     print("=" * 60)
     print()
 
@@ -129,7 +129,7 @@ def main():
     print("=" * 60)
 
     if all(checks):
-        print("✓ All checks passed! You're ready to run Asymptote.")
+        print("✓ All checks passed! You're ready to run Clio.")
         print()
         print("To start the server, run:")
         print("  python main.py")

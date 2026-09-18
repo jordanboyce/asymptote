@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 
-logger = logging.getLogger("asymptote.access")
+logger = logging.getLogger("clio.access")
 
 _lock = threading.Lock()
 _in_flight = 0

@@ -82,6 +82,7 @@ class DatabaseBackend(ABC):
         mcp_display_description: Optional[str] = None,
         guide: Optional[str] = None,
         sensitivity: Optional[str] = None,
+        published: Optional[bool] = None,
     ):
         ...
 

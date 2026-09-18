@@ -205,7 +205,7 @@ def test_research_concurrency_gate_queues_then_refuses(mcp_env, monkeypatch):
 
 def test_mcp_registration_and_async_tool_return_structured_results(mcp_env):
     mcp, _, _ = mcp_env
-    registered = asyncio.run(mcp._asymptote_mcp.list_tools())
+    registered = asyncio.run(mcp._clio_mcp.list_tools())
     tool = next(t for t in registered if t.name == "research_documents")
     assert tool.annotations.readOnlyHint is True
     assert tool.inputSchema["required"] == ["query"]
@@ -213,7 +213,7 @@ def test_mcp_registration_and_async_tool_return_structured_results(mcp_env):
     result = asyncio.run(mcp.research_documents("EQ-17", filters={"document_ids": ["doc-a"]}))
     assert result["total_results"] == 1
     assert result["results"][0]["chunk_id"] == "allowed"
-    content, structured = asyncio.run(mcp._asymptote_mcp.call_tool(
+    content, structured = asyncio.run(mcp._clio_mcp.call_tool(
         "research_documents", {"query": "EQ-17", "filters": {"document_ids": ["doc-a"]}}))
     assert structured["results"][0]["chunk_id"] == "allowed"
     assert json.loads(content[0].text) == structured

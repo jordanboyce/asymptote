@@ -431,7 +431,13 @@ def test_share_email_unconfigured_reports_error_but_creates_share(private_client
     assert private_client.post(f"/api/shares/{token}/accept", headers=_as(BOB)).status_code == 200
 
 
-def test_readwrite_share_can_update_but_not_delete(private_client):
+def test_readwrite_share_contributes_but_cannot_reconfigure(private_client):
+    """A read-write share is a contributor, not a co-owner.
+
+    Bob may add and remove sources — that is what the share is for — but the
+    collection's settings and its index stay Alice's. Re-indexing on someone
+    else's behalf rewrites their index under them, so it is owner-only.
+    """
     cid = private_client.post(
         "/api/collections", json={"name": "Team drafts"}, headers=_as(ALICE)
     ).json()["id"]
@@ -440,13 +446,23 @@ def test_readwrite_share_can_update_but_not_delete(private_client):
     ).json()["share_id"]
     private_client.post(f"/api/shares/{token}/accept", headers=_as(BOB))
 
+    # Configuration, re-indexing and deletion are the owner's alone.
     assert (
         private_client.put(
             f"/api/collections/{cid}", json={"description": "bob was here"}, headers=_as(BOB)
         ).status_code
+        == 403
+    )
+    assert private_client.post(f"/api/collections/{cid}/reindex", headers=_as(BOB)).status_code == 403
+    assert private_client.delete(f"/api/collections/{cid}", headers=_as(BOB)).status_code == 403
+
+    # Alice still has all three.
+    assert (
+        private_client.put(
+            f"/api/collections/{cid}", json={"description": "alice was here"}, headers=_as(ALICE)
+        ).status_code
         == 200
     )
-    assert private_client.delete(f"/api/collections/{cid}", headers=_as(BOB)).status_code == 403
 
 
 # ── Edge admission (Cloudflare Access) ───────────────────────────────────
@@ -820,3 +836,122 @@ def test_bulk_invite_rejects_empty_and_oversized(private_client):
     assert private_client.post(
         f"/api/collections/{cid}/shares/bulk", json={"emails": too_many}, headers=_as(ALICE)
     ).status_code == 400
+
+
+# ── Published collections ───────────────────────────────────────────────────
+#
+# Publishing is how a reviewed collection reaches the whole deployment while
+# staying one person's to maintain: everyone else resolves to 'read', in the
+# app and over MCP, and the way to work with it on your own terms is a clone.
+
+
+def test_published_collection_is_readable_by_everyone(private_mode):
+    cid = _make_private(ALICE)
+    assert sharing_service.check_collection_access(cid, BOB) is None
+
+    app_db.update_collection(cid, published=True)
+
+    assert sharing_service.check_collection_access(cid, ALICE) == "owner"
+    assert sharing_service.check_collection_access(cid, BOB) == "read"
+    # Released means released: a password-auth caller with no identity too.
+    assert sharing_service.check_collection_access(cid, None) == "read"
+
+
+def test_published_collection_appears_in_listings_as_read(private_mode):
+    cid = _make_private(ALICE)
+    app_db.update_collection(cid, published=True)
+
+    bob_cols = collection_service.get_all_collections(user_id=BOB)
+    entry = next(c for c in bob_cols if c["id"] == cid)
+    assert entry["permission"] == "read"
+    assert entry["published"] is True
+
+    # And the owner still sees it as theirs.
+    alice_entry = next(
+        c for c in collection_service.get_all_collections(user_id=ALICE) if c["id"] == cid
+    )
+    assert alice_entry["permission"] == "owner"
+
+
+def test_share_beats_publication(private_mode):
+    """An explicit read-write share must not be downgraded by publishing."""
+    cid = _make_private(ALICE)
+    share = sharing_service.create_share(cid, ALICE, permission="readwrite")
+    sharing_service.accept_share(share["share_id"], BOB)
+    app_db.update_collection(cid, published=True)
+
+    assert sharing_service.check_collection_access(cid, BOB) == "readwrite"
+    entry = next(
+        c for c in collection_service.get_all_collections(user_id=BOB) if c["id"] == cid
+    )
+    assert entry["permission"] == "readwrite"
+
+
+def test_published_collection_is_visible_over_mcp(private_mode):
+    from services.mcp_server import _resolve_collection_id
+
+    cid = _make_private(ALICE)
+    app_db.update_collection(cid, published=True)
+
+    token = set_request_user(BOB)
+    try:
+        assert _resolve_collection_id(cid) == cid
+    finally:
+        reset_request_user(token)
+
+
+def test_reader_cannot_reconfigure_published_collection(private_client):
+    cid = private_client.post(
+        "/api/collections", json={"name": "Handbook"}, headers=_as(ALICE)
+    ).json()["id"]
+    assert (
+        private_client.put(
+            f"/api/collections/{cid}", json={"published": True}, headers=_as(ALICE)
+        ).status_code
+        == 200
+    )
+
+    # Bob can read it...
+    assert private_client.get(f"/api/collections/{cid}", headers=_as(BOB)).status_code == 200
+    # ...and nothing more.
+    assert (
+        private_client.put(
+            f"/api/collections/{cid}", json={"chunk_size": 1200}, headers=_as(BOB)
+        ).status_code
+        == 403
+    )
+    assert private_client.post(f"/api/collections/{cid}/reindex", headers=_as(BOB)).status_code == 403
+    assert private_client.delete(f"/api/collections/{cid}", headers=_as(BOB)).status_code == 403
+
+
+def test_team_collections_cannot_be_published(private_client):
+    """A team collection has no single owner, so publishing would lock it
+    with nobody able to unlock it. Refused rather than allowed and regretted."""
+    resp = private_client.put(
+        "/api/collections/default", json={"published": True}, headers=_as(ALICE)
+    )
+    assert resp.status_code == 400
+    assert "team collection" in resp.json()["detail"].lower()
+
+
+def test_restricted_collections_cannot_be_published(private_client):
+    cid = private_client.post(
+        "/api/collections", json={"name": "Secrets"}, headers=_as(ALICE)
+    ).json()["id"]
+    private_client.put(
+        f"/api/collections/{cid}", json={"sensitivity": "restricted"}, headers=_as(ALICE)
+    )
+    resp = private_client.put(
+        f"/api/collections/{cid}", json={"published": True}, headers=_as(ALICE)
+    )
+    assert resp.status_code == 403
+    assert "restricted" in resp.json()["detail"].lower()
+
+
+def test_global_reindex_is_admin_only(private_client, monkeypatch):
+    """POST /api/reindex rebuilds every collection's index, including ones
+    the caller does not own — it was reachable by anyone."""
+    import services.access_provisioning as ap
+
+    monkeypatch.setattr(ap, "is_admin", lambda uid: uid == ALICE)
+    assert private_client.post("/api/reindex", headers=_as(BOB)).status_code == 403

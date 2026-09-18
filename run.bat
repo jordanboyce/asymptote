@@ -1,7 +1,7 @@
 @echo off
-REM Asymptote API startup script for Windows
+REM Clio API startup script for Windows
 
-echo Starting Asymptote API...
+echo Starting Clio API...
 echo.
 
 REM Check if virtual environment exists

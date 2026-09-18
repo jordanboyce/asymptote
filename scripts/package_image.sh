@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a portable Asymptote image and package it for a machine that cannot
+# Build a portable Clio image and package it for a machine that cannot
 # build one: an air-gapped network, a customer site, an appliance.
 #
 #   ./scripts/package_image.sh                       # default image
@@ -7,8 +7,8 @@
 #   ./scripts/package_image.sh --tag 1.4.0 --out /media/transfer
 #
 # Produces, in the output directory:
-#   asymptote-<tag>.tar.gz        the image (docker load < this)
-#   asymptote-<tag>.tar.gz.sha256 checksum to verify after the transfer
+#   clio-<tag>.tar.gz        the image (docker load < this)
+#   clio-<tag>.tar.gz.sha256 checksum to verify after the transfer
 #   docker-compose.onprem.yml     how to run it
 #   .env.onprem.example           what to configure
 #   ONPREM.md, AIRGAP.md          the deployment guides
@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-IMAGE="asymptote:${TAG}"
+IMAGE="clio:${TAG}"
 VCS_REF="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 echo "==> Building ${IMAGE} (offline_bundle=${OFFLINE_BUNDLE}, docling=${WITH_DOCLING})"
@@ -62,7 +62,7 @@ build_args=(
 docker build "${build_args[@]}" -t "$IMAGE" .
 
 mkdir -p "$OUT"
-ARCHIVE="${OUT}/asymptote-${TAG}.tar.gz"
+ARCHIVE="${OUT}/clio-${TAG}.tar.gz"
 
 echo "==> Saving ${IMAGE} to ${ARCHIVE}"
 docker save "$IMAGE" | gzip > "$ARCHIVE"
@@ -70,23 +70,23 @@ docker save "$IMAGE" | gzip > "$ARCHIVE"
 echo "==> Checksumming"
 # The checksum is what the receiving side verifies before loading; keep it
 # beside the archive with a bare filename so `sha256sum -c` works there.
-( cd "$OUT" && sha256sum "asymptote-${TAG}.tar.gz" > "asymptote-${TAG}.tar.gz.sha256" )
+( cd "$OUT" && sha256sum "clio-${TAG}.tar.gz" > "clio-${TAG}.tar.gz.sha256" )
 
 echo "==> Copying deployment files"
 cp docker-compose.onprem.yml .env.onprem.example "$OUT/"
 cp docs/ONPREM.md docs/AIRGAP.md "$OUT/"
 
 cat > "${OUT}/README.txt" <<EOF
-Asymptote ${TAG} — offline install bundle
+Clio ${TAG} — offline install bundle
 built $(date -u +%Y-%m-%dT%H:%M:%SZ) from ${VCS_REF}
 offline model bundle: ${OFFLINE_BUNDLE}   docling OCR: ${WITH_DOCLING}
 
 On the target machine:
 
-  sha256sum -c asymptote-${TAG}.tar.gz.sha256
-  docker load < asymptote-${TAG}.tar.gz
+  sha256sum -c clio-${TAG}.tar.gz.sha256
+  docker load < clio-${TAG}.tar.gz
   cp .env.onprem.example .env      # then edit: model endpoint, AUTH_PASSWORD
-  # set ASYMPTOTE_IMAGE=asymptote:${TAG} in .env
+  # set CLIO_IMAGE=clio:${TAG} in .env
   docker compose -f docker-compose.onprem.yml up -d
 
 Then open http://<host>:8473. Full guide: ONPREM.md (air gap: AIRGAP.md).

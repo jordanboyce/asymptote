@@ -120,7 +120,7 @@ async def get_audit(
         return PlainTextResponse(
             audit.to_csv(rows),
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=asymptote-audit.csv"},
+            headers={"Content-Disposition": "attachment; filename=clio-audit.csv"},
         )
     return {
         "retention_days": settings.audit_retention_days,

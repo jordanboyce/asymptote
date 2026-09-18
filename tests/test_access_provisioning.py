@@ -78,7 +78,7 @@ def test_no_admins_configured_means_nobody(monkeypatch):
 def test_admit_appends_and_preserves_other_rules(monkeypatch):
     _configure(monkeypatch)
     policy = {
-        "name": "asymptote-invited",
+        "name": "clio-invited",
         "decision": "allow",
         "include": [
             {"email": {"email": "existing@x.com"}},
@@ -94,7 +94,7 @@ def test_admit_appends_and_preserves_other_rules(monkeypatch):
     body = captured["body"]
     assert captured["method"] == "PUT"
     assert captured["auth"] == "Bearer cf_tok"
-    assert body["name"] == "asymptote-invited"
+    assert body["name"] == "clio-invited"
     assert body["decision"] == "allow"
     # normalised, appended, and nothing else disturbed
     assert {"email": {"email": "new@guest.com"}} in body["include"]

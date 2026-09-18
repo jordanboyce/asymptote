@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # None = anonymous (password-authenticated, or private mode off and unset).
 _request_user_id: ContextVar[Optional[str]] = ContextVar(
-    "asymptote_request_user_id", default=None
+    "clio_request_user_id", default=None
 )
 
 # Users already upserted by this process — avoids a DB write per request.

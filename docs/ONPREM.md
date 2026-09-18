@@ -1,6 +1,6 @@
 # On-Premises Deployment
 
-Asymptote ships as one portable container image. Build it once, carry it to
+Clio ships as one portable container image. Build it once, carry it to
 wherever it has to run, and configure it there: the model endpoint,
 credentials, CA certificates and data all arrive at run time, so the bytes
 that run in production are the bytes that were reviewed.
@@ -18,7 +18,7 @@ verifying zero egress. For remote access and identity, see
 **With registry access**
 
 ```bash
-docker pull ghcr.io/jordanboyce/asymptote:latest
+docker pull ghcr.io/jordanboyce/clio:latest
 ```
 
 **Without** — build on a connected machine and carry the result in:
@@ -33,8 +33,8 @@ compose file, the example configuration and these guides. On the target
 machine:
 
 ```bash
-sha256sum -c asymptote-1.0.0.tar.gz.sha256
-docker load < asymptote-1.0.0.tar.gz
+sha256sum -c clio-1.0.0.tar.gz.sha256
+docker load < clio-1.0.0.tar.gz
 ```
 
 Add `--offline-bundle` when the target will never reach the internet: it
@@ -56,7 +56,7 @@ The settings that matter on-prem:
 
 | Setting | What it does |
 |---|---|
-| `ASYMPTOTE_IMAGE` | The image to run — the tag you loaded, or a digest |
+| `CLIO_IMAGE` | The image to run — the tag you loaded, or a digest |
 | `AI_PROVIDER` | `openai_compatible`, `ollama`, or a hosted provider |
 | `AI_BASE_URL` | Your endpoint, e.g. `http://vllm.internal:8000/v1` |
 | `AI_MODEL` | The model to ask for |
@@ -80,7 +80,7 @@ browser configures its own provider.
 
 ```bash
 docker compose -f docker-compose.onprem.yml up -d
-docker compose -f docker-compose.onprem.yml logs -f asymptote
+docker compose -f docker-compose.onprem.yml logs -f clio
 ```
 
 Then open `http://<host>:8473`.
@@ -135,8 +135,8 @@ would leave you with `CERTIFICATE_VERIFY_FAILED` from an endpoint that
 
 ```bash
 cp corp-root-ca.crt certs/ca/
-docker compose -f docker-compose.onprem.yml restart asymptote
-docker compose -f docker-compose.onprem.yml logs asymptote | grep "installing CA"
+docker compose -f docker-compose.onprem.yml restart clio
+docker compose -f docker-compose.onprem.yml logs clio | grep "installing CA"
 ```
 
 This is a *runtime* mount, deliberately: it keeps one image usable at every
@@ -174,10 +174,10 @@ wrong one for a multi-tenant service. Pick one:
   site already runs). Keep `BIND_ADDRESS=127.0.0.1` so the proxy is the only
   route in.
 - **`PRIVATE_COLLECTIONS=true`** for per-person ownership and sharing. It
-  needs a verified identity on every request, which today means Cloudflare
-  Access (`CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`) in front of the
-  deployment; the app refuses to start with the flag on and no identity
-  source. See [DEPLOYMENT.md](DEPLOYMENT.md).
+  needs a verified identity on every request: point `IDENTITY_PROVIDER` at
+  your own IdP (`oidc` — Keycloak, Entra ID, Okta, PingFederate) or at the
+  proxy that already authenticates for you (`trusted_header`, which is how
+  mTLS and Kerberos front ends attach). See [IDENTITY.md](IDENTITY.md).
 
 ## Agents over MCP
 
@@ -188,23 +188,30 @@ localhost, list it in `MCP_ALLOWED_HOSTS` — the MCP SDK's DNS-rebinding
 protection trusts only localhost otherwise.
 
 A token carries the identity of whoever minted it, so under
-`PRIVATE_COLLECTIONS` an agent sees exactly that person's collections.
+`PRIVATE_COLLECTIONS` an agent sees exactly that person's collections. Set
+`MCP_AUDIT_TOOL_CALLS=true` where reads have to be accountable: every tool
+call is then recorded with the credential, collection and documents it
+touched — see [IDENTITY.md](IDENTITY.md).
 
 Clients that take a bearer header (Claude Code, Codex, VS Code, AnythingLLM)
 attach with the config generated in Settings → MCP. Connector-style clients
-(Claude Desktop, claude.ai, ChatGPT) speak OAuth instead, which this release
-does not implement.
+(Claude Desktop, claude.ai, ChatGPT, and Claude Code without a token) sign
+in at your IdP instead: with `IDENTITY_PROVIDER=oidc` set
+`MCP_PUBLIC_URL=https://clio.internal/mcp` and hand people that URL.
+The app is only the OAuth resource server; the IdP does the sign-in and
+registers the clients. Setup per IdP, the scope option and what is
+verified: [IDENTITY.md](IDENTITY.md#oauth-for-mcp-clients).
 
 ## Upgrading
 
 ```bash
-docker load < asymptote-1.1.0.tar.gz          # or docker pull
-# point ASYMPTOTE_IMAGE at the new tag in .env
+docker load < clio-1.1.0.tar.gz          # or docker pull
+# point CLIO_IMAGE at the new tag in .env
 docker compose -f docker-compose.onprem.yml up -d
 ```
 
 Data lives in the volume, not the image, so the container is disposable.
-Roll back by pointing `ASYMPTOTE_IMAGE` at the previous tag. Index formats
+Roll back by pointing `CLIO_IMAGE` at the previous tag. Index formats
 are forward-compatible within a major version; a release that needs a
 re-index says so.
 
