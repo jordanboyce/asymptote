@@ -1,4 +1,4 @@
-"""Embedded MCP server for Asymptote."""
+"""Embedded MCP server for Clio."""
 
 from __future__ import annotations
 
@@ -42,13 +42,13 @@ MCP_PROFILE_FIELDS = (
     "inline_row_threshold",
 )
 
-_request_mcp_profile: ContextVar[dict[str, Any]] = ContextVar("asymptote_request_mcp_profile", default={})
+_request_mcp_profile: ContextVar[dict[str, Any]] = ContextVar("clio_request_mcp_profile", default={})
 
 # Collection ids a personal MCP token was explicitly scoped to. Only a
 # request authenticated with such a token has one; it is what unlocks a
 # *restricted* collection over MCP (services/governance.py).
 _request_mcp_token_scope: ContextVar[list[str] | None] = ContextVar(
-    "asymptote_request_mcp_token_scope", default=None
+    "clio_request_mcp_token_scope", default=None
 )
 
 
@@ -60,7 +60,7 @@ def get_request_mcp_token_scope() -> list[str] | None:
 # may see, not merely a grant into restricted ones. Defaults to False so every
 # non-token caller (SSO session, password, in-process chat) keeps full access.
 _request_mcp_token_allowlist: ContextVar[bool] = ContextVar(
-    "asymptote_request_mcp_token_allowlist", default=False
+    "clio_request_mcp_token_allowlist", default=False
 )
 
 
@@ -88,7 +88,7 @@ def _token_permits(collection: dict[str, Any] | None) -> bool:
 # every other caller — an SSO session, the shared password, an Access
 # service token, the in-process chat loop — is a full user and may write,
 # subject to the collection's own write permission and the AUP gate.
-_request_mcp_can_write: ContextVar[bool] = ContextVar("asymptote_request_mcp_can_write", default=True)
+_request_mcp_can_write: ContextVar[bool] = ContextVar("clio_request_mcp_can_write", default=True)
 
 
 def get_request_mcp_can_write() -> bool:
@@ -99,7 +99,7 @@ def get_request_mcp_can_write() -> bool:
 # other caller (SSO session, shared password, in-process chat), whose
 # identity the audit layer already resolves from the user contextvar.
 _request_mcp_token_id: ContextVar[str | None] = ContextVar(
-    "asymptote_request_mcp_token_id", default=None
+    "clio_request_mcp_token_id", default=None
 )
 
 
@@ -113,7 +113,7 @@ def get_request_mcp_token_id() -> str | None:
 # off — which is exactly the deployment shape where the audit still needs to
 # name the real principal (an OIDC subject, an Access email) or nobody.
 _request_mcp_identity: ContextVar[str | None] = ContextVar(
-    "asymptote_request_mcp_identity", default=None
+    "clio_request_mcp_identity", default=None
 )
 
 MCP_CONFIG_FIELDS = (
@@ -150,7 +150,7 @@ from services.research_search import RESEARCH_INSTRUCTIONS as _RESEARCH_INSTRUCT
 # Surfaced to the model by MCP clients that honour server instructions. Keep it
 # domain-neutral: the corpus is whatever the owner indexed.
 _SERVER_INSTRUCTIONS = (
-    "Asymptote indexes the caller's own documents (PDF, Office, text, Markdown, "
+    "Clio indexes the caller's own documents (PDF, Office, text, Markdown, "
     "code, CSV/XLSX tables) and answers only from them. Every tool is scoped to "
     "the collections this credential may see; authorization is enforced server-"
     "side and cannot be widened by arguments. Start with list_collections when "
@@ -165,8 +165,8 @@ _SERVER_INSTRUCTIONS = (
     "stale. " + _RESEARCH_INSTRUCTIONS
 )
 
-_asymptote_mcp = FastMCP(
-    "Asymptote",
+_clio_mcp = FastMCP(
+    "Clio",
     instructions=_SERVER_INSTRUCTIONS,
     stateless_http=True,
     json_response=True,
@@ -502,9 +502,9 @@ def _serialize_result(
     return payload
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def health_check() -> dict[str, Any]:
-    """Check that the Asymptote MCP server is reachable and report its status.
+    """Check that the Clio MCP server is reachable and report its status.
 
     Call this FIRST when connecting to a new server, or whenever tools start
     returning errors, to verify the server is healthy before spending context
@@ -512,7 +512,7 @@ def health_check() -> dict[str, Any]:
 
     Returns:
       - status: "ok" when the server is healthy
-      - server_id: unique identifier for this Asymptote instance
+      - server_id: unique identifier for this Clio instance
       - version: schema/data version
       - embedding: active embedding provider and model name
       - mcp: key MCP settings (mode, top_k, default_collection)
@@ -551,7 +551,7 @@ def health_check() -> dict[str, Any]:
 
     return _tool_response({
         "status": "ok",
-        "server_id": settings.mcp_server_id or "asymptote",
+        "server_id": settings.mcp_server_id or "clio",
         "version": settings.schema_version,
         "embedding": embedding_info,
         "mcp": {
@@ -564,7 +564,7 @@ def health_check() -> dict[str, Any]:
     }, "health_check")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_collections() -> dict[str, Any]:
     """List every document collection available on this MCP server.
 
@@ -611,7 +611,7 @@ def list_collections() -> dict[str, Any]:
     }, "list_collections")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_collection_info(
     collection_id: str | None = None,
     detail: Literal["counts", "with_documents"] = "with_documents",
@@ -728,7 +728,7 @@ def _normalize_search_filters(filters: dict[str, Any] | None) -> dict[str, Any] 
     return out or None
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_collection_facets(collection_id: str | None = None) -> dict[str, Any]:
     """List the filterable metadata for a collection.
 
@@ -833,7 +833,7 @@ def search_all_collections_sync(
     }, "search_all_collections")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def search_all_collections(
     query: str,
     mode: Literal["semantic", "keyword", "hybrid"] | None = None,
@@ -870,7 +870,7 @@ async def search_all_collections(
     )
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_recent_documents(
     limit: int = 10,
     collection_id: str | None = None,
@@ -1120,7 +1120,7 @@ def _research_documents_impl(
     return payload
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def research_documents(
     query: str,
     collection_id: str | None = None,
@@ -1364,7 +1364,7 @@ def search_collection_sync(
     return _tool_response(response, "search_collection")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def search_collection(
     query: str,
     collection_id: str | None = None,
@@ -1444,7 +1444,7 @@ _DOC_CONTEXT_MAX_CHARS_DEFAULT = 12000
 _DOC_CONTEXT_MAX_CHARS_CAP = 40000
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_document_context(
     document_id: str,
     page_number: int | None = None,
@@ -1735,7 +1735,7 @@ def find_in_documents_sync(
     }, "find_in_documents")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 async def find_in_documents(
     pattern: str,
     literal: bool = True,
@@ -1879,7 +1879,7 @@ def _format_schema_summary(schema: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_tables(collection_id: str | None = None) -> dict[str, Any]:
     """List every CSV / Excel sheet ingested as a typed SQL table.
 
@@ -1920,7 +1920,7 @@ def list_tables(collection_id: str | None = None) -> dict[str, Any]:
     }, "list_tables")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_table_schema(
     identifier: str,
     collection_id: str | None = None,
@@ -1956,7 +1956,7 @@ def get_table_schema(
     return _tool_response(_format_schema_summary(schema), "get_table_schema")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_table_rows(
     identifier: str,
     limit: int = 200,
@@ -2029,7 +2029,7 @@ def get_table_rows(
     }, "get_table_rows")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def query_table(
     sql: str,
     max_rows: int = 500,
@@ -2080,7 +2080,7 @@ _AGG_FN_SQL = {
 }
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def aggregate_table(
     identifier: str,
     aggregate_col: str,
@@ -2172,7 +2172,7 @@ def aggregate_table(
     }, "aggregate_table")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_document_metadata(
     document_id: str,
     collection_id: str | None = None,
@@ -2454,7 +2454,7 @@ def write_document_sync(
     return _tool_response(payload, "write_document")
 
 
-@_asymptote_mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
+@_clio_mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 async def write_document(
     filename: str,
     content: str,
@@ -2548,7 +2548,7 @@ def _find_collection_for_table(identifier: str) -> tuple[str, dict[str, Any]] | 
     return None
 
 
-@_asymptote_mcp.resource("collection://{id}")
+@_clio_mcp.resource("collection://{id}")
 def resource_collection(id: str) -> dict[str, Any]:
     """Collection metadata and document inventory.
 
@@ -2592,7 +2592,7 @@ def resource_collection(id: str) -> dict[str, Any]:
     }, "resource_collection")
 
 
-@_asymptote_mcp.resource("collection://{id}/schema")
+@_clio_mcp.resource("collection://{id}/schema")
 def resource_collection_schema(id: str) -> dict[str, Any]:
     """All table schemas in a collection.
 
@@ -2619,7 +2619,7 @@ def resource_collection_schema(id: str) -> dict[str, Any]:
     }, "resource_collection_schema")
 
 
-@_asymptote_mcp.resource("collections://all")
+@_clio_mcp.resource("collections://all")
 def resource_all_collections() -> dict[str, Any]:
     """Complete workspace map — every collection with stats and document inventory.
 
@@ -2684,7 +2684,7 @@ def resource_all_collections() -> dict[str, Any]:
     }, "resource_all_collections")
 
 
-@_asymptote_mcp.resource("collection://{id}/guide")
+@_clio_mcp.resource("collection://{id}/guide")
 def resource_collection_guide(id: str) -> dict[str, Any]:
     """The full user-authored guide for a collection.
 
@@ -2706,7 +2706,7 @@ def resource_collection_guide(id: str) -> dict[str, Any]:
     }, "resource_collection_guide")
 
 
-@_asymptote_mcp.resource("collection://{id}/tables")
+@_clio_mcp.resource("collection://{id}/tables")
 def resource_collection_tables(id: str) -> dict[str, Any]:
     """All structured table listings for a collection.
 
@@ -2731,7 +2731,7 @@ def resource_collection_tables(id: str) -> dict[str, Any]:
     }, "resource_collection_tables")
 
 
-@_asymptote_mcp.resource("document://{id}")
+@_clio_mcp.resource("document://{id}")
 def resource_document(id: str) -> dict[str, Any]:
     """Full document metadata record — searched across ALL collections.
 
@@ -2767,7 +2767,7 @@ def resource_document(id: str) -> dict[str, Any]:
     }, "resource_document")
 
 
-@_asymptote_mcp.resource("table://{id}")
+@_clio_mcp.resource("table://{id}")
 def resource_table(id: str) -> dict[str, Any]:
     """Table schema and sample rows in one fetch — searched across ALL collections.
 
@@ -2832,7 +2832,7 @@ def _prompt_scope_line(collection: str) -> str:
             "the question refers to, and say which you chose. ")
 
 
-@_asymptote_mcp.prompt(
+@_clio_mcp.prompt(
     name="research_question",
     title="Research a question in the documents",
     description="Investigate a question with bounded, cited evidence and an explicit list of what the sources do not establish.",
@@ -2855,7 +2855,7 @@ def prompt_research_question(question: str, collection: str = "") -> str:
     )
 
 
-@_asymptote_mcp.prompt(
+@_clio_mcp.prompt(
     name="find_exact_reference",
     title="Find every mention of an identifier or phrase",
     description="Locate a literal identifier, code, or quoted phrase across the documents and report each occurrence in context.",
@@ -2874,7 +2874,7 @@ def prompt_find_exact_reference(identifier: str, collection: str = "") -> str:
     )
 
 
-@_asymptote_mcp.prompt(
+@_clio_mcp.prompt(
     name="collection_overview",
     title="Orient in a collection before asking questions",
     description="Summarise what a collection contains, how it is organised, and which tools suit it, before doing any research.",
@@ -2924,7 +2924,7 @@ class ToggleableMCPApp:
 
         if scope["type"] == "http" and not settings.enable_mcp:
             response = JSONResponse(
-                {"detail": "Asymptote MCP is disabled in Settings."},
+                {"detail": "Clio MCP is disabled in Settings."},
                 status_code=503,
             )
             await response(scope, receive, send)
@@ -2976,10 +2976,10 @@ class ToggleableMCPApp:
             _request_mcp_profile.reset(token)
 
 
-embedded_mcp_app = ToggleableMCPApp(_asymptote_mcp.streamable_http_app())
+embedded_mcp_app = ToggleableMCPApp(_clio_mcp.streamable_http_app())
 
 
 @asynccontextmanager
 async def mcp_server_lifespan():
-    async with _asymptote_mcp.session_manager.run():
+    async with _clio_mcp.session_manager.run():
         yield

@@ -83,7 +83,7 @@ def public_config() -> Dict[str, Any]:
         "enabled": enabled,
         "mode": settings.registration_mode if enabled else "off",
         "allowed_domains": allowed_domains() if enabled else [],
-        "product": "Asymptote",
+        "product": "Clio",
     }
 
 
@@ -223,7 +223,7 @@ def _notify_admins(row: Dict[str, Any]) -> None:
         return
     who = row.get("email", "")
     lines = [
-        f"{who} asked for access to Asymptote.",
+        f"{who} asked for access to Clio.",
         "",
         f"Name: {row.get('name') or '—'}",
         f"Organization: {row.get('organization') or '—'}",
@@ -287,7 +287,7 @@ def _notify_applicant(email: str, *, approved: bool) -> None:
     try:
         send_plain_email(
             email,
-            subject="Your Asymptote access is ready",
+            subject="Your Clio access is ready",
             text=(
                 "Your request for access was approved. Open the workspace and sign in "
                 "with this address; you'll receive a one-time code by email."

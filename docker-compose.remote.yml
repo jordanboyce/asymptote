@@ -1,4 +1,4 @@
-# Remote deployment override — Asymptote behind Cloudflare Tunnel + Access.
+# Remote deployment override — Clio behind Cloudflare Tunnel + Access.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d --build
 #
@@ -11,11 +11,18 @@
 #   AUTH_PASSWORD=...    # belt-and-braces shared secret (long + random)
 
 services:
-  asymptote:
+  clio:
     # Override the base file's published port: the tunnel is the only route in.
     ports: !reset []
     expose:
       - "8473"
+    # Tunnels provisioned before the Clio rename point their ingress at
+    # http://asymptote:8473. Keep that name resolving on the compose network so
+    # the rename does not require touching the Cloudflare side.
+    networks:
+      default:
+        aliases:
+          - asymptote
     environment:
       # Fail closed even if something reaches the container network directly:
       # every request (except /health) must carry this as Basic or Bearer auth.
@@ -23,10 +30,10 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
-    container_name: asymptote-tunnel
+    container_name: clio-tunnel
     command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env — see docs/REMOTE-ACCESS.md}
     depends_on:
-      - asymptote
+      - clio
     restart: unless-stopped

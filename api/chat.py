@@ -1612,7 +1612,7 @@ async def set_agent_config(
         api_key: The API key to store
 
     Note: Keys are stored server-side. For security, ensure your
-    Asymptote instance is properly secured. A stored key becomes shared
+    Clio instance is properly secured. A stored key becomes shared
     deployment state (everyone's chat can spend it), so under private
     collections this is admin-only — same trust rule as POST /api/config.
     """

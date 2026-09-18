@@ -58,3 +58,34 @@ describe('MCP client setup', () => {
     wrapper.unmount()
   })
 })
+
+describe('OAuth sign-in from the client', () => {
+  it('shows the one URL to paste when the deployment names an authorization server', async () => {
+    http.get.mockImplementation(async (path) => ({ data: {
+      '/api/collections': { collections: [{ id: 'default', name: 'Default' }] },
+      '/api/mcp/config': { enable_mcp: true },
+      '/api/mcp/tokens': { tokens: [] },
+      '/api/mcp/oauth': {
+        enabled: true, resource: 'https://clio.agency.test/mcp',
+        authorization_server: 'https://sso.agency.test/realms/main', scope: 'clio:mcp',
+      },
+    }[path] }))
+    const wrapper = mount(MCPTab, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="mcp-oauth"]')
+    expect(panel.get('#mcp-oauth-url').text()).toBe('https://clio.agency.test/mcp')
+    expect(panel.text()).toContain('sso.agency.test')
+    expect(panel.text()).toContain('clio:mcp')
+    expect(panel.text()).not.toContain('PASTE_YOUR_TOKEN')
+    expect(wrapper.text()).toContain('Claude Desktop, claude.ai, ChatGPT')
+    wrapper.unmount()
+  })
+
+  it('stays silent when OAuth is not configured, so token setup is the only story', async () => {
+    const wrapper = mount(MCPTab, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="mcp-oauth"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Sign in from your client')
+    wrapper.unmount()
+  })
+})

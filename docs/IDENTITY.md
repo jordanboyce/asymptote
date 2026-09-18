@@ -1,6 +1,6 @@
 # Identity: who a request is
 
-Asymptote has two separate questions, and they are often confused:
+Clio has two separate questions, and they are often confused:
 
 - **Can this caller in at all?** `AUTH_PASSWORD`, or nothing on a closed
   network. See [DEPLOYMENT.md](DEPLOYMENT.md).
@@ -38,7 +38,7 @@ The on-prem answer. Tokens your IdP already issues become identities here.
 ```bash
 IDENTITY_PROVIDER=oidc
 OIDC_ISSUER=https://sso.agency.gov/realms/main
-OIDC_AUDIENCE=asymptote               # the client id / API audience
+OIDC_AUDIENCE=clio               # the client id / API audience
 OIDC_IDENTITY_CLAIM=email             # default; preferred_username and sub are fallbacks
 PRIVATE_COLLECTIONS=true
 ```
@@ -56,7 +56,7 @@ anyone can use.
 ### Narrowing admission by claim
 
 ```bash
-OIDC_REQUIRED_CLAIMS=groups=asymptote-users
+OIDC_REQUIRED_CLAIMS=groups=clio-users
 ```
 
 Comma-separated `name=value` pairs, all required. Each matches a scalar
@@ -84,12 +84,15 @@ certifi's bundle at start up. See [ONPREM.md](ONPREM.md).
 
 ### What the agent clients do
 
-MCP clients (Claude Code, Codex) still use personal MCP tokens from
-Settings → MCP — those are minted by a person who is already signed in, and
-they carry that person's identity. You do not need to hand a browser OIDC
-token to an agent. Connector-style clients (Claude Desktop, claude.ai,
-ChatGPT) need OAuth, which this release does not implement; see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+Two ways in, both ending as the same person:
+
+- **Personal MCP tokens** (Settings → MCP) for clients that take a static
+  bearer header — Codex, VS Code, AnythingLLM, Claude Code with a pasted
+  token. Minted by someone already signed in; carries their identity.
+- **OAuth sign-in** for connector-style clients — Claude Desktop, claude.ai,
+  ChatGPT, and `claude mcp login`. The client sends the person to this IdP
+  and presents the token it gets; nothing to paste. Set `MCP_PUBLIC_URL`
+  and see [OAuth for MCP clients](#oauth-for-mcp-clients) below.
 
 ---
 
@@ -157,6 +160,155 @@ proxy_set_header X-Forwarded-User-Signature $hmac;   # njs/Lua, if not loopback
 Make sure the proxy **strips any inbound `X-Forwarded-User`** before setting
 its own. `proxy_set_header` replaces rather than appends, which covers the
 usual case.
+
+---
+
+## OAuth for MCP clients
+
+Connector-style MCP clients — Claude Desktop, claude.ai, ChatGPT, and
+Claude Code when you run `claude mcp login` instead of pasting a token —
+follow the MCP authorization spec: they treat `/mcp` as an OAuth 2.1
+*resource server*, discover its *authorization server* from RFC 9728
+metadata, send the person through a browser sign-in there, and present the
+bearer token they get back.
+
+Clio implements exactly the resource-server half. **The authorization
+server is your IdP.** There is deliberately no embedded one: an agency
+already runs an IdP, an embedded authorization server would be a second
+copy of every identity, and it is precisely the component a security review
+rejects.
+
+### With `oidc`: one more setting
+
+`IDENTITY_PROVIDER=oidc` already names the issuer and audience. Add the URL
+clients reach the endpoint at:
+
+```bash
+MCP_PUBLIC_URL=https://clio.agency.gov/mcp
+```
+
+That is the RFC 9728 `resource`. Clients always ask the IdP for a token
+*for that resource* (RFC 8707), and an IdP that honours the request mints a
+token whose audience is that URL — which is accepted, alongside
+`OIDC_AUDIENCE`, for IdPs that ignore the resource parameter (Entra ID
+among them). Left empty, the URL is derived from `MCP_ALLOWED_HOSTS`, and
+failing that from each request's `Host` header; a derived value is only
+ever advertised, never accepted as an audience.
+
+What happens when a client connects:
+
+1. `POST /mcp` with no token → `401` with
+   `WWW-Authenticate: Bearer resource_metadata="https://…/.well-known/oauth-protected-resource/mcp"`
+   (plus `scope="…"` if one is required).
+2. The client reads that document: `authorization_servers: ["<OIDC_ISSUER>"]`.
+   Both `/.well-known/oauth-protected-resource` and the `/mcp`-suffixed form
+   are served, unauthenticated, and answer 404 when no authorization server
+   applies.
+3. The client fetches the IdP's own metadata
+   (`/.well-known/oauth-authorization-server` or
+   `/.well-known/openid-configuration`), obtains a client id (next section),
+   and runs the PKCE authorization-code flow in the browser.
+4. It presents the token on every request. The token is verified by the
+   **same code path as a browser session** — signature against the JWKS,
+   issuer, audience, `exp`, `OIDC_REQUIRED_CLAIMS`, asymmetric algorithms
+   only — so the caller *is* that person: private collections scope to
+   them, the audit trail names them, and `ADMIN_EMAILS` applies.
+
+### Client registration is the IdP's job
+
+The metadata names no registration endpoint on purpose. The current MCP
+spec (2026-07-28) deprecates dynamic client registration and tells clients
+to prefer, in order: a pre-registered client id, a Client ID Metadata
+Document (the client identifies itself by an HTTPS URL the IdP fetches),
+then dynamic registration. Every client that matters accepts a
+pre-registered id, so nothing here depends on the IdP supporting more.
+
+| IdP | Zero-touch path | Otherwise |
+| --- | --- | --- |
+| Keycloak | Anonymous dynamic registration is built in (`registration_endpoint` is advertised). Allow the client's host in the realm's *Client registration → Anonymous access policies → Trusted Hosts*, or hand out an initial access token. | Create a public client with the client's redirect URI; give people its client id. |
+| Okta, Auth0 | Dynamic registration where enabled on the tenant; both are adding Client ID Metadata Document support. | An *Application* of type native/SPA (public, PKCE) with the client's redirect URI. |
+| Entra ID | None — no dynamic registration. | An *App registration* (public client, PKCE) with the client's redirect URI; set `OIDC_AUDIENCE` to its Application ID URI or client id, since Entra ignores `resource`. |
+
+Where the client id goes: Claude Desktop / claude.ai — *Add custom
+connector → Advanced settings*; ChatGPT — the OAuth client fields of the
+connector; Claude Code — `claude mcp add --transport http --client-id <id>
+[--callback-port <port>] clio https://…/mcp`. Redirect URIs the clients
+use (confirm in the client's docs, they change): Claude Code
+`http://localhost:<port>/callback` (random port unless `--callback-port`),
+claude.ai / Claude Desktop `https://claude.ai/api/mcp/auth_callback`,
+ChatGPT `https://chatgpt.com/connector_platform_oauth_redirect`. The hosted
+clients connect from Anthropic's and OpenAI's servers, so both the endpoint
+and the IdP must be reachable from the internet for them.
+
+### Requiring a scope
+
+```bash
+MCP_OAUTH_SCOPE=clio-mcp
+```
+
+Then a token must carry that scope (`scope` or `scp` claim, string or
+list) to be accepted on `/mcp`, while the same token stays a fine browser
+session. It is advertised as `scopes_supported` and in the 401 challenge,
+so clients request it; a token that is valid for the app but lacks it gets
+`403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"`,
+which is the step-up signal the spec defines. Define the scope at the IdP
+(a Keycloak client scope, an Entra *Expose an API* scope). Leave it empty
+unless you want MCP access to be a separately granted permission.
+
+One consequence worth knowing before you turn it on: a client that
+registers itself dynamically asks the IdP for exactly the scope in the
+challenge, and Keycloak then gives that client *only* that scope. The
+token it mints carries no audience and no email unless the scope itself
+provides them, and the app refuses it — correctly. So on Keycloak, put the
+audience mapper and the identity-claim mapper on the MCP client scope, not
+only on the realm defaults; `scripts/oauth_smoke/keycloak_realm.py` shows
+the shape. Pre-registered clients are configured by hand and do not have
+this problem.
+
+### A different IdP for `/mcp` only
+
+A Cloudflare Access deployment's browser identity is the Access assertion,
+not a bearer JWT, so it has no authorization server to advertise. Name one
+for `/mcp` only:
+
+```bash
+MCP_OAUTH_ISSUER=https://sso.agency.gov/realms/main    # or Access for SaaS (OIDC)
+MCP_OAUTH_AUDIENCE=clio-mcp
+MCP_OAUTH_JWKS_URL=                                    # optional, skips discovery
+MCP_PUBLIC_URL=https://clio.agency.gov/mcp
+```
+
+Tokens from that issuer are accepted on `/mcp` and nowhere else, and the
+Access-verified identity keeps working on `/mcp` beside them (a service
+token, for instance). The edge must let `/mcp` and
+`/.well-known/oauth-protected-resource` through to the app —
+`scripts/provision_cloudflare.py` adds both bypasses. Use the identity
+claim that matches what Access reports (email), so a person is the same
+person on both paths.
+
+### What is refused
+
+Wrong audience, wrong issuer, expired, no `exp`, a signature the JWKS does
+not verify, `HS256` even with a known key id, a token for another
+resource, a token without the required scope (403, above). At startup:
+`MCP_OAUTH_ISSUER` without `MCP_OAUTH_AUDIENCE`, a plaintext issuer,
+`MCP_OAUTH_SCOPE` with no authorization server to enforce it, and an
+`MCP_PUBLIC_URL` that is not an absolute http(s) URL.
+
+### Checking it
+
+```bash
+curl -si -X POST https://clio.agency.gov/mcp | grep -i www-authenticate
+curl -s https://clio.agency.gov/.well-known/oauth-protected-resource/mcp
+claude mcp add --transport http clio https://clio.agency.gov/mcp
+claude mcp login clio          # opens the browser at your IdP
+```
+
+Settings → MCP shows the same URL and per-client steps whenever an
+authorization server applies. For a full rehearsal against a throwaway
+Keycloak — dynamic registration, a pre-registered client, the SDK's
+reference client, the scope step-up — see
+[scripts/oauth_smoke/README.md](../scripts/oauth_smoke/README.md).
 
 ---
 

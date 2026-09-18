@@ -34,6 +34,11 @@ async def start_reindex():
         - job_id: ID for tracking re-indexing progress
         - status: Initial job status
     """
+    # Deployment-wide: this rebuilds every collection's index, including
+    # ones the caller does not own. Same bar as the other /api/admin work.
+    from api.deps import require_admin
+    require_admin("re-index the whole deployment")
+
     try:
         # Get current config (from database with .env fallback)
         current_config = config_manager.get_current_config()
@@ -93,7 +98,7 @@ async def start_collection_reindex(collection_id: str, user_id: str = Depends(ge
     """
     try:
         from api.deps import require_collection_access
-        require_collection_access(collection_id, user_id, write=True)
+        require_collection_access(collection_id, user_id, owner=True)
 
         # Get collection settings
         collection = collection_service.get_collection(collection_id)
@@ -309,7 +314,7 @@ async def get_collection_stats(collection_id: str):
 )
 async def update_collection(collection_id: str, updates: dict, user_id: str = Depends(get_current_user_id)):
     """
-    Update collection settings. Requires owner or readwrite access.
+    Update collection settings. Requires owner access.
 
     Body:
         name: New name
@@ -318,12 +323,14 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
         chunk_size: New chunk size
         chunk_overlap: New chunk overlap
         embedding_model: New embedding model
+        published: True releases the collection read-only to everyone in the
+            deployment (in-app and over MCP); False withdraws it.
 
     Note: Changing chunk_size, chunk_overlap, or embedding_model
     requires re-indexing the collection's documents.
     """
     from api.deps import require_collection_access
-    require_collection_access(collection_id, user_id, write=True)
+    require_collection_access(collection_id, user_id, owner=True)
 
     # Sensitivity is a governance label: validated, and its changes audited
     # (it decides whether the collection can be shared or reached over MCP).
@@ -340,6 +347,41 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
             audit.record("collection.sensitivity", actor=user_id, collection_id=collection_id,
                          detail={"from": previous, "to": sensitivity})
 
+    # Publishing releases the collection to everyone in the deployment as
+    # read-only. Two refusals guard it: a restricted label is a boundary
+    # (same rule as sharing), and a team collection has no single owner to
+    # keep configuration authority — publishing it would lock it for
+    # everybody, including whoever published it.
+    published = None
+    if "published" in updates and updates["published"] is not None:
+        published = bool(updates["published"])
+        collection_row = collection_service.get_collection(collection_id) or {}
+        if published:
+            from services.governance import is_restricted
+
+            if is_restricted(collection_row):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "This collection is labelled restricted and cannot be published. "
+                        "Change its sensitivity label first if releasing it is intended."
+                    ),
+                )
+            owner = (collection_row.get("owner_id") or "").strip()
+            if owner in ("", settings.default_user_id):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "This is a team collection — everyone can already reach it, and it "
+                        "has no single owner to keep control of how it is built. Publishing "
+                        "applies to collections owned by one person."
+                    ),
+                )
+        if bool(collection_row.get("published")) != published:
+            from services import audit
+            audit.record("collection.published", actor=user_id, collection_id=collection_id,
+                         detail={"published": published})
+
     collection = collection_service.update_collection(
         collection_id=collection_id,
         name=updates.get("name"),
@@ -350,6 +392,7 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
         embedding_model=updates.get("embedding_model"),
         guide=updates.get("guide"),
         sensitivity=sensitivity,
+        published=published,
     )
 
     if not collection:
@@ -359,6 +402,52 @@ async def update_collection(collection_id: str, updates: dict, user_id: str = De
         )
 
     return collection
+
+
+@router.post(
+    "/api/collections/{collection_id}/clone",
+    summary="Clone a collection you can read into one you own",
+    tags=["collections"],
+    status_code=status.HTTP_201_CREATED,
+)
+async def clone_collection(collection_id: str, body: dict = None, user_id: str = Depends(get_current_user_id)):
+    """
+    Copy a collection's sources into a new collection owned by the caller.
+
+    Read access is enough — that is the point. Someone reading a published
+    collection cannot change how it is built, so cloning is how they get a
+    copy they can rechunk, re-embed and add to. The copy starts unpublished.
+
+    Body:
+        name: Name for the copy (default: "Copy of <source name>")
+
+    Returns the new collection plus `job_id` for the background indexing job.
+    """
+    from api.deps import require_collection_access
+    from services import storage_quota
+
+    require_collection_access(collection_id, user_id)
+
+    if not user_id and settings.private_collections:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sign in to clone a collection — a copy needs an owner.",
+        )
+
+    try:
+        return collection_service.clone_collection(
+            source_id=collection_id,
+            owner_id=user_id or settings.default_user_id,
+            name=(body or {}).get("name"),
+        )
+    except storage_quota.StorageLimitExceeded as e:
+        raise HTTPException(status_code=413, detail=e.to_detail())
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except RuntimeError as e:
+        # An indexing job is already running for the new collection, or the
+        # deployment-wide job cap is reached.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
 @router.delete(
@@ -373,9 +462,7 @@ def delete_collection(collection_id: str, user_id: str = Depends(get_current_use
     Note: The 'default' collection cannot be deleted.
     """
     from api.deps import require_collection_access
-    access = require_collection_access(collection_id, user_id)
-    if access != "owner":
-        raise HTTPException(status_code=403, detail="Only the collection owner can delete it")
+    require_collection_access(collection_id, user_id, owner=True)
     if collection_id == "default":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

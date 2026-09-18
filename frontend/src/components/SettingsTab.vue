@@ -575,8 +575,24 @@
             />
           </div>
 
-          <!-- Re-index -->
-          <div class="flex items-start justify-between gap-8 py-6 border-t border-base-300/50">
+          <!-- Re-index (owner only: it rebuilds the owner's index) -->
+          <div
+            v-if="!collectionStore.canConfigureCurrent"
+            class="flex items-start justify-between gap-8 py-6 border-t border-base-300/50"
+          >
+            <div class="min-w-0">
+              <div class="text-sm font-medium">How this collection is built</div>
+              <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
+                {{ collectionStore.currentCollection?.name || 'This collection' }} belongs to someone else,
+                so its indexing settings are theirs to change. Make your own copy if you need different ones.
+              </p>
+            </div>
+            <button class="btn btn-sm btn-outline flex-shrink-0" @click="$emit('clone-collection')">
+              Make a copy
+            </button>
+          </div>
+
+          <div v-else class="flex items-start justify-between gap-8 py-6 border-t border-base-300/50">
             <div class="min-w-0">
               <div class="text-sm font-medium">Re-index this collection</div>
               <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[52ch]">
@@ -848,8 +864,8 @@
               </div>
             </div>
 
-            <!-- Chunking -->
-            <div class="pt-6 border-t border-base-300/50">
+            <!-- Chunking (owner only) -->
+            <div v-if="collectionStore.canConfigureCurrent" class="pt-6 border-t border-base-300/50">
               <div class="text-sm font-medium">Chunking</div>
               <p class="text-xs text-base-content/55 mt-1 leading-relaxed max-w-[56ch]">
                 Per-collection chunking for search. Re-index to apply changes.
@@ -1045,7 +1061,7 @@ import {
   notifyProviderChange,
 } from '../utils/aiProviders.js'
 
-const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled'])
+const emit = defineEmits(['data-cleared', 'stats-updated', 'switch-tab', 'chat-tab-toggled', 'clone-collection'])
 
 const collectionStore = useCollectionStore()
 const backgroundJobsStore = useBackgroundJobsStore()

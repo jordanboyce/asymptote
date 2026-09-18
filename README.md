@@ -1,18 +1,27 @@
-# Asymptote
+# Clio
 
 **Ask your sources. Check the evidence. Connect your AI tools.**
 
-Asymptote is a self-hosted knowledge workspace for individuals and small teams.
+Clio is a self-hosted knowledge workspace for individuals, teams, and
+organisations that want to keep their documents on their own infrastructure.
 Add documents to a collection, ask questions with citations, or find the exact
-passage you need. Connect Claude Code, Codex, and other MCP clients to the same
-knowledge. Local embeddings work out of the box; answer generation uses a model
-you configure. Hosted providers receive the text they process.
+passage you need. Expose the same knowledge to the AI clients you already use —
+Claude Desktop, claude.ai, ChatGPT, Claude Code, Codex, VS Code — over MCP.
+Local embeddings work out of the box; answer generation uses a model you
+configure, from a hosted API to a model running on your own hardware. Hosted
+providers receive the text they process.
+
+Clio is part of the DOE **Prometheus** ecosystem: Prometheus brings the fire
+(compute, models); Clio keeps the record (grounded, citable knowledge). The
+name — Clio, Muse of history, daughter of Mnemosyne — leaves room for a future
+family of related tools under the Mnemosyne umbrella.
 
 The everyday workspace has three destinations:
 
 - **Ask** — converse with your collection and open supporting sources.
 - **Find** — search passages without requiring an answer-generation model.
-- **Connect** — create a personal MCP token and configure your AI client.
+- **Connect** — attach your AI client: sign in from the client, or mint a
+  personal MCP token.
 
 Reports, saved instructions, and administration are under **More**. Notes and
 tools open on demand. Existing collections, saved conversations, and API routes
@@ -31,8 +40,42 @@ research tools in chat and MCP clients.
 
 ---
 
+## Use cases
+
+### What people do with it
+
+| You want to… | Where | How it works |
+|---|---|---|
+| **Ask a question and see the evidence** | Ask | Grounded answers cite `[Source N]`; open the passage, the page, and the original file. The assistant says when the sources do not establish something. |
+| **Find the exact passage or identifier** | Find | Hybrid search (semantic + keyword) without any answer model; exact strings, numbers, and negation stay intact. |
+| **Research a multi-part question** | Ask, MCP | `research_documents` runs focused subqueries, reports coverage gaps and weak evidence, and spans collections. [Guide](docs/AGENTIC_RESEARCH.md). |
+| **Query spreadsheets, not just prose** | Ask, MCP | CSV/XLSX become typed tables; counts, sums, filters, and rankings run as SQL, never as guessed passage search. |
+| **Turn a collection into a document** | Generate (under More) | Source-grounded briefings, summaries, and reports with citations to review before sharing. |
+| **Teach it your house style or domain** | Expertise (under More) | Expertise packs add instructions and terminology per collection, versioned alongside the corpus. |
+| **Give your AI assistant a private knowledge source** | Connect | Claude Desktop, claude.ai, ChatGPT and Claude Code sign in through your identity provider; Codex, VS Code, AnythingLLM and Claude Code can also use a personal token. Agents can write notes and summaries back when a token allows it. |
+| **Index scanned paper, photos, audio, code** | Add sources | OCR (local Tesseract/Docling or a vision model), Whisper transcription, code-aware chunking, image description. |
+| **Keep a shared corpus accountable** | More → Admin | Attribution on every document, an append-only audit trail (including agent reads if enabled), content-policy scanning with flag/quarantine/reject, sensitivity labels, blocklists, an acceptable-use gate. |
+
+### Where people run it
+
+| Situation | Run it as | Who gets in | Read |
+|---|---|---|---|
+| **Just you, on your machine** | `python main.py` or `docker compose up -d` | Loopback only; no password needed | [Quick Start](#quick-start) |
+| **A team on an internal network** | Docker with `BIND_ADDRESS` and `AUTH_PASSWORD` | Everyone with the password sees the shared corpus | [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| **A team reachable from anywhere** | Docker + Cloudflare Tunnel + Access, no inbound ports | Your SSO at the edge; per-person collections with `PRIVATE_COLLECTIONS`; self-serve `/register`; invitations admitted at the edge automatically | [REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md) |
+| **An organisation hosting it internally** | The portable image, your own IdP (`IDENTITY_PROVIDER=oidc` or an authenticating proxy), your own models (`AI_PROVIDER`) | Identities from Keycloak, Entra ID, Okta, mTLS or Kerberos; private collections; OAuth sign-in for connector clients; a full audit trail | [ONPREM.md](docs/ONPREM.md), [IDENTITY.md](docs/IDENTITY.md), [AGENCY_PILOT.md](docs/AGENCY_PILOT.md) |
+| **Fully air-gapped** | The offline bundle with `OFFLINE_MODE=1` | As above, with cloud providers and model downloads disabled | [AIRGAP.md](docs/AIRGAP.md) |
+| **A hosted PaaS (Railway, Render, Fly.io, Coolify)** | The Dockerfile, a volume at `/app/data`, `AUTH_PASSWORD` | The password, or an SSO proxy in front | [Hosting on a PaaS](#hosting-on-a-paas-railway-render-flyio-coolify-) |
+
+Every shape uses the same image and the same code path for authorization: a
+collection is reachable only through the app's access checks, whether the
+request comes from the browser, the API, or an MCP client.
+
+---
+
 ## Table of Contents
 
+- [Use cases](#use-cases)
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Technology Stack](#technology-stack)
@@ -80,7 +123,9 @@ That's the whole setup — the image builds the frontend, bundles OCR (Tesseract
 
 ### Sharing it with a team
 
-Choose an access model deliberately. In the default shared-appliance mode, everyone admitted can access the team corpus. `PRIVATE_COLLECTIONS=true` enables collection ownership and read/readwrite sharing using verified Cloudflare Access identities; configure `ADMIN_EMAILS` for operators. An arbitrary SSO proxy alone does not enable per-user collection isolation. Setup and verification: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Choose an access model deliberately. In the default shared-appliance mode, everyone admitted can access the team corpus. `PRIVATE_COLLECTIONS=true` enables collection ownership and read/readwrite sharing, enforced against a verified identity: Cloudflare Access at the edge, your own OIDC provider (`IDENTITY_PROVIDER=oidc` — Keycloak, Entra ID, Okta, PingFederate), or an authenticating reverse proxy (`trusted_header` — mTLS, Kerberos, a site SSO proxy). Configure `ADMIN_EMAILS` for operators. The app refuses to start with private collections on and no identity source it can enforce. Setup and verification: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [docs/IDENTITY.md](docs/IDENTITY.md).
+
+To reach a home or lab box from anywhere without opening a port, put it behind Cloudflare Tunnel + Access; `scripts/provision_cloudflare.py` creates the tunnel, the Access apps and the DNS record in one run. Recipe: [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md).
 
 People can also ask for access themselves: `REGISTRATION_MODE=approval` (queue for an admin) or `open` (admit matching addresses at once) turns on a public `/register` page, with an optional email-domain allowlist and a seat cap. Each collection holds up to 5 GiB of sources by default (`COLLECTION_STORAGE_LIMIT_BYTES`); usage is shown in the Sources panel.
 
@@ -95,7 +140,7 @@ there. Nothing site-specific is baked in.
 #   Windows:  .\scripts\package_image.ps1 -Tag 1.0.0 -Out D:\transfer
 
 # on the target host
-docker load < asymptote-1.0.0.tar.gz
+docker load < clio-1.0.0.tar.gz
 cp .env.onprem.example .env      # model endpoint, auth, data path
 docker compose -f docker-compose.onprem.yml up -d
 ```
@@ -115,12 +160,12 @@ OCR and the content-policy reviewer all use that endpoint, and the UI shows
 it as connected. A per-request key still overrides it, so an individual can
 bring their own provider. Endpoints with a private CA are handled by
 dropping the `.crt` into `certs/ca/` — trusted at container start, no
-rebuild. Registry users can `docker pull ghcr.io/jordanboyce/asymptote`
+rebuild. Registry users can `docker pull ghcr.io/jordanboyce/clio`
 instead of carrying a file. Full guide: [docs/ONPREM.md](docs/ONPREM.md).
 
 ### Air-gapped / offline deployment
 
-Asymptote runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, limiting supported provider paths to the local or self-hosted endpoints you configure. Enforce a network egress policy for a verifiable no-egress deployment. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
+Clio runs fully disconnected: build with `--build-arg OFFLINE_BUNDLE=1` to bake every runtime model (reranker, Whisper, Docling OCR) into the image, transfer it with `docker save`/`docker load`, and run with `OFFLINE_MODE=1` — which disables cloud AI providers and all HuggingFace downloads, limiting supported provider paths to the local or self-hosted endpoints you configure. Enforce a network egress policy for a verifiable no-egress deployment. Full walkthrough: [docs/AIRGAP.md](docs/AIRGAP.md).
 
 ### Hosting on a PaaS (Railway, Render, Fly.io, Coolify, …)
 
@@ -158,7 +203,7 @@ API and MCP clients then authenticate with `Authorization: Bearer <AUTH_PASSWORD
 
 ## What It Does
 
-Asymptote lets you:
+Clio lets you:
 
 1. **Upload Documents** - Drop in PDFs, Office docs, spreadsheets, code, audio, or images (books, papers, manuals, data, photos of whiteboards)
 2. **Hybrid Search** - Combine semantic understanding with keyword precision in one retrieval workflow
@@ -300,7 +345,7 @@ python main.py
 ```
 INFO - Loading embedding model: all-MiniLM-L6-v2
 INFO - Initializing vector store (metadata: json)
-INFO - Asymptote API ready
+INFO - Clio API ready
 INFO - Uvicorn running on http://127.0.0.1:8473
 ```
 
@@ -314,13 +359,17 @@ unauthenticated until you set `AUTH_PASSWORD`.
 
 ### MCP Integration
 
-Asymptote now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
+Clio now exposes an embedded HTTP MCP endpoint at `http://localhost:8473/mcp` when `ENABLE_MCP=true` (default).
 
 Use **Connect** in the UI to:
 - Enable or disable the MCP server without restarting
 - Choose the default collection and retrieval settings used by MCP
 - Keep MCP in search-only mode (recommended) to avoid duplicate model usage
 - Optionally enable Ollama-backed synthesis for MCP when you explicitly want server-side answering
+- **Sign in from the client** — with an OIDC identity provider configured (`IDENTITY_PROVIDER=oidc`,
+  `MCP_PUBLIC_URL`), Claude Desktop, claude.ai, ChatGPT and `claude mcp login` attach with the
+  endpoint URL alone: the app is the OAuth 2.1 resource server and your IdP signs people in
+  ([docs/IDENTITY.md](docs/IDENTITY.md#oauth-for-mcp-clients)).
 - **Generate a personal access token** — a self-serve bearer credential scoped to `/mcp` only, so
   connecting a client never requires editing `.env` or provisioning anything in Cloudflare. Pick an
   expiry (90 days by default, or never), optionally limit the token to specific collections, and
@@ -335,7 +384,7 @@ Use **Connect** in the UI to:
 
 For AnythingLLM, merge the entry into its storage `plugins/anythingllm_mcp_servers.json`
 and reload MCP servers in AnythingLLM. The export uses its `streamable` transport.
-Use an Asymptote URL reachable from the AnythingLLM host or container; a container's
+Use an Clio URL reachable from the AnythingLLM host or container; a container's
 `localhost` points to itself. See [AnythingLLM's MCP setup](https://docs.anythingllm.com/mcp-compatibility/overview).
 
 ### Step 4: Verify Setup
@@ -438,7 +487,7 @@ PORT=8473
 
 ### AI Features (Optional)
 
-Asymptote supports optional AI integration for enhanced search results:
+Clio supports optional AI integration for enhanced search results:
 
 **Features:**
 - **Result Reranking**: AI re-orders search results by semantic relevance
@@ -459,7 +508,7 @@ Asymptote supports optional AI integration for enhanced search results:
 - Compare responses side-by-side from both models
 - Selection preference persists between searches
 
-**Security Note:** API keys are stored only in your browser's localStorage and are sent directly to the AI providers. The Asymptote server never sees or stores your API keys.
+**Security Note:** API keys are stored only in your browser's localStorage and are sent directly to the AI providers. The Clio server never sees or stores your API keys.
 
 **Get API Keys:**
 - **Anthropic**: https://console.anthropic.com/
@@ -492,7 +541,7 @@ fine). `docker-compose.onprem.yml` mounts `certs/ca` already:
 
 ```bash
 cp /path/to/your/cert.crt certs/ca/
-docker compose -f docker-compose.onprem.yml restart asymptote
+docker compose -f docker-compose.onprem.yml restart clio
 ```
 
 **Important Notes:**
@@ -790,11 +839,11 @@ echo "EMBEDDING_MODEL=paraphrase-MiniLM-L3-v2" >> .env
 **Solution:**
 ```bash
 # Check logs
-docker-compose logs asymptote
+docker-compose logs clio
 
 # Increase memory limit in docker-compose.yml
 services:
-  asymptote:
+  clio:
     mem_limit: 4g
 ```
 
@@ -819,7 +868,7 @@ chmod -R 777 ./data
 
 ```bash
 # Check what's wrong
-docker-compose logs -f asymptote
+docker-compose logs -f clio
 
 # Common fix: Remove old containers
 docker-compose down
@@ -944,15 +993,23 @@ type, share, or rotate — and you get per-person revocation and an access log
 without writing any code. Full walkthrough, including how to verify the bypass
 is closed: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
-By default everyone who gets in sees the whole corpus. Deployments behind
-Cloudflare Access can set `PRIVATE_COLLECTIONS=true` for per-person
-collections: each collection is visible only to its owner until shared (read
-or readwrite share links), enforcement covers every entry point — search,
-documents, chat, and the `/mcp` tools — and everything created before the
-flag stays in a team tier everyone sees. The identity is the verified Access
-JWT, which is why the mode refuses to start without Access configured. (The
-old `ENABLE_MULTI_USER` flag also refuses to start: it filtered the collection
-list without enforcing anything.) Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+By default everyone who gets in sees the whole corpus. With a verified
+identity source — Cloudflare Access, your own OIDC provider, or an
+authenticating proxy ([docs/IDENTITY.md](docs/IDENTITY.md)) — set
+`PRIVATE_COLLECTIONS=true` for per-person collections: each collection is
+visible only to its owner until shared (read or readwrite share links),
+enforcement covers every entry point — search, documents, chat, and the
+`/mcp` tools — and everything created before the flag stays in a team tier
+everyone sees. The mode refuses to start without an identity source it can
+enforce. (The old `ENABLE_MULTI_USER` flag also refuses to start: it filtered
+the collection list without enforcing anything.) Details:
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+**MCP clients are the same people.** A personal token carries the identity of
+whoever minted it and only ever works on `/mcp`. An OAuth sign-in from Claude
+Desktop, claude.ai, ChatGPT or Claude Code is verified by the same rules as a
+browser session, so an agent sees exactly the collections its person can, and
+`MCP_AUDIT_TOOL_CALLS=true` records which credential read which document.
 
 **Content governance.** Once several people can add sources, every document
 records who added it, every upload / deletion / share / token / admin action
@@ -976,8 +1033,12 @@ opinion is off by default. Full description in
    your browser visits read this API. Non-browser clients (MCP, curl, SDKs) are
    unaffected either way. Credentialed cross-origin requests are never allowed
    for the wildcard.
-3. **Rate limiting** — not implemented; front with a proxy that provides it if
-   abuse is a concern
+3. **Rate limits and budgets** are built in — per-identity request limits for
+   chat, search and registration are on by default, an MCP class and a daily
+   provider-token budget per person are opt-in, and each collection has a
+   storage cap (`RATE_LIMIT_*`, `CHAT_DAILY_TOKEN_BUDGET`,
+   `COLLECTION_STORAGE_LIMIT_BYTES`). Tune them for your model's capacity; a
+   proxy in front can add coarser protection.
 4. **Air-gapped environments** — set `OFFLINE_MODE=1` to disable cloud AI
    providers and model downloads entirely (see [docs/AIRGAP.md](docs/AIRGAP.md))
 
@@ -1004,12 +1065,12 @@ data/indexes/sqlite/metadata.db
 **Backup script:**
 ```bash
 #!/bin/bash
-tar -czf asymptote-backup-$(date +%Y%m%d).tar.gz data/
+tar -czf clio-backup-$(date +%Y%m%d).tar.gz data/
 ```
 
 **Restore:**
 ```bash
-tar -xzf asymptote-backup-20240203.tar.gz
+tar -xzf clio-backup-20240203.tar.gz
 python main.py
 ```
 
@@ -1018,7 +1079,7 @@ python main.py
 ## Project Structure
 
 ```
-asymptote/
+clio/
 ├── main.py                    # App assembly: middleware, lifespan, routers, frontend serving
 ├── config.py                  # Settings from .env
 ├── requirements.txt           # Python dependencies
@@ -1135,10 +1196,10 @@ See [example_usage.py](example_usage.py) for more examples.
 A: Yes! Python and Docker both work on Windows.
 
 **Q: Does it support other file formats?**
-A: Yes! Currently supports PDF, TXT, DOCX, and CSV files.
+A: PDF, TXT, DOCX, CSV/XLSX, Markdown, HTML, JSON/JSONL, source code, audio (transcribed), and images (described and transcribed by a vision model). Scanned PDFs are OCRed when OCR is enabled.
 
 **Q: Can I use it offline?**
-A: Yes, after the first run (model downloads once).
+A: Yes. Search and embeddings are local after the first run (the model downloads once). For a deployment that must never reach the internet, build the offline bundle and run with `OFFLINE_MODE=1` ([docs/AIRGAP.md](docs/AIRGAP.md)); answers then come from a model you host.
 
 **Q: How accurate is semantic search?**
 A: Very good for finding concepts, not exact strings. ~80-90% accuracy for most queries.
@@ -1150,7 +1211,16 @@ A: It's in `~/.cache/torch/sentence_transformers/`. You can delete it but it'll 
 A: Tested up to 1000+ pages. Limited by RAM.
 
 **Q: Can multiple users access it?**
-A: Yes, but no built-in auth. Add authentication for multi-user.
+A: Yes. The simplest shape is a shared password (`AUTH_PASSWORD`), where everyone sees the same corpus. For per-person collections, sharing, an audit trail and self-serve registration, give it a verified identity source — Cloudflare Access, your own OIDC provider, or an authenticating proxy — and set `PRIVATE_COLLECTIONS=true` ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/IDENTITY.md](docs/IDENTITY.md)).
+
+**Q: Can Claude Desktop, claude.ai or ChatGPT use it?**
+A: Yes, when the deployment has an identity provider. They add the `/mcp` URL as a custom connector and sign in there; the app is the OAuth resource server and your IdP does the login. Claude Code, Codex, VS Code and AnythingLLM can do the same or use a personal token from Connect ([docs/IDENTITY.md](docs/IDENTITY.md#oauth-for-mcp-clients)).
+
+**Q: Can an agent add to a collection, not just read it?**
+A: Yes, with a personal token minted with *Allow adding and updating sources*: the `write_document` tool creates, replaces or appends text sources, indexed and audited like an upload. There is deliberately no delete tool.
+
+**Q: Does it need a cloud AI provider?**
+A: No. Search works with no model at all. For answers, use any provider you trust — Anthropic, OpenAI, Gemini, OpenRouter, Ollama Cloud — or a model you run yourself (Ollama, vLLM, LM Studio, llama.cpp, any OpenAI-compatible endpoint), set once for the whole deployment with `AI_PROVIDER` ([docs/ONPREM.md](docs/ONPREM.md)).
 
 ---
 
@@ -1170,4 +1240,4 @@ This is a reference implementation. Feel free to fork and adapt for your needs.
 
 ---
 
-**Asymptote** - Always approaching understanding, never quite reaching it.
+**Clio** — The record remembers.

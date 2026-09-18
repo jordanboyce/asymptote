@@ -15,7 +15,7 @@ import {
 // Provider persistence stays in that module (localStorage, and the
 // resolution chain documented there is still normative). What lived
 // outside it was the reactivity hack: localStorage isn't reactive, so a
-// window CustomEvent ('asymptote:provider-changed') fanned out to listeners
+// window CustomEvent ('clio:provider-changed') fanned out to listeners
 // in four components, and App.vue kept a providerPillVersion counter to
 // force recomputation. This store replaces all of that with one version
 // ref: every write path in aiProviders.js calls notifyProviderChange(),

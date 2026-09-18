@@ -403,7 +403,7 @@ class LegacyOCREngine(OCREngine):
         if not _has_poppler_binaries():
             raise RuntimeError(
                 "Poppler binaries not found. Install Poppler and add it to PATH, "
-                "or place poppler/bin next to Asymptote.exe."
+                "or place poppler/bin next to Clio.exe."
             )
         if self._engine == "pytesseract" and not _configure_pytesseract_binary():
             raise RuntimeError(
@@ -670,7 +670,7 @@ class VisionOCREngine(OCREngine):
         if not _has_poppler_binaries():
             raise RuntimeError(
                 "Poppler binaries not found. Install Poppler and add it to PATH, "
-                "or place poppler/bin next to Asymptote.exe."
+                "or place poppler/bin next to Clio.exe."
             )
 
         poppler_path = _find_poppler_path()

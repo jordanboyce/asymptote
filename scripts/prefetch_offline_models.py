@@ -1,4 +1,4 @@
-"""Pre-fetch every model Asymptote can need at runtime, for air-gapped deploys.
+"""Pre-fetch every model Clio can need at runtime, for air-gapped deploys.
 
 Run this on a machine WITH internet access:
 

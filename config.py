@@ -1,4 +1,4 @@
-"""Configuration management for Asymptote API."""
+"""Configuration management for Clio API."""
 
 import os
 from pathlib import Path
@@ -116,12 +116,12 @@ class Settings(BaseSettings):
     # key is set, a collection owner can email a share invitation directly
     # from the share dialog: the recipient gets the share token and a join
     # link. RESEND_FROM must be a sender your Resend account may use — an
-    # address on a domain you verified there (e.g. "Asymptote
-    # <asymptote@your-domain>"); the default onboarding sender only delivers
+    # address on a domain you verified there (e.g. "Clio
+    # <clio@your-domain>"); the default onboarding sender only delivers
     # to your own Resend account's email, so it's for testing. Disabled in
     # OFFLINE_MODE like every outbound integration.
     resend_api_key: str = ""
-    resend_from: str = "Asymptote <onboarding@resend.dev>"
+    resend_from: str = "Clio <onboarding@resend.dev>"
 
     # Text chunking configuration
     chunk_size: int = 1000
@@ -167,7 +167,7 @@ class Settings(BaseSettings):
 
     # MCP configuration
     enable_mcp: bool = True
-    mcp_server_id: str = "asymptote"
+    mcp_server_id: str = "clio"
     mcp_default_collection: str = "default"
     # Single-shot search defaults for agents. Hybrid with 8 passages: an agent
     # that reaches for search_collection instead of research_documents still
@@ -197,7 +197,7 @@ class Settings(BaseSettings):
     # as local files, so this is not HA and does not enable multi-replica.
     # See docs/DEPLOYMENT.md "Capacity & scaling".
     db_backend: Literal["sqlite", "postgresql"] = "sqlite"
-    postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/asymptote
+    postgres_url: str = ""  # e.g. postgresql://user:pass@localhost:5432/clio
 
     # Multi-user mode is NOT supported and the app refuses to start with it on.
     # The flag only ever filtered the collection list — search, document
@@ -253,7 +253,7 @@ class Settings(BaseSettings):
     # it, any token the IdP ever issued for any application would be accepted
     # here. OIDC_JWKS_URL skips discovery for an install that cannot reach the
     # issuer's .well-known document. OIDC_REQUIRED_CLAIMS narrows admission
-    # further, e.g. "groups=asymptote-users" — comma-separated name=value
+    # further, e.g. "groups=clio-users" — comma-separated name=value
     # pairs, each matching a scalar claim or a member of a list claim.
     oidc_issuer: str = ""            # e.g. "https://sso.agency.gov/realms/main"
     oidc_audience: str = ""          # comma-separated client ids / API audiences
@@ -421,11 +421,40 @@ class Settings(BaseSettings):
     audit_retention_days: int = 365
 
     # Extra Host header values the embedded /mcp endpoint accepts, comma-
-    # separated (e.g. "asymptote.example.com"). The MCP SDK ships DNS-rebinding
+    # separated (e.g. "clio.example.com"). The MCP SDK ships DNS-rebinding
     # protection that only trusts localhost Hosts by default; when the app is
     # served through a tunnel or reverse proxy under a public hostname, list
     # that hostname here. Localhost stays allowed either way.
     mcp_allowed_hosts: str = ""
+
+    # ── OAuth 2.1 on /mcp (docs/IDENTITY.md "OAuth for MCP clients") ─────
+    # Connector-style MCP clients (Claude Desktop, claude.ai, ChatGPT, and
+    # Claude Code without a pasted token) discover an authorization server
+    # from the /mcp 401 challenge and RFC 9728 metadata, sign the person in
+    # there, and present the resulting bearer JWT. The app is only ever the
+    # resource server: the site's own IdP is the authorization server, and
+    # the JWT is verified by the same OIDC backend a browser session uses,
+    # so private-collection scoping and the audit actor follow for free.
+    #
+    # With IDENTITY_PROVIDER=oidc nothing else is required - OIDC_ISSUER /
+    # OIDC_AUDIENCE are advertised and enforced on /mcp as they are
+    # everywhere. The MCP_OAUTH_* values below override them for /mcp only,
+    # which is how a Cloudflare Access deployment (whose browser identity
+    # is not a bearer JWT) names an IdP for its MCP clients.
+    #
+    # MCP_PUBLIC_URL is the canonical URL clients reach the endpoint at,
+    # e.g. https://clio.agency.gov/mcp. It is the RFC 9728 `resource`,
+    # and a token whose audience is exactly that URL is accepted on /mcp
+    # (RFC 8707 resource indicators). Empty = derived from MCP_ALLOWED_HOSTS,
+    # else from the request; set it explicitly for anything but localhost.
+    mcp_public_url: str = ""
+    mcp_oauth_issuer: str = ""        # empty = OIDC_ISSUER when IDENTITY_PROVIDER=oidc
+    mcp_oauth_audience: str = ""      # comma-separated; required with MCP_OAUTH_ISSUER
+    mcp_oauth_jwks_url: str = ""
+    # A scope the token must carry (space-separated `scope` claim, or `scp`)
+    # to be accepted on /mcp, advertised as scopes_supported and in the 401
+    # challenge. Empty = any token valid for the app is valid for /mcp.
+    mcp_oauth_scope: str = ""
 
     # OCR configuration — deliberately minimal: an on/off switch and an engine.
     # Scanned pages either go through a vision-capable LLM (best quality) or the
@@ -487,7 +516,7 @@ class Settings(BaseSettings):
     # shipped defaults instead of whatever .env sits next to the checkout
     # (a developer's real deployment posture). Not a documented knob.
     model_config = SettingsConfigDict(
-        env_file=os.environ.get("ASYMPTOTE_ENV_FILE", ".env"),
+        env_file=os.environ.get("CLIO_ENV_FILE") or os.environ.get("ASYMPTOTE_ENV_FILE", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

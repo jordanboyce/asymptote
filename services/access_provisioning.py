@@ -128,7 +128,7 @@ def _put_policy(policy: dict, include: List[dict]) -> None:
     lists unchanged rather than letting them be dropped.
     """
     body = {
-        "name": policy.get("name") or "asymptote-invited",
+        "name": policy.get("name") or "clio-invited",
         "decision": policy.get("decision") or "allow",
         "include": include,
     }

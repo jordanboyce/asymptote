@@ -46,7 +46,7 @@ describe('selectionStore', () => {
     s.set(['a', 'b', 'c'])
     s.remove(['b'])
     expect(s.currentIds).toEqual(['a', 'c'])
-    const saved = JSON.parse(sessionStorage.getItem('asymptote_source_selection'))
+    const saved = JSON.parse(sessionStorage.getItem('clio_source_selection'))
     expect(saved).toEqual({ c1: ['a', 'c'] })
   })
 })

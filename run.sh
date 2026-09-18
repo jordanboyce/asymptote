@@ -1,7 +1,7 @@
 #!/bin/bash
-# Asymptote API startup script
+# Clio API startup script
 
-echo "Starting Asymptote API..."
+echo "Starting Clio API..."
 echo ""
 
 # Check if virtual environment exists

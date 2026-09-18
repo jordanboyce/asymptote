@@ -11,7 +11,7 @@ A token is deliberately narrow:
     leaked token cannot reach the rest of the API or the UI.
   - Under PRIVATE_COLLECTIONS it carries the identity of whoever created it,
     so an MCP client presenting it sees exactly the collections that person
-    can see — no separate "asymptote-mcp" identity to remember to share
+    can see — no separate "clio-mcp" identity to remember to share
     collections to.
   - Only the sha256 hash is ever persisted. The plaintext is returned once,
     on creation, and cannot be recovered afterwards — same trust model as a

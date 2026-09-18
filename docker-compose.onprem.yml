@@ -1,10 +1,10 @@
-# Asymptote — on-premises deployment from a prebuilt image.
+# Clio — on-premises deployment from a prebuilt image.
 #
 #   docker compose -f docker-compose.onprem.yml up -d
 #   open http://<this-host>:8473
 #
 # Unlike docker-compose.yml this file never builds: it runs an image that was
-# built elsewhere and loaded here (`docker load < asymptote-image.tar.gz`) or
+# built elsewhere and loaded here (`docker load < clio-image.tar.gz`) or
 # pulled from an internal registry. That is the shape an on-prem install
 # usually needs — the host may have no compiler, no internet, and no business
 # running a 20-minute build.
@@ -20,13 +20,13 @@
 # docs/ONPREM.md.
 
 services:
-  asymptote:
+  clio:
     # No build: an image built once, carried in, and pinned by tag or digest.
-    # Pin a digest (asymptote@sha256:...) if you must prove that what runs is
+    # Pin a digest (clio@sha256:...) if you must prove that what runs is
     # what was reviewed.
-    image: ${ASYMPTOTE_IMAGE:-asymptote:local}
-    pull_policy: ${ASYMPTOTE_PULL_POLICY:-never}
-    container_name: asymptote
+    image: ${CLIO_IMAGE:-clio:local}
+    pull_policy: ${CLIO_PULL_POLICY:-never}
+    container_name: clio
     # Default is loopback — anything else is a deliberate choice that should
     # come with AUTH_PASSWORD or an authenticating reverse proxy in front.
     ports:

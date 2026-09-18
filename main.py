@@ -1,5 +1,5 @@
 """
-Asymptote — privacy-focused document indexing, grounded chat, and MCP access.
+Clio — privacy-focused document indexing, grounded chat, and MCP access.
 
 This module only assembles the app: middleware, lifespan, routers, and
 frontend serving. Endpoints live in `api/` (one router module per domain);
@@ -141,7 +141,7 @@ def _check_security_posture() -> None:
 async def lifespan(app: FastAPI):
     """Application lifespan manager - initialize and cleanup services."""
     async with mcp_server_lifespan():
-        logger.info("Initializing Asymptote API...")
+        logger.info("Initializing Clio API...")
 
         # Initialize default collection's indexer to pre-load embedding model
         logger.info("Loading default collection indexer...")
@@ -184,14 +184,14 @@ async def lifespan(app: FastAPI):
         from services.retention import retention_loop
         retention_task = asyncio.create_task(retention_loop())
 
-        logger.info("Asymptote API ready")
+        logger.info("Clio API ready")
         logger.info(f"Data directory: {settings.data_dir}")
         logger.info(f"Embedded MCP server: {'enabled' if settings.enable_mcp else 'disabled'}")
 
         yield
 
         # Cleanup on shutdown
-        logger.info("Shutting down Asymptote API...")
+        logger.info("Shutting down Clio API...")
         retention_task.cancel()
         indexer_manager.save_all()
         logger.info("Shutdown complete")
@@ -200,7 +200,7 @@ async def lifespan(app: FastAPI):
 _check_security_posture()
 
 app = FastAPI(
-    title="Asymptote API",
+    title="Clio API",
     description="Privacy-focused document indexing, grounded chat, and MCP access",
     version="0.1.0",
     lifespan=lifespan,
@@ -267,8 +267,9 @@ _PUBLIC_PATHS = {"/health", "/register", "/api/register", "/api/register/config"
 # SPA, so its hashed assets and brand files must load before sign-in. The
 # bundle holds no secrets — every fact about the deployment comes from the
 # API, which stays gated.
-_PUBLIC_STATIC = {"/favicon.ico", "/manifest.webmanifest", "/icon_black.svg", "/icon_white.svg",
-                  "/logo_black.svg", "/logo_white.svg"}
+_PUBLIC_STATIC = {"/favicon.ico", "/manifest.webmanifest", "/apple-touch-icon.png",
+                  "/clio-mark.png", "/clio-mark-dark.png", "/clio-icon-maskable.png",
+                  "/clio-og.png"}
 
 
 def _client_ip(request) -> str | None:
@@ -285,6 +286,10 @@ def _is_public_path(path: str) -> bool:
         or path in _PUBLIC_STATIC
         or path.startswith("/assets/")
         or path.startswith("/icons/")
+        # RFC 9728 protected-resource metadata: an MCP client reads it
+        # before it has any credential. It names the authorization server
+        # and nothing else (services/mcp_oauth.py).
+        or path.startswith("/.well-known/oauth-protected-resource")
     )
 
 
@@ -307,12 +312,25 @@ async def require_auth(request, call_next):
     # ...but only for a request that actually carries one: has_candidate is a
     # cheap header look, so a password-authenticated call never spends a
     # threadpool slot to discover it has no assertion.
-    from services.identity import get_identity_verifier
-    verifier = get_identity_verifier()
+    # On /mcp the verifier also covers OAuth bearer tokens from the
+    # authorization server the endpoint advertises (services/mcp_oauth.py).
+    from services.identity import InsufficientScope, get_identity_verifier, is_mcp_path
+    verifier = get_identity_verifier(request.url.path)
     if verifier is not None and verifier.has_candidate(request.headers):
-        who = await asyncio.to_thread(
-            verifier.verify_request, request.headers, _client_ip(request)
-        )
+        try:
+            who = await asyncio.to_thread(
+                verifier.verify_request, request.headers, _client_ip(request)
+            )
+        except InsufficientScope as exc:
+            # A token that is valid for this app but not for /mcp. 403 with
+            # the scope named, per the MCP authorization spec, so the client
+            # can step up instead of looping on a 401 it cannot satisfy.
+            from services.mcp_oauth import challenge
+            return JSONResponse(
+                {"detail": f"This token lacks the scope '{exc.scope}' required for the MCP endpoint."},
+                status_code=403,
+                headers={"WWW-Authenticate": challenge(request, error="insufficient_scope")},
+            )
         if who:
             request.state.auth_identity = who
             request.state.auth_via = verifier.via
@@ -360,10 +378,20 @@ async def require_auth(request, call_next):
     ):
         return await call_next(request)
 
+    # Browsers get the Basic challenge so the native prompt still works. The
+    # /mcp subtree gets the Bearer challenge of the MCP authorization spec:
+    # with an authorization server configured it carries the RFC 9728
+    # resource_metadata URL an OAuth client discovers from, otherwise a
+    # plain Bearer realm for bearer-header clients.
+    if is_mcp_path(request.url.path):
+        from services.mcp_oauth import challenge
+        www_authenticate = challenge(request, error="invalid_token" if presented else None)
+    else:
+        www_authenticate = 'Basic realm="Clio"'
     return JSONResponse(
         {"detail": "Not authenticated"},
         status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="Asymptote"'},
+        headers={"WWW-Authenticate": www_authenticate},
     )
 
 async def _call_with_user_context(request, call_next):
@@ -425,7 +453,7 @@ def _spa_response() -> HTMLResponse:
         )
     return HTMLResponse(
         content=(
-            "<h1>Asymptote API</h1>"
+            "<h1>Clio API</h1>"
             "<p>Frontend build not found — run <code>cd frontend && npm run build</code>, "
             "or visit <a href='/docs'>/docs</a> for API documentation.</p>"
         ),

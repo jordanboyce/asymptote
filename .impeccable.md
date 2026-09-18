@@ -1,7 +1,7 @@
 ## Design Context
 
 ### Users
-Mixed audience — solo researchers, developers exploring their own notes and code, and small teams in regulated environments all share the same surface. They come from different contexts but want the same thing: fast, trustworthy answers grounded in documents they already own. Asymptote is deployed as a web app, a Windows desktop app with tray integration, and in Docker/enterprise configurations, so the UI has to feel at home whether it's opened in a browser tab next to other tools or running as a dedicated desktop companion.
+Mixed audience — solo researchers, developers exploring their own notes and code, and small teams in regulated environments all share the same surface. They come from different contexts but want the same thing: fast, trustworthy answers grounded in documents they already own. Clio is deployed as a web app, a Windows desktop app with tray integration, and in Docker/enterprise configurations, so the UI has to feel at home whether it's opened in a browser tab next to other tools or running as a dedicated desktop companion.
 
 ### Job To Be Done
 Get answers from your own resources, faster. The product is measured by time-to-answer, not time-on-task. Every interaction should either (a) advance the user toward a specific passage, citation, or synthesized answer, or (b) get out of the way. Secondary jobs — managing collections, tuning OCR, inspecting tokenization — are tools in service of that primary goal and should be discoverable without competing with it.
@@ -20,7 +20,7 @@ Emotional target: trust, focus, quiet confidence. The user should feel like they
 
 **Anti-reference**: generic SaaS admin dashboard. That means no hero metric grids, no card-grid-of-cards, no "welcome back, here's your activity" landing pages, no big rounded stat tiles, no sidebar of gradient nav pills. Also no "cyber AI" aesthetic — neon-on-black with glowing cyan accents is the opposite of a research companion.
 
-**Theme**: DaisyUI's full theme catalog stays enabled — theme choice is a user preference, not a brand statement. The implication is that Asymptote's own design must be *theme-agnostic*: it cannot rely on a specific accent color, contrast story, or dark/light assumption to look good. Everything has to work in `cupcake` and `dracula` alike. This is a meaningful constraint — it means the design language comes from layout, rhythm, typography, and restraint, not from palette.
+**Theme**: DaisyUI's full theme catalog stays enabled — theme choice is a user preference, not a brand statement. The implication is that Clio's own design must be *theme-agnostic*: it cannot rely on a specific accent color, contrast story, or dark/light assumption to look good. Everything has to work in `cupcake` and `dracula` alike. This is a meaningful constraint — it means the design language comes from layout, rhythm, typography, and restraint, not from palette.
 
 ### Design Principles
 

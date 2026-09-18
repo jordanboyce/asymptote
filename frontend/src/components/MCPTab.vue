@@ -3,7 +3,12 @@
     <header>
       <h1 class="text-xl font-semibold">Connect your AI tools</h1>
       <p class="mt-2 text-sm text-base-content/60 max-w-2xl">
-        Search your sources from AnythingLLM, Claude Code, Codex, or VS Code using MCP.
+        <template v-if="oauth.enabled">
+          Search your sources from Claude Desktop, claude.ai, ChatGPT, Claude Code, Codex, AnythingLLM, or VS Code using MCP.
+        </template>
+        <template v-else>
+          Search your sources from AnythingLLM, Claude Code, Codex, or VS Code using MCP.
+        </template>
         Your client receives retrieved passages, so choose a client you trust with this data.
       </p>
     </header>
@@ -28,6 +33,46 @@
     </div>
 
     <template v-else>
+
+      <!-- Sign in from the client (OAuth). Shown when the deployment names an
+           authorization server for /mcp; the app is only the resource server,
+           so there is nothing to mint here — just the URL to paste. -->
+      <div v-if="oauth.enabled" class="card bg-base-200" data-testid="mcp-oauth">
+        <div class="card-body space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="card-title text-base">Sign in from your client</h3>
+            <span class="badge badge-success badge-sm">OAuth</span>
+          </div>
+          <p class="text-sm text-base-content/60">
+            Claude Desktop, claude.ai, ChatGPT and Claude Code need only this URL. They send you to
+            <span class="font-medium text-base-content/80">{{ oauthIssuerHost }}</span> to sign in, and then see
+            exactly the collections you can. No token to copy, nothing to revoke here — sign out at your
+            identity provider.
+          </p>
+          <div class="flex items-center gap-2 max-w-2xl">
+            <code id="mcp-oauth-url" class="font-mono text-xs bg-base-100 rounded px-2 py-1.5 flex-1 overflow-x-auto whitespace-nowrap">{{ oauth.resource }}</code>
+            <button class="btn btn-xs" @click="copyText(oauth.resource, 'Server URL')">Copy</button>
+          </div>
+          <ul class="text-xs text-base-content/60 space-y-1 max-w-2xl">
+            <li>
+              <span class="font-medium text-base-content/80">Claude Desktop, claude.ai:</span>
+              Settings → Connectors → Add custom connector → paste the URL. If your identity provider does not
+              register clients automatically, enter the client ID it gave you under Advanced settings.
+            </li>
+            <li>
+              <span class="font-medium text-base-content/80">ChatGPT:</span>
+              Settings → Apps &amp; Connectors → Developer mode → Create → paste the URL, authentication OAuth.
+            </li>
+            <li>
+              <span class="font-medium text-base-content/80">Claude Code:</span> <code class="font-mono">claude mcp add --transport http clio {{ oauth.resource }}</code>,
+              then <code class="font-mono">claude mcp login clio</code>.
+            </li>
+          </ul>
+          <p v-if="oauth.scope" class="text-xs text-base-content/50">
+            Tokens must carry the <code class="font-mono">{{ oauth.scope }}</code> scope; clients request it automatically.
+          </p>
+        </div>
+      </div>
 
       <!-- Personal access tokens -->
       <div class="card bg-base-200">
@@ -416,6 +461,18 @@ const mcpSettings = ref({
   mcp_max_source_length: 500,
 })
 
+// OAuth on /mcp: read-only here. Whether connector clients can sign in is a
+// deployment setting (IDENTITY_PROVIDER=oidc or MCP_OAUTH_ISSUER), so the tab
+// only reports it and hands over the URL.
+const oauth = ref({ enabled: false, resource: '', authorization_server: '', scope: '' })
+const oauthIssuerHost = computed(() => {
+  try {
+    return new URL(oauth.value.authorization_server).host
+  } catch {
+    return oauth.value.authorization_server
+  }
+})
+
 const configTabs = [
   { key: 'anythingllm', label: 'AnythingLLM' },
   { key: 'claude', label: 'Claude Code' },
@@ -426,7 +483,7 @@ const configTabs = [
 // Client configs are generated locally — the server URL plus a collection_id
 // query param is all a client needs; server defaults cover the rest.
 const sanitizeServerId = (value) =>
-  (value.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^[-_]+|[-_]+$/g, '')) || 'asymptote'
+  (value.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^[-_]+|[-_]+$/g, '')) || 'clio'
 
 const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at))
 const restrictedCollections = computed(() =>
@@ -448,7 +505,7 @@ watch(newTokenAllowlist, (on) => {
   }
 })
 
-const serverId = computed(() => sanitizeServerId(`asymptote-${exportCollectionId.value}`))
+const serverId = computed(() => sanitizeServerId(`clio-${exportCollectionId.value}`))
 const serverUrl = computed(() =>
   `${window.location.origin}/mcp/?collection_id=${encodeURIComponent(exportCollectionId.value)}`
 )
@@ -522,6 +579,16 @@ const loadMcpSettings = async () => {
     mcpError.value = error.response?.data?.detail || 'Failed to load MCP settings'
   } finally {
     mcpLoading.value = false
+  }
+}
+
+const loadOAuth = async () => {
+  try {
+    const response = await http.get('/api/mcp/oauth')
+    const data = response?.data || {}
+    if (data.enabled) oauth.value = { scope: '', ...data }
+  } catch {
+    // An older backend has no such endpoint; token-based setup still works.
   }
 }
 
@@ -656,6 +723,7 @@ const saveMcpSettings = async () => {
 onMounted(() => {
   loadMcpCollections()
   loadMcpSettings()
+  loadOAuth()
   loadTokens()
 })
 </script>

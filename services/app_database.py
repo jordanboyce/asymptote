@@ -481,6 +481,16 @@ class SQLiteBackend(DatabaseBackend):
                 except sqlite3.OperationalError:
                     pass
 
+            # v4.6: a collection reviewed and released for everyone to read.
+            # Publishing keeps the owner — it is the one way a collection can
+            # be reachable by the whole deployment while still having exactly
+            # one person accountable for how it is built. Everyone else
+            # resolves to 'read' (see sharing_service.check_collection_access).
+            try:
+                conn.execute("ALTER TABLE collections ADD COLUMN published INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
             # Add phase columns to upload_jobs if missing
             for col, default in [
                 ("phase", "TEXT"),
@@ -640,6 +650,7 @@ class SQLiteBackend(DatabaseBackend):
             row = conn.execute("SELECT * FROM collections WHERE id = ?", (collection_id,)).fetchone()
             if row:
                 collection = dict(row)
+                collection['published'] = bool(collection.get('published'))
                 collection['document_count'] = _get_document_count_from_metadata(collection_id)
                 collection['storage_bytes'] = _get_storage_bytes_from_metadata(collection_id)
                 return collection
@@ -658,6 +669,7 @@ class SQLiteBackend(DatabaseBackend):
             collections = []
             for row in cursor.fetchall():
                 collection = dict(row)
+                collection['published'] = bool(collection.get('published'))
                 collection['document_count'] = _get_document_count_from_metadata(collection['id'])
                 collection['storage_bytes'] = _get_storage_bytes_from_metadata(collection['id'])
                 collections.append(collection)
@@ -676,6 +688,7 @@ class SQLiteBackend(DatabaseBackend):
         mcp_display_description: Optional[str] = None,
         guide: Optional[str] = None,
         sensitivity: Optional[str] = None,
+        published: Optional[bool] = None,
     ):
         updates = []
         params = []
@@ -684,7 +697,8 @@ class SQLiteBackend(DatabaseBackend):
                              ("embedding_model", embedding_model),
                              ("mcp_display_name", mcp_display_name),
                              ("mcp_display_description", mcp_display_description),
-                             ("guide", guide), ("sensitivity", sensitivity)]:
+                             ("guide", guide), ("sensitivity", sensitivity),
+                             ("published", None if published is None else int(published))]:
             if value is not None:
                 updates.append(f"{field} = ?")
                 params.append(value)
@@ -859,6 +873,7 @@ class SQLiteBackend(DatabaseBackend):
             results = []
             for row in rows:
                 coll = dict(row)
+                coll['published'] = bool(coll.get('published'))
                 coll['document_count'] = _get_document_count_from_metadata(coll['id'])
                 coll['storage_bytes'] = _get_storage_bytes_from_metadata(coll['id'])
                 coll['shared'] = True

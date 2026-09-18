@@ -5,7 +5,7 @@
 > pointing the deployment at a private endpoint, and private CAs. This guide
 > is the disconnected-network specialisation of it.
 
-Asymptote is designed to run entirely inside a disconnected network: documents
+Clio is designed to run entirely inside a disconnected network: documents
 are indexed, searched, and chatted with locally, and no data ever leaves the
 environment. This guide covers preparing a deployment on a connected machine,
 transferring it across the air gap, and verifying that nothing phones home.
@@ -51,13 +51,13 @@ To bake a different Whisper size: `--build-arg WHISPER_MODEL=small`.
 ### 2. Export, transfer, load
 
 ```bash
-docker save asymptote-asymptote | gzip > asymptote-image.tar.gz
+docker save clio-clio | gzip > clio-image.tar.gz
 # transfer via approved media, then inside the air gap:
-docker load < asymptote-image.tar.gz
+docker load < clio-image.tar.gz
 ```
 
 (Check the image name with `docker images` — compose names it
-`<project-dir>-asymptote`.)
+`<project-dir>-clio`.)
 
 ### 3. Run inside the air gap
 
@@ -65,7 +65,7 @@ Use `docker-compose.onprem.yml`, which never builds — it runs the image you
 loaded — and copy `.env.onprem.example` to `.env`:
 
 ```bash
-ASYMPTOTE_IMAGE=asymptote:local
+CLIO_IMAGE=clio:local
 OFFLINE_MODE=1
 AUTH_PASSWORD=<a-strong-shared-secret>
 AI_PROVIDER=openai_compatible          # your model server, see below
@@ -119,7 +119,7 @@ With Ollama specifically:
    plus `nomic-embed-text` if you want Ollama-served embeddings).
 2. Copy the Ollama model store across the gap (`~/.ollama/models` on
    Linux/macOS, `%USERPROFILE%\.ollama\models` on Windows).
-3. Point Asymptote at it via `OLLAMA_BASE_URL` (the compose file defaults to
+3. Point Clio at it via `OLLAMA_BASE_URL` (the compose file defaults to
    the Docker host's Ollama at `host.docker.internal:11434`).
 
 Search, indexing, and the MCP tools work with **no LLM at all** — chat is the
@@ -140,7 +140,7 @@ only feature that requires one.
       reachable set matches who is cleared for the material
 - [ ] Verify zero egress: run a packet capture (`tcpdump`/firewall logs) while
       indexing a document, running a search, and chatting — the only traffic
-      should be client↔Asymptote and Asymptote↔Ollama
+      should be client↔Clio and Clio↔Ollama
 
 ## What works offline
 

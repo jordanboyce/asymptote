@@ -75,7 +75,7 @@ def test_closed_without_edge_admission(monkeypatch, fresh_db):
 def test_closed_when_mode_off(edge, monkeypatch):
     monkeypatch.setattr(config.settings, "registration_mode", "off")
     assert registration.public_config() == {
-        "enabled": False, "mode": "off", "allowed_domains": [], "product": "Asymptote",
+        "enabled": False, "mode": "off", "allowed_domains": [], "product": "Clio",
     }
 
 

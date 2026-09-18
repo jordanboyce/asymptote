@@ -12,7 +12,7 @@ import { useCollectionStore } from './collectionStore'
 // siblings, and because the selection must survive the sidebar being
 // closed. Kept per collection and in sessionStorage: it is a working
 // scope for this sitting, not a preference.
-const STORAGE_KEY = 'asymptote_source_selection'
+const STORAGE_KEY = 'clio_source_selection'
 
 function load() {
   try {

@@ -146,6 +146,51 @@ async def revoke_mcp_token(token_id: str, user_id: Optional[str] = Depends(get_c
     return {"revoked": True}
 
 
+# ── OAuth 2.1 for MCP clients ───────────────────────────────────────────────
+# RFC 9728 protected-resource metadata: the document an MCP client reads
+# (from the /mcp 401 challenge, or by probing these well-known paths) to
+# learn which authorization server signs people in. Public by design -
+# main.py exempts the prefix from auth - and it names the IdP and nothing
+# else. 404 when no authorization server applies to /mcp, which is the
+# signal the spec gives a client to fall back or ask the user.
+
+@router.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+@router.get("/.well-known/oauth-protected-resource/mcp", include_in_schema=False)
+async def oauth_protected_resource_metadata(request: Request):
+    from fastapi.responses import JSONResponse
+    from services import mcp_oauth
+
+    document = mcp_oauth.protected_resource_metadata(request)
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail="OAuth is not configured for the MCP endpoint. Set IDENTITY_PROVIDER=oidc "
+                   "or MCP_OAUTH_ISSUER; see docs/IDENTITY.md.",
+        )
+    return JSONResponse(
+        document,
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            # Browser-hosted MCP clients (an inspector, a web app) fetch this
+            # cross-origin before they have any credential; it is public.
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@router.get(
+    "/api/mcp/oauth",
+    summary="How OAuth-capable MCP clients connect",
+    tags=["mcp"],
+)
+async def get_mcp_oauth(request: Request):
+    """Whether connector-style clients (Claude Desktop, claude.ai, ChatGPT,
+    Claude Code without a token) can sign in, and the URL they paste."""
+    from services import mcp_oauth
+
+    return mcp_oauth.summary(request)
+
+
 # Redirect bare /mcp (no trailing slash) to /mcp/ so MCP clients that use the old
 # exported URL still work. Uses 307 to preserve the HTTP method (POST stays POST).
 @router.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)

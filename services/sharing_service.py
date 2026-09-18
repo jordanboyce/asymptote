@@ -180,8 +180,15 @@ class SharingService:
             before the mode existed, plus anything created by anonymous
             password callers) grant 'owner' to every authenticated caller.
           - The recorded owner gets 'owner'.
+          - A published collection grants 'read' to everyone else: it has been
+            reviewed and released, so the whole deployment can search it and
+            reach it over MCP, but only its owner decides how it is built.
+            Publishing is what makes a collection reachable *and* safe from
+            edits; it is refused on team collections precisely because those
+            have no single owner to keep that authority (see api/collections).
           - An accepted share grants its 'read'/'readwrite' permission.
-          - Anonymous callers (user_id None) reach team collections only.
+          - Anonymous callers (user_id None) reach team and published
+            collections only.
         """
         if not settings.private_collections:
             return "owner"
@@ -194,13 +201,19 @@ class SharingService:
         if owner in ("", settings.default_user_id):
             return "owner"
 
-        if user_id is None:
-            return None
-
-        if owner == user_id:
+        if user_id and owner == user_id:
             return "owner"
 
-        return app_db.check_share_access(collection_id, user_id)
+        # A share is the stronger grant (it can carry write), so it wins over
+        # the blanket read that publishing gives everyone.
+        share = app_db.check_share_access(collection_id, user_id) if user_id else None
+        if share:
+            return share
+
+        if collection.get("published"):
+            return "read"
+
+        return None
 
 
 # Global instance
