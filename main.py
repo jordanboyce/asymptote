@@ -143,6 +143,13 @@ async def lifespan(app: FastAPI):
     async with mcp_server_lifespan():
         logger.info("Initializing Clio API...")
 
+        # Jobs do not survive the process that ran them, but their rows do.
+        # Reconcile before anything can enqueue work, so a restart mid-index
+        # does not leave a job that shows as running forever and blocks the
+        # collection it was indexing into.
+        from services.upload_service import upload_service
+        upload_service.recover_orphaned_jobs()
+
         # Initialize default collection's indexer to pre-load embedding model
         logger.info("Loading default collection indexer...")
         try:

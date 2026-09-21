@@ -17,7 +17,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional, Dict, Callable, Any
+from typing import List, Optional, Dict, Callable, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -89,6 +89,23 @@ class _BulkFileWork:
     held_bytes: int = 0
 
 
+@dataclass
+class _QueuedJob:
+    """A job that has a row and a plan but has not been given a thread yet.
+
+    Indexing used to refuse a second job for a collection with a 409 and
+    leave the caller to retry by hand, which is why adding a folder right
+    after adding files so often looked broken. Jobs now wait their turn
+    here instead: FIFO, at most one running per collection, and never more
+    than ``MAX_CONCURRENT_INDEX_JOBS`` running at once.
+    """
+
+    job_id: int
+    collection_id: str
+    target: Callable[..., None]
+    args: tuple
+
+
 def _size_of(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -105,8 +122,17 @@ class UploadService:
     v4.0: Adds real-time progress events via SSE.
     """
 
+    # A waiting list this long means something is submitting in a loop; past
+    # here we refuse rather than accept work we will not get to.
+    MAX_QUEUED_JOBS = 50
+
     def __init__(self):
         self._active_threads: Dict[int, threading.Thread] = {}
+        # job_id -> collection_id for every job currently holding a thread,
+        # so the dispatcher can keep one running job per collection without
+        # a database round trip.
+        self._active_collections: Dict[int, str] = {}
+        self._queue: deque = deque()  # _QueuedJob, FIFO
         self._lock = threading.Lock()
         # SSE event queues per job (for real-time streaming)
         self._event_queues: Dict[int, List[queue.Queue]] = {}
@@ -118,26 +144,129 @@ class UploadService:
         with self._lock:
             return len(self._active_threads)
 
-    def _check_global_job_cap(self) -> None:
-        """Refuse a new job when the process-wide cap is reached.
-
-        The per-collection guard alone lets N users start N jobs — but every
-        job funnels through one embedding lock, so extra parallel jobs just
-        shuffle the queue while starving live search. Raises RuntimeError,
-        which the routers already translate to an HTTP conflict.
-        (Reindex jobs run outside this service and are not counted —
-        they're admin-initiated and rare.)
-        """
-        cap = settings.max_concurrent_index_jobs
-        if cap <= 0:
-            return
+    def queued_job_count(self) -> int:
         with self._lock:
-            running = len(self._active_threads)
-        if running >= cap:
+            return len(self._queue)
+
+    def queue_position(self, job_id: int) -> Optional[int]:
+        """1-based place in line, or None if the job is not waiting."""
+        with self._lock:
+            for position, queued in enumerate(self._queue, 1):
+                if queued.job_id == job_id:
+                    return position
+        return None
+
+    def _check_queue_capacity(self) -> None:
+        """Refuse submission only when the waiting list itself is full.
+
+        Every job funnels through one embedding lock, so running many at
+        once just shuffles the queue while starving live search — the
+        concurrency cap lives in the dispatcher instead, which holds extra
+        jobs back rather than rejecting them. Raises RuntimeError, which
+        the routers already translate to an HTTP conflict.
+        """
+        with self._lock:
+            waiting = len(self._queue)
+        if waiting >= self.MAX_QUEUED_JOBS:
             raise RuntimeError(
-                f"{running} indexing job(s) already running (limit {cap}). "
-                "Wait for one to finish before starting another."
+                f"{waiting} indexing jobs are already waiting to run. "
+                "Wait for the queue to drain before adding more."
             )
+
+    def _submit(self, job: _QueuedJob) -> None:
+        """Put a job on the queue and start it if a slot is free."""
+        with self._lock:
+            self._cancel_flags.setdefault(job.job_id, False)
+            self._queue.append(job)
+        self._dispatch()
+
+    def _dispatch(self) -> None:
+        """Start as many waiting jobs as the caps allow.
+
+        Picks the first waiting job whose collection has nothing running,
+        so a queue headed by a busy collection does not block jobs for
+        other collections behind it.
+        """
+        while True:
+            with self._lock:
+                cap = max(0, int(settings.max_concurrent_index_jobs or 0))
+                if cap and len(self._active_threads) >= cap:
+                    return
+                busy = set(self._active_collections.values())
+                picked = next(
+                    (q for q in self._queue if q.collection_id not in busy), None
+                )
+                if picked is None:
+                    return
+                self._queue.remove(picked)
+                waiting = len(self._queue)
+                thread = threading.Thread(
+                    target=self._run_job,
+                    args=(picked,),
+                    name=f"index-job-{picked.job_id}",
+                    daemon=False,
+                )
+                self._active_threads[picked.job_id] = thread
+                self._active_collections[picked.job_id] = picked.collection_id
+            thread.start()
+            logger.info(
+                f"Started index job {picked.job_id} for collection "
+                f"'{picked.collection_id}' ({waiting} still queued)"
+            )
+
+    def _run_job(self, job: _QueuedJob) -> None:
+        """Thread body: run the job, then always free its slot and dispatch.
+
+        The slot is released here rather than inside the pipeline so that a
+        job which dies before the pipeline starts (a missing documents
+        directory, say) cannot strand its collection permanently.
+        """
+        try:
+            job.target(*job.args)
+        except Exception as e:
+            logger.error(f"Index job {job.job_id} crashed: {e}", exc_info=True)
+            try:
+                app_db.update_upload_job(
+                    job.job_id, status="failed", error=str(e), current_file=None
+                )
+            except Exception:
+                logger.exception(f"Could not mark job {job.job_id} failed")
+            self._broadcast_event(ProgressEvent(
+                job_id=job.job_id,
+                event_type="job_error",
+                phase=UploadPhase.FAILED.value,
+                error=str(e),
+            ))
+        finally:
+            with self._lock:
+                self._active_threads.pop(job.job_id, None)
+                self._active_collections.pop(job.job_id, None)
+                self._cancel_flags.pop(job.job_id, None)
+            self._dispatch()
+
+    def recover_orphaned_jobs(self) -> Dict[str, int]:
+        """Close out jobs the last process left mid-flight. Call once at startup.
+
+        Upload jobs live in threads and reindex jobs in asyncio tasks;
+        neither survives a restart, but their rows do. Until this ran, a
+        restart mid-index left a job that showed as running forever in the
+        drawer, and the guard that keeps one job per collection refused
+        every future job for that collection.
+        """
+        try:
+            counts = app_db.fail_interrupted_jobs(
+                "Interrupted - the server restarted while this job was running. "
+                "Add the sources again to finish indexing them."
+            )
+        except Exception as e:
+            logger.error(f"Could not reconcile interrupted jobs: {e}")
+            return {"upload_jobs": 0, "reindex_jobs": 0}
+        if counts.get("upload_jobs") or counts.get("reindex_jobs"):
+            logger.warning(
+                f"Marked {counts['upload_jobs']} interrupted index job(s) and "
+                f"{counts['reindex_jobs']} interrupted re-index job(s) as failed"
+            )
+        return counts
 
     def subscribe_to_events(self, job_id: int) -> queue.Queue:
         """Subscribe to real-time progress events for a job.
@@ -172,21 +301,52 @@ class UploadService:
                 except queue.Full:
                     pass  # Skip if queue is full
 
-    def cancel_job(self, job_id: int, force: bool = False) -> bool:
-        """Request cancellation of a running job.
+    def cancel_job(self, job_id: int, force: bool = False) -> str:
+        """Cancel a job, whether it is waiting in the queue or already running.
 
-        Args:
-            job_id: Job ID to cancel
-            force: If True, mark job as cancelled in DB even if thread not found
-                   (useful for orphaned jobs where thread crashed/exited)
-
-        Returns True if cancellation was requested/completed, False if job not found.
+        Returns what happened, so the caller can tell the person something
+        true: "cancelled" (the job is finished and will not run), "cancelling"
+        (a running job was asked to stop and will at the next file boundary),
+        or "" (no such job here).
         """
+        # A job still in the queue has touched nothing: drop it outright
+        # rather than leaving it to start and immediately stop.
+        with self._lock:
+            waiting = next((q for q in self._queue if q.job_id == job_id), None)
+            if waiting is not None:
+                self._queue.remove(waiting)
+                self._cancel_flags.pop(job_id, None)
+        if waiting is not None:
+            logger.info(f"Cancelled queued job {job_id} before it started")
+            app_db.update_upload_job(
+                job_id, status="cancelled", error="Cancelled before it started",
+                current_file=None,
+            )
+            self._broadcast_event(ProgressEvent(
+                job_id=job_id,
+                event_type="job_cancelled",
+                phase="cancelled",
+                error="Cancelled before it started",
+            ))
+            return "cancelled"
+
         with self._lock:
             if job_id in self._active_threads:
                 self._cancel_flags[job_id] = True
-                logger.info(f"Cancellation requested for job {job_id}")
-                return True
+                running = True
+            else:
+                running = False
+        if running:
+            logger.info(f"Cancellation requested for job {job_id}")
+            # Tell every listener immediately. A running job stops at the
+            # next file boundary, which can be a while on a large file, and
+            # a Cancel button that visibly does nothing gets clicked again.
+            self._broadcast_event(ProgressEvent(
+                job_id=job_id,
+                event_type="job_cancelling",
+                phase="cancelling",
+            ))
+            return "cancelling"
 
         # Thread not found - if force=True, mark as cancelled directly in DB
         if force:
@@ -195,6 +355,7 @@ class UploadService:
                 job_id,
                 status="cancelled",
                 error="Force cancelled (job thread was not active)",
+                current_file=None,
             )
             # Broadcast cancellation event for any listeners
             self._broadcast_event(ProgressEvent(
@@ -203,13 +364,18 @@ class UploadService:
                 phase="cancelled",
                 error="Force cancelled (job thread was not active)",
             ))
-            return True
+            return "cancelled"
 
-        return False
+        return ""
 
     def _is_cancelled(self, job_id: int) -> bool:
         """Check if job has been cancelled."""
         return self._cancel_flags.get(job_id, False)
+
+    def cancel_requested(self, job_id: int) -> bool:
+        """True while a running job is stopping but has not stopped yet."""
+        with self._lock:
+            return bool(self._cancel_flags.get(job_id))
 
     def get_job_status(self, job_id: int) -> Optional[dict]:
         """Get upload job status with progress percentage.
@@ -229,6 +395,10 @@ class UploadService:
             progress = (job["processed_files"] / job["total_files"]) * 100
         else:
             progress = 0
+        if job["status"] in ("completed", "failed", "cancelled"):
+            # A finished job's bar should not sit at 97% forever because the
+            # last throttled progress write lost a race with the final one.
+            progress = 100 if job["status"] == "completed" else progress
 
         # Parse result_summary if present
         result_summary = None
@@ -258,6 +428,10 @@ class UploadService:
             "chunks_total": job.get("chunks_total"),
             # Job type: 'upload' for browser uploads, 'index' for local file indexing
             "job_type": job.get("job_type", "upload"),
+            # Place in line while waiting for a slot (None once running)
+            "queue_position": self.queue_position(job["id"]),
+            # A running job that has been asked to stop
+            "cancel_requested": self.cancel_requested(job["id"]),
         }
 
 
@@ -281,13 +455,7 @@ class UploadService:
         Returns:
             Job ID for tracking progress
         """
-        # Check if already running for this collection
-        active_job = app_db.get_active_upload_job(collection_id)
-        if active_job:
-            raise RuntimeError(
-                f"Upload job {active_job['id']} is already running for collection '{collection_id}'"
-            )
-        self._check_global_job_cap()
+        self._check_queue_capacity()
 
         # Create job record with job_type='index' for local file indexing
         job_id = app_db.create_upload_job(collection_id, len(file_paths), job_type="index")
@@ -297,22 +465,15 @@ class UploadService:
                              "copy_to_library": copy_to_library,
                              "sample": [Path(p).name for p in file_paths[:10]]})
 
-        # Initialize cancellation flag
-        self._cancel_flags[job_id] = False
-
-        # Start background thread
-        thread = threading.Thread(
+        # Queued, not started: the dispatcher runs it as soon as this
+        # collection is free and a slot is open.
+        self._submit(_QueuedJob(
+            job_id=job_id,
+            collection_id=collection_id,
             target=self._run_local_index,
             args=(job_id, file_paths, collection_id, copy_to_library, uploaded_by),
-            name=f"local-index-job-{job_id}",
-            daemon=False,
-        )
-
-        with self._lock:
-            self._active_threads[job_id] = thread
-
-        thread.start()
-        logger.info(f"Started local index thread for job {job_id}: {len(file_paths)} files")
+        ))
+        logger.info(f"Submitted local index job {job_id}: {len(file_paths)} files")
 
         return job_id
 
@@ -374,7 +535,7 @@ class UploadService:
         file_extensions: Optional[List[str]] = None,
         exclude_patterns: Optional[List[str]] = None,
         uploaded_by: Optional[str] = None,
-    ) -> int:
+    ) -> Tuple[int, int]:
         """Start a background job to index a repository/folder.
 
         Args:
@@ -385,7 +546,9 @@ class UploadService:
             exclude_patterns: Glob patterns to exclude
 
         Returns:
-            Job ID for tracking progress
+            (job_id, files_found) - the caller needs the count to tell the
+            person what was picked up; the job row carries it too, but not
+            before the response goes out.
         """
         import os
         import fnmatch
@@ -432,36 +595,23 @@ class UploadService:
         if not files_to_index:
             raise ValueError(f"No matching files found in {repo_path}")
 
-        # Check if already running
-        active_job = app_db.get_active_upload_job(collection_id)
-        if active_job:
-            raise RuntimeError(
-                f"Job {active_job['id']} is already running for collection '{collection_id}'"
-            )
-        self._check_global_job_cap()
+        self._check_queue_capacity()
 
         # Create job record
         job_id = app_db.create_upload_job(collection_id, len(files_to_index), job_type="index")
-        self._cancel_flags[job_id] = False
         audit.record("document.index_job", actor=uploaded_by, collection_id=collection_id,
                      target=str(job_id),
                      detail={"kind": "repo", "path": repo_path, "files": len(files_to_index)})
 
-        # Start background thread
-        thread = threading.Thread(
+        self._submit(_QueuedJob(
+            job_id=job_id,
+            collection_id=collection_id,
             target=self._run_repo_index,
             args=(job_id, files_to_index, repo_path, collection_id, uploaded_by),
-            name=f"repo-index-job-{job_id}",
-            daemon=False,
-        )
+        ))
+        logger.info(f"Submitted repo index job {job_id}: {len(files_to_index)} files from {repo_path}")
 
-        with self._lock:
-            self._active_threads[job_id] = thread
-
-        thread.start()
-        logger.info(f"Started repo index job {job_id}: {len(files_to_index)} files from {repo_path}")
-
-        return job_id
+        return job_id, len(files_to_index)
 
     def _run_repo_index(
         self,
@@ -574,14 +724,20 @@ class UploadService:
         total_files = len(works)
         resolved = 0  # files fully persisted or failed
         # SSE events stay per-file, but the upload_jobs row (read by the
-        # polling endpoint) only needs a few writes per second.
+        # polling endpoint) only needs a few writes per second. Throttled
+        # updates are merged rather than dropped: dropping them outright
+        # meant a job whose last few writes all landed inside one window
+        # kept reporting a file it had long since finished.
         last_db_write = 0.0
+        deferred: Dict[str, Any] = {}
 
         def write_job(force: bool = False, **fields):
             nonlocal last_db_write
+            deferred.update(fields)
             now = time.monotonic()
             if force or now - last_db_write >= 0.5:
-                app_db.update_upload_job(job_id, **fields)
+                app_db.update_upload_job(job_id, **deferred)
+                deferred.clear()
                 last_db_write = now
 
         try:
@@ -649,9 +805,58 @@ class UploadService:
                     f"{doc_metadata.total_chunks} chunks"
                 )
 
+            def discard(entries):
+                """Give back the staged copies of files that will not be indexed."""
+                for entry in entries:
+                    work = entry[1]
+                    storage_quota.release(collection_id, work.held_bytes)
+                    work.held_bytes = 0
+                    if work.cleanup:
+                        try:
+                            work.cleanup()
+                        except Exception as cleanup_error:
+                            logger.warning(
+                                f"Cleanup failed for {work.display_name}: {cleanup_error}"
+                            )
+
+            def finish_cancelled():
+                """Close the job out as cancelled. Indexed files are kept."""
+                if results["documents_processed"] > 0:
+                    # Keep the on-disk FAISS index consistent with the chunk
+                    # rows already committed to SQLite.
+                    indexer.save_index()
+                logger.info(
+                    f"Job {job_id} cancelled by user after "
+                    f"{results['documents_processed']}/{total_files} files"
+                )
+                app_db.update_upload_job(
+                    job_id,
+                    status="cancelled",
+                    processed_files=resolved,
+                    current_file=None,
+                    error=(
+                        f"Cancelled after indexing {results['documents_processed']} "
+                        f"of {total_files} file(s)"
+                    ),
+                    result_summary=json.dumps(results),
+                )
+                self._broadcast_event(ProgressEvent(
+                    job_id=job_id,
+                    event_type="job_cancelled",
+                    phase="cancelled",
+                    error="Cancelled by user",
+                ))
+
             def persist_batch(batch):
                 """Embed + persist a list of (idx, work, prepared) in one pass."""
                 if not batch:
+                    return
+                if self._is_cancelled(job_id):
+                    # Embedding a batch is the long pole and cannot be
+                    # interrupted once started, so the check belongs here:
+                    # refusing to start another batch is what makes Cancel
+                    # take effect on a job whose files all extracted early.
+                    discard(batch)
                     return
                 chunks_total = sum(len(p.chunks) for _, _, p in batch)
                 resolved_before = resolved
@@ -748,41 +953,19 @@ class UploadService:
 
                 while pending:
                     if self._is_cancelled(job_id):
-                        if results["documents_processed"] > 0:
-                            # Keep the on-disk FAISS index consistent with the
-                            # chunk rows already committed to SQLite.
-                            indexer.save_index()
                         # Staged-but-never-indexed files (in-flight futures and
                         # the unflushed accumulator) get their cleanup hook so
                         # cancelled jobs don't leave stray library copies.
                         executor.shutdown(wait=False, cancel_futures=True)
-                        leftovers = list(pending) + [
-                            (idx, work, None) for idx, work, _ in batcher.drain()
-                        ]
-                        for _, work, future in leftovers:
-                            if future is not None:
-                                try:
-                                    future.result(timeout=30)
-                                except Exception:
-                                    continue
-                            if work.cleanup:
-                                try:
-                                    work.cleanup()
-                                except Exception:
-                                    pass
-                        logger.info(f"Job {job_id} cancelled by user")
-                        app_db.update_upload_job(
-                            job_id,
-                            status="cancelled",
-                            error="Cancelled by user",
-                            result_summary=json.dumps(results),
-                        )
-                        self._broadcast_event(ProgressEvent(
-                            job_id=job_id,
-                            event_type="job_cancelled",
-                            phase="cancelled",
-                            error="Cancelled by user",
-                        ))
+                        staged = []
+                        for idx, work, future in pending:
+                            try:
+                                future.result(timeout=30)
+                            except Exception:
+                                continue  # never staged; nothing to clean up
+                            staged.append((idx, work, None))
+                        discard(staged + batcher.drain())
+                        finish_cancelled()
                         return
 
                     idx, work, future = pending.popleft()
@@ -837,6 +1020,12 @@ class UploadService:
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
 
+            if self._is_cancelled(job_id):
+                # Extraction can finish well ahead of embedding, so a job
+                # cancelled late lands here rather than in the loop above.
+                finish_cancelled()
+                return
+
             if results["documents_processed"] > 0:
                 indexer.save_index()
 
@@ -884,11 +1073,16 @@ class UploadService:
             ))
 
         finally:
-            with self._lock:
-                if job_id in self._active_threads:
-                    del self._active_threads[job_id]
-                if job_id in self._cancel_flags:
-                    del self._cancel_flags[job_id]
+            # Files staged but never committed (cancellation, or a crash
+            # mid-batch) still hold bytes against the collection's cap.
+            # Nothing else gives them back, and a leaked reservation makes
+            # the collection look full until the process restarts.
+            for work in works:
+                if work.held_bytes:
+                    storage_quota.release(collection_id, work.held_bytes)
+                    work.held_bytes = 0
+            # The job's thread slot is released by _run_job, which owns it
+            # for the whole run including the parts outside this pipeline.
 
 
 # Global instance

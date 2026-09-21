@@ -3,7 +3,8 @@
 import logging
 import json
 import asyncio
-from typing import List
+import time
+from typing import List, Optional
 from pathlib import Path
 import shutil
 
@@ -333,6 +334,53 @@ def stage_uploads(  # sync: disk writes run in FastAPI's threadpool
     return {"staged": staged, "failed": failed, "collection_id": collection_id}
 
 
+def _job_row_to_response(job: dict, with_summary: bool = False) -> UploadJobResponse:
+    """One shape for a job row, wherever it is listed.
+
+    The active-jobs list used to build its own dict and leave out job_type,
+    so every restored local-index job came back after a page refresh
+    labelled "Upload".
+    """
+    total = job.get("total_files") or 0
+    processed = job.get("processed_files") or 0
+    status_value = job.get("status")
+    if status_value == "completed":
+        progress = 100.0
+    elif total > 0:
+        progress = round((processed / total) * 100, 1)
+    else:
+        progress = 0.0
+
+    summary = None
+    if with_summary and job.get("result_summary"):
+        try:
+            summary = json.loads(job["result_summary"])
+        except (json.JSONDecodeError, TypeError):
+            summary = None
+
+    return UploadJobResponse(
+        job_id=job["id"],
+        collection_id=job["collection_id"],
+        status=status_value,
+        total_files=total,
+        processed_files=processed,
+        current_file=job.get("current_file"),
+        progress_percent=progress,
+        error=job.get("error"),
+        result_summary=summary,
+        started_at=job.get("started_at"),
+        completed_at=job.get("completed_at"),
+        phase=job.get("phase"),
+        phase_progress=job.get("phase_progress"),
+        phase_detail=job.get("phase_detail"),
+        chunks_processed=job.get("chunks_processed"),
+        chunks_total=job.get("chunks_total"),
+        job_type=job.get("job_type") or "upload",
+        queue_position=upload_service.queue_position(job["id"]),
+        cancel_requested=upload_service.cancel_requested(job["id"]),
+    )
+
+
 @router.get(
     "/documents/upload/{job_id}/status",
     response_model=UploadJobResponse,
@@ -377,6 +425,9 @@ async def get_upload_status(job_id: int) -> UploadJobResponse:
         phase_detail=job_status.get("phase_detail"),
         chunks_processed=job_status.get("chunks_processed"),
         chunks_total=job_status.get("chunks_total"),
+        job_type=job_status.get("job_type", "upload"),
+        queue_position=job_status.get("queue_position"),
+        cancel_requested=job_status.get("cancel_requested", False),
     )
 
 
@@ -397,36 +448,35 @@ async def get_active_upload_jobs() -> List[UploadJobResponse]:
     """
     from services.app_database import app_db
 
-    active_jobs = app_db.get_all_active_upload_jobs()
+    return [_job_row_to_response(job) for job in app_db.get_all_active_upload_jobs()]
 
-    result = []
-    for job in active_jobs:
-        # Calculate progress
-        progress = 0
-        if job["total_files"] > 0:
-            progress = round((job["processed_files"] / job["total_files"]) * 100, 1)
 
-        result.append(UploadJobResponse(
-            job_id=job["id"],
-            collection_id=job["collection_id"],
-            status=job["status"],
-            total_files=job["total_files"],
-            processed_files=job["processed_files"],
-            current_file=job["current_file"],
-            progress_percent=progress,
-            error=job["error"],
-            result_summary=None,  # Don't parse JSON here for list view
-            started_at=job["started_at"],
-            completed_at=job["completed_at"],
-            # v4.0: Granular progress
-            phase=job.get("phase"),
-            phase_progress=job.get("phase_progress"),
-            phase_detail=job.get("phase_detail"),
-            chunks_processed=job.get("chunks_processed"),
-            chunks_total=job.get("chunks_total"),
-        ))
+@router.get(
+    "/documents/jobs",
+    response_model=List[UploadJobResponse],
+    summary="Recent indexing jobs, finished ones included",
+    tags=["documents"],
+)
+async def list_recent_jobs(limit: int = 20, collection_id: Optional[str] = None) -> List[UploadJobResponse]:
+    """
+    Recent indexing jobs in every state, newest first.
 
-    return result
+    The active-jobs endpoint only restores work in flight. This one is what
+    lets a person find out, after a refresh or a day later, that four files
+    in last night's folder add never made it in - the per-file failures ride
+    along in each job's result_summary.
+
+    Args:
+        limit: How many jobs to return (1-200, default 20)
+        collection_id: Restrict to one collection
+
+    Returns:
+        Jobs newest first, each with its result summary parsed
+    """
+    from services.app_database import app_db
+
+    jobs = app_db.get_recent_upload_jobs(limit=limit, collection_id=collection_id)
+    return [_job_row_to_response(job, with_summary=True) for job in jobs]
 
 
 @router.get(
@@ -506,24 +556,29 @@ async def stream_upload_progress(job_id: int):
                 yield f"event: job_{job_status['status']}\ndata: {json.dumps(final_data)}\n\n"
                 return
 
-            # Stream events from queue
+            # Stream events from the queue.
+            #
+            # Polled without blocking rather than waited on in a worker
+            # thread: the old version parked a threadpool thread for up to
+            # 30 seconds per open stream, so a handful of browsers watching
+            # jobs could starve the pool that also serves uploads.
+            idle_since = time.monotonic()
             while True:
                 try:
-                    # Use asyncio to check queue with timeout
-                    event = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: event_queue.get(timeout=30)
-                    )
-
-                    # Send SSE event
-                    yield event.to_sse()
-
-                    # Check for terminal events
-                    if event.event_type in ("job_complete", "job_error", "job_cancelled"):
-                        break
-
+                    event = event_queue.get_nowait()
                 except queue.Empty:
-                    # Send keepalive ping every 30 seconds
-                    yield ": keepalive\n\n"
+                    if time.monotonic() - idle_since >= 20:
+                        idle_since = time.monotonic()
+                        yield ": keepalive\n\n"
+                    await asyncio.sleep(0.25)
+                    continue
+
+                idle_since = time.monotonic()
+                yield event.to_sse()
+
+                # Check for terminal events
+                if event.event_type in ("job_complete", "job_error", "job_cancelled"):
+                    break
 
         except asyncio.CancelledError:
             # Client disconnected
@@ -575,31 +630,37 @@ async def cancel_upload_job(job_id: int):
             detail=f"Job {job_id} is not active (status: {job_status['status']})",
         )
 
-    # Request cancellation - try normal cancellation first, then force if thread not found
-    cancelled = upload_service.cancel_job(job_id)
+    # A queued job is dropped outright; a running one is asked to stop and
+    # does so at the next file boundary; anything else is an orphan row.
+    outcome = upload_service.cancel_job(job_id)
 
-    if cancelled:
+    if outcome == "cancelled":
         return {
-            "message": f"Cancellation requested for job {job_id}",
+            "message": f"Job {job_id} cancelled before it started",
+            "job_id": job_id,
+            "status": "cancelled",
+        }
+
+    if outcome == "cancelling":
+        return {
+            "message": "Stopping after the file being indexed right now",
             "job_id": job_id,
             "status": "cancelling",
         }
 
     # Thread not in active list - try force cancellation for orphaned jobs
     logger.warning(f"Job {job_id} thread not found, attempting force cancellation")
-    force_cancelled = upload_service.cancel_job(job_id, force=True)
-
-    if force_cancelled:
+    if upload_service.cancel_job(job_id, force=True) == "cancelled":
         return {
             "message": f"Job {job_id} force-cancelled (thread was not active)",
             "job_id": job_id,
             "status": "cancelled",
         }
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to cancel job {job_id}",
-        )
+
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Failed to cancel job {job_id}",
+    )
 
 
 @router.post(
@@ -675,7 +736,7 @@ def upload_repository(  # sync: extraction+embedding run in FastAPI's threadpool
 
     try:
         # Start background job
-        job_id = upload_service.start_repo_index(
+        job_id, files_found = upload_service.start_repo_index(
             repo_path=request.path,
             collection_id=request.collection_id,
             recursive=request.recursive,
@@ -684,20 +745,32 @@ def upload_repository(  # sync: extraction+embedding run in FastAPI's threadpool
             uploaded_by=get_request_user(),
         )
 
+        # The count matters to the caller: the UI used to read files_indexed
+        # off this response, get the 0 that was always there, and tell the
+        # person their folder had added nothing while the job ran fine.
+        queued_behind = upload_service.queue_position(job_id)
+        if queued_behind:
+            message = (
+                f"{files_found} file(s) found. Queued behind "
+                f"{queued_behind} other job(s); indexing starts automatically."
+            )
+        else:
+            message = f"Indexing {files_found} file(s) in the background."
+
         return RepoUploadResponse(
-            message=f"Repository indexing started. Use GET /upload-jobs/{job_id} to track progress.",
+            message=message,
             job_id=job_id,
-            files_found=0,  # Will be updated as job progresses
+            files_found=files_found,
         )
 
     except ValueError as e:
-        # No files found
-        return RepoUploadResponse(
-            message=str(e),
-            files_found=0,
+        # Nothing matched - a dead end for the caller, not a started job.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
         )
     except RuntimeError as e:
-        # Job already running
+        # The waiting list is full
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
@@ -776,8 +849,11 @@ def index_local_file(request: IndexLocalRequest) -> DocumentMetadata:  # sync: i
     try:
       with storage_quota.reserve(request.collection_id, path.stat().st_size, path.name):
         if request.copy_to_library:
-            # Copy file to data/documents/ directory first, then index
-            document_dir = settings.data_dir / "documents"
+            # Copy into THIS collection's documents directory first, then
+            # index. It used to copy to the deployment-wide data/documents,
+            # so a file added to any non-default collection landed outside
+            # the folder that collection reindexes from.
+            document_dir = indexer_manager.get_documents_path(request.collection_id)
             document_dir.mkdir(parents=True, exist_ok=True)
             dest_path = document_dir / path.name
 
@@ -874,32 +950,37 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
 
     SUPPORTED_EXTENSIONS = DocumentExtractor.SUPPORTED_EXTENSIONS
 
-    # Validate all paths exist and are supported
+    # Sort the batch rather than refusing it. One unreadable path used to
+    # abort the whole submission, which on a folder drop of thousands of
+    # files meant none of them were indexed and the person was told only
+    # about the first bad one.
     valid_paths = []
+    skipped: List[dict] = []
     for file_path in request.file_paths:
         path = Path(file_path)
         if not path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {file_path}",
-            )
+            skipped.append({"filename": path.name or file_path, "error": "file not found"})
+            continue
         if not path.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Not a file: {file_path}",
-            )
-        file_ext = path.suffix.lower()
-        if file_ext not in SUPPORTED_EXTENSIONS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported file type: {file_ext} for {path.name}",
-            )
+            skipped.append({"filename": path.name or file_path, "error": "not a file"})
+            continue
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            skipped.append({
+                "filename": path.name,
+                "error": f"unsupported file type ({path.suffix.lower() or 'no extension'})",
+            })
+            continue
         valid_paths.append(file_path)
 
     if not valid_paths:
+        detail = "No files could be indexed"
+        if skipped:
+            shown = "; ".join(f"{s['filename']}: {s['error']}" for s in skipped[:5])
+            more = f" (and {len(skipped) - 5} more)" if len(skipped) > 5 else ""
+            detail = f"{detail} - {shown}{more}"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No valid files to index",
+            detail=detail,
         )
 
     _require_ingest(request.collection_id)
@@ -925,6 +1006,9 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
             total_files=len(valid_paths),
             processed_files=0,
             progress_percent=0.0,
+            job_type="index",
+            queue_position=upload_service.queue_position(job_id),
+            skipped_files=skipped,
         )
 
     except RuntimeError as e:

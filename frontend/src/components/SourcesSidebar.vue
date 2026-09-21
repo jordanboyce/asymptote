@@ -251,7 +251,9 @@
           <!-- Success -->
           <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
             <CheckCircle :size="12" aria-hidden="true" />
-            <span v-if="indexResult.background">{{ indexResult.count.toLocaleString() }} file(s) uploaded — indexing continues in the background</span>
+            <span v-if="indexResult.background">
+              {{ indexResult.count.toLocaleString() }} file(s) queued — indexing runs in the background, you can close this tab
+            </span>
             <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
             <button
               class="ml-auto btn btn-ghost btn-xs p-0 h-4 min-h-0"
@@ -1017,7 +1019,7 @@ async function uploadRecording(blob) {
     emit('document-deleted')
   } catch (err) {
     console.error('Recording upload failed:', err)
-    recordError.value = err.response?.data?.detail || err.message || 'Failed to transcribe recording'
+    recordError.value = err?.message || 'Failed to transcribe recording'
   } finally {
     transcribing.value = false
     transcribeStatus.value = ''
@@ -1192,7 +1194,7 @@ const openFilePicker = async () => {
     }
   } catch (err) {
     console.error('File picker error:', err)
-    indexError.value = err.response?.data?.detail || 'Failed to open file picker'
+    indexError.value = err?.message || 'Failed to open file picker'
   }
 }
 
@@ -1228,7 +1230,7 @@ const openFolderPicker = async () => {
     }
   } catch (err) {
     console.error('Folder picker error:', err)
-    indexError.value = err.response?.data?.detail || 'Failed to open folder picker'
+    indexError.value = err?.message || 'Failed to open folder picker'
   }
 }
 
@@ -1242,17 +1244,23 @@ const clearAllPaths = () => {
   indexError.value = ''
 }
 
-// Main indexing function
+// Main indexing function.
+//
+// Whatever was picked - browser files, server paths, folders - ends up as
+// a background job on the server, and the only blocking work here is
+// moving bytes. Files used to be indexed one at a time inside the request
+// with the tab held open, folders started a job whose response this code
+// misread as "0 files indexed", and picking both at once made the second
+// submission fail with a 409. All three now land in the jobs drawer alike.
 const indexFiles = async () => {
   if (selectedPaths.value.length === 0) return
 
   // Split browser-uploaded File objects from server-side path references
   const browserItems = selectedPaths.value.filter(p => p.file)
   const pathItems = selectedPaths.value.filter(p => !p.file)
-
-  // Separate files and folders (path-based items only)
   const files = pathItems.filter(p => !p.isFolder)
-  const filePaths = files.map(p => p.path)
+  const folders = pathItems.filter(p => p.isFolder)
+  const collectionId = collectionStore.currentCollectionId
 
   indexing.value = true
   indexProgressPercent.value = 0
@@ -1260,19 +1268,19 @@ const indexFiles = async () => {
   indexSuccess.value = false
   indexError.value = ''
 
-  const folders = pathItems.filter(p => p.isFolder)
-
-  let successCount = 0
-  let totalChunks = 0
   const errors = []
+  let jobsStarted = 0
+  let filesQueued = 0
+
+  const describe = (err, fallback) => err?.message || fallback
 
   try {
-    // Browser-uploaded File objects (headless/Docker mode) → multipart POST to
-    // /documents/upload, in batches. One request per batch keeps each POST
-    // under proxy body-size caps (Cloudflare: 100MB) and response timeouts
-    // (~100s), which is what makes very large folder drops (tens of
-    // thousands of files) work from the browser at all. One failed batch is
-    // reported and skipped; the rest continue.
+    // Phase 1 - transfer. Browser File objects are streamed to the server
+    // in batches, saved but not indexed. One request per batch keeps each
+    // POST under proxy body-size caps (Cloudflare: 100MB) and response
+    // timeouts, which is what makes very large folder drops work from the
+    // browser at all. A failed batch is reported; the rest continue.
+    const stagedPaths = []
     if (browserItems.length > 0) {
       const BATCH_MAX_FILES = 40
       const BATCH_MAX_BYTES = 25 * 1024 * 1024
@@ -1291,31 +1299,24 @@ const indexFiles = async () => {
       }
       if (batch.length) batches.push(batch)
 
-      // Phase 1 — transfer: stage batches to the server (no indexing in the
-      // request, so each batch is just an upload and finishes fast). The tab
-      // must stay open only for this phase.
       uploading.value = true
       uploadingCount.value = browserItems.length
-      const stagedPaths = []
       let uploaded = 0
       try {
         for (const group of batches) {
           const formData = new FormData()
-          for (const item of group) {
-            formData.append('files', item.file, item.name)
-          }
-          formData.append('collection_id', collectionStore.currentCollectionId)
+          for (const item of group) formData.append('files', item.file, item.name)
+          formData.append('collection_id', collectionId)
           try {
             const response = await http.post('/documents/upload-staged', formData, {
               headers: { 'Content-Type': 'multipart/form-data' },
               timeout: 0, // large batches stream for as long as they need
             })
-            for (const s of response.data.staged || []) stagedPaths.push(s.path)
+            for (const staged of response.data.staged || []) stagedPaths.push(staged.path)
             for (const f of response.data.failed || []) errors.push(`${f.filename}: ${f.error}`)
           } catch (err) {
-            const errorMsg = err.response?.data?.detail || err.message
-            errors.push(`Upload batch (${group[0].name}…): ${errorMsg}`)
-            console.error('Browser upload error:', err)
+            errors.push(`Upload of ${group.length} file(s) starting with ${group[0].name}: ` +
+                        describe(err, 'transfer failed'))
           }
           uploaded += group.length
           uploadingCount.value = browserItems.length - uploaded
@@ -1326,115 +1327,78 @@ const indexFiles = async () => {
         uploading.value = false
         uploadingCount.value = 0
       }
-
-      // Phase 2 — hand off: one server-side background job indexes the staged
-      // files. It shows up in the background-jobs drawer with live progress,
-      // survives page refreshes, and keeps running if the tab closes.
-      if (stagedPaths.length > 0) {
-        try {
-          const jobResp = await http.post('/documents/index-local-async', {
-            file_paths: stagedPaths,
-            collection_id: collectionStore.currentCollectionId,
-            copy_to_library: false,
-          })
-          backgroundJobsStore.addUploadJob(jobResp.data)
-          successCount += stagedPaths.length
-          if (filePaths.length === 0 && folders.length === 0) {
-            indexSuccess.value = true
-            indexResult.value = { count: stagedPaths.length, chunks: 0, background: true }
-            justIndexed.value = true
-            addSectionOpen.value = false
-          }
-        } catch (err) {
-          const detail = err.response?.data?.detail || err.message
-          errors.push(err.response?.status === 409
-            ? 'Another indexing job is running — wait for it to finish, then re-add this folder.'
-            : `Failed to start background indexing: ${detail}`)
-        }
-      }
     }
 
-    if (filePaths.length > 0) {
-      // Synchronous indexing
-      for (let i = 0; i < filePaths.length; i++) {
-        const filename = getFilename(filePaths[i])
-        currentIndexingFile.value = filename
-        indexProgressPercent.value = ((i) / filePaths.length) * 100
-
-        try {
-          const response = await http.post('/documents/index-local', {
-            file_path: filePaths[i],
-            collection_id: collectionStore.currentCollectionId
-          }, { timeout: 0 }) // synchronous extract+embed of one file
-          successCount++
-          totalChunks += response.data.total_chunks || 0
-          // Update progress after successful index
-          indexProgressPercent.value = ((i + 1) / filePaths.length) * 100
-        } catch (err) {
-          const errorMsg = err.response?.data?.detail || err.message
-          errors.push(`${filename}: ${errorMsg}`)
-          console.error(`Failed to index ${filePaths[i]}:`, err)
-        }
-      }
-
-      if (successCount > 0) {
-        indexSuccess.value = true
-        indexResult.value = { count: successCount, chunks: totalChunks }
-        selectedPaths.value = folders
-        justIndexed.value = true
-        addSectionOpen.value = false
-        loadDocuments()
-        setTimeout(() => loadDocuments(), 1500)
-        emit('document-deleted')
-      }
-    }
-
-    // Index folders via repo endpoint (synchronous)
-    for (let i = 0; i < folders.length; i++) {
-      const folder = folders[i]
-      currentIndexingFile.value = folder.name
-
+    // Phase 2 - hand off. Staged uploads and server-side file paths are
+    // the same thing to the indexer, so they go in as one job.
+    const localPaths = [...stagedPaths, ...files.map(f => f.path)]
+    if (localPaths.length > 0) {
       try {
-        const response = await http.post('/documents/upload-repo', {
-          path: folder.path,
-          collection_id: collectionStore.currentCollectionId,
-          recursive: true
-        }, { timeout: 0 }) // synchronous whole-folder indexing
-        successCount += response.data.files_indexed || 0
-        totalChunks += response.data.total_chunks || 0
+        const { data } = await http.post('/documents/index-local-async', {
+          file_paths: localPaths,
+          collection_id: collectionId,
+          copy_to_library: false,
+        })
+        backgroundJobsStore.addUploadJob(data)
+        jobsStarted += 1
+        filesQueued += data.total_files || localPaths.length
+        for (const skipped of data.skipped_files || []) {
+          errors.push(`${skipped.filename}: ${skipped.error}`)
+        }
       } catch (err) {
-        const errorMsg = err.response?.data?.detail || err.message
-        errors.push(`${folder.name}: ${errorMsg}`)
-        console.error(`Failed to index ${folder.path}:`, err)
+        errors.push(describe(err, 'Could not start indexing'))
       }
     }
 
-    // If we indexed folders synchronously, show results and always refresh
-    if (folders.length > 0) {
-      if (successCount > 0) {
-        indexSuccess.value = true
-        indexResult.value = { count: successCount, chunks: totalChunks }
-        justIndexed.value = true
-        addSectionOpen.value = false
+    // Phase 3 - folders. One job each, scanned and counted server-side.
+    for (const folder of folders) {
+      currentIndexingFile.value = folder.name
+      try {
+        const { data } = await http.post('/documents/upload-repo', {
+          path: folder.path,
+          collection_id: collectionId,
+          recursive: true,
+        }, { timeout: 0 }) // scanning a deep tree can take a while
+        if (data.job_id) {
+          backgroundJobsStore.addUploadJob({
+            job_id: data.job_id,
+            collection_id: collectionId,
+            status: 'pending',
+            total_files: data.files_found || 0,
+            processed_files: 0,
+            progress_percent: 0,
+            job_type: 'index',
+          })
+          jobsStarted += 1
+          filesQueued += data.files_found || 0
+        } else {
+          errors.push(`${folder.name}: ${data.message || 'no files matched'}`)
+        }
+      } catch (err) {
+        errors.push(`${folder.name}: ${describe(err, 'could not be added')}`)
       }
-      selectedPaths.value = []
-      loadDocuments()
-      setTimeout(() => loadDocuments(), 1500)
-      emit('document-deleted')
     }
-
   } finally {
     indexing.value = false
     currentIndexingFile.value = ''
     indexProgressPercent.value = 0
   }
 
-  if (errors.length > 0) {
-    indexError.value = errors.join('; ')
+  if (jobsStarted > 0) {
+    indexSuccess.value = true
+    indexResult.value = { count: filesQueued, jobs: jobsStarted, background: true }
+    justIndexed.value = true
+    addSectionOpen.value = false
+    selectedPaths.value = []
+    // The job may land its first documents before anyone looks again;
+    // the store's throttled refresh tick keeps the list growing after this.
+    loadDocuments()
+    emit('document-deleted')
   }
 
-  // Clear selection if everything was submitted successfully
-  if (errors.length === 0) {
+  if (errors.length > 0) {
+    indexError.value = errors.join('; ')
+  } else {
     selectedPaths.value = []
   }
 }
@@ -1485,7 +1449,7 @@ const loadDocuments = async () => {
     docTotal.value = response.data.total_documents ?? documents.value.length
     if (docTotal.value > 0) justIndexed.value = false
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to load sources'
+    error.value = err?.message || 'Failed to load sources'
   } finally {
     loading.value = false
   }
@@ -1498,7 +1462,7 @@ const loadMoreDocuments = async () => {
     documents.value = documents.value.concat(response.data.documents || [])
     docTotal.value = response.data.total_documents ?? docTotal.value
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to load more sources'
+    error.value = err?.message || 'Failed to load more sources'
   } finally {
     loadingMore.value = false
   }
@@ -1580,7 +1544,7 @@ const openChunks = async (doc) => {
     )
     chunkResponse.value = response.data
   } catch (err) {
-    chunksError.value = err.response?.data?.detail || 'Failed to load document chunks'
+    chunksError.value = err?.message || 'Failed to load document chunks'
   } finally {
     chunksLoading.value = false
   }
@@ -1644,7 +1608,7 @@ const deleteDocument = async () => {
 
     emit('document-deleted')
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to delete source'
+    error.value = err?.message || 'Failed to delete source'
   } finally {
     deleting.value = false
     closeDeleteModal()
@@ -1675,7 +1639,7 @@ const deleteBulk = async () => {
     selectedDocuments.value = []
     emit('document-deleted')
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Failed to delete sources'
+    error.value = err?.message || 'Failed to delete sources'
   } finally {
     deleting.value = false
     closeDeleteModal()
@@ -1772,11 +1736,14 @@ watch(() => backgroundJobsStore.reindexJob?.status, (newStatus, oldStatus) => {
 
 // Warn user before leaving page during indexing
 const beforeUnloadHandler = (e) => {
-  if (indexing.value || isRecording.value || transcribing.value) {
+  // Only the transfer of bytes from this browser is at risk from leaving.
+  // Indexing itself runs server-side and survives the tab, so warning
+  // about it just trained people to ignore the dialog.
+  if (uploading.value || isRecording.value || transcribing.value) {
     e.preventDefault()
     e.returnValue = isRecording.value
       ? 'Recording in progress. Are you sure you want to leave?'
-      : 'Indexing in progress. Are you sure you want to leave?'
+      : 'Files are still uploading. Are you sure you want to leave?'
     return e.returnValue
   }
 }

@@ -152,6 +152,19 @@ class UploadJobResponse(BaseModel):
     chunks_processed: Optional[int] = Field(None, description="Chunks processed in current file")
     chunks_total: Optional[int] = Field(None, description="Total chunks in current file")
 
+    job_type: str = Field("upload", description="'upload' for browser uploads, 'index' for local/folder indexing")
+    queue_position: Optional[int] = Field(
+        None,
+        description="1-based place in line while waiting for a slot; null once the job is running",
+    )
+    cancel_requested: bool = Field(
+        False, description="True while a running job is stopping at the next file boundary"
+    )
+    skipped_files: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Files left out of the job at submission, with the reason for each",
+    )
+
 
 class AIOptions(BaseModel):
     """Optional AI enhancement settings for search."""

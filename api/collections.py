@@ -1,5 +1,6 @@
 """Collection CRUD and re-indexing endpoints."""
 
+import json
 import logging
 
 from fastapi import Depends, HTTPException, status, Request
@@ -184,8 +185,23 @@ async def get_reindex_status(job_id: int = None):
     else:
         progress = 0
 
+    # Which collection this job is rebuilding lives in the config snapshot.
+    # Surface it: the sidebar refreshes mid-job only when the job names the
+    # collection on screen, so without this a re-index never refreshed
+    # anything until it finished.
+    job = dict(job)
+    snapshot = job.pop("config_snapshot", None)
+    collection_id = None
+    if snapshot:
+        try:
+            parsed = json.loads(snapshot) if isinstance(snapshot, str) else snapshot
+            collection_id = (parsed or {}).get("collection_id")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            collection_id = None
+
     return {
         **job,
+        "collection_id": collection_id,
         "progress_percent": round(progress, 1)
     }
 

@@ -705,7 +705,7 @@
       <template v-if="footerActiveJob">
         <span class="w-px h-3 bg-base-300" aria-hidden="true"></span>
         <span class="truncate max-w-[40ch] text-base-content/45">
-          {{ footerActiveJob.currentFile || footerActiveJob.phase || footerActiveJob.type }}
+          {{ footerJobLabel }}
         </span>
         <progress
           class="progress progress-warning w-24 h-1.5"
@@ -1125,76 +1125,104 @@
               :key="`${job.type}-${job.id}`"
               class="card bg-base-200"
             >
-              <div class="card-body p-4">
+              <div class="card-body p-4 gap-2">
                 <!-- Job Header -->
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-2">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2 min-w-0">
                     <Loader2
-                      v-if="job.status === 'pending' || job.status === 'running'"
+                      v-if="backgroundJobsStore.isActiveStatus(job.status)"
                       :size="18"
-                      class="animate-spin text-primary"
+                      class="animate-spin text-primary flex-shrink-0"
                     />
                     <CheckCircle
+                      v-else-if="job.status === 'completed' && job.failedFiles.length === 0"
+                      :size="18"
+                      class="text-success flex-shrink-0"
+                    />
+                    <AlertTriangle
                       v-else-if="job.status === 'completed'"
                       :size="18"
-                      class="text-success"
+                      class="text-warning flex-shrink-0"
                     />
-                    <XCircle
-                      v-else-if="job.status === 'failed' || job.status === 'cancelled'"
-                      :size="18"
-                      class="text-error"
-                    />
-                    <span class="font-semibold capitalize">
-                      {{ job.type === 'index' ? 'Indexing' : job.type === 'upload' ? 'Upload' : job.type }}
-                    </span>
-                    <span class="badge badge-sm" :class="{
-                      'badge-warning': job.status === 'pending',
-                      'badge-info': job.status === 'running',
-                      'badge-success': job.status === 'completed',
-                      'badge-error': job.status === 'failed' || job.status === 'cancelled'
-                    }">{{ job.status }}</span>
+                    <XCircle v-else :size="18" class="text-error flex-shrink-0" />
+                    <span class="font-semibold truncate">{{ jobTitle(job) }}</span>
                   </div>
-                  <button
-                    v-if="(job.type === 'upload' || job.type === 'index') && (job.status === 'pending' || job.status === 'running')"
-                    @click="cancelJob(job.id)"
-                    class="btn btn-ghost btn-xs text-error"
-                    title="Cancel job"
-                    :aria-label="`Cancel ${job.type} job`"
-                  >
-                    <XCircle :size="16" />
-                  </button>
+                  <div class="flex items-center gap-1 flex-shrink-0">
+                    <span class="badge badge-sm" :class="jobBadgeClass(job)">{{ jobStatusLabel(job) }}</span>
+                    <button
+                      v-if="job.cancellable"
+                      @click="cancelJob(job.id)"
+                      class="btn btn-ghost btn-xs text-error"
+                      :disabled="job.cancelRequested"
+                      :title="job.cancelRequested ? 'Stopping after the current file' : 'Cancel job'"
+                      :aria-label="`Cancel ${job.type} job`"
+                    >
+                      <XCircle :size="16" />
+                    </button>
+                  </div>
                 </div>
 
-                <!-- Current File -->
-                <div v-if="job.currentFile" class="text-sm text-base-content/70 truncate">
+                <!-- What it is working on, or where it sits in line -->
+                <div v-if="job.queuePosition" class="text-sm text-base-content/70">
+                  Waiting for another job to finish — {{ ordinal(job.queuePosition) }} in line.
+                </div>
+                <div v-else-if="job.currentFile" class="text-sm text-base-content/70 truncate" :title="job.currentFile">
                   {{ job.currentFile }}
                 </div>
 
                 <!-- Phase Info -->
-                <div v-if="job.phase && (job.status === 'running' || job.status === 'pending')" class="flex items-center gap-2 text-sm">
-                  <span class="text-base-content/50">Phase:</span>
+                <div v-if="job.phase && backgroundJobsStore.isActiveStatus(job.status) && !job.queuePosition" class="flex items-center gap-2 text-sm flex-wrap">
                   <span class="badge badge-sm badge-primary capitalize">{{ job.phase }}</span>
                   <span v-if="job.chunksTotal > 0" class="text-base-content/50">
-                    ({{ job.chunksProcessed }}/{{ job.chunksTotal }} chunks)
+                    {{ job.chunksProcessed.toLocaleString() }}/{{ job.chunksTotal.toLocaleString() }} chunks
                   </span>
                 </div>
 
                 <!-- Progress -->
-                <div v-if="job.status === 'running' || job.status === 'pending'" class="space-y-1">
+                <div v-if="backgroundJobsStore.isActiveStatus(job.status)" class="space-y-1">
                   <progress
-                    class="progress progress-primary w-full"
-                    :value="job.progress"
+                    class="progress w-full"
+                    :class="job.cancelRequested ? 'progress-warning' : 'progress-primary'"
+                    :value="job.queuePosition ? 0 : job.progress"
                     max="100"
                   ></progress>
                   <div class="flex justify-between text-xs text-base-content/60">
                     <span>{{ Math.round(job.progress) }}%</span>
-                    <span>{{ job.processedFiles || 0 }}/{{ job.totalFiles || '?' }} files</span>
+                    <span>{{ (job.processedFiles || 0).toLocaleString() }}/{{ (job.totalFiles || 0).toLocaleString() }} files</span>
                   </div>
+                </div>
+
+                <!-- Outcome, once it is over. Suppressed when an error
+                     message already says how it ended, so the card does not
+                     state the same thing twice. -->
+                <div v-else-if="!job.error" class="text-xs text-base-content/60">
+                  {{ jobOutcomeLine(job) }}
                 </div>
 
                 <!-- Error -->
                 <div v-if="job.error" class="text-sm text-error">
                   {{ job.error }}
+                </div>
+
+                <!-- Files that did not make it in. This list is the only
+                     record a person has of sources missing from a job that
+                     otherwise looks like it worked. -->
+                <details v-if="job.failedFiles.length" class="text-xs">
+                  <summary class="cursor-pointer text-warning">
+                    {{ job.failedFiles.length }} file{{ job.failedFiles.length === 1 ? '' : 's' }} could not be indexed
+                  </summary>
+                  <ul class="mt-1.5 space-y-1 max-h-40 overflow-y-auto">
+                    <li v-for="(f, i) in job.failedFiles" :key="i" class="text-base-content/70">
+                      <div class="font-medium truncate" :title="f.filename">{{ f.filename }}</div>
+                      <div class="text-base-content/50 line-clamp-2" :title="f.error">{{ f.error }}</div>
+                    </li>
+                  </ul>
+                </details>
+
+                <div v-if="!backgroundJobsStore.isActiveStatus(job.status) && job.type !== 'reindex'" class="flex justify-end">
+                  <button class="btn btn-ghost btn-xs" @click="backgroundJobsStore.removeUploadJob(job.id)">
+                    Dismiss
+                  </button>
                 </div>
               </div>
             </div>
@@ -1202,9 +1230,9 @@
         </div>
 
         <!-- Footer -->
-        <div v-if="backgroundJobsStore.allJobs.some(j => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')" class="p-4 border-t border-base-300">
-          <button class="btn btn-ghost btn-sm w-full" @click="clearCompletedJobs">
-            Clear completed jobs
+        <div v-if="backgroundJobsStore.finishedJobs.length" class="p-4 border-t border-base-300">
+          <button class="btn btn-ghost btn-sm w-full" @click="backgroundJobsStore.clearFinishedJobs()">
+            Clear finished jobs
           </button>
         </div>
       </div>
@@ -1214,7 +1242,7 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
-import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, X, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search, Copy, PanelLeft, PanelLeftClose, PanelRight, PanelRightClose } from 'lucide-vue-next'
+import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, AlertTriangle, X, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search, Copy, PanelLeft, PanelLeftClose, PanelRight, PanelRightClose } from 'lucide-vue-next'
 import http from './utils/http'
 import { useModal } from './composables/useModal'
 import { lazyView } from './utils/lazyView'
@@ -1493,9 +1521,62 @@ const toggleNotes = () => {
 }
 
 // Most recent active job, surfaced inline in the footer.
-const footerActiveJob = computed(() =>
-  backgroundJobsStore.allJobs.find(j => j.status === 'running' || j.status === 'pending')
-)
+// The status bar has room for one job, so it shows the one doing work.
+// A job waiting for a slot is the less informative of the two, and it
+// sorts first by start time.
+const footerActiveJob = computed(() => {
+  const active = backgroundJobsStore.allJobs.filter(j => backgroundJobsStore.isActiveStatus(j.status))
+  return active.find(j => !j.queuePosition) || active[0]
+})
+
+// Job presentation helpers, shared by the drawer and the footer.
+// What the status bar says about the job in flight. "queued" and
+// "cancelling" are states a person needs to see without opening a drawer.
+const footerJobLabel = computed(() => {
+  const job = footerActiveJob.value
+  if (!job) return ''
+  if (job.cancelRequested) return 'Cancelling…'
+  if (job.queuePosition) return `Queued — ${ordinal(job.queuePosition)} in line`
+  return job.currentFile || job.phase || jobTitle(job)
+})
+
+function jobTitle(job) {
+  if (job.type === 'reindex') return 'Re-indexing'
+  if (job.type === 'upload') return 'Upload'
+  return 'Indexing'
+}
+
+function jobStatusLabel(job) {
+  if (job.cancelRequested && backgroundJobsStore.isActiveStatus(job.status)) return 'cancelling'
+  if (job.queuePosition) return 'queued'
+  if (job.status === 'completed' && job.failedFiles.length) return 'completed with errors'
+  return job.status
+}
+
+function jobBadgeClass(job) {
+  if (job.cancelRequested || job.queuePosition) return 'badge-warning'
+  if (job.status === 'running') return 'badge-info'
+  if (job.status === 'pending') return 'badge-warning'
+  if (job.status === 'completed') return job.failedFiles.length ? 'badge-warning' : 'badge-success'
+  return 'badge-error'
+}
+
+function ordinal(n) {
+  const suffix = ['th', 'st', 'nd', 'rd'][(n % 100 - 20) % 10] || ['th', 'st', 'nd', 'rd'][n % 100] || 'th'
+  return `${n}${suffix}`
+}
+
+function jobOutcomeLine(job) {
+  const total = job.totalFiles || 0
+  if (job.status === 'completed') {
+    const indexed = job.indexedFiles ?? job.processedFiles ?? 0
+    return `Indexed ${indexed.toLocaleString()} of ${total.toLocaleString()} file${total === 1 ? '' : 's'}`
+  }
+  if (job.status === 'cancelled') {
+    return `Stopped after ${(job.processedFiles || 0).toLocaleString()} of ${total.toLocaleString()} files`
+  }
+  return `Stopped at ${(job.processedFiles || 0).toLocaleString()} of ${total.toLocaleString()} files`
+}
 
 // Forward an Analysis-sidebar action into the chat input.
 const handleSendToChat = (prompt) => {
@@ -1831,14 +1912,32 @@ watch(() => collectionStore.currentCollectionId, () => {
   statsStore.fetchStats()
 })
 
-// Watch for background jobs completing to refresh collection counts and stats
-watch(() => backgroundJobsStore.allJobs.map(j => j.status), (newStatuses, oldStatuses) => {
-  // Check if any job just transitioned to completed
-  if (oldStatuses && newStatuses.some((s, i) => s === 'completed' && oldStatuses[i] !== 'completed')) {
-    collectionStore.loadCollections()
-    statsStore.fetchStats()
-  }
-}, { deep: true })
+// Watch for background jobs completing to refresh collection counts and
+// stats. Keyed by job id: the list is sorted newest-first and jobs come
+// and go, so comparing two arrays position by position compared the
+// statuses of different jobs.
+watch(
+  () => backgroundJobsStore.allJobs.map(j => `${j.type}-${j.id}:${j.status}`),
+  (now, before) => {
+    if (!before) return
+    const previous = new Map(before.map(entry => {
+      const at = entry.lastIndexOf(':')
+      return [entry.slice(0, at), entry.slice(at + 1)]
+    }))
+    const finished = now.some(entry => {
+      const at = entry.lastIndexOf(':')
+      const key = entry.slice(0, at)
+      const status = entry.slice(at + 1)
+      const was = previous.get(key)
+      return was !== undefined && was !== status &&
+        ['completed', 'failed', 'cancelled'].includes(status)
+    })
+    if (finished) {
+      collectionStore.loadCollections()
+      statsStore.fetchStats()
+    }
+  },
+)
 
 // Live stats refresh while a job is still indexing into the current
 // collection (throttled inside the jobs store), so the footer counts and
@@ -1849,17 +1948,17 @@ watch(() => backgroundJobsStore.dataRefreshTick, () => {
   }
 })
 
-// Clear completed jobs from the drawer
-const clearCompletedJobs = () => {
-  // Remove completed upload jobs
-  backgroundJobsStore.uploadJobs = backgroundJobsStore.uploadJobs.filter(
-    j => j.status === 'pending' || j.status === 'running'
-  )
-  // Clear completed reindex job
-  if (backgroundJobsStore.reindexJob &&
-      (backgroundJobsStore.reindexJob.status === 'completed' || backgroundJobsStore.reindexJob.status === 'failed')) {
-    backgroundJobsStore.clearReindexJob()
-  }
+// Coming back to the tab re-reads the job list. A job can be started from
+// another tab, another device, or an agent over MCP, and this tab would
+// otherwise keep saying "Idle" until someone reloaded it. Throttled, since
+// focus fires generously.
+let lastJobsRefresh = 0
+const refreshJobsOnReturn = () => {
+  if (document.visibilityState === 'hidden') return
+  const now = Date.now()
+  if (now - lastJobsRefresh < 15000) return
+  lastJobsRefresh = now
+  backgroundJobsStore.checkActiveJobs()
 }
 
 // Cancel an active upload job
@@ -1924,6 +2023,8 @@ onMounted(async () => {
 
   // Check for any active background jobs
   backgroundJobsStore.checkActiveJobs()
+  window.addEventListener('visibilitychange', refreshJobsOnReturn)
+  window.addEventListener('focus', refreshJobsOnReturn)
 
   // Initialize theme
   updateThemeFromStorage()
@@ -1950,5 +2051,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   backgroundJobsStore.cleanup()
+  window.removeEventListener('visibilitychange', refreshJobsOnReturn)
+  window.removeEventListener('focus', refreshJobsOnReturn)
 })
 </script>

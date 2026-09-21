@@ -743,13 +743,19 @@ class PostgresBackend(DatabaseBackend):
         finally:
             self._put(conn)
 
+    # See AppDatabase.NULLABLE_UPLOAD_JOB_FIELDS: these may be cleared on purpose.
+    NULLABLE_UPLOAD_JOB_FIELDS = ("current_file", "phase_detail", "error")
+
     def update_upload_job(self, job_id: int, **kwargs):
         updates, params = [], []
         for field in ["status", "processed_files", "current_file", "error", "result_summary",
                        "phase", "phase_progress", "phase_detail", "chunks_processed", "chunks_total"]:
-            if field in kwargs and kwargs[field] is not None:
-                updates.append(f"{field} = %s")
-                params.append(kwargs[field])
+            if field not in kwargs:
+                continue
+            if kwargs[field] is None and field not in self.NULLABLE_UPLOAD_JOB_FIELDS:
+                continue
+            updates.append(f"{field} = %s")
+            params.append(kwargs[field])
         if kwargs.get("status") in ("completed", "failed", "cancelled"):
             updates.append("completed_at = %s")
             params.append(datetime.utcnow().isoformat())
@@ -801,6 +807,47 @@ class PostgresBackend(DatabaseBackend):
         finally:
             self._put(conn)
 
+    def get_recent_upload_jobs(self, limit: int = 20,
+                               collection_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Recent jobs in every state, newest first (see the SQLite backend)."""
+        limit = max(1, min(int(limit or 20), 200))
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                if collection_id:
+                    cur.execute(f"{self._upload_job_query()} WHERE collection_id = %s ORDER BY id DESC LIMIT %s",
+                                (collection_id, limit))
+                else:
+                    cur.execute(f"{self._upload_job_query()} ORDER BY id DESC LIMIT %s", (limit,))
+                return self._fetchall_dict(cur)
+        finally:
+            self._put(conn)
+
+    def fail_interrupted_jobs(self, reason: str) -> Dict[str, int]:
+        """Close out jobs left mid-flight by a process exit (see the SQLite backend)."""
+        ts = datetime.utcnow().isoformat()
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE upload_jobs SET status = 'failed', error = %s, completed_at = %s,
+                                              current_file = NULL
+                       WHERE status IN ('pending', 'running')""",
+                    (reason, ts),
+                )
+                uploads = cur.rowcount
+                cur.execute(
+                    """UPDATE reindex_jobs SET status = 'failed', error = %s, completed_at = %s,
+                                               current_file = NULL
+                       WHERE status IN ('pending', 'running')""",
+                    (reason, ts),
+                )
+                reindexes = cur.rowcount
+            conn.commit()
+            return {"upload_jobs": uploads or 0, "reindex_jobs": reindexes or 0}
+        finally:
+            self._put(conn)
+
     # ── Reindex Jobs ─────────────────────────────────────────
 
     def create_reindex_job(self, config_snapshot: Dict[str, Any]) -> int:
@@ -837,7 +884,7 @@ class PostgresBackend(DatabaseBackend):
             self._put(conn)
 
     def _reindex_query(self):
-        return "SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error FROM reindex_jobs"
+        return "SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error, config_snapshot FROM reindex_jobs"
 
     def get_reindex_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         conn = self._conn()

@@ -927,6 +927,13 @@ class SQLiteBackend(DatabaseBackend):
             conn.commit()
             return cursor.lastrowid
 
+    # Fields a caller may deliberately clear by passing None. Everything else
+    # treats None as "not supplied", so a partial progress update doesn't wipe
+    # the columns it says nothing about. Without this, the completion write
+    # (current_file=None) was dropped and a finished job kept showing the last
+    # file it touched.
+    NULLABLE_UPLOAD_JOB_FIELDS = ("current_file", "phase_detail", "error")
+
     def update_upload_job(self, job_id: int, **kwargs):
         updates = []
         params = []
@@ -937,9 +944,12 @@ class SQLiteBackend(DatabaseBackend):
             "chunks_processed": "chunks_processed", "chunks_total": "chunks_total",
         }
         for kwarg, col in field_map.items():
-            if kwarg in kwargs and kwargs[kwarg] is not None:
-                updates.append(f"{col} = ?")
-                params.append(kwargs[kwarg])
+            if kwarg not in kwargs:
+                continue
+            if kwargs[kwarg] is None and kwarg not in self.NULLABLE_UPLOAD_JOB_FIELDS:
+                continue
+            updates.append(f"{col} = ?")
+            params.append(kwargs[kwarg])
 
         status = kwargs.get("status")
         if status in ("completed", "failed", "cancelled"):
@@ -995,6 +1005,53 @@ class SQLiteBackend(DatabaseBackend):
                    FROM upload_jobs WHERE status IN ('pending', 'running') ORDER BY id DESC"""
             ).fetchall()]
 
+    def get_recent_upload_jobs(self, limit: int = 20,
+                               collection_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Recent jobs in every state, newest first.
+
+        The drawer needs finished jobs too: a job that ended with failed
+        files is the only place a person learns which sources did not make
+        it in, and that has to survive a page refresh.
+        """
+        limit = max(1, min(int(limit or 20), 200))
+        where = "WHERE collection_id = ?" if collection_id else ""
+        params = (collection_id, limit) if collection_id else (limit,)
+        with sqlite_connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(
+                f"""SELECT id, collection_id, status, total_files, processed_files,
+                           current_file, error, started_at, completed_at, result_summary,
+                           phase, phase_progress, phase_detail, chunks_processed,
+                           chunks_total, job_type
+                    FROM upload_jobs {where} ORDER BY id DESC LIMIT ?""", params
+            ).fetchall()]
+
+    def fail_interrupted_jobs(self, reason: str) -> Dict[str, int]:
+        """Close out jobs left mid-flight by a process exit.
+
+        Upload jobs run in threads and reindex jobs in asyncio tasks, so
+        neither survives a restart — but their rows do. Left alone, those
+        rows make the UI show a job that will never move, and the
+        per-collection guard refuses every new job for that collection
+        forever. Called once at startup, before anything can enqueue work.
+        """
+        timestamp = datetime.utcnow().isoformat()
+        with sqlite_connect(self.db_path) as conn:
+            uploads = conn.execute(
+                """UPDATE upload_jobs SET status = 'failed', error = ?, completed_at = ?,
+                                          current_file = NULL
+                   WHERE status IN ('pending', 'running')""",
+                (reason, timestamp),
+            ).rowcount
+            reindexes = conn.execute(
+                """UPDATE reindex_jobs SET status = 'failed', error = ?, completed_at = ?,
+                                           current_file = NULL
+                   WHERE status IN ('pending', 'running')""",
+                (reason, timestamp),
+            ).rowcount
+            conn.commit()
+        return {"upload_jobs": uploads or 0, "reindex_jobs": reindexes or 0}
+
     # ── Reindex Jobs ─────────────────────────────────────────
 
     def create_reindex_job(self, config_snapshot: Dict[str, Any]) -> int:
@@ -1034,7 +1091,7 @@ class SQLiteBackend(DatabaseBackend):
         with sqlite_connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
-                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
+                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error, config_snapshot
                    FROM reindex_jobs WHERE id = ?""",
                 (job_id,)
             )
@@ -1043,7 +1100,7 @@ class SQLiteBackend(DatabaseBackend):
         with sqlite_connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
-                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
+                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error, config_snapshot
                    FROM reindex_jobs ORDER BY id DESC LIMIT 1"""
             )
 
@@ -1051,7 +1108,7 @@ class SQLiteBackend(DatabaseBackend):
         with sqlite_connect(self.db_path) as conn:
             return self._reindex_row_to_dict(
                 conn,
-                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error
+                """SELECT id, status, started_at, completed_at, total_documents, processed_documents, current_file, error, config_snapshot
                    FROM reindex_jobs WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1"""
             )
 

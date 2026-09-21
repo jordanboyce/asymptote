@@ -12,6 +12,8 @@ reloaded so middleware registration matches the mode.
 
 import importlib
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -132,23 +134,60 @@ def test_open_mode_admin_endpoints_are_open(fresh_db):
 # ── Global index-job cap ────────────────────────────────────────────────────
 
 
-def test_global_job_cap_blocks_at_limit(fresh_db):
+def test_global_job_cap_holds_jobs_in_the_queue(fresh_db):
+    """At the concurrency cap a new job waits instead of being refused."""
     import threading
-    from services.upload_service import upload_service
+    from services.upload_service import upload_service, _QueuedJob
 
     old = config.settings.max_concurrent_index_jobs
     config.settings.max_concurrent_index_jobs = 2
+    ran = []
     try:
-        upload_service._check_global_job_cap()  # nothing running → fine
         with upload_service._lock:
             upload_service._active_threads[9001] = threading.Thread()
+            upload_service._active_collections[9001] = "c1"
             upload_service._active_threads[9002] = threading.Thread()
-        with pytest.raises(RuntimeError, match="limit 2"):
-            upload_service._check_global_job_cap()
-        config.settings.max_concurrent_index_jobs = 0  # 0 = uncapped
-        upload_service._check_global_job_cap()
+            upload_service._active_collections[9002] = "c2"
+
+        upload_service._submit(_QueuedJob(
+            job_id=9003, collection_id="c3", target=ran.append, args=(9003,),
+        ))
+        # Both slots are taken, so it waits rather than raising.
+        assert ran == []
+        assert upload_service.queue_position(9003) == 1
+
+        # Freeing a slot and dispatching starts it.
+        with upload_service._lock:
+            upload_service._active_threads.pop(9001, None)
+            upload_service._active_collections.pop(9001, None)
+        upload_service._dispatch()
+        for _ in range(50):
+            if ran:
+                break
+            time.sleep(0.02)
+        assert ran == [9003]
+        assert upload_service.queue_position(9003) is None
     finally:
         config.settings.max_concurrent_index_jobs = old
         with upload_service._lock:
-            upload_service._active_threads.pop(9001, None)
-            upload_service._active_threads.pop(9002, None)
+            for stale in (9001, 9002, 9003):
+                upload_service._active_threads.pop(stale, None)
+                upload_service._active_collections.pop(stale, None)
+            upload_service._queue.clear()
+
+
+def test_queue_admission_refuses_only_when_the_waiting_list_is_full(fresh_db):
+    """Submission is refused for a full queue, not for a busy collection."""
+    from services.upload_service import upload_service, _QueuedJob
+
+    try:
+        with upload_service._lock:
+            for n in range(upload_service.MAX_QUEUED_JOBS):
+                upload_service._queue.append(_QueuedJob(
+                    job_id=8000 + n, collection_id="busy", target=lambda: None, args=(),
+                ))
+        with pytest.raises(RuntimeError, match="waiting to run"):
+            upload_service._check_queue_capacity()
+    finally:
+        with upload_service._lock:
+            upload_service._queue.clear()

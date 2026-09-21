@@ -364,6 +364,54 @@ def test_process_bulk_job_end_to_end(tmp_path, indexer, embedder, monkeypatch):
     assert summary["total_chunks"] == indexer.vector_store.get_total_chunks()
 
 
+def test_cancel_after_extraction_finishes_still_cancels(tmp_path, indexer, monkeypatch):
+    """Cancelling once every file is extracted must not finish as completed.
+
+    Extraction runs ahead of embedding, so on a batch of small files the
+    file loop can drain before the person clicks Cancel. The remaining work
+    is one big embed, and the job used to sail past every cancellation
+    check and report success.
+    """
+    import json
+
+    import services.upload_service as us
+
+    paths = [str(_write_txt(tmp_path, f"doc{i}.txt")) for i in range(4)]
+
+    job_updates = []
+    monkeypatch.setattr(
+        us.app_db, "update_upload_job",
+        lambda job_id, **kw: job_updates.append((job_id, kw)),
+    )
+    monkeypatch.setattr(us.collection_service, "add_document", lambda cid, doc_id: None)
+    monkeypatch.setattr(us.indexer_manager, "get_indexer", lambda collection_id: indexer)
+    # Nothing flushes until the final drain, so all the embedding work is
+    # left for after the file loop has emptied.
+    monkeypatch.setattr(us.settings, "bulk_flush_chunks", 100000)
+
+    service = us.UploadService()
+    service._cancel_flags[11] = False
+
+    real_prepare = indexer.prepare_document
+
+    def prepare_then_cancel(path, filename, **kwargs):
+        prepared = real_prepare(path, filename, **kwargs)
+        if filename == "doc3.txt":  # the last file: the loop is about to end
+            service._cancel_flags[11] = True
+        return prepared
+
+    monkeypatch.setattr(indexer, "prepare_document", prepare_then_cancel)
+
+    service._run_local_index(11, paths, "test-collection", copy_to_library=False)
+
+    final = job_updates[-1][1]
+    assert final["status"] == "cancelled"
+    assert "Cancelled after indexing" in final["error"]
+    # Nothing was embedded, so nothing landed in the index.
+    assert indexer.list_documents() == []
+    assert json.loads(final["result_summary"])["documents_processed"] == 0
+
+
 def test_process_bulk_job_cancellation(tmp_path, indexer, monkeypatch):
     """Cancelling mid-job marks the job cancelled and stops processing."""
     import services.upload_service as us
