@@ -1,6 +1,27 @@
 <template>
   <div>
     <div class="prose prose-sm max-w-none text-sm chat-markdown" @click="reviewCitation" v-html="html"></div>
+    <!-- Source strip: every passage behind the answer, one glance, one click
+         to the evidence. Numbers match the [Source N] citations in the prose. -->
+    <div v-if="sources.length && !streaming" class="mt-3 flex flex-wrap gap-1.5" role="list" aria-label="Sources" @click="reviewCitation">
+      <button
+        v-for="(source, index) in visibleSources" :key="index" type="button" role="listitem"
+        class="btn btn-xs btn-ghost h-auto min-h-0 py-1 px-2 gap-1.5 font-normal max-w-full border border-base-300 hover:border-base-content/30"
+        :data-source-chip="index + 1"
+        :title="chipTitle(source)"
+        :aria-label="`Review source ${index + 1}: ${source.filename}`"
+      >
+        <span class="font-mono text-base-content/60 tabular-nums">{{ index + 1 }}</span>
+        <span class="truncate max-w-[12rem]">{{ source.filename }}</span>
+        <span v-if="source.page_number" class="text-base-content/50">p.{{ source.page_number }}</span>
+      </button>
+      <button
+        v-if="sources.length > MAX_CHIPS" type="button"
+        class="btn btn-xs btn-ghost h-auto min-h-0 py-1 px-2 font-normal text-base-content/60"
+        :aria-label="`Review all ${sources.length} sources`"
+        @click.stop="openAll"
+      >+{{ sources.length - MAX_CHIPS }} more</button>
+    </div>
     <details v-if="sources.length" ref="evidencePanel" class="mt-4 border-t border-base-300 pt-3">
       <summary class="cursor-pointer text-sm font-medium py-1">
         Review evidence <span class="font-normal text-base-content/70">· {{ sources.length }} passages</span>
@@ -45,10 +66,23 @@ const selected = ref(null)
 const evidencePanel = ref(null)
 const html = computed(() => renderEvidenceMarkdown(props.content, props.sources))
 
+const MAX_CHIPS = 8
+const visibleSources = computed(() => props.sources.slice(0, MAX_CHIPS))
+const chipTitle = (source) => {
+  const snippet = String(source.text_snippet || '').replace(/\s+/g, ' ').trim()
+  return snippet ? (snippet.length > 220 ? snippet.slice(0, 217) + '…' : snippet) : source.filename
+}
+
+function openAll() {
+  if (!evidencePanel.value) return
+  evidencePanel.value.open = true
+  evidencePanel.value.scrollIntoView?.({ block: 'nearest' })
+}
+
 async function reviewCitation(event) {
-  const button = event.target.closest('button[data-source-number]')
+  const button = event.target.closest('button[data-source-number], button[data-source-chip]')
   if (!button || !evidencePanel.value) return
-  selected.value = Number(button.dataset.sourceNumber)
+  selected.value = Number(button.dataset.sourceNumber || button.dataset.sourceChip)
   evidencePanel.value.open = true
   await nextTick()
   const passage = evidencePanel.value.querySelector(`[id="${id}-source-${selected.value}"]`)

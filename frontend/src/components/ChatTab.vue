@@ -5,13 +5,43 @@
       <div class="flex items-center justify-between flex-shrink-0 py-1.5 mb-1 border-b border-base-300/60">
         <div class="flex items-center gap-1.5 min-w-0">
           <Bot :size="14" class="text-base-content/40 flex-shrink-0" aria-hidden="true" />
-          <span class="text-sm font-medium truncate text-base-content/80">{{ activeSessionTitle }}</span>
+          <form v-if="renaming" class="min-w-0" @submit.prevent="commitRename">
+            <label for="chat-title-input" class="sr-only">Chat title</label>
+            <input
+              id="chat-title-input"
+              ref="renameInputRef"
+              v-model="renameDraft"
+              class="input input-xs input-bordered w-64 max-w-full"
+              maxlength="80"
+              @keydown.esc.prevent="renaming = false"
+              @blur="commitRename"
+            />
+          </form>
+          <button
+            v-else
+            type="button"
+            class="text-sm font-medium truncate text-base-content/80 hover:text-base-content text-left min-w-0"
+            :class="{ 'cursor-default': messages.length === 0 }"
+            :title="messages.length > 0 ? 'Rename this chat' : undefined"
+            :aria-label="messages.length > 0 ? `Rename chat: ${activeSessionTitle}` : activeSessionTitle"
+            @click="messages.length > 0 && startRename()"
+          >{{ activeSessionTitle }}</button>
           <span v-if="messages.length > 0" class="text-xs text-base-content/40 ml-1 flex-shrink-0">
             · {{ messages.length }}
           </span>
         </div>
 
         <div class="flex items-center gap-0.5">
+
+          <button
+            v-if="messages.length > 0"
+            class="btn btn-xs btn-ghost btn-square text-base-content/50 hover:text-base-content"
+            title="Export this chat as Markdown"
+            aria-label="Export this chat as Markdown"
+            @click="exportChat"
+          >
+            <Download :size="13" aria-hidden="true" />
+          </button>
 
           <!-- Session switcher -->
           <div class="dropdown dropdown-end">
@@ -28,7 +58,22 @@
               <li class="menu-title">
                 <span class="text-xs">Chat sessions ({{ sessions.length }})</span>
               </li>
-              <li v-for="session in sessions" :key="session.id">
+              <li v-if="sessions.length > 4" class="px-1 pb-1">
+                <label class="sr-only" for="chat-session-filter">Find a chat</label>
+                <input
+                  id="chat-session-filter"
+                  v-model="sessionFilter"
+                  type="search"
+                  class="input input-xs input-bordered w-full"
+                  placeholder="Find a chat…"
+                  @click.stop
+                  @keydown.stop
+                />
+              </li>
+              <li v-if="sessionFilter && filteredSessions.length === 0" class="disabled">
+                <span class="text-xs text-base-content/50">No chats match</span>
+              </li>
+              <li v-for="session in filteredSessions" :key="session.id">
                 <div
                   class="flex items-start gap-2 group"
                   :class="{ 'bg-primary/10': session.id === activeSessionId }"
@@ -191,16 +236,24 @@
               <h3 class="text-sm font-medium text-base-content/80">Ask about your documents</h3>
               <p class="text-sm text-base-content/70">Ask a question, then open its citations to check the evidence.</p>
             </div>
-            <div class="flex flex-col gap-1.5 w-full">
-              <button
-                v-for="suggestion in suggestions"
-                :key="suggestion"
-                class="btn btn-sm btn-ghost justify-start font-normal text-base-content/70 hover:text-base-content border border-base-300 hover:border-base-content/20"
-                @click="useSuggestion(suggestion)"
-              >
-                <Sparkles :size="13" class="text-base-content/30 flex-shrink-0" aria-hidden="true" />
-                <span class="truncate">{{ suggestion }}</span>
-              </button>
+            <div class="flex flex-col gap-1.5 w-full" aria-live="polite">
+              <p v-if="starters.length" class="text-xs text-base-content/50 text-left px-1">Suggested from your sources</p>
+              <template v-if="startersLoading && !starters.length">
+                <div v-for="n in 3" :key="n" class="skeleton h-8 w-full rounded-lg" aria-hidden="true"></div>
+                <span class="sr-only">Reading your sources for suggested questions</span>
+              </template>
+              <template v-else>
+                <button
+                  v-for="suggestion in starterList"
+                  :key="suggestion"
+                  class="btn btn-sm btn-ghost justify-start font-normal text-base-content/70 hover:text-base-content border border-base-300 hover:border-base-content/20 h-auto min-h-8 py-1.5 text-left"
+                  :disabled="loading"
+                  @click="askQuestion(suggestion)"
+                >
+                  <Sparkles :size="13" class="text-base-content/30 flex-shrink-0" aria-hidden="true" />
+                  <span class="line-clamp-2">{{ suggestion }}</span>
+                </button>
+              </template>
             </div>
           </div>
         </div>
@@ -436,15 +489,6 @@
                       class="badge badge-xs badge-outline"
                       :title="msg.cachedQuestion ? `Cached answer originally generated for: ${msg.cachedQuestion}` : 'Served from the answer cache'"
                     >cached · 0 tokens</span>
-                    <button
-                      class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 gap-1 text-base-content/50 hover:text-base-content"
-                      title="Bypass the cache and generate a fresh answer"
-                      :disabled="loading"
-                      @click="regenerateFresh(index)"
-                    >
-                      <RefreshCw :size="11" />
-                      <span class="text-xs">Fresh answer</span>
-                    </button>
                   </template>
                   <template v-else-if="msg.aiUsage">
                     <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
@@ -459,9 +503,41 @@
                     </span>
                     <span v-if="msg.scope === 'all'" class="badge badge-xs badge-secondary badge-outline">all collections</span>
                   </template>
+                  <span
+                    v-if="msg.depth"
+                    class="badge badge-xs badge-ghost gap-0.5"
+                    :title="msg.depth === 'quick' ? 'Quick answer: one pass from the retrieved passages' : 'Research answer: document searches and verification ran before answering'"
+                  >
+                    <Zap v-if="msg.depth === 'quick'" :size="9" aria-hidden="true" />
+                    <Search v-else :size="9" aria-hidden="true" />
+                    {{ msg.depth === 'quick' ? 'quick' : 'research' }}
+                  </span>
+                  <span class="ml-auto"></span>
+                  <template v-if="msg.content && index === lastAssistantIndex">
+                    <button
+                      v-if="msg.depth === 'quick'"
+                      class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 gap-1 text-base-content/50 hover:text-base-content"
+                      title="Answer again with document searches and verification"
+                      :disabled="loading"
+                      @click="rerunAnswer(index, { depth: 'research' })"
+                    >
+                      <Search :size="11" aria-hidden="true" />
+                      <span class="text-xs">Go deeper</span>
+                    </button>
+                    <button
+                      class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 gap-1 text-base-content/50 hover:text-base-content"
+                      :title="msg.cached ? 'Bypass the cache and generate a fresh answer' : 'Generate this answer again'"
+                      :aria-label="msg.cached ? 'Generate a fresh answer' : 'Regenerate this answer'"
+                      :disabled="loading"
+                      @click="rerunAnswer(index)"
+                    >
+                      <RefreshCw :size="11" aria-hidden="true" />
+                      <span class="text-xs">{{ msg.cached ? 'Fresh answer' : 'Regenerate' }}</span>
+                    </button>
+                  </template>
                   <button
                     v-if="msg.content"
-                    class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 ml-auto text-base-content/50 hover:text-base-content gap-1"
+                    class="btn btn-ghost btn-xs h-5 min-h-0 px-1.5 text-base-content/50 hover:text-base-content gap-1"
                     :title="copiedMessageIndex === index ? 'Copied!' : 'Copy answer with evidence'"
                     :aria-label="copiedMessageIndex === index ? 'Copied to clipboard' : 'Copy answer with evidence to clipboard'"
                     @click="copyMessage(msg, index)"
@@ -470,6 +546,31 @@
                     <Copy v-else :size="11" />
                     <span class="text-xs">{{ copiedMessageIndex === index ? 'Copied' : 'Copy with evidence' }}</span>
                   </button>
+                </div>
+
+                <!-- Related: what a reader of this answer asks next. One tap asks it. -->
+                <div
+                  v-if="!msg.streaming && msg.relatedQuestions && msg.relatedQuestions.length"
+                  class="mt-3 pt-2 border-t border-base-300/70"
+                  data-testid="related-questions"
+                >
+                  <div class="flex items-center gap-1 text-xs font-medium text-base-content/60 mb-0.5">
+                    <Sparkles :size="11" class="text-base-content/40" aria-hidden="true" />
+                    Related
+                  </div>
+                  <ul class="divide-y divide-base-300/60">
+                    <li v-for="question in msg.relatedQuestions" :key="question">
+                      <button
+                        type="button"
+                        class="w-full text-left text-sm py-1.5 flex items-start gap-2 text-base-content/80 hover:text-primary disabled:opacity-50"
+                        :disabled="loading"
+                        @click="askQuestion(question)"
+                      >
+                        <Plus :size="13" class="mt-0.5 flex-shrink-0 text-base-content/40" aria-hidden="true" />
+                        <span>{{ question }}</span>
+                      </button>
+                    </li>
+                  </ul>
                 </div>
               </div>
             </div>
@@ -556,6 +657,33 @@
               >
                 /
               </button>
+              <!-- Answer depth: the one-tap Quick / Research choice -->
+              <div class="join rounded-full border border-base-300" role="radiogroup" aria-label="Answer depth">
+                <button
+                  type="button"
+                  class="btn btn-xs join-item gap-1 border-0 rounded-l-full"
+                  :class="depth === 'quick' ? 'btn-active' : 'btn-ghost text-base-content/60'"
+                  role="radio"
+                  :aria-checked="depth === 'quick'"
+                  title="Quick: one pass from the retrieved passages. Fastest."
+                  @click="depth = 'quick'"
+                >
+                  <Zap :size="12" aria-hidden="true" />
+                  Quick
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-xs join-item gap-1 border-0 rounded-r-full"
+                  :class="depth === 'research' ? 'btn-active' : 'btn-ghost text-base-content/60'"
+                  role="radio"
+                  :aria-checked="depth === 'research'"
+                  title="Research: runs document searches and verification before answering. Slower, more thorough."
+                  @click="depth = 'research'"
+                >
+                  <Search :size="12" aria-hidden="true" />
+                  Research
+                </button>
+              </div>
               <span v-if="selectedProvider" class="badge badge-xs hidden sm:inline-flex" :class="providerBadgeClass(selectedProvider)">{{ providerDisplayName(selectedProvider) }}</span>
               <span v-if="rerank" class="badge badge-xs badge-outline badge-primary hidden sm:inline-flex">Rerank</span>
             </div>
@@ -585,7 +713,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import http from '../utils/http'
 import AnswerEvidence from './AnswerEvidence.vue'
 import { answerWithReferences } from '../utils/answerEvidence'
-import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check, RefreshCw } from 'lucide-vue-next'
+import { Bot, FileText, ArrowUp, Trash2, Layers, Database, Plus, History, ChevronDown, SlidersHorizontal, Table2, Search, BookOpen, ListTree, Wrench, Sparkles, Copy, Check, RefreshCw, Zap, Download } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chatStore'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useBackgroundJobsStore } from '../stores/backgroundJobsStore'
@@ -646,6 +774,14 @@ const topK = ref(parseInt(localStorage.getItem('chat_top_k') || '5'))
 const searchMode = ref(localStorage.getItem('chat_search_mode') || 'hybrid')
 const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
+// Answer depth. Quick answers in one pass from the retrieved passages (large
+// tables stay queryable); Research runs document searches and verification
+// first. Quick is the default: time-to-answer is the product's metric, and
+// "Go deeper" on any quick answer is one click.
+const DEPTHS = ['quick', 'research']
+const depth = ref(DEPTHS.includes(localStorage.getItem('chat_depth')) ? localStorage.getItem('chat_depth') : 'quick')
+// Set by "Go deeper" / "Regenerate" for the one turn they trigger.
+const depthOverride = ref('')
 
 // Provider state. Refs (not computeds over localStorage) because the list can
 // grow after mount: server-stored team keys are fetched async and count as
@@ -700,6 +836,59 @@ const activeSessionTitle = computed(() => {
   const s = sessions.value.find((x) => x.id === activeSessionId.value)
   return s?.title || 'New chat'
 })
+const lastAssistantIndex = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].role === 'assistant' && !messages.value[i].slashCommand) return i
+  }
+  return -1
+})
+
+// ── Session library: find, rename, export ────────────────────────────────
+const sessionFilter = ref('')
+const filteredSessions = computed(() => {
+  const q = sessionFilter.value.trim().toLowerCase()
+  if (!q) return sessions.value
+  return sessions.value.filter((s) =>
+    (s.title || '').toLowerCase().includes(q) ||
+    (s.messages || []).some((m) => m.role === 'user' && String(m.content || '').toLowerCase().includes(q))
+  )
+})
+
+const renaming = ref(false)
+const renameDraft = ref('')
+const renameInputRef = ref(null)
+const startRename = () => {
+  renameDraft.value = activeSessionTitle.value
+  renaming.value = true
+  nextTick(() => { renameInputRef.value?.focus(); renameInputRef.value?.select() })
+}
+const commitRename = () => {
+  if (!renaming.value) return
+  renaming.value = false
+  const title = renameDraft.value.trim()
+  if (title && title !== activeSessionTitle.value) {
+    chatStore.renameSession(collectionStore.currentCollectionId, activeSessionId.value, title)
+  }
+}
+
+const exportChat = () => {
+  const collectionName = collectionStore.currentCollection?.name || collectionStore.currentCollectionId
+  const lines = [`# ${activeSessionTitle.value}`, '', `Collection: ${collectionName}`, `Exported: ${new Date().toLocaleString()}`, '']
+  for (const m of messages.value) {
+    if (m.streaming) continue
+    if (m.role === 'user') lines.push(`## ${m.content}`, '')
+    else lines.push(answerWithReferences(m), '')
+  }
+  const slug = activeSessionTitle.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'chat'
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  link.download = `${slug}.md`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(link.href)
+}
 
 const formatRelativeTime = (ts) => {
   if (!ts) return ''
@@ -732,12 +921,58 @@ const deleteSession = (sessionId) => {
   }
 }
 
-const suggestions = [
+// ── Starter questions ────────────────────────────────────────────────────
+// Written from the collection's own passages by the fast model (cached
+// server-side per corpus version). The generic list is the fallback when no
+// model can be reached or the collection has nothing to sample.
+const FALLBACK_SUGGESTIONS = [
   'Summarize the key points in these documents',
   'Compare the requirements in these sources and cite any conflicts.',
   'Which deadlines and responsibilities are stated? Cite each source.',
   'What is missing from these documents that I should verify?',
 ]
+const starters = ref([])
+const startersLoading = ref(false)
+let startersKey = ''
+const starterList = computed(() => (starters.value.length ? starters.value : FALLBACK_SUGGESTIONS))
+const startersKeyNow = () => [
+  collectionStore.currentCollectionId,
+  documentCount.value,
+  selectionStore.active ? selectionStore.currentIds.join(',') : '',
+  selectedProvider.value,
+].join('|')
+
+const loadStarters = async () => {
+  if (!hasAnyProvider.value || documentCount.value === 0 || messages.value.length > 0) return
+  const key = startersKeyNow()
+  if (key === startersKey) return
+  startersKey = key
+  startersLoading.value = true
+  try {
+    const { data } = await http.post(
+      `/api/chat/starters?collection_id=${encodeURIComponent(collectionStore.currentCollectionId)}`,
+      {
+        provider: selectedProvider.value,
+        document_ids: selectionStore.active ? selectionStore.currentIds : null,
+      },
+      { headers: buildProviderHeaders(selectedProvider.value, chatModelOverrides.value[selectedProvider.value] || null) },
+    )
+    if (startersKeyNow() === key) starters.value = Array.isArray(data?.questions) ? data.questions : []
+  } catch {
+    // The generic suggestions stand in; nothing to surface.
+    if (startersKeyNow() === key) starters.value = []
+  } finally {
+    if (startersKeyNow() === key) startersLoading.value = false
+  }
+}
+watch(
+  () => [startersKeyNow(), hasAnyProvider.value, messages.value.length === 0],
+  ([key]) => {
+    if (key !== startersKey) starters.value = []
+    loadStarters()
+  },
+  { immediate: true },
+)
 
 // Expanded-details state for structured result cards: Set of "msgIdx:srIdx"
 const openStructuredDetails = ref(new Set())
@@ -864,8 +1099,11 @@ const copyMessage = async (msg, index) => {
   }
 }
 
-const useSuggestion = (suggestion) => {
-  inputMessage.value = suggestion
+// A starter or related question is asked the moment it is tapped.
+const askQuestion = async (question) => {
+  if (loading.value || !question) return
+  inputMessage.value = question
+  await sendMessage()
 }
 
 // Slash command picker state
@@ -934,11 +1172,13 @@ const runInlineSlashCommand = async (input) => {
   await scrollToBottom()
 }
 
-// Set by the "Fresh answer" button on a cached response: the next send
-// bypasses the semantic answer cache (and its result replaces the entry).
+// Set by "Regenerate" / "Go deeper": the next send bypasses the semantic
+// answer cache (and its result replaces the entry).
 const forceFresh = ref(false)
 
-const regenerateFresh = async (index) => {
+// Ask the question behind an answer again — always fresh, optionally at a
+// different depth ("Go deeper" reruns a quick answer as research).
+const rerunAnswer = async (index, { depth: nextDepth } = {}) => {
   if (loading.value) return
   const msgs = messages.value
   let userIdx = -1
@@ -947,14 +1187,16 @@ const regenerateFresh = async (index) => {
   }
   if (userIdx === -1) return
   const question = msgs[userIdx].content
-  // Drop the question + cached answer, then resend as a fresh exchange.
+  // Drop the question + its answer, then resend as a fresh exchange.
   msgs.splice(userIdx, msgs.length - userIdx)
   inputMessage.value = question
   forceFresh.value = true
+  depthOverride.value = nextDepth || ''
   try {
     await sendMessage()
   } finally {
     forceFresh.value = false
+    depthOverride.value = ''
   }
 }
 
@@ -1012,6 +1254,8 @@ const sendMessage = async () => {
           scope: scope.value,
           rerank: rerank.value,
           use_cache: !forceFresh.value,
+          depth: depthOverride.value || depth.value,
+          related: true,
           // Selected sources bound the whole turn server-side (retrieval,
           // tool calls, tables, overview, cache). Ids belong to the current
           // collection, so they only travel with scope=current.
@@ -1069,6 +1313,8 @@ const sendMessage = async () => {
           chatStore.appendStreamingText(collectionId, event.delta || '')
         } else if (event.type === 'sources') {
           // Sources will be committed in 'done'
+        } else if (event.type === 'related') {
+          chatStore.setStreamingRelated(collectionId, event.questions || [])
         } else if (event.type === 'done') {
           chatStore.finalizeStreamingMessage(collectionId, {
             sources: event.sources || [],
@@ -1076,6 +1322,8 @@ const sendMessage = async () => {
             structuredResults: event.structured_results || [],
             cached: event.cached || false,
             cachedQuestion: event.cached_question || '',
+            relatedQuestions: event.related_questions || [],
+            depth: event.depth || (depthOverride.value || depth.value),
           })
           // Stamp the last assistant message with provider/scope for the badge
           const msgs = messages.value
@@ -1111,6 +1359,7 @@ watch(topK, (v) => localStorage.setItem('chat_top_k', String(v)))
 watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
 watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
+watch(depth, (v) => localStorage.setItem('chat_depth', v))
 
 watch(messages, () => { throttledAutoScroll() }, { deep: true })
 

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 
 
@@ -316,6 +316,16 @@ class ChatRequest(BaseModel):
                     "collection). Retrieval, tool calls, table queries, the overview and "
                     "citations all stay inside the selection. Omitted = every source in scope.",
     )
+    depth: Literal["quick", "research"] = Field(
+        "research",
+        description="'quick' answers in one pass from the retrieved context (large tables "
+                    "stay queryable); 'research' lets the assistant run document searches "
+                    "and verification tools before answering.",
+    )
+    related: bool = Field(
+        True,
+        description="Suggest follow-up questions after the answer (one extra fast-model call).",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -332,6 +342,26 @@ class ChatResponse(BaseModel):
     cached_question: Optional[str] = Field(
         None, description="The originally asked question the cached answer was generated for"
     )
+    related_questions: List[str] = Field(
+        default_factory=list, description="Suggested follow-up questions for this answer"
+    )
+    depth: str = Field("research", description="The answer depth this turn ran at")
+
+
+class StarterQuestionsRequest(BaseModel):
+    """Request body for suggested opening questions about a collection."""
+
+    provider: str = Field("anthropic", description="AI provider used to write the questions")
+    document_ids: Optional[List[str]] = Field(
+        None, description="Limit the suggestions to these sources (document ids in the collection)"
+    )
+
+
+class StarterQuestionsResponse(BaseModel):
+    """Suggested opening questions for a collection."""
+
+    questions: List[str] = Field(default_factory=list)
+    cached: bool = Field(False, description="True when served from the per-corpus-version cache")
 
 
 class ArtifactRequest(BaseModel):

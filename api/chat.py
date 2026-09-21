@@ -15,6 +15,11 @@ from services.agent_tools import anthropic_tools, openai_tools
 from services.collection_overview import build_collection_overview as _build_collection_overview
 from services.collection_service import collection_service
 from services.chat_evidence import ChatEvidence, CITATION_INSTRUCTIONS
+from services.chat_followups import (
+    QUICK_ANSWER_INSTRUCTIONS,
+    related_questions as _related_questions,
+    starter_questions as _starter_questions,
+)
 from services.research_search import RESEARCH_INSTRUCTIONS
 from services.structured_chat import (
     _summarize_args as _summarize_for_log,
@@ -34,6 +39,8 @@ from models.schemas import (
     ChatRequest,
     ChatResponse,
     ChatSource,
+    StarterQuestionsRequest,
+    StarterQuestionsResponse,
 )
 
 from fastapi import APIRouter
@@ -130,6 +137,7 @@ def _request_fingerprint(chat_request: ChatRequest, collection_ids: list[str], m
         f"mode={getattr(chat_request.mode, 'value', chat_request.mode)}",
         f"top_k={chat_request.top_k}",
         f"rerank={int(bool(chat_request.rerank))}",
+        f"depth={getattr(chat_request, 'depth', 'research')}",
         "selection=" + ",".join(_selected_document_ids(chat_request) or []),
     ]
     for cid in collection_ids:
@@ -233,7 +241,55 @@ def _cache_lookup(cache_ctx):
     return entry
 
 
-def _cache_store(cache_ctx, answer_text: str, filtered_results, provider: str):
+# ── Answer depth and follow-ups ─────────────────────────────────────────────
+# depth='quick' answers in one pass from the retrieved context: no document
+# research tools, so time-to-answer is one provider round-trip. Large tables
+# are the exception — they only exist behind the table tools, so those stay
+# callable. depth='research' is the full agent loop.
+
+_TABLE_TOOL_NAMES = frozenset({
+    "list_tables", "get_table_schema", "get_table_rows", "query_table", "aggregate_table",
+})
+
+
+def _is_quick(chat_request: ChatRequest) -> bool:
+    return getattr(chat_request, "depth", "research") == "quick"
+
+
+def _tools_for_depth(chat_request: ChatRequest, tools_spec: list, tool_tables) -> list:
+    """The tool list a turn may use: everything for research, only the table
+    tools (and only when large tables exist) for a quick answer."""
+    if not _is_quick(chat_request):
+        return tools_spec
+    if not tool_tables:
+        return []
+    return [t for t in tools_spec
+            if (t.get("name") or (t.get("function") or {}).get("name")) in _TABLE_TOOL_NAMES]
+
+
+def _depth_instructions(chat_request: ChatRequest) -> str:
+    return QUICK_ANSWER_INSTRUCTIONS if _is_quick(chat_request) else RESEARCH_INSTRUCTIONS
+
+
+def _followups(chat_request: ChatRequest, provider, ai_service, question: str,
+               answer: str, filtered_results) -> tuple[list[str], dict]:
+    """Suggested follow-up questions for a finished turn, with the usage of
+    the extra call. Best effort: never turns a good answer into a failed turn."""
+    if not getattr(chat_request, "related", True) or not (answer or "").strip():
+        return [], {}
+    try:
+        out = _related_questions(
+            provider, ai_service.fast_model, question, answer,
+            [r.filename for r, _ in filtered_results],
+        )
+        return out.get("questions") or [], out.get("usage") or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Follow-up questions skipped: %s", exc)
+        return [], {}
+
+
+def _cache_store(cache_ctx, answer_text: str, filtered_results, provider: str,
+                 related: list[str] | None = None):
     """Record a freshly generated answer. Answers without sources are never
     cached — 'nothing found' should stay retryable, and there would be no
     fingerprints to invalidate on."""
@@ -264,6 +320,7 @@ def _cache_store(cache_ctx, answer_text: str, filtered_results, provider: str):
             cache_ctx["scope_key"], cache_ctx["embedding_model"],
             cache_ctx["question"], cache_ctx["vec"],
             answer_text, sources, fingerprints, provider,
+            related=related,
         )
     except Exception as e:
         logger.warning(f"Answer cache store failed: {e}")
@@ -391,6 +448,8 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                     ai_usage=None,
                     cached=True,
                     cached_question=cache_entry["question"],
+                    related_questions=cache_entry.get("related") or [],
+                    depth=chat_request.depth,
                 )
 
         # --- Daily token budget ---
@@ -572,7 +631,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         }
 
         base_system_parts = [
-            RESEARCH_INSTRUCTIONS,
+            _depth_instructions(chat_request),
             CITATION_INSTRUCTIONS,
             f"You are an analytical research assistant working over the user's "
             f"indexed sources in {scope_note}.",
@@ -680,7 +739,11 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
 
         if provider.supports_native_tools():
             is_anthropic = isinstance(provider, AnthropicProvider)
-            tools_spec = anthropic_tools() if is_anthropic else openai_tools()
+            tools_spec = _tools_for_depth(
+                chat_request, anthropic_tools() if is_anthropic else openai_tools(), tool_tables
+            )
+            if _is_quick(chat_request):
+                max_iterations = 4 if tools_spec else 1
 
             # Seed messages with prior conversation + latest user query.
             messages: list[dict] = [
@@ -785,7 +848,9 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         else:
             # --- ReAct fallback for providers without native tools (Ollama, etc.) ---
             suffix = ""
-            for iteration in range(5):
+            if _is_quick(chat_request) and not tool_tables:
+                tools_block = ""  # one pass, no tool protocol in the prompt
+            for iteration in range(5 if tools_block else 1):
                 prompt = compose_prompt(suffix)
                 result = provider.complete(prompt=prompt, max_tokens=2048, model=ai_service.quality_model)
                 raw_text = result["text"]
@@ -816,6 +881,14 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
                     + "When done, write the answer with no <tool_call> blocks."
                 )
             response_text = strip_tool_calls(response_text).strip()
+
+        # --- Suggested follow-ups (after the answer is settled) ---
+        related, related_usage = _followups(
+            chat_request, provider, ai_service, latest_query, response_text, filtered_results
+        )
+        total_input_tokens += related_usage.get("input_tokens", 0)
+        total_output_tokens += related_usage.get("output_tokens", 0)
+
         usage = {
             "input_tokens": total_input_tokens,
             "output_tokens": total_output_tokens,
@@ -872,7 +945,8 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         ]
 
         if cache_ctx and not executed_results:
-            _cache_store(cache_ctx, response_text, filtered_results, chat_request.provider)
+            _cache_store(cache_ctx, response_text, filtered_results, chat_request.provider,
+                         related=related)
 
         record_chat_usage(
             turn_user, usage_collection, chat_request.provider, model_used,
@@ -887,6 +961,8 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
             sources=sources,
             ai_usage=ai_usage,
             structured_results=executed_results or None,
+            related_questions=related,
+            depth=chat_request.depth,
         )
 
     except HTTPException:
@@ -980,9 +1056,12 @@ async def chat_stream_endpoint(
                 )
                 cached_base = str(request.base_url).rstrip("/")
                 cached_sources = _cached_sources(cache_entry, cached_base)
+                cached_related = cache_entry.get("related") or []
                 yield f"data: {_json.dumps({'type':'text_delta','delta':cache_entry['answer']})}\n\n"
                 yield f"data: {_json.dumps({'type':'sources','sources':cached_sources})}\n\n"
-                yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':0,'output_tokens':0,'model':'answer-cache'},'structured_results':[],'sources':cached_sources,'cached':True,'cached_question':cache_entry['question']})}\n\n"
+                if cached_related:
+                    yield f"data: {_json.dumps({'type':'related','questions':cached_related})}\n\n"
+                yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':0,'output_tokens':0,'model':'answer-cache'},'structured_results':[],'sources':cached_sources,'cached':True,'cached_question':cache_entry['question'],'related_questions':cached_related,'depth':chat_request.depth})}\n\n"
                 return
 
             # ---------- provider -------------------------------------------------
@@ -1121,7 +1200,7 @@ async def chat_stream_endpoint(
             if selected_ids:
                 _scope_note = f"the {len(selected_ids)} source(s) the user selected in the current collection"
             base_system_parts = [
-                RESEARCH_INSTRUCTIONS,
+                _depth_instructions(chat_request),
                 CITATION_INSTRUCTIONS,
                 f"You are an analytical research assistant working over the user's "
                 f"indexed sources in {_scope_note}.",
@@ -1184,7 +1263,11 @@ async def chat_stream_endpoint(
 
             if provider.supports_native_tools():
                 is_anthropic = isinstance(provider, AnthropicProvider)
-                tools_spec = anthropic_tools() if is_anthropic else openai_tools()
+                tools_spec = _tools_for_depth(
+                    chat_request, anthropic_tools() if is_anthropic else openai_tools(), tool_tables
+                )
+                if _is_quick(chat_request):
+                    max_iterations = 4 if tools_spec else 1
 
                 messages: list[dict] = [
                     {"role": m.role, "content": m.content} for m in chat_request.messages
@@ -1281,7 +1364,7 @@ async def chat_stream_endpoint(
                     for m in chat_request.messages[:-1]
                 ]
                 history_text = "\n\n".join(history_parts) if history_parts else "(Start of conversation)"
-                tools_block = build_tool_use_instructions()
+                tools_block = "" if (_is_quick(chat_request) and not tool_tables) else build_tool_use_instructions()
 
                 def _compose(extra=""):
                     parts = [base_system, "", f"COLLECTION OVERVIEW:\n{collection_overview}"]
@@ -1300,7 +1383,7 @@ async def chat_stream_endpoint(
                     parts.append("Assistant:")
                     return "\n\n".join(parts)
 
-                for iteration in range(5):
+                for iteration in range(5 if tools_block else 1):
                     prompt = _compose(suffix)
                     result = await asyncio.to_thread(
                         provider.complete, prompt=prompt, max_tokens=2048, model=ai_service.quality_model
@@ -1354,9 +1437,22 @@ async def chat_stream_endpoint(
             ]
             yield f"data: {_json.dumps({'type':'sources','sources':sources_data})}\n\n"
 
+            # ---------- suggested follow-ups ---------------------------------------
+            # After the answer has streamed, so the reader is never kept
+            # waiting on the extra call.
+            related, related_usage = await asyncio.to_thread(
+                _followups, chat_request, provider, ai_service, latest_query,
+                response_text, filtered_results,
+            )
+            total_input_tokens += related_usage.get("input_tokens", 0)
+            total_output_tokens += related_usage.get("output_tokens", 0)
+            if related:
+                yield f"data: {_json.dumps({'type':'related','questions':related})}\n\n"
+
             if cache_ctx and not executed_results:
                 await asyncio.to_thread(
-                    _cache_store, cache_ctx, response_text, filtered_results, chat_request.provider
+                    _cache_store, cache_ctx, response_text, filtered_results, chat_request.provider,
+                    related=related,
                 )
 
             # ---------- done -----------------------------------------------------
@@ -1368,7 +1464,7 @@ async def chat_stream_endpoint(
                 tool_calls=sum(1 for r in executed_results if r.get("tool") != "_thinking"),
                 duration_ms=int((time.time() - turn_started) * 1000),
             )
-            yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':total_input_tokens,'output_tokens':total_output_tokens,'model':model_used},'structured_results':executed_results,'sources':sources_data,'cached':False})}\n\n"
+            yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':total_input_tokens,'output_tokens':total_output_tokens,'model':model_used},'structured_results':executed_results,'sources':sources_data,'cached':False,'related_questions':related,'depth':chat_request.depth})}\n\n"
 
         except Exception as e:
             logger.exception("Stream chat failed")
@@ -1383,6 +1479,138 @@ async def chat_stream_endpoint(
             "Access-Control-Allow-Origin": "*",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Starter questions: what to ask a collection you just opened
+# ---------------------------------------------------------------------------
+# One fast-model call per (collection, corpus version, selection, model),
+# remembered in-process so reopening the tab costs nothing until the
+# sources change. Reads go through get_indexer (the private-collections
+# read gate) and hidden/quarantined documents are never sampled.
+
+_STARTERS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_STARTERS_TTL_SECONDS = 24 * 3600
+_STARTERS_MAX_ENTRIES = 256
+_STARTERS_SAMPLE_DOCS = 6
+
+
+def _build_provider(provider_name: str, x_ai_key, x_ollama_model, x_anthropic_model,
+                    x_openai_model, x_ai_model, x_ai_base_url):
+    """The provider a request runs on, resolved exactly as /api/chat does."""
+    try:
+        if provider_name == "ollama":
+            extra: dict = {"model": x_ai_model or x_ollama_model or "llama3.2"}
+            if x_ai_base_url:
+                extra["base_url"] = x_ai_base_url
+            return create_provider("ollama", **extra)
+        key = resolve_ai_key(provider_name, x_ai_key)
+        if not key and provider_name != "openai_compatible":
+            raise HTTPException(
+                status_code=400,
+                detail=f"API key required for {provider_name} — pass X-AI-Key or store a team key via /api/agent/config",
+            )
+        extra = {}
+        model = x_ai_model or x_anthropic_model or x_openai_model
+        if model:
+            extra["model"] = model
+        if x_ai_base_url:
+            extra["base_url"] = x_ai_base_url
+        return create_provider(provider_name, key, **extra)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to initialize AI provider: {e}")
+
+
+def _sample_passages(indexer, selected_ids: list[str] | None) -> list[dict]:
+    """The opening passage of a few recent, servable documents."""
+    from services.governance import is_hidden
+
+    docs = [d for d in indexer.list_documents() if not is_hidden(d)]
+    if selected_ids:
+        wanted = set(selected_ids)
+        docs = [d for d in docs if d.get("document_id") in wanted]
+    metadata = indexer.vector_store.metadata_store
+    samples = []
+    for doc in docs[:_STARTERS_SAMPLE_DOCS]:
+        try:
+            rowids = metadata.get_document_chunk_rowids(doc["document_id"])[:1]
+            chunks = metadata.get_chunks_by_rowids(rowids) if rowids else {}
+            text = next((c.get("text") for c in chunks.values() if c.get("text")), "")
+        except Exception as exc:  # noqa: BLE001 - one bad document must not block the rest
+            logger.debug("Starter sample skipped for %s: %s", doc.get("document_id"), exc)
+            text = ""
+        samples.append({"filename": doc.get("filename"), "text": text or ""})
+    return samples
+
+
+@router.post(
+    "/api/chat/starters",
+    response_model=StarterQuestionsResponse,
+    tags=["chat"],
+    summary="Suggested opening questions for a collection",
+)
+def starter_questions_endpoint(  # sync: provider round-trip runs in the threadpool
+    body: StarterQuestionsRequest,
+    collection_id: str = "default",
+    x_ai_key: str = Header(None),
+    x_ollama_model: str = Header(None),
+    x_anthropic_model: str = Header(None),
+    x_openai_model: str = Header(None),
+    x_ai_model: str = Header(None),
+    x_ai_base_url: str = Header(None),
+) -> StarterQuestionsResponse:
+    """Questions the collection can actually answer, written from its overview
+    and a sample of its passages. Cached per corpus version and selection."""
+    started = time.time()
+    try:
+        indexer = get_indexer(collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    selected = sorted({str(d).strip() for d in (body.document_ids or []) if str(d).strip()}) or None
+    model = _requested_model(body, x_ai_model, x_ollama_model, x_anthropic_model,
+                             x_openai_model, x_ai_base_url)
+    key = "|".join([collection_id, _corpus_version(collection_id), ",".join(selected or []),
+                    body.provider, model])
+    hit = _STARTERS_CACHE.get(key)
+    if hit and time.time() - hit[0] < _STARTERS_TTL_SECONDS:
+        return StarterQuestionsResponse(questions=list(hit[1]), cached=True)
+
+    user = get_request_user()
+    over_budget = check_daily_budget(user)
+    if over_budget:
+        return JSONResponse(status_code=429, content=over_budget,
+                            headers={"Retry-After": str(over_budget["retry_after_seconds"])})
+
+    provider = _build_provider(body.provider, x_ai_key, x_ollama_model, x_anthropic_model,
+                               x_openai_model, x_ai_model, x_ai_base_url)
+    ai_service = AIService(provider=provider)
+
+    samples = _sample_passages(indexer, selected)
+    if not samples:
+        return StarterQuestionsResponse(questions=[], cached=False)
+    try:
+        overview = _build_collection_overview([collection_id], selected)
+    except Exception as e:
+        logger.warning(f"Starters: collection overview unavailable: {e}")
+        overview = ""
+
+    out = _starter_questions(provider, ai_service.fast_model, overview, samples)
+    questions = out.get("questions") or []
+    usage = out.get("usage") or {}
+    record_chat_usage(
+        user, collection_id, body.provider, usage.get("model", ai_service.fast_model),
+        input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0),
+        duration_ms=int((time.time() - started) * 1000),
+    )
+    if questions:
+        if len(_STARTERS_CACHE) >= _STARTERS_MAX_ENTRIES:
+            oldest = min(_STARTERS_CACHE, key=lambda k: _STARTERS_CACHE[k][0])
+            _STARTERS_CACHE.pop(oldest, None)
+        _STARTERS_CACHE[key] = (time.time(), list(questions))
+    return StarterQuestionsResponse(questions=questions, cached=False)
 
 
 # Local File Reference endpoints (v3.1 feature)

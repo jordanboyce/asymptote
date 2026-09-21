@@ -76,13 +76,19 @@ class AnswerCache:
                         provider TEXT,
                         created_at TEXT NOT NULL,
                         hits INTEGER DEFAULT 0,
-                        last_used_at TEXT NOT NULL
+                        last_used_at TEXT NOT NULL,
+                        related_json TEXT
                     )
                     """
                 )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_answer_cache_scope ON answer_cache (scope_key, embedding_model)"
                 )
+                # Related questions ride along with the answer they were
+                # written for (added 2026-09); older databases gain the column.
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(answer_cache)")}
+                if "related_json" not in columns:
+                    conn.execute("ALTER TABLE answer_cache ADD COLUMN related_json TEXT")
                 conn.commit()
             self._initialized = True
         return sqlite_connect(self.db_path)
@@ -142,6 +148,7 @@ class AnswerCache:
             "provider": best_row["provider"],
             "created_at": best_row["created_at"],
             "similarity": round(best_sim, 4),
+            "related": json.loads(best_row["related_json"]) if best_row["related_json"] else [],
         }
 
     def mark_hit(self, entry_id: str) -> None:
@@ -167,6 +174,7 @@ class AnswerCache:
         sources: List[Dict[str, Any]],
         fingerprints: List[Dict[str, Any]],
         provider: str = "",
+        related: Optional[List[str]] = None,
     ) -> str:
         """Insert an entry, replacing any near-duplicate question in the scope
         (a regenerated answer supersedes the stale one) and evicting the least
@@ -184,14 +192,16 @@ class AnswerCache:
                 """
                 INSERT INTO answer_cache
                 (id, scope_key, embedding_model, question, embedding, answer,
-                 sources_json, fingerprints_json, provider, created_at, hits, last_used_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                 sources_json, fingerprints_json, provider, created_at, hits, last_used_at,
+                 related_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     entry_id, scope_key, embedding_model, question,
                     self._to_blob(query_vec), answer,
                     json.dumps(sources), json.dumps(fingerprints),
                     provider, now, now,
+                    json.dumps(list(related or [])),
                 ),
             )
             cap = max(1, settings.answer_cache_max_per_scope)

@@ -190,11 +190,19 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults, cached, cachedQuestion } = {}) => {
+  // Suggested follow-ups arrive as their own event after the answer text.
+  const setStreamingRelated = (collectionId, questions) => {
+    const msg = _lastAssistantMsg(collectionId)
+    if (msg) msg.relatedQuestions = Array.isArray(questions) ? questions : []
+  }
+
+  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults, cached, cachedQuestion, relatedQuestions, depth } = {}) => {
     const msg = _lastAssistantMsg(collectionId)
     if (!msg) return
     msg.streaming = false
     if (sources) msg.sources = sources
+    if (Array.isArray(relatedQuestions)) msg.relatedQuestions = relatedQuestions
+    if (depth) msg.depth = depth
     if (usage) msg.aiUsage = { synthesis: { ...usage }, total_input_tokens: usage.input_tokens || 0, total_output_tokens: usage.output_tokens || 0 }
     if (cached) {
       msg.cached = true
@@ -315,6 +323,7 @@ export const useChatStore = defineStore('chat', () => {
     addStreamingToolCall,
     resolveStreamingToolCall,
     addStreamingThinking,
+    setStreamingRelated,
     finalizeStreamingMessage,
     removeLastStreamingMessage,
   }

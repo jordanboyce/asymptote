@@ -24,6 +24,32 @@ describe('Answer evidence review', () => {
     wrapper.unmount()
   })
 
+  it('lists every source as a numbered chip that opens its passage', async () => {
+    const sources = Array.from({ length: 10 }, (_, i) => ({
+      ...source, document_id: `doc-${i + 1}`, page_number: i + 1, text_snippet: `Passage ${i + 1}`,
+    }))
+    const wrapper = mount(AnswerEvidence, { props: { content: 'Answer without inline citations.', sources }, attachTo: document.body })
+    const strip = wrapper.get('[aria-label="Sources"]')
+    const chips = strip.findAll('button[data-source-chip]')
+    expect(chips).toHaveLength(8)
+    expect(chips[2].text()).toContain('3')
+    expect(chips[2].text()).toContain('p.3')
+    expect(chips[2].attributes('title')).toBe('Passage 3')
+    expect(strip.text()).toContain('+2 more')
+    // Chips are not citations: the citation control count is untouched.
+    expect(wrapper.findAll('button[data-source-number]')).toHaveLength(0)
+
+    await chips[2].trigger('click')
+    expect(wrapper.get('details').element.open).toBe(true)
+    expect(document.activeElement.textContent).toContain('Passage 3')
+    wrapper.unmount()
+  })
+
+  it('hides the source strip while the answer is still streaming', () => {
+    const wrapper = mount(AnswerEvidence, { props: { content: 'Partial', sources: [source], streaming: true } })
+    expect(wrapper.find('[aria-label="Sources"]').exists()).toBe(false)
+  })
+
   it('does not manufacture evidence for invalid citations or code examples', () => {
     const wrapper = mount(AnswerEvidence, { props: {
       content: '[Source 8] and `[Source 1]` and [Source 1]', sources: [source],
