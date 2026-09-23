@@ -158,7 +158,10 @@ class ReindexService:
             # Create new vector store in collection's indexes directory
             vector_store = VectorStore(
                 index_dir=indexes_dir,
-                embedding_dim=embedding_service.embedding_dim
+                embedding_dim=embedding_service.embedding_dim,
+                # A model change is exactly when the dimension moves; the old
+                # index is cleared below anyway.
+                discard_mismatched_index=True,
             )
 
             # Delegate all per-document work to DocumentIndexer so CSV/XLSX
@@ -453,7 +456,10 @@ class ReindexService:
             indexes_dir = documents_dir.parent / "indexes"
             vector_store = VectorStore(
                 index_dir=indexes_dir,
-                embedding_dim=embedding_service.embedding_dim
+                embedding_dim=embedding_service.embedding_dim,
+                # A model change is exactly when the dimension moves; the old
+                # index is cleared below anyway.
+                discard_mismatched_index=True,
             )
 
             indexer = DocumentIndexer(

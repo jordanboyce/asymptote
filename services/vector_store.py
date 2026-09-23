@@ -26,17 +26,22 @@ class VectorStore:
     - Better scalability for large collections
     """
 
-    def __init__(self, index_dir: Path, embedding_dim: int = 384):
+    def __init__(self, index_dir: Path, embedding_dim: int = 384, discard_mismatched_index: bool = False):
         """
         Initialize the vector store.
 
         Args:
             index_dir: Directory to store FAISS index and metadata
             embedding_dim: Dimension of embedding vectors
+            discard_mismatched_index: Start from an empty index instead of
+                refusing when the saved one has a different dimension. Only
+                a re-index, which is about to clear and rebuild everything,
+                should pass this.
         """
         self.index_dir = index_dir
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
+        self.discard_mismatched_index = discard_mismatched_index
 
         self.index_path = self.index_dir / "faiss.index"
         self.metadata_db_path = self.index_dir / "metadata.db"
@@ -84,6 +89,13 @@ class VectorStore:
             # Refuse a dimension mismatch up front. Without this check, an
             # embedding-model change fails deep inside add_with_ids — after
             # the chunk metadata has already been committed to SQLite.
+            if loaded.d != self.embedding_dim and self.discard_mismatched_index:
+                logger.warning(
+                    f"Discarding {loaded.d}-dim index at {self.index_path}; "
+                    f"re-indexing at {self.embedding_dim} dims"
+                )
+                self.index = self._new_index()
+                return
             if loaded.d != self.embedding_dim:
                 raise RuntimeError(
                     f"FAISS index at {self.index_path} has dimension {loaded.d}, "
