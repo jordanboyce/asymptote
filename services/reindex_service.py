@@ -291,6 +291,9 @@ class ReindexService:
         """
         documents = []
         seen_paths = set()
+        # Files the metadata lists but that are not on disk. The caller clears
+        # the index before re-adding, so skipping these would delete them.
+        missing: List[str] = []
 
         # Get all documents from metadata store
         # list_documents() returns chunks grouped by document_id, with source info from LEFT JOIN
@@ -309,7 +312,9 @@ class ReindexService:
                 if source_type == "local_reference" and source_path:
                     # Local reference - use source_path
                     path = Path(source_path)
-                    if path.exists() and str(path) not in seen_paths:
+                    if not path.exists():
+                        missing.append(f"{filename} (expected at {path})")
+                    elif str(path) not in seen_paths:
                         documents.append({
                             "path": path,
                             "document_id": doc_id,
@@ -320,7 +325,9 @@ class ReindexService:
                 else:
                     # Uploaded file or orphan chunks - use documents_dir
                     path = documents_dir / filename
-                    if path.exists() and str(path) not in seen_paths:
+                    if not path.exists():
+                        missing.append(f"{filename} (expected at {path})")
+                    elif str(path) not in seen_paths:
                         documents.append({
                             "path": path,
                             "document_id": doc_id,
@@ -352,6 +359,14 @@ class ReindexService:
                             "source_path": None
                         })
                         seen_paths.add(str(f))
+
+        if missing:
+            shown = "; ".join(missing[:5]) + (f"; and {len(missing) - 5} more" if len(missing) > 5 else "")
+            raise RuntimeError(
+                f"Re-index stopped before changing anything: {len(missing)} source file(s) "
+                f"could not be found, and re-indexing would remove them from the collection. "
+                f"Missing: {shown}"
+            )
 
         logger.info(f"Found {len(documents)} documents to reindex")
         return documents
