@@ -614,3 +614,19 @@ def test_quarantined_document_is_404_for_non_admin(private_client, policy):
     assert private_client.get(f"/documents/{doc_id}/chunks", headers=_as(ADMIN)).status_code == 200
     # And a user cannot clear their own hold.
     assert private_client.post(f"/api/admin/documents/default/{doc_id}/approve", headers=_as(USER)).status_code == 403
+
+
+def test_injection_flagged_pages_index(tmp_path, indexer, policy, monkeypatch):
+    """Extractors key injection warnings by int page; DocumentMetadata needs str keys."""
+    from services.document_extractor import ExtractionResult
+    from services.prompt_injection_detector import InjectionScanResult
+
+    policy("off")
+    flagged = InjectionScanResult(is_flagged=True, risk_score=0.9, summary="ignore previous instructions")
+    monkeypatch.setattr(
+        indexer.document_extractor, "extract_text",
+        lambda path: ExtractionResult({1: BENIGN, 2: BENIGN + " again"}, injection_warnings={2: flagged}),
+    )
+    p = _write(tmp_path, "handbook.txt", BENIGN)
+    meta = indexer.index_document(p, "handbook.txt", collection_id="default")
+    assert list(meta.injection_warnings) == ["2"]

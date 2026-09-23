@@ -278,7 +278,7 @@ class DocumentIndexer:
         page_texts = extraction_result.page_texts
         extraction_method = extraction_result.method
         injection_warnings = {
-            page: scan.to_dict()
+            str(page): scan.to_dict()  # JSON keys; DocumentMetadata requires str
             for page, scan in extraction_result.injection_warnings.items()
             if scan.is_flagged
         } or None
@@ -444,7 +444,7 @@ class DocumentIndexer:
         extraction_result = self.document_extractor.extract_text(document_path)
         page_texts = extraction_result.page_texts
         injection_warnings = {
-            page: scan.to_dict()
+            str(page): scan.to_dict()  # JSON keys; DocumentMetadata requires str
             for page, scan in extraction_result.injection_warnings.items()
             if scan.is_flagged
         } or None
