@@ -32,6 +32,20 @@ class ReindexService:
         self.current_collection_id: Optional[str] = None
         self.is_running = False
         self.reload_callback: Optional[Callable[[str], None]] = None  # Takes collection_id
+        # asyncio keeps only a weak reference to tasks; hold them until done.
+        self._tasks: set = set()
+
+    def _spawn(self, fn: Callable, **kwargs) -> None:
+        """Run a blocking job body on a worker thread.
+
+        The job bodies are entirely synchronous - extraction, per-page vision
+        OCR over the network, embedding, saving - so running them as a plain
+        coroutine froze the event loop for the whole job: every request,
+        health checks included, hung until a 400-page PDF finished OCR.
+        """
+        task = asyncio.create_task(asyncio.to_thread(fn, **kwargs))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def start_collection_reindex(
         self,
@@ -77,8 +91,8 @@ class ReindexService:
 
         job_id = app_db.create_reindex_job(config_snapshot)
 
-        # Start background task
-        asyncio.create_task(self._run_collection_reindex(
+        self._spawn(
+            self._run_collection_reindex,
             job_id=job_id,
             collection_id=collection_id,
             documents_dir=documents_dir,
@@ -87,11 +101,11 @@ class ReindexService:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             embedding_dim=embedding_dim,
-        ))
+        )
 
         return job_id
 
-    async def _run_collection_reindex(
+    def _run_collection_reindex(
         self,
         job_id: int,
         collection_id: str,
@@ -218,9 +232,6 @@ class ReindexService:
                 except Exception as e:
                     logger.error(f"Failed to process {doc_path.name}: {e}")
                     continue
-
-                # Yield control to allow other async operations (like status checks)
-                await asyncio.sleep(0)
 
             # Save the index to disk
             logger.info("Saving re-indexed data to disk...")
@@ -381,19 +392,19 @@ class ReindexService:
 
         job_id = app_db.create_reindex_job(config_snapshot)
 
-        # Start background task
-        asyncio.create_task(self._run_reindex(
+        self._spawn(
+            self._run_reindex,
             job_id=job_id,
             documents_dir=documents_dir,
             embedding_model=embedding_model,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             embedding_dim=embedding_dim,
-        ))
+        )
 
         return job_id
 
-    async def _run_reindex(
+    def _run_reindex(
         self,
         job_id: int,
         documents_dir: Path,
@@ -509,8 +520,6 @@ class ReindexService:
                 except Exception as e:
                     logger.error(f"Failed to process {doc_path.name}: {e}")
                     continue
-
-                await asyncio.sleep(0)
 
             # Save the index to disk
             logger.info("Saving re-indexed data to disk...")
