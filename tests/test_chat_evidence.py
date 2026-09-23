@@ -158,3 +158,22 @@ def test_document_context_preserves_label_and_rejects_quarantined_source(monkeyp
     info["policy_status"] = "quarantined"
     with pytest.raises(ValueError, match="not found"):
         mcp.get_document_context("doc", collection_id="ops")
+
+
+def test_document_context_sends_each_passage_once(monkeypatch):
+    """A max-size read must fit Claude Code's MCP result limit (~25k tokens)."""
+    from services import mcp_server as mcp
+
+    chunks = [{"page_number": i // 4 + 1, "text": "x" * 1000, "chunk_id": f"c{i}", "chunk_index": i}
+              for i in range(200)]
+    metadata = SimpleNamespace(
+        get_document_info=lambda _: {"filename": "book.pdf", "policy_status": "clean"},
+        get_chunks_by_document=lambda _: chunks,
+    )
+    monkeypatch.setattr(mcp, "_resolve_collection_id", lambda _: "ops")
+    monkeypatch.setattr(mcp.indexer_manager, "get_indexer", lambda _: SimpleNamespace(vector_store=SimpleNamespace(metadata_store=metadata)))
+    monkeypatch.setattr(mcp.collection_service, "get_collection", lambda _: {})
+    result = mcp.get_document_context("doc", max_chars=40000, collection_id="ops")
+    assert result["truncated"] and "text" not in result
+    assert result["total_chars"] == sum(len(c["text"]) for c in result["chunks"]) <= 40000
+    assert len(json.dumps(result)) < 45000

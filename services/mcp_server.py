@@ -1481,9 +1481,9 @@ def get_document_context(
 
     Returns:
       - document_id, filename, source_format, total_pages
-      - chunks: list of {chunk_id, page_number, chunk_index, text}
-      - text: concatenated text of the returned chunks (newline-joined)
-      - total_chars: length of `text`
+      - chunks: list of {chunk_id, page_number, chunk_index, text}, in
+        document order — read them in sequence for the continuous text
+      - total_chars: combined length of the returned chunk texts
       - truncated: true if `max_chars` was hit before all matching chunks
         were included — call again with a narrower filter or a larger cap
 
@@ -1554,8 +1554,6 @@ def get_document_context(
         })
         running += len(text) + 1
 
-    joined = "\n".join(c["text"] for c in emitted)
-
     from services.governance import effective_sensitivity
 
     return _tool_response({
@@ -1565,9 +1563,11 @@ def get_document_context(
         "source_format": doc_info.get("source_format"),
         "total_pages": doc_info.get("num_pages"),
         "total_chunks_in_document": len(all_chunks),
+        # The text travels once, per chunk. A newline-joined copy used to ride
+        # alongside, doubling every response: at the 40k cap that was ~80k
+        # characters, past Claude Code's MCP result limit.
         "chunks": emitted,
-        "text": joined,
-        "total_chars": len(joined),
+        "total_chars": sum(len(c["text"]) for c in emitted),
         "truncated": truncated,
         "sensitivity": effective_sensitivity(
             collection_service.get_collection(resolved_collection), doc_info.get("sensitivity")
