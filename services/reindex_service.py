@@ -220,7 +220,7 @@ class ReindexService:
 
                     metadata = indexer.index_document(doc_path, doc_path.name)
 
-                    if source_type == "local_reference" and source_path:
+                    if source_type in ("local_reference", "url") and source_path:
                         vector_store.metadata_store.update_document_source(
                             document_id=metadata.document_id,
                             source_path=source_path,
@@ -526,7 +526,7 @@ class ReindexService:
 
                     metadata = indexer.index_document(doc_path, doc_path.name)
 
-                    if source_type == "local_reference" and source_path:
+                    if source_type in ("local_reference", "url") and source_path:
                         vector_store.metadata_store.update_document_source(
                             document_id=metadata.document_id,
                             source_path=source_path,

@@ -1254,6 +1254,8 @@ class DocumentExtractor:
         for tag in soup(["script", "style", "noscript", "template", "iframe", "svg", "canvas"]):
             tag.decompose()
 
+        self._strip_html_boilerplate(soup)
+
         for table in soup.find_all("table"):
             rows = []
             for tr in table.find_all("tr"):
@@ -1288,6 +1290,70 @@ class DocumentExtractor:
             sections[0] = f"{title}\n\n{sections[0]}"
 
         return {i: section for i, section in enumerate(sections, start=1)}
+
+    @staticmethod
+    def _strip_html_boilerplate(soup) -> None:
+        """Remove the parts of a web page that are not its content.
+
+        Pages fetched from a link carry navigation, cookie banners, footers
+        and sidebars that would otherwise be indexed as if they were the
+        article. When the page marks its content with <main> or a single
+        <article>, everything outside it goes; either way, landmark
+        elements (nav, footer, aside, forms, page-level headers) are
+        dropped. A hand-written report with no landmarks is untouched.
+        """
+        body = soup.body
+        if body is None:
+            return
+
+        content = soup.find("main") or soup.find(attrs={"role": "main"})
+        if content is None:
+            articles = soup.find_all("article")
+            if len(articles) == 1:
+                content = articles[0]
+        if content is not None:
+            content_text = content.get_text(" ", strip=True)
+            # Only trust the landmark when it holds the bulk of the page:
+            # some templates wrap a teaser in <article> and the body in divs.
+            if len(content_text) >= 0.4 * len(body.get_text(" ", strip=True)):
+                body.clear()
+                body.append(content)
+
+        # Nothing that holds most of the page's text is chrome, whatever it
+        # is called: WebForms pages wrap everything in one <form>, and a
+        # <div class="menu"> can be a restaurant's actual menu.
+        body_len = len(body.get_text(" ", strip=True))
+
+        def is_bulk(tag) -> bool:
+            return body_len > 0 and len(tag.get_text(" ", strip=True)) >= 0.6 * body_len
+
+        def drop(tag) -> None:
+            if not is_bulk(tag):
+                tag.decompose()
+
+        for tag in soup.find_all(["nav", "footer", "aside", "form", "button", "select"]):
+            drop(tag)
+        for tag in soup.find_all(attrs={"role": ["navigation", "banner", "contentinfo",
+                                                  "complementary", "search", "dialog"]}):
+            drop(tag)
+        # A page-level <header> is site chrome; one inside an article is its byline.
+        for tag in soup.find_all("header"):
+            if tag.find_parent(["article", "main", "section"]) is None:
+                drop(tag)
+        # Class/id names that templates without landmarks use for chrome.
+        # Exact tokens only: "footer" yes, "footnote" no.
+        chrome = {"footer", "site-footer", "page-footer", "sidebar", "site-header",
+                  "navbar", "nav", "menu", "breadcrumb", "breadcrumbs", "cookie-banner",
+                  "cookie-consent", "skip-link", "sphinxsidebar", "related"}
+        for tag in soup.find_all(True):
+            # A tag inside something dropped above is already gone.
+            if getattr(tag, "decomposed", False) or tag.name in ("body", "html", "main", "article"):
+                continue
+            tokens = set(tag.get("class") or [])
+            if tag.get("id"):
+                tokens.add(tag["id"])
+            if tokens & chrome:
+                drop(tag)
 
     def _extract_json(self, json_path: Path) -> Dict[int, str]:
         """

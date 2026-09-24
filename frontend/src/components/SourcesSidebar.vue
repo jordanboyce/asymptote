@@ -158,6 +158,18 @@
               </button>
             </template>
             <button
+              v-if="capabilities.link_indexing !== false"
+              @click="linkPanelOpen = !linkPanelOpen"
+              class="btn btn-xs flex-1 gap-1"
+              :class="linkPanelOpen ? 'btn-secondary' : 'btn-outline'"
+              :disabled="indexing || isRecording"
+              :aria-expanded="linkPanelOpen"
+              title="Index the content behind a link"
+            >
+              <Link :size="12" />
+              Link
+            </button>
+            <button
               @click="toggleRecording"
               class="btn btn-xs flex-1 gap-1"
               :class="isRecording ? 'btn-error' : 'btn-outline btn-secondary'"
@@ -188,6 +200,29 @@
             <div v-else-if="recordError" class="flex items-start gap-2">
               <span class="flex-1 text-error">{{ recordError }}</span>
               <button class="btn btn-ghost btn-xs" @click="recordError = ''">Dismiss</button>
+            </div>
+          </div>
+
+          <!-- Link panel: paste one or more URLs; the server fetches each one
+               and indexes the page (or the PDF/file behind it) in the background -->
+          <div v-if="linkPanelOpen" class="space-y-1.5">
+            <textarea
+              v-model="linkInput"
+              class="textarea textarea-bordered textarea-xs w-full leading-snug font-mono"
+              rows="3"
+              placeholder="https://example.com/page&#10;One link per line"
+              aria-label="Links to index, one per line"
+              :disabled="linkSubmitting"
+              @keydown.ctrl.enter.prevent="indexLinks"
+              @keydown.meta.enter.prevent="indexLinks"
+            ></textarea>
+            <div class="flex items-center gap-2 text-xs">
+              <span class="flex-1 text-base-content/50 leading-tight">Public web pages, PDFs and files. Pages are saved and indexed as they are now.</span>
+              <button class="btn btn-primary btn-xs gap-1 flex-shrink-0" @click="indexLinks" :disabled="linkSubmitting || parsedLinks.length === 0">
+                <span v-if="linkSubmitting" class="loading loading-spinner loading-xs"></span>
+                <Link v-else :size="11" />
+                {{ linkSubmitting ? 'Adding…' : (parsedLinks.length > 1 ? `Add ${parsedLinks.length} links` : 'Add link') }}
+              </button>
             </div>
           </div>
 
@@ -252,7 +287,7 @@
           <div v-if="indexSuccess" class="flex items-center gap-1.5 text-xs text-success bg-success/10 rounded px-2 py-1.5" role="status">
             <CheckCircle :size="12" aria-hidden="true" />
             <span v-if="indexResult.background">
-              {{ indexResult.count.toLocaleString() }} file(s) queued — indexing runs in the background, you can close this tab
+              {{ indexResult.count.toLocaleString() }} {{ indexResult.noun || 'file' }}(s) queued — indexing runs in the background, you can close this tab
             </span>
             <span v-else>{{ indexResult.count }} file(s), {{ indexResult.chunks }} chunks</span>
             <button
@@ -452,17 +487,21 @@
           />
 
           <!-- File icon -->
-          <div class="flex items-center justify-center w-7 h-7 rounded flex-shrink-0 mt-0.5" :class="getFileIconClass(doc.filename)">
-            <component :is="getFileIcon(doc.filename)" :size="14" :class="getFileIconTextClass(doc.filename)" />
+          <div class="flex items-center justify-center w-7 h-7 rounded flex-shrink-0 mt-0.5" :class="isLinkDoc(doc) ? 'bg-info/20' : getFileIconClass(doc.filename)">
+            <component :is="isLinkDoc(doc) ? Globe : getFileIcon(doc.filename)" :size="14" :class="isLinkDoc(doc) ? 'text-info' : getFileIconTextClass(doc.filename)" />
           </div>
 
           <!-- Info -->
           <div class="flex-1 min-w-0">
-            <div class="text-xs font-semibold truncate leading-tight" :title="doc.filename">{{ doc.filename }}</div>
+            <div class="text-xs font-semibold truncate leading-tight" :title="isLinkDoc(doc) ? doc.source_path : doc.filename">{{ doc.filename }}</div>
             <div class="flex items-center gap-1 mt-0.5 flex-wrap">
               <span class="text-xs text-base-content/50">{{ doc.total_pages }}p · {{ doc.total_chunks }}ch</span>
-              <span class="badge badge-xs" :class="doc.source_type === 'local_reference' ? 'badge-ghost' : 'badge-primary'">
-                {{ doc.source_type === 'local_reference' ? 'local' : 'lib' }}
+              <span
+                class="badge badge-xs"
+                :class="isLinkDoc(doc) ? 'badge-info' : (doc.source_type === 'local_reference' ? 'badge-ghost' : 'badge-primary')"
+                :title="isLinkDoc(doc) ? `Fetched from ${doc.source_path}` : ''"
+              >
+                {{ isLinkDoc(doc) ? 'web' : (doc.source_type === 'local_reference' ? 'local' : 'lib') }}
               </span>
               <span
                 v-if="isTabularFile(doc.filename)"
@@ -520,12 +559,12 @@
               <FileSearch :size="12" />
             </button>
             <a
-              :href="`/documents/${doc.document_id}/pdf?collection_id=${collectionStore.currentCollectionId}`"
+              :href="isLinkDoc(doc) ? doc.source_path : `/documents/${doc.document_id}/pdf?collection_id=${collectionStore.currentCollectionId}`"
               target="_blank"
-              rel="noopener"
+              rel="noopener noreferrer"
               class="side-icon-btn side-icon-btn-sm text-base-content/50 hover:text-base-content"
-              title="Open source document"
-              :aria-label="`Open source document ${doc.filename} in a new tab`"
+              :title="isLinkDoc(doc) ? 'Open the original link' : 'Open source document'"
+              :aria-label="isLinkDoc(doc) ? `Open the original link for ${doc.filename} in a new tab` : `Open source document ${doc.filename} in a new tab`"
             >
               <Eye :size="12" />
             </a>
@@ -782,7 +821,7 @@
 <script setup>
 import { ref, computed, markRaw, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import http from '../utils/http'
-import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen, Flag, Copy, Search, ListFilter } from 'lucide-vue-next'
+import { FileText, Eye, Trash2, RefreshCw, X, FolderOpen, FileCode, FileSearch, CheckCircle, XCircle, Plus, ChevronDown, ShieldAlert, Table2, Mic, Square, BookOpen, Flag, Copy, Search, ListFilter, Link, Globe } from 'lucide-vue-next'
 import { useCollectionStore } from '../stores/collectionStore'
 import { useUiStore } from '../stores/uiStore'
 import { useUserStore } from '../stores/userStore'
@@ -828,6 +867,14 @@ const indexResult = ref({ count: 0, chunks: 0 })
 const uploading = ref(false)
 const uploadingCount = ref(0)
 const justIndexed = ref(false)
+
+// Link panel: URLs pasted one per line (any whitespace separates them —
+// a URL never contains one), de-duplicated before they are sent.
+const linkPanelOpen = ref(false)
+const linkInput = ref('')
+const linkSubmitting = ref(false)
+const parsedLinks = computed(() => [...new Set(linkInput.value.split(/\s+/).map(s => s.trim()).filter(Boolean))])
+const isLinkDoc = (doc) => doc?.source_type === 'url' && /^https?:\/\//i.test(doc.source_path || '')
 
 // Document management state
 const documents = ref([])
@@ -1400,6 +1447,38 @@ const indexFiles = async () => {
     indexError.value = errors.join('; ')
   } else {
     selectedPaths.value = []
+  }
+}
+
+const indexLinks = async () => {
+  const urls = parsedLinks.value
+  if (urls.length === 0 || linkSubmitting.value) return
+  const collectionId = collectionStore.currentCollectionId
+
+  linkSubmitting.value = true
+  indexSuccess.value = false
+  indexError.value = ''
+  try {
+    const { data } = await http.post('/documents/index-links', { urls, collection_id: collectionId })
+    backgroundJobsStore.addUploadJob(data)
+    const skipped = (data.skipped_files || []).map(s => `${s.filename}: ${s.error}`)
+    indexSuccess.value = true
+    indexResult.value = { count: data.total_files || urls.length, jobs: 1, background: true, noun: 'link' }
+    justIndexed.value = true
+    linkInput.value = ''
+    linkPanelOpen.value = false
+    if (skipped.length > 0) {
+      // Keep the panel open so the person sees which links were refused
+      indexError.value = skipped.join('; ')
+    } else {
+      addSectionOpen.value = false
+    }
+    loadDocuments()
+    emit('document-deleted')
+  } catch (err) {
+    indexError.value = err?.message || 'Could not add links'
+  } finally {
+    linkSubmitting.value = false
   }
 }
 
