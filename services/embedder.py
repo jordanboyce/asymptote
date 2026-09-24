@@ -477,7 +477,62 @@ def embedding_signature(overrides: Optional[dict] = None) -> str:
     return f"{provider}::{base}::{model}"
 
 
+def service_signature(collection_model: Optional[str] = None, overrides: Optional[dict] = None) -> str:
+    """The signature of the service create_embedding_service would build.
+
+    Like embedding_signature(), but honours the per-collection local model
+    override the factory applies — the signature must name the model that
+    actually produced a collection's vectors.
+    """
+    from config import settings
+
+    o = overrides or {}
+    if o.get("embedding_provider", settings.embedding_provider) == "local":
+        return f"local::{collection_model or o.get('embedding_model', settings.embedding_model)}"
+    return embedding_signature(o)
+
+
+def describe_embedding(service) -> dict:
+    """Everything another system needs to embed queries compatibly.
+
+    Vectors are only reusable with the exact model, and some models (bge,
+    e5, qwen3) expect an instruction prefix on queries or passages; a reader
+    that skips it gets quietly worse results rather than an error.
+    """
+    info = {
+        "signature": getattr(service, "signature", None),
+        "model": getattr(service, "model_name", None),
+        "dimension": int(getattr(service, "embedding_dim", 0) or 0),
+        # VectorStore L2-normalises before adding and searching (inner
+        # product over unit vectors = cosine similarity).
+        "normalization": "l2",
+        "metric": "inner_product",
+    }
+    for attr in ("_query_prompt_name", "_query_prompt", "_document_prompt_name", "_document_prompt"):
+        value = getattr(service, attr, None)
+        if isinstance(value, str) and value:
+            info[attr.lstrip("_")] = value
+    return info
+
+
 def create_embedding_service(
+    collection_model: Optional[str] = None,
+    overrides: Optional[dict] = None,
+):
+    """Build the embedding service and tag it with its signature.
+
+    The signature travels with the vectors the service writes (see
+    VectorStore.embedding_info), so an index can say what produced it.
+    """
+    service = _build_embedding_service(collection_model, overrides)
+    try:
+        service.signature = service_signature(collection_model, overrides)
+    except Exception:  # a stub or slotted object; the signature is advisory
+        pass
+    return service
+
+
+def _build_embedding_service(
     collection_model: Optional[str] = None,
     overrides: Optional[dict] = None,
 ):

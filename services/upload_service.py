@@ -435,6 +435,61 @@ class UploadService:
         }
 
 
+    def submit_job(
+        self,
+        collection_id: str,
+        job_type: str,
+        total_files: int,
+        target: Callable[..., None],
+        args: Tuple = (),
+    ) -> int:
+        """Queue a job of another kind (e.g. a collection import) on the same
+        dispatcher, so it shows in the jobs drawer, respects the one-job-per-
+        collection rule and can be cancelled like any index job.
+
+        `target(job_id, *args)` runs on the job thread; it reports through
+        report_progress()/finish_job() and may check is_cancelled(job_id).
+        Raises RuntimeError when the waiting list is full.
+        """
+        self._check_queue_capacity()
+        job_id = app_db.create_upload_job(collection_id, total_files, job_type=job_type)
+        self._submit(_QueuedJob(
+            job_id=job_id,
+            collection_id=collection_id,
+            target=target,
+            args=(job_id, *args),
+        ))
+        return job_id
+
+    def is_cancelled(self, job_id: int) -> bool:
+        return self._is_cancelled(job_id)
+
+    def report_progress(self, job_id: int, phase: str, percent: float, detail: str,
+                        done: int = 0, total: int = 0) -> None:
+        """Record and broadcast progress for a job started with submit_job()."""
+        app_db.update_upload_job(
+            job_id, status="running", phase=phase, phase_progress=int(percent),
+            phase_detail=detail, chunks_processed=done, chunks_total=total,
+        )
+        self._broadcast_event(ProgressEvent(
+            job_id=job_id, event_type="phase_progress", phase=phase,
+            phase_progress=percent, phase_detail=detail,
+            chunks_processed=done, chunks_total=total, overall_percent=percent,
+        ))
+
+    def finish_job(self, job_id: int, summary: Dict[str, Any], cancelled: bool = False) -> None:
+        """Mark a submit_job() job completed (or cancelled) and tell listeners."""
+        status = "cancelled" if cancelled else "completed"
+        app_db.update_upload_job(
+            job_id, status=status, processed_files=0 if cancelled else 1,
+            current_file=None, phase=status, result_summary=json.dumps(summary),
+            error="Cancelled" if cancelled else None,
+        )
+        self._broadcast_event(ProgressEvent(
+            job_id=job_id, event_type="job_cancelled" if cancelled else "job_complete",
+            phase=status, overall_percent=100.0,
+        ))
+
     def start_local_index(
         self,
         file_paths: List[str],

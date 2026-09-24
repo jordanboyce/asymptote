@@ -14,7 +14,7 @@ from typing import Optional, List, Callable, Dict, Any
 from services.app_database import app_db
 from services.document_extractor import DocumentExtractor
 from services.chunker import TextChunker
-from services.embedder import create_embedding_service
+from services.embedder import create_embedding_service, describe_embedding
 from services.vector_store import VectorStore
 from services.metadata_store import MetadataStore
 from services.indexing.indexer import DocumentIndexer
@@ -163,6 +163,7 @@ class ReindexService:
                 # index is cleared below anyway.
                 discard_mismatched_index=True,
             )
+            vector_store.embedding_info = describe_embedding(embedding_service)
 
             # Delegate all per-document work to DocumentIndexer so CSV/XLSX
             # files get routed through the tabular path (structured SQL
@@ -476,6 +477,7 @@ class ReindexService:
                 # index is cleared below anyway.
                 discard_mismatched_index=True,
             )
+            vector_store.embedding_info = describe_embedding(embedding_service)
 
             indexer = DocumentIndexer(
                 vector_store=vector_store,

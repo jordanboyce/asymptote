@@ -3,7 +3,7 @@
 import os
 import threading
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 import logging
 import numpy as np
 import faiss
@@ -42,6 +42,9 @@ class VectorStore:
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
         self.discard_mismatched_index = discard_mismatched_index
+        # describe_embedding() of the service writing into this store; set by
+        # whoever builds the store, recorded in metadata.db on save().
+        self.embedding_info: Optional[Dict[str, Any]] = None
 
         self.index_path = self.index_dir / "faiss.index"
         self.metadata_db_path = self.index_dir / "metadata.db"
@@ -494,6 +497,15 @@ class VectorStore:
         with self._index_lock:
             logger.info(f"Saving FAISS index with {self.index.ntotal} vectors")
             self._write_index_atomic(self.index)
+            # Record what produced these vectors next to them, so an export
+            # (or a person) can tell which model a query must use.
+            if self.embedding_info:
+                try:
+                    self.metadata_store.set_index_info(
+                        {**self.embedding_info, "dimension": int(self.index.d)}
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not record embedding info: {e}")
         logger.info("Index saved successfully")
 
     def _write_index_atomic(self, index: faiss.Index):

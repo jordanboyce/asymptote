@@ -379,6 +379,23 @@
                     New collection
                   </button>
                   <button
+                    class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
+                    @click="importInput?.click()"
+                    :disabled="importing"
+                    title="Create a collection from a .clio.zip someone exported"
+                  >
+                    <span v-if="importing" class="loading loading-spinner loading-xs"></span>
+                    <Upload v-else :size="14" />
+                    Import
+                  </button>
+                  <input
+                    ref="importInput"
+                    type="file"
+                    accept=".zip,application/zip"
+                    class="hidden"
+                    @change="importCollection"
+                  />
+                  <button
                     v-if="userStore.privateCollections"
                     class="btn btn-sm btn-ghost gap-1.5 normal-case font-medium border border-base-300 hover:border-base-content/30"
                     @click="openJoinSharedModal"
@@ -497,6 +514,15 @@
                       </button>
                       <button
                         v-if="collectionStore.canConfigure(collection)"
+                        @click.stop="openExportModal(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Export to share with another Clio"
+                        :aria-label="`Export collection ${collection.name}`"
+                      >
+                        <Download :size="13" />
+                      </button>
+                      <button
+                        v-if="collectionStore.canConfigure(collection)"
                         @click.stop="openEditCollectionModal(collection)"
                         class="btn btn-ghost btn-xs btn-square"
                         title="Edit collection"
@@ -604,6 +630,15 @@
                       >
                         <span v-if="cloningId === collection.id" class="loading loading-spinner loading-xs"></span>
                         <Copy v-else :size="13" />
+                      </button>
+                      <button
+                        v-if="collectionStore.canConfigure(collection)"
+                        @click.stop="openExportModal(collection)"
+                        class="btn btn-ghost btn-xs btn-square"
+                        title="Export to share with another Clio"
+                        :aria-label="`Export collection ${collection.name}`"
+                      >
+                        <Download :size="13" />
                       </button>
                       <button
                         v-if="collectionStore.canConfigure(collection)"
@@ -1010,6 +1045,38 @@
       </form>
     </dialog>
 
+    <!-- Export Collection Modal -->
+    <dialog :ref="exportModal.dialogRef" class="modal" @close="exportModal.onClosed" aria-labelledby="export-collection-title">
+      <div class="modal-box max-w-md">
+        <h3 id="export-collection-title" class="font-bold text-lg mb-1">Export {{ exportTarget?.name }}</h3>
+        <p class="text-sm text-base-content/70 mb-4">
+          A <code>.clio.zip</code> another Clio can import with <strong>Import</strong>. It carries the
+          extracted text, pages and tables, and the vectors with the exact embedding model that made them,
+          so nothing has to be OCR'd again. If the other Clio uses a different model, it re-embeds from the text.
+        </p>
+        <label class="flex items-start gap-3 cursor-pointer mb-3">
+          <input v-model="exportIncludeSources" type="checkbox" class="checkbox checkbox-sm mt-0.5" />
+          <span class="text-sm">
+            Include the original files
+            <span class="block text-xs text-base-content/60">
+              Larger download. Needed to open originals or re-chunk later. Only share files you have the right to redistribute.
+            </span>
+          </span>
+        </label>
+        <p class="text-xs text-base-content/60">
+          Quarantined sources are left out. The text inside the bundle is readable by anyone you give it to.
+        </p>
+        <div class="modal-action">
+          <button class="btn btn-ghost" @click="exportModal.close()">Cancel</button>
+          <a class="btn btn-primary" :href="exportHref" download @click="exportModal.close()">
+            <Download :size="16" />
+            Download
+          </a>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button aria-label="Close">close</button></form>
+    </dialog>
+
     <!-- Delete Collection Confirmation Modal -->
     <dialog
       :ref="deleteModal.dialogRef"
@@ -1242,7 +1309,7 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
-import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, AlertTriangle, X, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search, Copy, PanelLeft, PanelLeftClose, PanelRight, PanelRightClose } from 'lucide-vue-next'
+import { Settings, Plus, Check, ChevronDown, Pencil, Trash2, Bell, Loader2, CheckCircle, XCircle, AlertTriangle, X, Share2, Users, LayoutGrid, List, BookOpen, Sparkles, ShieldCheck, CircleUser, LogOut, HelpCircle, EllipsisVertical, Search, Copy, Download, Upload, PanelLeft, PanelLeftClose, PanelRight, PanelRightClose } from 'lucide-vue-next'
 import http from './utils/http'
 import { useModal } from './composables/useModal'
 import { lazyView } from './utils/lazyView'
@@ -1543,6 +1610,7 @@ const footerJobLabel = computed(() => {
 function jobTitle(job) {
   if (job.type === 'reindex') return 'Re-indexing'
   if (job.type === 'upload') return 'Upload'
+  if (job.type === 'import') return 'Import'
   return 'Indexing'
 }
 
@@ -1596,6 +1664,52 @@ const newCollectionDescription = ref('')
 const newCollectionColor = ref('#3b82f6')
 const newCollectionVisibility = ref('private')
 const creatingCollection = ref(false)
+
+// Export / import (portable .clio.zip bundles)
+const exportModal = useModal()
+const exportTarget = ref(null)
+const exportIncludeSources = ref(false)
+const exportHref = computed(() => exportTarget.value
+  ? `/api/collections/${encodeURIComponent(exportTarget.value.id)}/export?include_sources=${exportIncludeSources.value}`
+  : '#')
+
+const openExportModal = (collection) => {
+  exportTarget.value = collection
+  exportIncludeSources.value = false
+  exportModal.open()
+}
+
+const importInput = ref(null)
+const importing = ref(false)
+
+const importCollection = async (event) => {
+  const file = event.target.files?.[0]
+  event.target.value = '' // let the same file be picked again after an error
+  if (!file || importing.value) return
+  importing.value = true
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    // Bundles with originals can be large: no client timeout.
+    const { data } = await http.post('/api/collections/import', form, { timeout: 0 })
+    await collectionStore.loadCollections()
+    collectionStore.setCurrentCollection(data.id)
+    backgroundJobsStore.addUploadJob({
+      job_id: data.job_id, collection_id: data.id, status: 'pending',
+      total_files: 1, processed_files: 0, job_type: 'import',
+    })
+    showJobsDrawer.value = true
+    const how = data.vectors === 'reused'
+      ? 'its vectors match this server, so it is ready as soon as keyword search is rebuilt'
+      : "re-embedding its text with this server's model in the background"
+    const blocked = data.documents_blocked ? ` ${data.documents_blocked} blocklisted source(s) were left out.` : ''
+    ui.notify(`Imported ${data.name}: ${data.documents_imported} source(s), ${how}.${blocked}`, 'success', { duration: 8000 })
+  } catch (err) {
+    ui.toastError(err, 'Could not import that file')
+  } finally {
+    importing.value = false
+  }
+}
 
 // Edit collection modal
 const editModal = useModal()

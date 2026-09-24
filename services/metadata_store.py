@@ -523,6 +523,44 @@ class MetadataStore:
             cursor = conn.execute("SELECT id FROM chunks ORDER BY id")
             return [row[0] for row in cursor.fetchall()]
 
+    def iter_rowid_texts(self, batch_size: int = 256):
+        """Stream lists of (rowid, text) in id order - the FAISS id and the
+        text it embeds, which is all a re-embed needs."""
+        conn = sqlite_connect(self.db_path)
+        try:
+            cursor = conn.execute("SELECT id, text FROM chunks ORDER BY id")
+            while True:
+                rows = cursor.fetchmany(batch_size)
+                if not rows:
+                    break
+                yield rows
+        finally:
+            conn.close()
+
+    # ── What produced the vectors ────────────────────────────────────────
+    # A small key/value table in the collection's own database, so the index
+    # describes itself wherever it is copied. Created on first use rather
+    # than by a schema migration: older databases simply have no answer.
+
+    def set_index_info(self, info: Dict[str, Any]) -> None:
+        with sqlite_connect(self.db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS index_info (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.executemany(
+                "INSERT OR REPLACE INTO index_info (key, value) VALUES (?, ?)",
+                [(k, json.dumps(v)) for k, v in info.items()],
+            )
+            conn.commit()
+
+    def get_index_info(self) -> Dict[str, Any]:
+        with sqlite_connect(self.db_path) as conn:
+            try:
+                rows = conn.execute("SELECT key, value FROM index_info").fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        return {k: json.loads(v) for k, v in rows}
+
     def get_documents_info(self, document_ids) -> Dict[str, dict]:
         """
         Batch version of get_document_info for a set of documents.

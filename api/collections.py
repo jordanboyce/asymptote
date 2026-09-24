@@ -3,7 +3,9 @@
 import json
 import logging
 
-from fastapi import Depends, HTTPException, status, Request
+from typing import Optional
+
+from fastapi import Depends, File, Form, HTTPException, Request, UploadFile, status
 
 from config import settings
 from services.config_manager import config_manager
@@ -464,6 +466,105 @@ async def clone_collection(collection_id: str, body: dict = None, user_id: str =
         # An indexing job is already running for the new collection, or the
         # deployment-wide job cap is reached.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+
+@router.get(
+    "/api/collections/{collection_id}/export",
+    summary="Download a collection as a portable bundle",
+    tags=["collections"],
+)
+def export_collection(  # sync: builds a zip in the threadpool
+    collection_id: str,
+    include_sources: bool = False,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    A `.clio.zip` another Clio can import: chunk text, pages, document
+    records, CSV tables, the vectors with the exact model that produced
+    them, and (with `include_sources=true`) the original files.
+
+    Owner only. Quarantined documents are left out. A restricted collection
+    additionally needs an administrator, like sharing it would.
+    """
+    from starlette.background import BackgroundTask
+    from fastapi.responses import FileResponse
+
+    from api.deps import require_admin, require_collection_access
+    from services import audit, governance
+    from services.collection_bundle import BundleError, export_collection as build
+
+    require_collection_access(collection_id, user_id, owner=True)
+    if governance.is_restricted(collection_service.get_collection(collection_id)):
+        require_admin("export a restricted collection")
+
+    try:
+        path, filename = build(collection_id, include_sources=include_sources, exported_by=user_id)
+    except BundleError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    audit.record("collection.exported", actor=user_id, collection_id=collection_id,
+                 detail={"include_sources": include_sources, "bytes": path.stat().st_size})
+    return FileResponse(
+        path, media_type="application/zip", filename=filename,
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
+
+
+@router.post(
+    "/api/collections/import",
+    summary="Create a collection from an exported bundle",
+    tags=["collections"],
+    status_code=status.HTTP_201_CREATED,
+)
+def import_collection(  # sync: unpacks the bundle in the threadpool
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    visibility: Optional[str] = Form(None),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Upload a `.clio.zip` from Export. Creates a new collection owned by the
+    caller and returns it with `job_id` for the job that finishes it: the
+    vectors are reused when this server embeds with exactly the model the
+    bundle records (`vectors: "reused"`), otherwise re-embedded from the
+    bundle's chunk text (`vectors: "re-embed"`) - no extraction or OCR
+    either way.
+    """
+    import shutil
+    import uuid
+
+    from services import governance, storage_quota
+    from services.collection_bundle import BundleError, _work_dir, import_collection as load
+
+    if not user_id and settings.private_collections:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sign in to import a collection — it needs an owner.",
+        )
+    governance.require_aup(user_id)
+
+    tmp = _work_dir() / f"import-{uuid.uuid4().hex}.zip"
+    try:
+        with open(tmp, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+        return load(
+            tmp,
+            owner_id=(
+                settings.default_user_id
+                if visibility == "team" or not user_id
+                else user_id
+            ),
+            name=(name or "").strip() or None,
+            actor=user_id,
+        )
+    except BundleError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except storage_quota.StorageLimitExceeded as e:
+        raise HTTPException(status_code=413, detail=e.to_detail())
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 @router.delete(

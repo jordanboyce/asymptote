@@ -37,6 +37,9 @@ ACTIONS: List[str] = [
     "document.reported",        # a user reported a document
     "document.sensitivity",     # per-document sensitivity override changed
     "collection.sensitivity",   # collection label changed
+    "collection.published",
+    "collection.exported",      # bundle downloaded (with/without originals)
+    "collection.imported",      # collection created from a bundle
     "share.create",
     "share.accept",
     "share.revoke",

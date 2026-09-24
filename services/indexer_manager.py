@@ -14,7 +14,7 @@ from typing import Dict, Optional
 from services.collection_service import collection_service
 from services.document_extractor import DocumentExtractor
 from services.chunker import TextChunker
-from services.embedder import create_embedding_service, embedding_signature
+from services.embedder import create_embedding_service, describe_embedding, embedding_signature
 from services.vector_store import VectorStore
 from services.indexing import DocumentIndexer
 from config import settings
@@ -196,6 +196,7 @@ class IndexerManager:
             index_dir=indexes_dir,
             embedding_dim=embedding_service.embedding_dim,
         )
+        vector_store.embedding_info = describe_embedding(embedding_service)
 
         # Create text chunker with collection settings
         text_chunker = TextChunker(
