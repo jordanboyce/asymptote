@@ -54,7 +54,7 @@ class DocumentMetadata(BaseModel):
 
     # v3.1: Local file reference support
     source_path: Optional[str] = Field(None, description="Original filesystem path for local references")
-    source_type: str = Field(default="upload", description="Source type: 'upload' or 'local_reference'")
+    source_type: str = Field(default="upload", description="Source type: 'upload', 'local_reference', or 'url' (source_path holds the link)")
 
     # v3.2: Prompt injection warnings (page_num -> scan result dict)
     injection_warnings: Optional[Dict[str, Any]] = Field(None, description="Flagged pages with injection scan details")

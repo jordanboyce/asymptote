@@ -35,6 +35,7 @@ from services.form_field_extractor import (
 from services import audit, governance, storage_quota
 from services.content_policy import BlockedContentError, ContentRejectedError
 from services.storage_quota import StorageLimitExceeded
+from services.link_fetcher import LinkError, LinkRefused, link_indexing_available, validate_link
 
 from fastapi import APIRouter, Request
 from api.deps import (
@@ -91,6 +92,20 @@ def _upload_size(file: UploadFile) -> int:
         return max(0, end - pos)
     except Exception:
         return 0
+
+
+def _content_disposition(disposition: str, filename: str) -> str:
+    """A header value that survives any filename.
+
+    HTTP headers are Latin-1; a filename with an em dash or accented letter
+    (every page named after its <title>, plenty of uploads) used to make the
+    response fail with a 500. The ASCII form is the fallback older clients
+    read; filename* carries the real name per RFC 5987.
+    """
+    from urllib.parse import quote
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii").replace('"', "").replace("\\", "")
+    ascii_name = ascii_name.strip() or "document"
+    return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
 def _storage_error(error: StorageLimitExceeded) -> HTTPException:
@@ -1023,6 +1038,113 @@ async def index_local_files_async(request: IndexLocalAsyncRequest) -> UploadJobR
             detail=f"Failed to start indexing: {str(e)}",
         )
 
+class IndexLinksRequest(BaseModel):
+    """Request body for indexing the content behind links."""
+    urls: List[str]
+    collection_id: str = "default"
+
+
+MAX_LINKS_PER_REQUEST = 50
+
+
+@router.post(
+    "/documents/index-links",
+    response_model=UploadJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Fetch and index the content behind links in the background",
+    tags=["documents"],
+)
+async def index_links_async(request: IndexLinksRequest) -> UploadJobResponse:
+    """
+    Start a background job that fetches each link and indexes what it finds.
+
+    A web page is saved as HTML and sectioned by heading; a link straight
+    to a PDF, Office file, text, Markdown, JSON, CSV, or image is saved as
+    that file type. Each document keeps the link as its source_path
+    (source_type='url'). Progress is tracked like any other index job via
+    /documents/upload/{job_id}/status.
+
+    Links are validated before the job starts: malformed URLs and hosts
+    that resolve to private or local addresses are listed in skipped_files
+    rather than failing the request. The whole request is refused when
+    link indexing is unavailable (OFFLINE_MODE or LINK_INDEXING_ENABLED=false).
+    """
+    if not link_indexing_available():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Link indexing is unavailable in offline mode"
+                if settings.offline_mode else "Link indexing is disabled on this server"
+            ),
+        )
+
+    # Blank lines from a pasted list are noise, not errors.
+    submitted = [u.strip() for u in request.urls if u and u.strip()]
+    if not submitted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No links provided")
+    if len(submitted) > MAX_LINKS_PER_REQUEST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"At most {MAX_LINKS_PER_REQUEST} links per request",
+        )
+
+    _require_ingest(request.collection_id)
+    try:
+        get_indexer(request.collection_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    valid_urls: List[str] = []
+    skipped: List[dict] = []
+    seen = set()
+    # Validation resolves DNS; keep it off the event loop.
+    for raw in submitted:
+        try:
+            url = await asyncio.to_thread(validate_link, raw)
+        except (LinkError, LinkRefused) as e:
+            skipped.append({"filename": raw, "error": str(e)})
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        valid_urls.append(url)
+
+    if not valid_urls:
+        shown = "; ".join(f"{s['filename']}: {s['error']}" for s in skipped[:5])
+        more = f" (and {len(skipped) - 5} more)" if len(skipped) > 5 else ""
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No links could be indexed - {shown}{more}",
+        )
+
+    try:
+        job_id = upload_service.start_link_index(
+            urls=valid_urls,
+            collection_id=request.collection_id,
+            uploaded_by=get_request_user(),
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to start link index job: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start indexing: {str(e)}",
+        )
+
+    return UploadJobResponse(
+        job_id=job_id,
+        collection_id=request.collection_id,
+        status="pending",
+        total_files=len(valid_urls),
+        processed_files=0,
+        progress_percent=0.0,
+        job_type="index",
+        queue_position=upload_service.queue_position(job_id),
+        skipped_files=skipped,
+    )
+
+
 @router.get(
     "/documents",
     response_model=DocumentListResponse,
@@ -1206,6 +1328,10 @@ async def get_pdf(
             '.csv': 'text/csv',
             '.md': 'text/markdown',
             '.json': 'application/json',
+            # Saved HTML (uploads and fetched links) is shown as source, not
+            # rendered: a fetched page's scripts must never run on this origin.
+            '.html': 'text/plain; charset=utf-8',
+            '.htm': 'text/plain; charset=utf-8',
             # Code files - serve as plain text for browser preview
             '.pas': 'text/plain',
             '.dpr': 'text/plain',
@@ -1231,7 +1357,7 @@ async def get_pdf(
         media_type = media_types.get(file_ext, 'application/octet-stream')
 
         # Files that can be previewed inline in the browser
-        inline_extensions = {'.pdf', '.txt', '.md', '.json', '.csv',
+        inline_extensions = {'.pdf', '.txt', '.md', '.json', '.csv', '.html', '.htm',
                             '.pas', '.dpr', '.dpk', '.pp', '.inc', '.dfm',
                             '.mod', '.def', '.mi', '.asm', '.s',
                             '.png', '.jpg', '.jpeg', '.webp', '.gif'}
@@ -1239,9 +1365,7 @@ async def get_pdf(
         return FileResponse(
             path=doc_path,
             media_type=media_type,
-            headers={
-                "Content-Disposition": f'{disposition}; filename="{doc_info["filename"]}"'
-            }
+            headers={"Content-Disposition": _content_disposition(disposition, doc_info["filename"])},
         )
 
     except HTTPException:

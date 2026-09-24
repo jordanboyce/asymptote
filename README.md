@@ -213,6 +213,8 @@ Clio lets you:
 
 **Supported file types:** PDF, TXT, DOCX, CSV/XLSX, Markdown, HTML, JSON/JSONL, source code, audio (transcribed), images (PNG/JPG/WEBP/TIFF — described and transcribed by a vision model)
 
+**Links too:** paste URLs into *Add sources → Link* and the server fetches each one — a web page is saved as HTML with its navigation and footer stripped, a link straight to a PDF or file is saved as that file — and indexes it like an upload. Only public hosts are fetched by default (`LINK_ALLOW_PRIVATE_NETWORKS=1` opens intranet links); `OFFLINE_MODE` turns the feature off.
+
 **Example:**
 - Query: *"How do I optimize database queries?"*
 - Result: Points you to page 47 of your database textbook with a direct link

@@ -498,6 +498,18 @@ class Settings(BaseSettings):
     bulk_flush_chunks: int = 256
     bulk_extract_workers: int = 4
 
+    # Link indexing: "Add link" fetches the page or file behind a URL into
+    # the collection's documents directory and indexes the saved copy like
+    # an upload. The server makes the request, so by default it refuses
+    # hosts that resolve to private, loopback, or link-local addresses
+    # (a shared appliance must not become a proxy into its own network);
+    # LINK_ALLOW_PRIVATE_NETWORKS=1 relaxes that for intranet wikis.
+    # OFFLINE_MODE disables the feature outright.
+    link_indexing_enabled: bool = True
+    link_allow_private_networks: bool = False
+    link_max_bytes: int = 25 * 1024 * 1024
+    link_fetch_timeout_seconds: float = 30.0
+
     # Audio transcription (meeting recordings via local Whisper)
     # Model size: tiny | base | small | medium | large-v3
     #   tiny   ~39MB   fastest, lowest accuracy

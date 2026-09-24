@@ -28,6 +28,7 @@ from services.app_database import app_db
 from services.indexer_manager import indexer_manager
 from services.collection_service import collection_service
 from services.indexing import ChunkBatcher
+from services.link_fetcher import fetch_link
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +582,95 @@ class UploadService:
         works = [make_work(Path(fp)) for fp in file_paths]
         self._process_bulk_job(job_id, works, collection_id, uploaded_by=uploaded_by)
 
+
+    def start_link_index(
+        self,
+        urls: List[str],
+        collection_id: str = "default",
+        uploaded_by: Optional[str] = None,
+    ) -> int:
+        """Start a background job that fetches and indexes the content behind links.
+
+        Each URL is fetched from an extraction worker (so several download
+        at once), saved into the collection's documents directory under a
+        name that says where it came from, and indexed exactly like an
+        uploaded file of that type. The document keeps the URL as its
+        source_path with source_type='url'.
+
+        Args:
+            urls: Links already passed through link_fetcher.validate_link
+            collection_id: Target collection ID
+            uploaded_by: Identity that started the job (see start_local_index)
+        """
+        self._check_queue_capacity()
+        job_id = app_db.create_upload_job(collection_id, len(urls), job_type="index")
+        audit.record("document.index_job", actor=uploaded_by, collection_id=collection_id,
+                     target=str(job_id),
+                     detail={"kind": "link", "files": len(urls), "sample": urls[:10]})
+        self._submit(_QueuedJob(
+            job_id=job_id,
+            collection_id=collection_id,
+            target=self._run_link_index,
+            args=(job_id, urls, collection_id, uploaded_by),
+        ))
+        logger.info(f"Submitted link index job {job_id}: {len(urls)} links")
+        return job_id
+
+    def _run_link_index(
+        self,
+        job_id: int,
+        urls: List[str],
+        collection_id: str,
+        uploaded_by: Optional[str] = None,
+    ):
+        """Run link fetching + indexing in the background thread."""
+        documents_dir = indexer_manager.get_documents_path(collection_id)
+        documents_dir.mkdir(parents=True, exist_ok=True)
+        save_lock = threading.Lock()
+
+        def make_work(url: str) -> _BulkFileWork:
+            saved: Dict[str, Path] = {}
+            work = _BulkFileWork(display_name=url, stage=lambda: None)
+
+            def stage() -> Path:
+                fetched = fetch_link(url)
+                # The size is only known once the body is in hand, so the
+                # storage cap is taken here rather than before staging; a
+                # refusal releases nothing because nothing was written yet.
+                work.held_bytes += storage_quota.take(
+                    collection_id, len(fetched.body), fetched.filename
+                )
+                with save_lock:
+                    final_path = documents_dir / fetched.filename
+                    stem, suffix = final_path.stem, final_path.suffix
+                    counter = 1
+                    while final_path.exists():
+                        final_path = documents_dir / f"{stem}_{counter}{suffix}"
+                        counter += 1
+                    final_path.write_bytes(fetched.body)
+                saved["path"] = final_path
+                return final_path
+
+            def finalize(indexer, doc_metadata):
+                indexer.vector_store.metadata_store.update_document_source(
+                    doc_metadata.document_id, source_path=url, source_type="url",
+                )
+                doc_metadata.source_path = url
+                doc_metadata.source_type = "url"
+
+            def cleanup():
+                path = saved.pop("path", None)
+                if path is not None:
+                    path.unlink(missing_ok=True)
+
+            work.stage = stage
+            work.finalize = finalize
+            work.cleanup = cleanup
+            return work
+
+        logger.info(f"Starting link index job {job_id}: {len(urls)} links")
+        works = [make_work(url) for url in urls]
+        self._process_bulk_job(job_id, works, collection_id, uploaded_by=uploaded_by)
 
     def start_repo_index(
         self,
