@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 
 from fastapi import Header, HTTPException, Request, status
@@ -207,22 +208,58 @@ def _document_fingerprint(collection_id: str, document_id: str) -> dict | None:
         return None
 
 
-def _cache_lookup(cache_ctx):
+# Tokens that flip the meaning of a question without moving its embedding
+# much: numbers/identifiers ("2024" vs "2025", "Q3", "v1.2") and negations
+# ("is permitted" vs "is not permitted"). Two questions may only share a
+# cached answer when these agree.
+_LOAD_BEARING_RE = re.compile(
+    r"[a-z]+n't\b"
+    r"|\w*\d[\w./%-]*"
+    r"|\b(?:not|no|never|none|nor|without|except|unless|cannot|neither)\b"
+)
+
+
+def _normalized_question(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _load_bearing_tokens(text: str) -> list[str]:
+    return sorted(m.rstrip(".,") for m in _LOAD_BEARING_RE.findall(text.casefold()))
+
+
+def _same_question(stored: str, asked: str, threshold: float) -> bool:
+    """Whether a cached question may stand in for the one being asked.
+
+    The embedding similarity (already at or above ``threshold``) is only a
+    candidate lookup. At threshold 1.0 only the identical text counts
+    (whitespace and case aside). Below that the rephrasing is accepted, but
+    numbers and negations must agree: embeddings place "2024 revenue" next
+    to "2025 revenue", and those are different questions."""
+    if _normalized_question(stored) == _normalized_question(asked):
+        return True
+    if threshold >= 1.0:
+        return False
+    return _load_bearing_tokens(stored) == _load_bearing_tokens(asked)
+
+
+def _cache_lookup(cache_ctx, threshold: float | None = None):
     """Best fresh cached entry for this question, or None. Entries whose
-    source documents changed or vanished are discarded on sight."""
+    source documents changed or vanished are discarded on sight.
+
+    ``threshold`` is the request's own similarity floor (Chat Settings
+    slider); None means the deployment default."""
     from config import settings
     from services.answer_cache import answer_cache
 
+    if threshold is None:
+        threshold = settings.answer_cache_threshold
     entry = answer_cache.find_best(
         cache_ctx["scope_key"], cache_ctx["embedding_model"],
-        cache_ctx["vec"], settings.answer_cache_threshold,
+        cache_ctx["vec"], threshold,
     )
     if entry is None:
         return None
-    # Embeddings can place "2024 revenue" next to "2025 revenue", or
-    # "is permitted" next to "is not permitted". Similarity is a candidate
-    # lookup, not proof that a stored answer answers the same question.
-    if " ".join(entry["question"].split()) != " ".join(cache_ctx["question"].split()):
+    if not _same_question(entry["question"], cache_ctx["question"], threshold):
         return None
     # Legacy or incomplete entries cannot establish the provenance of every
     # returned source, so regenerate rather than serving unvalidated text.
@@ -376,6 +413,19 @@ def _rerank_context(ai_service, query, results, collection_ids, top_k):
         return results, collection_ids, None
 
 
+@router.get("/api/chat/cache", tags=["chat"], summary="Answer cache status")
+async def answer_cache_status():
+    """Whether the semantic answer cache is on and the deployment's default
+    similarity threshold — what a request gets when it omits
+    ``cache_threshold``. The Chat Settings slider seeds itself from this."""
+    from config import settings
+
+    return {
+        "enabled": bool(settings.enable_answer_cache),
+        "threshold": float(settings.answer_cache_threshold),
+    }
+
+
 @router.delete("/api/chat/cache", tags=["chat"], summary="Clear the semantic answer cache")
 async def clear_answer_cache(collection_id: str = None):
     """Drop cached answers — for one collection, or all of them."""
@@ -430,7 +480,7 @@ def _prepare_turn(chat_request: ChatRequest, collection_id: str, model_hint: str
     try:
         cache_ctx = _cache_context(chat_request, collection_id, model_hint)
         if cache_ctx and chat_request.use_cache:
-            return cache_ctx, _cache_lookup(cache_ctx)
+            return cache_ctx, _cache_lookup(cache_ctx, chat_request.cache_threshold)
         return cache_ctx, None
     except Exception as e:
         logger.warning(f"Answer cache lookup failed: {e}")
@@ -512,7 +562,10 @@ def _run_turn(chat_request: ChatRequest, collection_id: str, base_url: str,
         if related:
             yield {"type": "related", "questions": related}
         yield _done({"input_tokens": 0, "output_tokens": 0, "model": "answer-cache"}, [], sources,
-                    related, cached=True, cached_question=cache_entry["question"], _answer=cache_entry["answer"])
+                    related, cached=True, cached_question=cache_entry["question"],
+                    cached_similarity=(round(float(cache_entry["similarity"]), 4)
+                                       if cache_entry.get("similarity") is not None else None),
+                    _answer=cache_entry["answer"])
         return
 
     user_messages = [m for m in chat_request.messages if m.role == "user"]
@@ -868,6 +921,7 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
         structured_results=done["structured_results"] or None,
         cached=done["cached"],
         cached_question=done.get("cached_question"),
+        cached_similarity=done.get("cached_similarity"),
         related_questions=done["related_questions"],
         depth=done["depth"],
     )

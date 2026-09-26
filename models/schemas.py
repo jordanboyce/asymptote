@@ -323,6 +323,14 @@ class ChatRequest(BaseModel):
         description="Serve a semantically matching cached answer when one exists; "
                     "false forces a fresh response (and replaces the cached one)",
     )
+    cache_threshold: Optional[float] = Field(
+        None, ge=0.5, le=1.0,
+        description="How similar (cosine, local embeddings) this question must be to an "
+                    "already-answered one for its cached answer to be reused. 1.0 reuses "
+                    "only the identical question. Omitted = the deployment default "
+                    "(ANSWER_CACHE_THRESHOLD). Questions that differ in numbers or "
+                    "negation are never treated as the same.",
+    )
     document_ids: Optional[List[str]] = Field(
         None,
         description="Limit this conversation to these sources (document ids in the current "
@@ -354,6 +362,9 @@ class ChatResponse(BaseModel):
     cached: bool = Field(False, description="True when this answer was served from the semantic answer cache")
     cached_question: Optional[str] = Field(
         None, description="The originally asked question the cached answer was generated for"
+    )
+    cached_similarity: Optional[float] = Field(
+        None, description="Similarity between this question and the cached one (1.0 = identical)"
     )
     related_questions: List[str] = Field(
         default_factory=list, description="Suggested follow-up questions for this answer"

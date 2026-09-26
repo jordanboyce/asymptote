@@ -209,6 +209,30 @@
               <input type="checkbox" class="toggle toggle-sm toggle-primary" v-model="rerank" />
             </label>
 
+            <label v-if="hasCacheThreshold" class="space-y-1 block">
+              <span class="text-sm flex items-center justify-between gap-2">
+                <span>Reuse cached answers</span>
+                <span class="text-xs text-base-content/60 tabular-nums">{{ cacheThresholdLabel }}</span>
+              </span>
+              <input
+                v-model.number="cacheThreshold"
+                type="range"
+                min="0.75"
+                max="1"
+                step="0.01"
+                class="range range-primary range-xs"
+                :aria-label="`Reuse cached answers: ${cacheThresholdLabel}`"
+              />
+              <div class="w-full flex justify-between text-xs px-1 text-base-content/40" aria-hidden="true">
+                <span>Similar wording</span><span>Identical only</span>
+              </div>
+              <p class="text-xs text-base-content/50">
+                How close a new question must be to one already answered before the stored
+                answer is served without calling the model. Questions that differ in numbers
+                or negation are never matched.
+              </p>
+            </label>
+
             <label v-if="hasSynthesize" class="flex items-center justify-between cursor-pointer select-none">
               <span class="text-sm">Synthesize</span>
               <input type="checkbox" class="toggle toggle-sm toggle-secondary" v-model="synthesize" />
@@ -266,12 +290,19 @@ const searchMode = defineModel('searchMode', { type: String, default: 'hybrid' }
 const semanticWeight = defineModel('semanticWeight', { type: Number, default: undefined })
 const rerank = defineModel('rerank', { type: Boolean, default: false })
 const synthesize = defineModel('synthesize', { type: Boolean, default: undefined })
+// Answer-cache similarity floor (Chat only). Hidden when the parent doesn't
+// bind it, or binds null because the deployment has the cache off.
+const cacheThreshold = defineModel('cacheThreshold', { type: Number, default: undefined })
 const modelOverrides = defineModel('modelOverrides', { type: Object, default: undefined })
 
 const titleId = computed(() => `ai-settings-title-${props.mode}`)
 const hasAnyProvider = computed(() => props.configuredProviders.length > 0)
 const hasWeight = computed(() => typeof semanticWeight.value === 'number')
 const hasSynthesize = computed(() => typeof synthesize.value === 'boolean')
+const hasCacheThreshold = computed(() => typeof cacheThreshold.value === 'number')
+const cacheThresholdLabel = computed(() =>
+  cacheThreshold.value >= 1 ? 'Identical only' : `${Math.round(cacheThreshold.value * 100)}% similar`
+)
 const hasModelOverrides = computed(() => modelOverrides.value != null)
 
 const close = () => { open.value = false }

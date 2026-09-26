@@ -122,7 +122,10 @@ class AnswerCache:
         """
         query_vec = np.asarray(query_vec, dtype=np.float32)
         best_row = None
-        best_sim = threshold
+        # float32 cosine of a vector with itself can land at 0.9999999, so a
+        # threshold of exactly 1.0 ("identical question only") gets a hair of
+        # tolerance rather than never matching.
+        best_sim = threshold - 1e-6
         with self._conn() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(

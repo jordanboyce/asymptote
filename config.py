@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     # existing answers, so a cached answer reflects the corpus as of when it
     # was generated until its sources change or it's regenerated.
     enable_answer_cache: bool = True
-    answer_cache_threshold: float = 0.9   # candidate similarity; chat also checks question text
+    answer_cache_threshold: float = 0.9   # default reuse similarity; ChatRequest.cache_threshold overrides per turn
     answer_cache_max_per_scope: int = 200  # LRU cap per collection/scope
 
     # Share invitations by email via Resend (https://resend.com). When the

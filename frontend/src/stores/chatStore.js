@@ -196,7 +196,7 @@ export const useChatStore = defineStore('chat', () => {
     if (msg) msg.relatedQuestions = Array.isArray(questions) ? questions : []
   }
 
-  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults, cached, cachedQuestion, relatedQuestions, depth } = {}) => {
+  const finalizeStreamingMessage = (collectionId, { sources, usage, structuredResults, cached, cachedQuestion, cachedSimilarity, relatedQuestions, depth } = {}) => {
     const msg = _lastAssistantMsg(collectionId)
     if (!msg) return
     msg.streaming = false
@@ -207,6 +207,7 @@ export const useChatStore = defineStore('chat', () => {
     if (cached) {
       msg.cached = true
       msg.cachedQuestion = cachedQuestion || ''
+      msg.cachedSimilarity = typeof cachedSimilarity === 'number' ? cachedSimilarity : null
     }
     // Replace structuredResults with the server's authoritative list if provided
     if (structuredResults && structuredResults.length > 0) msg.structuredResults = structuredResults
