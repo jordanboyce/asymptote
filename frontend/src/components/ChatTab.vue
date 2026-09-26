@@ -166,6 +166,7 @@
         v-model:top-k="topK"
         v-model:search-mode="searchMode"
         v-model:rerank="rerank"
+        v-model:cache-threshold="cacheThreshold"
         v-model:model-overrides="chatModelOverrides"
         top-k-label="Context chunks"
         :top-k-max="20"
@@ -488,7 +489,7 @@
                     <span
                       class="badge badge-xs badge-outline"
                       :title="msg.cachedQuestion ? `Cached answer originally generated for: ${msg.cachedQuestion}` : 'Served from the answer cache'"
-                    >cached · 0 tokens</span>
+                    >cached · 0 tokens<template v-if="msg.cachedSimilarity != null && msg.cachedSimilarity < 0.9995"> · {{ Math.round(msg.cachedSimilarity * 100) }}% match</template></span>
                   </template>
                   <template v-else-if="msg.aiUsage">
                     <span class="badge badge-xs" :class="providerBadgeClass(msg.provider || selectedProvider)">
@@ -774,6 +775,27 @@ const topK = ref(parseInt(localStorage.getItem('chat_top_k') || '5'))
 const searchMode = ref(localStorage.getItem('chat_search_mode') || 'hybrid')
 const scope = ref(localStorage.getItem('chat_scope') || 'current')
 const rerank = ref(localStorage.getItem('chat_rerank') === 'true')
+// Answer-cache similarity floor. A stored value is the user's own choice;
+// otherwise the slider seeds from the deployment default (GET /api/chat/cache)
+// and null hides it when the cache is off.
+const storedCacheThreshold = localStorage.getItem('chat_cache_threshold')
+const cacheThreshold = ref(storedCacheThreshold != null ? Number(storedCacheThreshold) : 0.9)
+let seedingCacheThreshold = false
+const seedCacheThreshold = async () => {
+  try {
+    const res = await fetch('/api/chat/cache')
+    if (!res.ok) return
+    const data = await res.json()
+    seedingCacheThreshold = true
+    if (data.enabled === false) cacheThreshold.value = null
+    else if (storedCacheThreshold == null && typeof data.threshold === 'number') cacheThreshold.value = data.threshold
+    await nextTick()
+  } catch {
+    // the slider keeps its local value
+  } finally {
+    seedingCacheThreshold = false
+  }
+}
 // Answer depth. Quick answers in one pass from the retrieved passages (large
 // tables stay queryable); Research runs document searches and verification
 // first. Quick is the default: time-to-answer is the product's metric, and
@@ -1254,6 +1276,7 @@ const sendMessage = async () => {
           scope: scope.value,
           rerank: rerank.value,
           use_cache: !forceFresh.value,
+          cache_threshold: typeof cacheThreshold.value === 'number' ? cacheThreshold.value : null,
           depth: depthOverride.value || depth.value,
           related: true,
           // Selected sources bound the whole turn server-side (retrieval,
@@ -1322,6 +1345,7 @@ const sendMessage = async () => {
             structuredResults: event.structured_results || [],
             cached: event.cached || false,
             cachedQuestion: event.cached_question || '',
+            cachedSimilarity: typeof event.cached_similarity === 'number' ? event.cached_similarity : null,
             relatedQuestions: event.related_questions || [],
             depth: event.depth || (depthOverride.value || depth.value),
           })
@@ -1359,6 +1383,11 @@ watch(topK, (v) => localStorage.setItem('chat_top_k', String(v)))
 watch(searchMode, (v) => localStorage.setItem('chat_search_mode', v))
 watch(scope, (v) => localStorage.setItem('chat_scope', v))
 watch(rerank, (v) => localStorage.setItem('chat_rerank', String(v)))
+watch(cacheThreshold, (v) => {
+  if (seedingCacheThreshold || typeof v !== 'number') return
+  localStorage.setItem('chat_cache_threshold', String(v))
+})
+onMounted(seedCacheThreshold)
 watch(depth, (v) => localStorage.setItem('chat_depth', v))
 
 watch(messages, () => { throttledAutoScroll() }, { deep: true })

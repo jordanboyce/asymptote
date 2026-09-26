@@ -211,7 +211,7 @@ def test_followup_failure_never_fails_the_turn(monkeypatch):
 
 def test_cached_answers_carry_their_followups(monkeypatch):
     monkeypatch.setattr(chat, "_cache_context", lambda *a: {"scope_key": "test"})
-    monkeypatch.setattr(chat, "_cache_lookup", lambda ctx: {
+    monkeypatch.setattr(chat, "_cache_lookup", lambda ctx, threshold=None: {
         "answer": "Cached.", "question": "Q", "related": ["Then what?"],
         "sources": [{"filename": "a.pdf", "page_number": 1, "text_snippet": "x", "similarity_score": 0.9,
                      "document_id": "d", "collection_id": "default", "sensitivity": "public"}],

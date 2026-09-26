@@ -176,6 +176,64 @@ def test_similar_questions_do_not_reuse_a_different_answer(chat_env, cache, monk
     assert chat_env._cache_lookup(ctx) is None
 
 
+FRESH_FP = {
+    "filename": "a.pdf", "upload_timestamp": "t1", "num_chunks": 3,
+    "content_hash": "hash-a", "sensitivity": "internal",
+}
+
+
+def _ask(text):
+    from models.schemas import ChatMessage
+    return _request(messages=[ChatMessage(role="user", content=text)])
+
+
+def test_rephrased_question_reuses_the_answer(chat_env, cache, monkeypatch):
+    _store(cache, question="what is x?", scope=chat_env._cache_context(_request(), "default")["scope_key"])
+    monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: FRESH_FP)
+    ctx = chat_env._cache_context(_ask("What's x, exactly?"), "default")
+    entry = chat_env._cache_lookup(ctx)
+    assert entry is not None and entry["answer"] == "x is 42"
+
+
+def test_negated_question_is_a_different_question(chat_env, cache, monkeypatch):
+    _store(cache, question="is x permitted?", scope=chat_env._cache_context(_request(), "default")["scope_key"])
+    monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: FRESH_FP)
+    assert chat_env._cache_lookup(chat_env._cache_context(_ask("is x not permitted?"), "default")) is None
+    assert chat_env._cache_lookup(chat_env._cache_context(_ask("isn't x permitted?"), "default")) is None
+    assert chat_env._cache_lookup(chat_env._cache_context(_ask("Is X permitted ?"), "default")) is not None
+
+
+def test_exact_threshold_reuses_only_identical_text(chat_env, cache, monkeypatch):
+    _store(cache, question="what is x?", scope=chat_env._cache_context(_request(), "default")["scope_key"])
+    monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: FRESH_FP)
+    assert chat_env._cache_lookup(chat_env._cache_context(_ask("What's x, exactly?"), "default"), 1.0) is None
+    assert chat_env._cache_lookup(chat_env._cache_context(_ask("  What is  X? "), "default"), 1.0) is not None
+
+
+def test_request_threshold_overrides_the_default(chat_env, cache, monkeypatch):
+    # Stored under V_A; the asked question embeds to V_A_CLOSE (cos ≈ 0.995).
+    _store(cache, vec=V_A, question="what is x?", scope=chat_env._cache_context(_request(), "default")["scope_key"])
+    monkeypatch.setattr(chat_env, "_document_fingerprint", lambda cid, did: FRESH_FP)
+    monkeypatch.setattr(_FakeEmbedder, "embed_query", lambda self, q: V_A_CLOSE)
+    ctx = chat_env._cache_context(_ask("what is x really?"), "default")
+    assert chat_env._cache_lookup(ctx) is not None          # deployment default 0.9
+    assert chat_env._cache_lookup(ctx, 0.999) is None       # stricter per-request floor
+    assert chat_env._cache_lookup(ctx, 0.95) is not None
+
+
+def test_chat_request_bounds_cache_threshold():
+    from pydantic import ValidationError
+    from models.schemas import ChatMessage, ChatRequest
+
+    msgs = [ChatMessage(role="user", content="q")]
+    assert ChatRequest(messages=msgs).cache_threshold is None
+    assert ChatRequest(messages=msgs, cache_threshold=0.95).cache_threshold == 0.95
+    with pytest.raises(ValidationError):
+        ChatRequest(messages=msgs, cache_threshold=0.2)
+    with pytest.raises(ValidationError):
+        ChatRequest(messages=msgs, cache_threshold=1.5)
+
+
 def test_cache_refuses_sources_without_fingerprints(chat_env, cache):
     _store(cache, fingerprints=[], scope=chat_env._cache_context(_request(), "default")["scope_key"])
     ctx = chat_env._cache_context(_request(), "default")
@@ -257,3 +315,17 @@ def test_clearing_a_scope_drops_every_fingerprint(chat_env, cache):
     _store(cache, scope="col:other#cccc", question="third?")
     assert cache.clear("col:default") == 2
     assert cache.stats()["entries"] == 1
+
+
+def test_cache_status_endpoint_reports_default_threshold(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import api.chat as chat
+
+    monkeypatch.setattr(config.settings, "enable_answer_cache", True)
+    monkeypatch.setattr(config.settings, "answer_cache_threshold", 0.87)
+    app = FastAPI()
+    app.include_router(chat.router)
+    with TestClient(app) as client:
+        body = client.get("/api/chat/cache").json()
+    assert body == {"enabled": True, "threshold": 0.87}
