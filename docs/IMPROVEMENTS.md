@@ -17,7 +17,7 @@ engineering-quality work. Check items off as they land.
 - [x] **Stop blocking the event loop on search.** FastMCP calls sync tools
   directly on the loop, and `/search` ran embedding + FAISS + synthesis
   inline — one search froze the UI and every MCP sidecar. `search_collection`,
-  `search_all_collections`, `find_in_documents`, `/search`, and `/api/embed`
+  `search_all_collections`, `find_in_documents`, and `/search`
   now offload CPU work via `asyncio.to_thread`.
 - [x] **Stop inlining PDF-extracted tables into every response.** Tables
   extracted from PDF/DOCX pages were inlined as "authoritative CSV data" into
