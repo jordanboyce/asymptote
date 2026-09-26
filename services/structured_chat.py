@@ -1,14 +1,12 @@
-"""Helpers for wiring structured CSV/XLSX query tools into the chat loop.
+"""The chat agent's tools: dispatch, source-selection enforcement, and the
+structured-table prompt blocks.
 
-The chat endpoint uses a provider-agnostic ReAct-style tool-use loop: we
-inject table schemas + tool-use instructions into the prompt, parse
-`<tool_call>{...}</tool_call>` blocks out of the model's response, execute
-them against the per-collection StructuredStore, and feed the results back
-on a subsequent pass.
-
-This approach works across every AI provider the app supports (Anthropic,
-OpenAI, Ollama, Grok, Google, GitHub Models, OpenAI-compatible) without
-needing provider-specific tool-use APIs.
+Providers with native tool calling (Anthropic, OpenAI family) receive the
+JSON-Schema specs in `services.agent_tools`; providers without it (Ollama)
+get the prose protocol from `build_tool_use_instructions` and their
+`<tool_call>{...}</tool_call>` blocks are parsed by `parse_tool_calls`.
+Either way every call lands in `execute_tool_calls`, which runs the
+in-process MCP tool functions against the per-collection stores.
 """
 
 from __future__ import annotations
@@ -98,12 +96,10 @@ def describe_tables_for_prompt(tables: List[Dict[str, Any]], max_tables: int = 2
 
 
 def build_tool_use_instructions() -> str:
-    """Render the agentic tool-use protocol for the system prompt.
+    """The prose tool protocol for providers without native tool calling.
 
-    Describes every tool the chat loop can dispatch (document retrieval,
-    structured tables, collection listing). Provider-agnostic because we use
-    ReAct-style `<tool_call>{...}</tool_call>` blocks rather than each
-    provider's native tool-calling API.
+    Describes every tool the chat loop can dispatch; the model answers with
+    `<tool_call>{...}</tool_call>` blocks that `parse_tool_calls` extracts.
     """
     return (
         "TOOL USE PROTOCOL:\n"
@@ -238,13 +234,6 @@ _TOOL_ALIASES = {
 }
 
 
-def _coerce_collection_id(call: Dict[str, Any], default_collection_id: Optional[str]) -> Optional[str]:
-    explicit = call.get("collection_id")
-    if explicit:
-        return explicit
-    return default_collection_id
-
-
 class _SourceSelection:
     """The user's selected sources, enforced on every tool the agent can call.
 
@@ -362,12 +351,19 @@ def execute_tool_calls(
             })
             continue
 
-        collection_id = _coerce_collection_id(call, default_collection_id)
+        # A source selection pins the collection: the selected ids belong to
+        # the current collection, so whatever the model passes here (usually
+        # the collection's *name*, copied from the overview) is ignored rather
+        # than refused — a refusal only makes the model retry until it gives up.
+        # Without a selection an explicit id or name is honoured (the MCP layer
+        # resolves names) so the user can ask about another collection.
+        if selection is not None:
+            collection_id = default_collection_id
+        else:
+            collection_id = call.get("collection_id") or default_collection_id
         args_for_log: Dict[str, Any] = {}
 
         try:
-            if selection is not None and collection_id != default_collection_id and tool != "list_collections":
-                raise ValueError("The source selection belongs to the current collection; tools cannot switch collections while it is active.")
             if tool == "research_documents":
                 filters = call.get("filters")
                 if selection is not None:

@@ -5,12 +5,9 @@ import json
 import asyncio
 
 from fastapi import Header, HTTPException, status, Request
-from pydantic import BaseModel
 
-from config import settings
 from services.ai_service import AIService, create_provider
 from services.collection_overview import build_collection_overview as _build_collection_overview
-from services.indexer_manager import indexer_manager
 from services.structured_chat import (
     build_structured_context,
     collect_structured_tables,
@@ -30,29 +27,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-class EmbedRequest(BaseModel):
-    text: str
-
-
-@router.post("/api/embed", tags=["search"])
-async def embed_text(request: EmbedRequest):
-    """Return a normalized embedding vector for text (used for client-side semantic cache comparison)."""
-    import numpy as np
-    try:
-        indexer = indexer_manager.get_indexer("default")
-        # embed_query is CPU-bound (sentence-transformers) — keep it off the event loop
-        embedding = await asyncio.to_thread(indexer.embedding_service.embed_query, request.text)
-        norm = float(np.linalg.norm(embedding))
-        if norm > 0:
-            embedding = embedding / norm
-        return {
-            "embedding": embedding.tolist(),
-            "dim": len(embedding),
-            "model": settings.embedding_model,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
 
 @router.post(
     "/search",

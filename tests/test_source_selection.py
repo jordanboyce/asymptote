@@ -125,6 +125,23 @@ def test_sql_naming_an_unselected_table_is_rejected(mcp):
     assert "csv_b" in refused[0]["error"] and "Allowed tables: csv_a" in refused[0]["error"]
 
 
+def test_selection_pins_the_collection_whatever_the_model_passes(mcp):
+    # Models copy the collection *name* from the overview into collection_id;
+    # comparing it with the id used to refuse every call for the whole turn.
+    out = _run([{"tool": "search_documents", "query": "q", "collection_id": "My Notes"},
+                {"tool": "get_document_context", "document_id": "docA", "collection_id": "other-id"}])
+    assert all("error" not in r for r in out), out
+    assert mcp.calls[0][1]["collection_id"] == "default"
+    assert mcp.calls[1][1]["collection_id"] == "default"
+
+
+def test_no_selection_honours_an_explicit_collection(mcp):
+    out = _run([{"tool": "search_documents", "query": "q", "collection_id": "other"}],
+               ctx={"collection_id": "default", "scope": "current", "document_ids": None})
+    assert "error" not in out[0]
+    assert mcp.calls[0][1]["collection_id"] == "other"
+
+
 def test_no_selection_means_no_restriction(mcp):
     out = _run([{"tool": "search_documents", "query": "q"},
                 {"tool": "get_document_context", "document_id": "docB"}],

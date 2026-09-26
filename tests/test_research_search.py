@@ -249,7 +249,10 @@ def test_chat_tools_cannot_expand_selected_sources(mcp_env, monkeypatch, tool, f
     assert evidence.results[0][0].document_id == "doc-a"
     assert all(t in tool_names() for t in ["research_documents", "find_in_documents"])
     assert len(openai_tools()) == len(anthropic_tools())
-    denied = execute_tool_calls([{"tool": tool, **fields, "collection_id": "other"}], context)
-    assert "cannot switch collections" in denied[0]["error"]
+    # With a selection active the collection is pinned: a collection_id from
+    # the model (an id, or the name it saw in the overview) is ignored.
+    pinned = execute_tool_calls([{"tool": tool, **fields, "collection_id": "other"}], context)
+    assert "error" not in pinned[0], pinned
+    assert pinned[0]["args"]["collection_id"] == "ops"
     denied_ids = execute_tool_calls([{"tool": tool, **fields, "filters": {"document_ids": ["doc-b"]}}], context)
     assert "outside the sources" in denied_ids[0]["error"]

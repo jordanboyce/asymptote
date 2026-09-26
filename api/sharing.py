@@ -429,17 +429,6 @@ async def accept_share(share_token: str, user_id: str = Depends(get_current_user
     return result
 
 
-@router.get(
-    "/api/shared-with-me",
-    summary="List collections shared with me",
-    tags=["sharing"],
-)
-async def list_shared_with_me(user_id: str = Depends(get_current_user_id)):
-    """Get all collections that have been shared with the current user."""
-    collections = sharing_service.get_shared_with_me(user_id)
-    return {"collections": collections}
-
-
 @router.delete(
     "/api/shares/{share_id}",
     summary="Revoke a share link",

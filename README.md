@@ -1144,9 +1144,7 @@ clio/
 │
 ├── .env.example              # Configuration template
 ├── Dockerfile                # Multi-stage image: frontend build + deps build + slim runtime (OCR included)
-├── docker-compose.yml        # One-command deployment (docker compose up -d)
-├── example_usage.py          # Python client example
-└── verify_setup.py           # Installation checker
+└── docker-compose.yml        # One-command deployment (docker compose up -d)
 ```
 
 ---
@@ -1187,8 +1185,6 @@ if results:
     import webbrowser
     webbrowser.open(results[0]["page_url"])
 ```
-
-See [example_usage.py](example_usage.py) for more examples.
 
 ---
 

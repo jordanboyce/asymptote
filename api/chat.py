@@ -1,10 +1,11 @@
 """Chat and AI-provider endpoints."""
 
-import logging
 import asyncio
+import json
+import logging
 import time
 
-from fastapi import Header, HTTPException, status, Request
+from fastapi import Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from middleware.user_context import get_request_user
@@ -22,7 +23,6 @@ from services.chat_followups import (
 )
 from services.research_search import RESEARCH_INSTRUCTIONS
 from services.structured_chat import (
-    _summarize_args as _summarize_for_log,
     build_structured_context,
     build_tool_use_instructions,
     collect_structured_tables,
@@ -79,7 +79,8 @@ def _selected_document_ids(chat_request: ChatRequest) -> list[str] | None:
 
 
 def _requested_model(chat_request: ChatRequest, x_ai_model=None, x_ollama_model=None,
-                     x_anthropic_model=None, x_openai_model=None, x_ai_base_url=None) -> str:
+                     x_anthropic_model=None, x_openai_model=None, x_ai_base_url=None,
+                     x_ai_key=None) -> str:
     """The model the request will actually run on, as the provider block
     resolves it — folded into the cache key so a switch of model or
     endpoint never serves the other one's answer."""
@@ -390,6 +391,437 @@ async def clear_answer_cache(collection_id: str = None):
     return {"cleared": removed}
 
 
+# ---------------------------------------------------------------------------
+# One chat turn
+# ---------------------------------------------------------------------------
+# Both chat routes run the same pipeline — cache → provider → retrieval →
+# prompt → agent loop → follow-ups → usage. `_run_turn` is that pipeline as
+# a synchronous generator of events: /api/chat drains it into a ChatResponse,
+# /api/chat/stream relays each event as it happens.
+#
+# Event types:
+#   error       — {"message", "_status"}; always the last event
+#   thinking    — prose the model emitted alongside tool calls
+#   tool_start  — a tool call is about to execute
+#   tool_end    — tool call finished (result included)
+#   text        — the final answer (the SSE route streams it as text_delta)
+#   sources     — the source list
+#   related     — suggested follow-up questions (only when there are some)
+#   done        — completion marker: usage, structured_results, sources, …
+# Keys starting with "_" are for the in-process caller and never leave the
+# server.
+
+_NO_CONTEXT = "No relevant context found."
+_EMPTY_STRUCTURED: dict = {
+    "inline_block": "", "tool_tables": [], "inlined_filenames": set(), "inlined_document_ids": set(),
+}
+_FINAL_ANSWER_FALLBACK = (
+    "I ran several tool calls but couldn't settle on a final answer — "
+    "please rephrase or narrow the question."
+)
+
+
+def _prepare_turn(chat_request: ChatRequest, collection_id: str, model_hint: str):
+    """Answer-cache lookup, done before any provider is built: a hit needs
+    no provider (or API key) and, because it spends nothing, stays
+    available to a user who is over their daily budget."""
+    if not any(m.role == "user" for m in chat_request.messages):
+        return None, None
+    try:
+        cache_ctx = _cache_context(chat_request, collection_id, model_hint)
+        if cache_ctx and chat_request.use_cache:
+            return cache_ctx, _cache_lookup(cache_ctx)
+        return cache_ctx, None
+    except Exception as e:
+        logger.warning(f"Answer cache lookup failed: {e}")
+        return None, None
+
+
+def _source_dicts(results, base_url: str) -> list[dict]:
+    label_cache: dict = {}
+    return [
+        {
+            "filename": r.filename,
+            "page_number": r.page_number,
+            "text_snippet": r.text_snippet,
+            "similarity_score": r.similarity_score,
+            "document_id": r.document_id,
+            "pdf_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={cid}",
+            "page_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={cid}#page={r.page_number}",
+            "sensitivity": _source_sensitivity(cid, r, label_cache),
+        }
+        for r, cid in results
+    ]
+
+
+def _expertise_block(collection_id: str) -> str:
+    """Guidance from the Expertise packs attached to a collection, or ''."""
+    try:
+        packs = expertise_store.get_packs_for_collection(collection_id)
+    except Exception as e:
+        logger.warning("Failed to load expertise packs for collection %s: %s", collection_id, e)
+        return ""
+    if not packs:
+        return ""
+    return "EXPERTISE (apply these frameworks when analyzing these sources):\n" + "\n\n".join(
+        f"## {p.name}\n{(p.description + chr(10)) if p.description else ''}{p.body}".strip()
+        for p in packs
+    )
+
+
+def _tool_result_messages(tool_calls: list, results: list, is_anthropic: bool) -> list[dict]:
+    """Tool results in the provider's native message shape."""
+    payloads = [
+        _truncate_tool_result(json.dumps(res.get("error") or res.get("result") or {}, default=str))
+        for res in results
+    ]
+    if is_anthropic:
+        return [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tc["id"], "content": payload,
+             **({"is_error": True} if res.get("error") else {})}
+            for tc, res, payload in zip(tool_calls, results, payloads)
+        ]}]
+    return [{"role": "tool", "tool_call_id": tc["id"], "content": payload}
+            for tc, payload in zip(tool_calls, payloads)]
+
+
+def _run_turn(chat_request: ChatRequest, collection_id: str, base_url: str,
+              provider_args: dict, cache_ctx, cache_entry):  # noqa: C901
+    turn_started = time.time()
+    turn_user = get_request_user()
+    usage_collection = "all" if chat_request.scope == "all" else collection_id
+
+    def _done(usage: dict, structured_results: list, sources: list, related: list, **extra) -> dict:
+        record_chat_usage(
+            turn_user, usage_collection, chat_request.provider, usage["model"],
+            input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"],
+            tool_calls=sum(1 for r in structured_results if r.get("tool") != "_thinking"),
+            duration_ms=int((time.time() - turn_started) * 1000),
+            **({"cache_hit": True} if extra.get("cached") else {}),
+        )
+        return {"type": "done", "usage": usage, "structured_results": structured_results,
+                "sources": sources, "related_questions": related, "depth": chat_request.depth,
+                "cached": False, **extra}
+
+    # ---------- cached answer: no provider, no tokens ----------------------
+    if cache_entry:
+        sources = _cached_sources(cache_entry, base_url)
+        related = cache_entry.get("related") or []
+        yield {"type": "text", "text": cache_entry["answer"], "_whole": True}
+        yield {"type": "sources", "sources": sources}
+        if related:
+            yield {"type": "related", "questions": related}
+        yield _done({"input_tokens": 0, "output_tokens": 0, "model": "answer-cache"}, [], sources,
+                    related, cached=True, cached_question=cache_entry["question"], _answer=cache_entry["answer"])
+        return
+
+    user_messages = [m for m in chat_request.messages if m.role == "user"]
+    if not user_messages:
+        yield {"type": "error", "message": "No user messages in conversation", "_status": 400}
+        return
+    latest_query = user_messages[-1].content
+
+    try:
+        provider = _build_provider(chat_request.provider, **provider_args)
+    except HTTPException as e:
+        yield {"type": "error", "message": e.detail, "_status": e.status_code}
+        return
+    ai_service = AIService(provider=provider)
+
+    try:
+        # ---------- retrieval ----------------------------------------------
+        # Follow-up questions ("what date was that?") reference prior turns the
+        # index knows nothing about; rewriting them into self-contained queries
+        # is what makes multi-turn retrieval work. Single-turn queries skip the
+        # extra provider call.
+        prior = [{"role": m.role, "content": m.content} for m in chat_request.messages[:-1]]
+        search_query = ai_service.reformulate_query(prior, latest_query) if prior else latest_query
+
+        # The user's source selection constrains everything downstream:
+        # retrieval, the inlined tables, the overview and every tool call.
+        selected_ids = _selected_document_ids(chat_request)
+        hits: list[tuple] = []
+        if chat_request.scope == "all":
+            overview_ids = [c["id"] for c in collection_service.get_all_collections()]
+            for cid in overview_ids:
+                try:
+                    found = get_indexer(cid).search(
+                        query=search_query, top_k=chat_request.top_k, mode=chat_request.mode,
+                    )
+                    hits.extend((r, cid) for r in found["results"])
+                except Exception as e:
+                    logger.warning(f"Chat: search failed for collection '{cid}': {e}")
+            hits.sort(key=lambda h: h[0].similarity_score, reverse=True)
+            hits = hits[:chat_request.top_k]
+        else:
+            overview_ids = [collection_id]
+            try:
+                indexer = get_indexer(collection_id)
+            except ValueError as e:
+                yield {"type": "error", "message": str(e), "_status": 404}
+                return
+            found = indexer.search(
+                query=search_query, top_k=chat_request.top_k, mode=chat_request.mode,
+                filters={"document_ids": selected_ids} if selected_ids else None,
+            )
+            hits = [(r, collection_id) for r in found["results"]]
+
+        context_results = [r for r, _ in hits]
+        result_collection_ids = [cid for _, cid in hits]
+        rerank_usage = None
+        if chat_request.rerank and context_results:
+            context_results, result_collection_ids, rerank_usage = _rerank_context(
+                ai_service, latest_query, context_results, result_collection_ids, chat_request.top_k,
+            )
+        rerank_usage = rerank_usage or {}
+
+        # ---------- structured tables --------------------------------------
+        # Small CSV/XLSX tables are inlined whole as JSONL (and their chunks
+        # dropped: the JSONL is authoritative); large ones stay behind tools.
+        structured_tables, structured_stores = collect_structured_tables(overview_ids, selected_ids)
+        structured_ctx = (build_structured_context(structured_tables, structured_stores)
+                          if structured_tables else _EMPTY_STRUCTURED)
+        inline_block = structured_ctx["inline_block"]
+        tool_tables = structured_ctx["tool_tables"]
+        tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
+
+        filtered = [(r, cid) for r, cid in zip(context_results, result_collection_ids)
+                    if r.filename not in structured_ctx["inlined_filenames"]]
+        context_text = "\n\n---\n\n".join(
+            f"[Source {i + 1}: {r.filename}, page {r.page_number}]\n{r.text_snippet}"
+            for i, (r, _) in enumerate(filtered)
+        ) or _NO_CONTEXT
+        # Evidence keeps citation numbering stable as tool calls discover more
+        # passages; its `results` list is the source list for the whole turn.
+        evidence = ChatEvidence(filtered)
+
+        try:
+            collection_overview = _build_collection_overview(overview_ids, selected_ids)
+        except Exception as e:
+            logger.warning(f"Failed to build collection overview: {e}")
+            collection_overview = "(Collection overview unavailable.)"
+
+        # ---------- system prompt ------------------------------------------
+        if selected_ids:
+            scope_note = f"the {len(selected_ids)} source(s) the user selected in the current collection"
+        else:
+            scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
+        system_parts = [
+            _depth_instructions(chat_request),
+            CITATION_INSTRUCTIONS,
+            f"You are an analytical research assistant working over the user's indexed sources in {scope_note}.",
+            "Ground every claim in the provided sources, cite them, and say so plainly when the "
+            "sources don't contain the answer rather than guessing.",
+            "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED TABLES (when "
+            "provided), and RETRIEVED CONTEXT below.",
+            "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
+            "(file counts, available documents, date ranges).",
+        ]
+        if inline_block:
+            system_parts.append(
+                "When STRUCTURED TABLES are included below, they are the FULL contents of CSV/XLSX "
+                "files as JSONL — every row is present. For any numeric, sum, count, average, filter, "
+                "date-range, or ranking question about those files, answer DIRECTLY from the JSONL "
+                "rows and show your arithmetic. Do NOT guess from chunk snippets and do NOT assume "
+                "data is missing."
+            )
+        if tool_tables:
+            system_parts.append(
+                "For questions about the LARGE tables listed under TOOL USE PROTOCOL, call the "
+                "structured-query tools — do not estimate from row text."
+            )
+        system_parts.append("Use RETRIEVED CONTEXT for prose/document questions, citing [Source N] as needed.")
+        expertise_block = _expertise_block(collection_id) if chat_request.scope != "all" else ""
+        if expertise_block:
+            system_parts.append(
+                "When EXPERTISE is provided, follow its guidance, rules, and frameworks as "
+                "authoritative instructions for this analysis."
+            )
+        sections = [" ".join(system_parts), f"COLLECTION OVERVIEW:\n{collection_overview}"]
+        if expertise_block:
+            sections.append(expertise_block)
+        if inline_block:
+            sections.append(inline_block)
+
+        agent_context = {"collection_id": collection_id, "scope": chat_request.scope,
+                         "document_ids": selected_ids}
+        executed: list[dict] = []
+        tokens = {"input_tokens": 0, "output_tokens": 0, "model": ai_service.quality_model}
+
+        def account(usage: dict | None):
+            usage = usage or {}
+            tokens["input_tokens"] += usage.get("input_tokens", 0)
+            tokens["output_tokens"] += usage.get("output_tokens", 0)
+            tokens["model"] = usage.get("model", tokens["model"])
+
+        def run_tools(calls: list[dict]) -> list[dict]:
+            results = execute_tool_calls(calls, agent_context=agent_context)
+            evidence.observe(results)
+            executed.extend(results)
+            return results
+
+        answer = ""
+        # ---------- agent loop: native tool calling ------------------------
+        if provider.supports_native_tools():
+            is_anthropic = isinstance(provider, AnthropicProvider)
+            tools_spec = _tools_for_depth(
+                chat_request, anthropic_tools() if is_anthropic else openai_tools(), tool_tables,
+            )
+            max_iterations = (4 if tools_spec else 1) if _is_quick(chat_request) else 8
+            system_text = "\n\n".join(
+                sections
+                + ([f"PRE-RETRIEVED CONTEXT (optional primer):\n{context_text}"] if context_text != _NO_CONTEXT else [])
+                + ([f"LARGE TABLES AVAILABLE:\n{tables_block}"] if tables_block else [])
+            )
+            messages = [{"role": m.role, "content": m.content} for m in chat_request.messages]
+
+            for iteration in range(max_iterations):
+                turn = provider.complete_with_tools(
+                    messages=messages, tools=tools_spec, max_tokens=4096,
+                    model=ai_service.quality_model, system=system_text,
+                )
+                account(turn.get("usage"))
+                tool_calls = turn.get("tool_calls") or []
+                narration = turn.get("text") or ""
+                if not tool_calls:
+                    answer = narration.strip()
+                    break
+                if narration:
+                    executed.append({"tool": "_thinking", "args": {"iteration": iteration}, "result": {"text": narration}})
+                    yield {"type": "thinking", "text": narration}
+                for tc in tool_calls:
+                    yield {"type": "tool_start", "tool": tc["name"], "args": tc.get("input") or {}}
+                messages.append(turn["assistant_message"])
+                results = run_tools([{"tool": tc["name"], **(tc.get("input") or {})} for tc in tool_calls])
+                for tc, res in zip(tool_calls, results):
+                    yield {"type": "tool_end", "tool": tc["name"], "result": res}
+                messages.extend(_tool_result_messages(tool_calls, results, is_anthropic))
+
+            if not answer:
+                # Iteration cap hit mid-research: one more pass with no tools
+                # so the turn always ends in an answer.
+                try:
+                    turn = provider.complete_with_tools(
+                        messages=messages, tools=[], max_tokens=2048, model=ai_service.quality_model,
+                        system=system_text + "\n\nDo not call any more tools. Summarize the final answer.",
+                    )
+                    account(turn.get("usage"))
+                    answer = (turn.get("text") or "").strip()
+                except Exception as e:
+                    logger.warning(f"Agent final-answer pass failed: {e}")
+                answer = answer or _FINAL_ANSWER_FALLBACK
+
+        # ---------- agent loop: prose <tool_call> protocol (Ollama) ---------
+        else:
+            tools_block = "" if (_is_quick(chat_request) and not tool_tables) else build_tool_use_instructions()
+            history_text = "\n\n".join(
+                f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in chat_request.messages[:-1]
+            ) or "(Start of conversation)"
+
+            def compose(extra: str = "") -> str:
+                parts = sections + [f"RETRIEVED CONTEXT:\n{context_text}"]
+                if tables_block:
+                    parts.append(f"LARGE TABLES (use SQL tool calls):\n{tables_block}")
+                if tools_block:
+                    parts.append(tools_block)
+                parts += [f"CONVERSATION HISTORY:\n{history_text}", f"User: {latest_query}"]
+                if extra:
+                    parts.append(extra)
+                parts.append("Assistant:")
+                return "\n\n".join(parts)
+
+            def ask(extra: str) -> str:
+                result = provider.complete(prompt=compose(extra), max_tokens=2048, model=ai_service.quality_model)
+                account(result.get("usage"))
+                return result["text"]
+
+            suffix = ""
+            for iteration in range(5 if tools_block else 1):
+                raw = ask(suffix)
+                calls = parse_tool_calls(raw)
+                narration = strip_tool_calls(raw)
+                if not calls:
+                    answer = narration
+                    break
+                if narration:
+                    executed.append({"tool": "_thinking", "args": {"iteration": iteration}, "result": {"text": narration}})
+                    yield {"type": "thinking", "text": narration}
+                for call in calls:
+                    yield {"type": "tool_start", "tool": call.get("tool") or "unknown",
+                           "args": {k: v for k, v in call.items() if k != "tool"}}
+                results = run_tools(calls)
+                for call, res in zip(calls, results):
+                    yield {"type": "tool_end", "tool": call.get("tool") or "unknown", "result": res}
+                suffix = (
+                    (suffix + "\n\n" if suffix else "")
+                    + f"Assistant (previous turn):\n{raw.strip()}\n\n"
+                    + format_results_for_prompt(results)
+                    + "\n\nYou may call more tools, or produce the final answer. "
+                    + "When done, write the answer with no <tool_call> blocks."
+                )
+            if not answer and suffix:
+                try:
+                    answer = strip_tool_calls(ask(suffix + "\n\nDo not call any more tools. Write the final answer now."))
+                except Exception as e:
+                    logger.warning(f"Agent final-answer pass failed: {e}")
+                answer = answer or _FINAL_ANSWER_FALLBACK
+
+        # ---------- answer, sources, follow-ups ----------------------------
+        yield {"type": "text", "text": answer}
+        sources = _source_dicts(evidence.results, base_url)
+        yield {"type": "sources", "sources": sources}
+
+        # After the answer, so the reader never waits on the extra call.
+        related, related_usage = _followups(chat_request, provider, ai_service, latest_query, answer, evidence.results)
+        account(related_usage)
+        if related:
+            yield {"type": "related", "questions": related}
+
+        # Only single-query answers are cacheable: a turn that ran tools has
+        # dependencies the cache can't fingerprint.
+        if cache_ctx and not executed:
+            _cache_store(cache_ctx, answer, evidence.results, chat_request.provider, related=related)
+
+        ai_usage = AIUsage(
+            features_used=["chat"] + (["reranking"] if rerank_usage else []) + (["structured_tools"] if executed else []),
+            reranking=AIUsageDetail(
+                input_tokens=rerank_usage.get("input_tokens", 0),
+                output_tokens=rerank_usage.get("output_tokens", 0),
+                model=rerank_usage.get("model", ai_service.fast_model),
+            ) if rerank_usage else None,
+            synthesis=AIUsageDetail(**tokens),
+            total_input_tokens=tokens["input_tokens"] + rerank_usage.get("input_tokens", 0),
+            total_output_tokens=tokens["output_tokens"] + rerank_usage.get("output_tokens", 0),
+        )
+        yield _done(
+            {"input_tokens": ai_usage.total_input_tokens, "output_tokens": ai_usage.total_output_tokens,
+             "model": tokens["model"]},
+            executed, sources, related, _ai_usage=ai_usage, _answer=answer,
+        )
+
+    except HTTPException as e:
+        yield {"type": "error", "message": e.detail, "_status": e.status_code}
+    except Exception as e:
+        logger.exception("Chat turn failed")
+        yield {"type": "error", "message": f"Chat failed: {e}", "_status": 500}
+
+
+def _provider_args(x_ai_key, x_ollama_model, x_anthropic_model, x_openai_model, x_ai_model, x_ai_base_url) -> dict:
+    return {"x_ai_key": x_ai_key, "x_ollama_model": x_ollama_model, "x_anthropic_model": x_anthropic_model,
+            "x_openai_model": x_openai_model, "x_ai_model": x_ai_model, "x_ai_base_url": x_ai_base_url}
+
+
+def _budget_response(turn_user):
+    """A 429 when the user is over their daily token budget, else None.
+    Checked only after the cache: a cache hit spends nothing, so it stays
+    available to a capped user."""
+    over_budget = check_daily_budget(turn_user)
+    if not over_budget:
+        return None
+    return JSONResponse(status_code=429, content=over_budget,
+                        headers={"Retry-After": str(over_budget["retry_after_seconds"])})
+
+
 @router.post("/api/chat", response_model=ChatResponse)
 def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAPI's threadpool
     chat_request: ChatRequest,
@@ -406,589 +838,41 @@ def chat_with_documents(  # sync: provider round-trips + tool loop run in FastAP
     Chat with your indexed documents using conversational AI.
 
     Retrieves relevant document chunks based on the latest user message,
-    then passes the context + conversation history to the selected AI provider.
+    then runs the agent loop on the selected AI provider.
 
     Supports:
     - scope='current': search only the specified collection
     - scope='all': search all collections and merge results by relevance
     - rerank=True: use AI to rerank retrieved context before generating response
     """
-    turn_started = time.time()
-    turn_user = get_request_user()
-    usage_collection = "all" if chat_request.scope == "all" else collection_id
-    try:
-        # Extract the latest user message for context retrieval
-        user_messages = [m for m in chat_request.messages if m.role == "user"]
-        if not user_messages:
-            raise HTTPException(status_code=400, detail="No user messages in conversation")
-
-        latest_query = user_messages[-1].content
-
-        # --- Semantic answer cache ---
-        # Checked before provider construction: a cache hit needs no provider
-        # (and no API key) at all. use_cache=false skips the lookup but still
-        # stores the fresh answer, replacing the near-duplicate entry.
-        cache_ctx = _cache_context(
-            chat_request, collection_id,
-            _requested_model(chat_request, x_ai_model, x_ollama_model, x_anthropic_model,
-                             x_openai_model, x_ai_base_url),
-        )
-        if cache_ctx and chat_request.use_cache:
-            cache_entry = _cache_lookup(cache_ctx)
-            if cache_entry:
-                record_chat_usage(
-                    turn_user, usage_collection, chat_request.provider, "answer-cache",
-                    input_tokens=0, output_tokens=0, cache_hit=True,
-                    duration_ms=int((time.time() - turn_started) * 1000),
-                )
-                cached_base_url = str(request.base_url).rstrip("/")
-                return ChatResponse(
-                    message=ChatMessage(role="assistant", content=cache_entry["answer"]),
-                    sources=[ChatSource(**s) for s in _cached_sources(cache_entry, cached_base_url)],
-                    ai_usage=None,
-                    cached=True,
-                    cached_question=cache_entry["question"],
-                    related_questions=cache_entry.get("related") or [],
-                    depth=chat_request.depth,
-                )
-
-        # --- Daily token budget ---
-        # Checked only after the cache: a cache hit spends nothing, so it
-        # stays available to a capped user.
-        over_budget = check_daily_budget(turn_user)
+    provider_args = _provider_args(x_ai_key, x_ollama_model, x_anthropic_model, x_openai_model, x_ai_model, x_ai_base_url)
+    cache_ctx, cache_entry = _prepare_turn(chat_request, collection_id, _requested_model(chat_request, **provider_args))
+    if cache_entry is None:
+        over_budget = _budget_response(get_request_user())
         if over_budget:
-            return JSONResponse(
-                status_code=429,
-                content=over_budget,
-                headers={"Retry-After": str(over_budget["retry_after_seconds"])},
-            )
+            return over_budget
 
-        # --- Build AI provider (needed before search for query reformulation) ---
-        try:
-            if chat_request.provider == "ollama":
-                model = x_ai_model or x_ollama_model or "llama3.2"
-                extra: dict = {"model": model}
-                if x_ai_base_url:
-                    extra["base_url"] = x_ai_base_url
-                provider = create_provider("ollama", **extra)
-            else:
-                x_ai_key = resolve_ai_key(chat_request.provider, x_ai_key)
-                if not x_ai_key and chat_request.provider != "openai_compatible":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"API key required for {chat_request.provider} — pass X-AI-Key or store a team key via /api/agent/config",
-                    )
-                extra = {}
-                model = x_ai_model or x_anthropic_model or x_openai_model
-                if model:
-                    extra["model"] = model
-                if x_ai_base_url:
-                    extra["base_url"] = x_ai_base_url
-                provider = create_provider(chat_request.provider, x_ai_key, **extra)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to initialize AI provider: {str(e)}")
-
-        ai_service = AIService(provider=provider)
-
-        # --- Reformulate the query using conversation history ---
-        # Follow-up questions ("what date was that?") reference prior context that the
-        # vector index has no access to. Rewriting them into self-contained queries
-        # (e.g. "Maverick Adventure First Stop receipt purchase date") dramatically
-        # improves retrieval accuracy on multi-turn conversations. Skip on single-turn
-        # queries to avoid an unnecessary LLM call (and the failure mode when the
-        # provider is unreachable).
-        prior_messages = chat_request.messages[:-1]
-        if prior_messages:
-            history_for_reformulation = [
-                {"role": m.role, "content": m.content} for m in prior_messages
-            ]
-            search_query = ai_service.reformulate_query(history_for_reformulation, latest_query)
-        else:
-            search_query = latest_query
-
-        # --- Retrieve context chunks ---
-        # Track which collection each result came from so URLs are correct
-        context_results = []
-        result_collection_ids = []  # parallel list to context_results
-        # The user's source selection constrains everything downstream:
-        # retrieval here, the tables inlined below, the overview, and every
-        # tool call the agent makes (services/structured_chat.py).
-        selected_ids = _selected_document_ids(chat_request)
-        selection_filters = {"document_ids": selected_ids} if selected_ids else None
-
-        if chat_request.scope == "all":
-            # Search every collection and merge results by similarity score
-            all_collections = collection_service.get_all_collections()
-            for col in all_collections:
-                col_id = col["id"]
-                try:
-                    col_indexer = get_indexer(col_id)
-                    col_search = col_indexer.search(
-                        query=search_query,
-                        top_k=chat_request.top_k,
-                        mode=chat_request.mode,
-                    )
-                    for r in col_search["results"]:
-                        context_results.append(r)
-                        result_collection_ids.append(col_id)
-                except Exception as e:
-                    logger.warning(f"Chat: search failed for collection '{col_id}': {e}")
-
-            # Sort merged results by similarity score, keep top_k
-            paired = sorted(
-                zip(context_results, result_collection_ids),
-                key=lambda x: x[0].similarity_score,
-                reverse=True,
-            )[:chat_request.top_k]
-            context_results = [p[0] for p in paired]
-            result_collection_ids = [p[1] for p in paired]
-        else:
-            # Single collection
-            try:
-                indexer = get_indexer(collection_id)
-            except ValueError as e:
-                raise HTTPException(status_code=404, detail=str(e))
-
-            search_result = indexer.search(
-                query=search_query,
-                top_k=chat_request.top_k,
-                mode=chat_request.mode,
-                filters=selection_filters,
-            )
-            context_results = search_result["results"]
-            result_collection_ids = [collection_id] * len(context_results)
-
-        # --- Optionally rerank context chunks ---
-        rerank_usage = None
-        if chat_request.rerank and context_results:
-            context_results, result_collection_ids, rerank_usage = _rerank_context(
-                ai_service, latest_query, context_results, result_collection_ids, chat_request.top_k
-            )
-
-        # --- Collect structured CSV/XLSX tables early so we can both inline
-        # the small ones as JSONL AND know which files to drop from chunks. ---
-        if chat_request.scope == "all":
-            overview_ids = [c["id"] for c in collection_service.get_all_collections()]
-        else:
-            overview_ids = [collection_id]
-        structured_tables, structured_stores = collect_structured_tables(overview_ids, selected_ids)
-        structured_ctx = build_structured_context(structured_tables, structured_stores) \
-            if structured_tables else {
-                "inline_block": "",
-                "tool_tables": [],
-                "inlined_filenames": set(),
-                "inlined_document_ids": set(),
-            }
-        inlined_filenames = structured_ctx["inlined_filenames"]
-        tool_tables = structured_ctx["tool_tables"]
-        inline_block = structured_ctx["inline_block"]
-
-        # --- Format context and history ---
-        # Drop chunks from files that are already fully inlined as JSONL: the
-        # JSONL is authoritative, keeping duplicated (and possibly truncated)
-        # chunk snippets would just confuse the model.
-        filtered_results = [
-            (r, cid) for (r, cid) in zip(context_results, result_collection_ids)
-            if r.filename not in inlined_filenames
-        ]
-        context_parts = []
-        for i, (result, _cid) in enumerate(filtered_results):
-            context_parts.append(
-                f"[Source {i + 1}: {result.filename}, page {result.page_number}]\n{result.text_snippet}"
-            )
-        context_text = "\n\n---\n\n".join(context_parts) if context_parts else "No relevant context found."
-        evidence = ChatEvidence(filtered_results)
-        filtered_results = evidence.results
-
-        history_parts = []
-        for msg in chat_request.messages[:-1]:
-            prefix = "User" if msg.role == "user" else "Assistant"
-            history_parts.append(f"{prefix}: {msg.content}")
-        history_text = "\n\n".join(history_parts) if history_parts else "(Start of conversation)"
-
-        # --- Build collection overview (handles meta-questions like "how many files") ---
-        try:
-            collection_overview = _build_collection_overview(overview_ids, selected_ids)
-        except Exception as e:
-            logger.warning(f"Failed to build collection overview: {e}")
-            collection_overview = "(Collection overview unavailable.)"
-
-        scope_note = "all collections" if chat_request.scope == "all" else "the current collection"
-        if selected_ids:
-            scope_note = f"the {len(selected_ids)} source(s) the user selected in the current collection"
-
-        # The agent always has the full toolkit available (search, table tools,
-        # etc.). Only the LARGE-table schema block is conditional on tool_tables
-        # — small tables are already inlined as JSONL.
-        tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
-        tools_block = build_tool_use_instructions()
-        agent_context = {
-            "collection_id": collection_id,
-            "scope": chat_request.scope,
-            "document_ids": selected_ids,
-        }
-
-        base_system_parts = [
-            _depth_instructions(chat_request),
-            CITATION_INSTRUCTIONS,
-            f"You are an analytical research assistant working over the user's "
-            f"indexed sources in {scope_note}.",
-            "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED "
-            "TABLES (when provided), and RETRIEVED CONTEXT below.",
-            "Ground every claim in the provided sources, cite them, and say so "
-            "plainly when the sources don't contain the answer rather than guessing.",
-            "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself "
-            "(file counts, available documents, date ranges).",
-        ]
-        if inline_block:
-            base_system_parts.append(
-                "When STRUCTURED TABLES are included below, they are the FULL contents "
-                "of CSV/XLSX files as JSONL — every row is present. For any numeric, "
-                "sum, count, average, filter, date-range, or ranking question about "
-                "those files, answer DIRECTLY from the JSONL rows and show your arithmetic. "
-                "Do NOT guess from chunk snippets and do NOT assume data is missing."
-            )
-        if tool_tables:
-            base_system_parts.append(
-                "For questions about the LARGE tables listed under TOOL USE PROTOCOL, "
-                "call the structured-query tools — do not estimate from row text."
-            )
-        base_system_parts.append(
-            "Use RETRIEVED CONTEXT for prose/document questions, citing [Source N] as needed."
-        )
-
-        # --- Expertise Library injection (single-collection scope only) ---
-        # Load packs attached to this collection and build the guidance block.
-        # Skipped for "all" scope to avoid conflicting guidance across clients.
-        expertise_block: str = ""
-        if chat_request.scope != "all":
-            try:
-                attached_packs = expertise_store.get_packs_for_collection(collection_id)
-                if attached_packs:
-                    base_system_parts.append(
-                        "When EXPERTISE is provided, follow its guidance, rules, and "
-                        "frameworks as authoritative instructions for this analysis."
-                    )
-                    guidance_sections = "\n\n".join(
-                        f"## {p.name}\n{(p.description + chr(10)) if p.description else ''}{p.body}".strip()
-                        for p in attached_packs
-                    )
-                    expertise_block = (
-                        "EXPERTISE (apply these frameworks when analyzing these sources):\n"
-                        + guidance_sections
-                    )
-            except Exception as _ep_err:
-                logger.warning("Failed to load expertise packs for collection %s: %s", collection_id, _ep_err)
-
-        base_system = " ".join(base_system_parts)
-
-        def compose_prompt(extra_suffix: str = "") -> str:
-            parts = [
-                base_system,
-                "",
-                f"COLLECTION OVERVIEW:\n{collection_overview}",
-            ]
-            if expertise_block:
-                parts.extend(["", expertise_block])
-            if inline_block:
-                parts.extend(["", inline_block])
-            parts.extend(["", f"RETRIEVED CONTEXT:\n{context_text}"])
-            if tables_block:
-                parts.extend(["", f"LARGE TABLES (use SQL tool calls):\n{tables_block}"])
-            if tools_block:
-                parts.extend(["", tools_block])
-            parts.extend([
-                "",
-                f"CONVERSATION HISTORY:\n{history_text}",
-                "",
-                f"User: {latest_query}",
-            ])
-            if extra_suffix:
-                parts.append(extra_suffix)
-            parts.append("Assistant:")
-            return "\n\n".join(parts)
-
-        # --- Agentic tool-use loop ---
-        # When the provider supports native tool-calling (Anthropic, OpenAI
-        # family) we drive the messages API directly — the model can't
-        # respond with prose-only once it's decided to call a tool, which
-        # eliminates the "let me query that for you" dead-end failure mode.
-        # Ollama and other providers without native tools fall back to the
-        # ReAct-over-prose path below.
-        executed_results: list[dict] = []
-        total_input_tokens = 0
-        total_output_tokens = 0
-        model_used = ai_service.quality_model
-        response_text = ""
-        max_iterations = 8
-
-        # Build system prompt (no conversation history/user — those go into
-        # messages natively) for the native-tools path.
-        system_parts_native = [base_system, f"COLLECTION OVERVIEW:\n{collection_overview}"]
-        if expertise_block:
-            system_parts_native.append(expertise_block)
-        if inline_block:
-            system_parts_native.append(inline_block)
-        if context_text and context_text != "No relevant context found.":
-            system_parts_native.append(f"PRE-RETRIEVED CONTEXT (optional primer):\n{context_text}")
-        if tables_block:
-            system_parts_native.append(f"LARGE TABLES AVAILABLE:\n{tables_block}")
-        system_text_native = "\n\n".join(system_parts_native)
-
-        if provider.supports_native_tools():
-            is_anthropic = isinstance(provider, AnthropicProvider)
-            tools_spec = _tools_for_depth(
-                chat_request, anthropic_tools() if is_anthropic else openai_tools(), tool_tables
-            )
-            if _is_quick(chat_request):
-                max_iterations = 4 if tools_spec else 1
-
-            # Seed messages with prior conversation + latest user query.
-            messages: list[dict] = [
-                {"role": m.role, "content": m.content}
-                for m in chat_request.messages
-            ]
-
-            for iteration in range(max_iterations):
-                logger.info("[agent] iter=%d provider=%s msgs=%d", iteration,
-                            provider.__class__.__name__, len(messages))
-                turn = provider.complete_with_tools(
-                    messages=messages,
-                    tools=tools_spec,
-                    max_tokens=2048,
-                    model=ai_service.quality_model,
-                    system=system_text_native,
-                )
-                usage_iter = turn.get("usage", {}) or {}
-                total_input_tokens += usage_iter.get("input_tokens", 0)
-                total_output_tokens += usage_iter.get("output_tokens", 0)
-                model_used = usage_iter.get("model", model_used)
-
-                tool_calls = turn.get("tool_calls") or []
-                thinking = turn.get("text") or ""
-                logger.info(
-                    "[agent] iter=%d stop=%s tool_calls=%d thinking=%r",
-                    iteration, turn.get("stop_reason"), len(tool_calls),
-                    thinking[:200] if thinking else "",
-                )
-                for tc in tool_calls:
-                    logger.info("[agent]   -> %s %s", tc["name"], _summarize_for_log(tc.get("input") or {}))
-
-                # Record any narration the model emitted alongside tool calls
-                # so the UI can show the chain of thought.
-                if tool_calls and thinking:
-                    executed_results.append({
-                        "tool": "_thinking",
-                        "args": {"iteration": iteration},
-                        "result": {"text": thinking},
-                    })
-
-                if not tool_calls:
-                    response_text = thinking.strip()
-                    break
-
-                # Append the assistant turn verbatim (provider-native shape)
-                # so the next call has the tool_use history.
-                messages.append(turn["assistant_message"])
-
-                # Execute each tool call and append tool results.
-                adapted_calls = [
-                    {"tool": tc["name"], **(tc.get("input") or {})}
-                    for tc in tool_calls
-                ]
-                iter_results = execute_tool_calls(adapted_calls, agent_context=agent_context)
-                evidence.observe(iter_results)
-                executed_results.extend(iter_results)
-
-                # Pair each call id with its result payload for the provider.
-                import json as _json
-                if is_anthropic:
-                    tool_result_content = []
-                    for tc, res in zip(tool_calls, iter_results):
-                        payload = res.get("error") or res.get("result") or {}
-                        tool_result_content.append({
-                            "type": "tool_result",
-                            "tool_use_id": tc["id"],
-                            "content": _truncate_tool_result(_json.dumps(payload, default=str)),
-                            **({"is_error": True} if res.get("error") else {}),
-                        })
-                    messages.append({"role": "user", "content": tool_result_content})
-                else:
-                    for tc, res in zip(tool_calls, iter_results):
-                        payload = res.get("error") or res.get("result") or {}
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": _truncate_tool_result(_json.dumps(payload, default=str)),
-                        })
-
-            if not response_text:
-                # Hit iteration cap without a clean final turn — force one
-                # more pass with no tools so we always return an answer.
-                try:
-                    turn = provider.complete_with_tools(
-                        messages=messages,
-                        tools=[],
-                        max_tokens=2048,
-                        model=ai_service.quality_model,
-                        system=system_text_native
-                        + "\n\nDo not call any more tools. Summarize the final answer.",
-                    )
-                    response_text = (turn.get("text") or "").strip()
-                    usage_iter = turn.get("usage", {}) or {}
-                    total_input_tokens += usage_iter.get("input_tokens", 0)
-                    total_output_tokens += usage_iter.get("output_tokens", 0)
-                    model_used = usage_iter.get("model", model_used)
-                except Exception as e:
-                    logger.warning(f"Agent final-answer pass failed: {e}")
-                    response_text = "I ran several tool calls but couldn't settle on a final answer — please rephrase or narrow the question."
-
-        else:
-            # --- ReAct fallback for providers without native tools (Ollama, etc.) ---
-            suffix = ""
-            if _is_quick(chat_request) and not tool_tables:
-                tools_block = ""  # one pass, no tool protocol in the prompt
-            for iteration in range(5 if tools_block else 1):
-                prompt = compose_prompt(suffix)
-                result = provider.complete(prompt=prompt, max_tokens=2048, model=ai_service.quality_model)
-                raw_text = result["text"]
-                usage_iter = result.get("usage", {}) or {}
-                total_input_tokens += usage_iter.get("input_tokens", 0)
-                total_output_tokens += usage_iter.get("output_tokens", 0)
-                model_used = usage_iter.get("model", model_used)
-
-                calls = parse_tool_calls(raw_text)
-                thinking = strip_tool_calls(raw_text).strip()
-                if calls and thinking:
-                    executed_results.append({
-                        "tool": "_thinking",
-                        "args": {"iteration": iteration},
-                        "result": {"text": thinking},
-                    })
-                if not calls:
-                    response_text = raw_text.strip()
-                    break
-                iter_results = execute_tool_calls(calls, agent_context=agent_context)
-                evidence.observe(iter_results)
-                executed_results.extend(iter_results)
-                suffix = (
-                    (suffix + "\n\n" if suffix else "")
-                    + f"Assistant (previous turn):\n{raw_text.strip()}\n\n"
-                    + format_results_for_prompt(iter_results)
-                    + "\n\nYou may call more tools, or produce the final answer. "
-                    + "When done, write the answer with no <tool_call> blocks."
-                )
-            response_text = strip_tool_calls(response_text).strip()
-
-        # --- Suggested follow-ups (after the answer is settled) ---
-        related, related_usage = _followups(
-            chat_request, provider, ai_service, latest_query, response_text, filtered_results
-        )
-        total_input_tokens += related_usage.get("input_tokens", 0)
-        total_output_tokens += related_usage.get("output_tokens", 0)
-
-        usage = {
-            "input_tokens": total_input_tokens,
-            "output_tokens": total_output_tokens,
-            "model": model_used,
-        }
-
-        features_used = ["chat"]
-        if chat_request.rerank and rerank_usage:
-            features_used.append("reranking")
-        if executed_results:
-            features_used.append("structured_tools")
-
-        reranking_detail = None
-        extra_input = 0
-        extra_output = 0
-        if rerank_usage:
-            reranking_detail = AIUsageDetail(
-                input_tokens=rerank_usage.get("input_tokens", 0),
-                output_tokens=rerank_usage.get("output_tokens", 0),
-                model=rerank_usage.get("model", ai_service.fast_model),
-            )
-            extra_input = rerank_usage.get("input_tokens", 0)
-            extra_output = rerank_usage.get("output_tokens", 0)
-
-        ai_usage = AIUsage(
-            features_used=features_used,
-            reranking=reranking_detail,
-            synthesis=AIUsageDetail(
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                model=usage.get("model", ai_service.quality_model),
-            ),
-            total_input_tokens=usage.get("input_tokens", 0) + extra_input,
-            total_output_tokens=usage.get("output_tokens", 0) + extra_output,
-        )
-
-        # --- Build source list with URLs ---
-        # Only show sources whose chunks actually made it into the prompt —
-        # i.e. skip files that were inlined as authoritative JSONL.
-        base_url = str(request.base_url).rstrip("/")
-        label_cache: dict = {}
-        sources = [
-            ChatSource(
-                filename=r.filename,
-                page_number=r.page_number,
-                text_snippet=r.text_snippet,
-                similarity_score=r.similarity_score,
-                document_id=r.document_id,
-                pdf_url=f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}",
-                page_url=f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}",
-                sensitivity=_source_sensitivity(col_id, r, label_cache),
-            )
-            for r, col_id in filtered_results
-        ]
-
-        if cache_ctx and not executed_results:
-            _cache_store(cache_ctx, response_text, filtered_results, chat_request.provider,
-                         related=related)
-
-        record_chat_usage(
-            turn_user, usage_collection, chat_request.provider, model_used,
-            input_tokens=ai_usage.total_input_tokens,
-            output_tokens=ai_usage.total_output_tokens,
-            tool_calls=sum(1 for r in executed_results if r.get("tool") != "_thinking"),
-            duration_ms=int((time.time() - turn_started) * 1000),
-        )
-
-        return ChatResponse(
-            message=ChatMessage(role="assistant", content=response_text),
-            sources=sources,
-            ai_usage=ai_usage,
-            structured_results=executed_results or None,
-            related_questions=related,
-            depth=chat_request.depth,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Chat failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chat failed: {str(e)}",
-        )
+    done = None
+    for event in _run_turn(chat_request, collection_id, str(request.base_url).rstrip("/"),
+                           provider_args, cache_ctx, cache_entry):
+        if event["type"] == "error":
+            raise HTTPException(status_code=event["_status"], detail=event["message"])
+        if event["type"] == "done":
+            done = event
+    if done is None:
+        raise HTTPException(status_code=500, detail="Chat failed: no answer produced")
+    return ChatResponse(
+        message=ChatMessage(role="assistant", content=done["_answer"]),
+        sources=[ChatSource(**s) for s in done["sources"]],
+        ai_usage=done.get("_ai_usage"),
+        structured_results=done["structured_results"] or None,
+        cached=done["cached"],
+        cached_question=done.get("cached_question"),
+        related_questions=done["related_questions"],
+        depth=done["depth"],
+    )
 
 
-# ---------------------------------------------------------------------------
-# Streaming chat endpoint (SSE)
-# ---------------------------------------------------------------------------
-# Mirrors /api/chat but emits Server-Sent Events so the frontend can display
-# live tool-call indicators and stream the final text token-by-token.
-#
-# Event types (each line: "data: <json>\n\n"):
-#   tool_start  — a tool call is about to execute
-#   tool_end    — tool call finished (result included)
-#   thinking    — prose the model emitted between tool calls
-#   text_delta  — one word/chunk of the final response
-#   sources     — final source list
-#   done        — completion marker + usage stats
-#   error       — something went wrong
 @router.post("/api/chat/stream", tags=["chat"])
 async def chat_stream_endpoint(
     chat_request: ChatRequest,
@@ -1004,480 +888,50 @@ async def chat_stream_endpoint(
     """
     Streaming version of /api/chat. Returns text/event-stream (SSE).
 
-    Events are emitted as the agent works so the frontend can show live
-    tool-call indicators and stream text as it arrives.
+    Events (each line "data: <json>\\n\\n"): tool_start, tool_end, thinking,
+    text_delta, sources, related, done, error — see `_run_turn`.
     """
-    import json as _json
-
-    turn_started = time.time()
-    turn_user = get_request_user()
-    usage_collection = "all" if chat_request.scope == "all" else collection_id
-
-    # ---------- cache lookup + budget, before the stream starts ----------
-    # The lookup runs out here for two reasons. It puts the cache before
-    # provider construction, matching /api/chat (a cache hit needs no
-    # provider or API key at all). And it lets the daily budget return a
-    # real HTTP 429 — impossible once the SSE stream has begun — while a
-    # budget-capped user keeps receiving cached answers, which cost nothing.
-    cache_ctx = None
-    cache_entry = None
-    if any(m.role == "user" for m in chat_request.messages):
-        try:
-            cache_ctx = await asyncio.to_thread(
-                _cache_context, chat_request, collection_id,
-                _requested_model(chat_request, x_ai_model, x_ollama_model, x_anthropic_model,
-                                 x_openai_model, x_ai_base_url),
-            )
-            if cache_ctx and chat_request.use_cache:
-                cache_entry = await asyncio.to_thread(_cache_lookup, cache_ctx)
-        except Exception as e:
-            logger.warning(f"Answer cache lookup failed: {e}")
-            cache_ctx = None
-            cache_entry = None
-
+    provider_args = _provider_args(x_ai_key, x_ollama_model, x_anthropic_model, x_openai_model, x_ai_model, x_ai_base_url)
+    # Cache and budget are settled before the stream starts: the budget can
+    # still answer with a real HTTP 429, impossible once SSE has begun.
+    cache_ctx, cache_entry = await asyncio.to_thread(
+        _prepare_turn, chat_request, collection_id, _requested_model(chat_request, **provider_args),
+    )
     if cache_entry is None:
-        over_budget = check_daily_budget(turn_user)
+        over_budget = _budget_response(get_request_user())
         if over_budget:
-            return JSONResponse(
-                status_code=429,
-                content=over_budget,
-                headers={"Retry-After": str(over_budget["retry_after_seconds"])},
-            )
+            return over_budget
 
-    async def generate():  # noqa: C901 (complexity fine for one function)
+    turn = _run_turn(chat_request, collection_id, str(request.base_url).rstrip("/"),
+                     provider_args, cache_ctx, cache_entry)
+
+    def sse(payload: dict) -> str:
+        return f"data: {json.dumps({k: v for k, v in payload.items() if not k.startswith('_')}, default=str)}\n\n"
+
+    async def generate():
+        exhausted = object()
         try:
-            # ---------- cached answer --------------------------------------------
-            # Looked up before the stream began; no provider tokens spent.
-            if cache_entry:
-                record_chat_usage(
-                    turn_user, usage_collection, chat_request.provider, "answer-cache",
-                    input_tokens=0, output_tokens=0, cache_hit=True,
-                    duration_ms=int((time.time() - turn_started) * 1000),
-                )
-                cached_base = str(request.base_url).rstrip("/")
-                cached_sources = _cached_sources(cache_entry, cached_base)
-                cached_related = cache_entry.get("related") or []
-                yield f"data: {_json.dumps({'type':'text_delta','delta':cache_entry['answer']})}\n\n"
-                yield f"data: {_json.dumps({'type':'sources','sources':cached_sources})}\n\n"
-                if cached_related:
-                    yield f"data: {_json.dumps({'type':'related','questions':cached_related})}\n\n"
-                yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':0,'output_tokens':0,'model':'answer-cache'},'structured_results':[],'sources':cached_sources,'cached':True,'cached_question':cache_entry['question'],'related_questions':cached_related,'depth':chat_request.depth})}\n\n"
-                return
-
-            # ---------- provider -------------------------------------------------
-            try:
-                if chat_request.provider == "ollama":
-                    model_name = x_ai_model or x_ollama_model or "llama3.2"
-                    extra: dict = {"model": model_name}
-                    if x_ai_base_url:
-                        extra["base_url"] = x_ai_base_url
-                    provider = create_provider("ollama", **extra)
-                else:
-                    # NB: distinct name — assigning to x_ai_key here would shadow
-                    # the enclosing endpoint parameter inside this generator.
-                    resolved_key = resolve_ai_key(chat_request.provider, x_ai_key)
-                    if not resolved_key and chat_request.provider != "openai_compatible":
-                        yield f"data: {_json.dumps({'type':'error','message':f'API key required for {chat_request.provider}'})}\n\n"
-                        return
-                    extra = {}
-                    model_name = x_ai_model or x_anthropic_model or x_openai_model
-                    if model_name:
-                        extra["model"] = model_name
-                    if x_ai_base_url:
-                        extra["base_url"] = x_ai_base_url
-                    provider = create_provider(chat_request.provider, resolved_key, **extra)
-            except Exception as e:
-                yield f"data: {_json.dumps({'type':'error','message':f'Failed to initialize AI provider: {e}'})}\n\n"
-                return
-
-            ai_service = AIService(provider=provider)
-
-            # ---------- context retrieval ----------------------------------------
-            user_messages = [m for m in chat_request.messages if m.role == "user"]
-            if not user_messages:
-                yield f"data: {_json.dumps({'type':'error','message':'No user messages in conversation'})}\n\n"
-                return
-            latest_query = user_messages[-1].content
-
-            # (semantic answer cache: looked up before the stream started —
-            # see the cached-answer branch at the top of this generator)
-
-            prior_messages = chat_request.messages[:-1]
-            if prior_messages:
-                history_for_reformulation = [
-                    {"role": m.role, "content": m.content} for m in prior_messages
-                ]
-                # Blocking provider round-trip — keep it off the event loop
-                search_query = await asyncio.to_thread(
-                    ai_service.reformulate_query, history_for_reformulation, latest_query
-                )
-            else:
-                search_query = latest_query
-
-            context_results = []
-            result_collection_ids = []
-            selected_ids = _selected_document_ids(chat_request)
-            selection_filters = {"document_ids": selected_ids} if selected_ids else None
-
-            if chat_request.scope == "all":
-                all_collections = collection_service.get_all_collections()
-                for col in all_collections:
-                    col_id = col["id"]
-                    try:
-                        col_indexer = get_indexer(col_id)
-                        col_search = await asyncio.to_thread(
-                            col_indexer.search,
-                            query=search_query, top_k=chat_request.top_k, mode=chat_request.mode
-                        )
-                        for r in col_search["results"]:
-                            context_results.append(r)
-                            result_collection_ids.append(col_id)
-                    except Exception as e:
-                        logger.warning(f"Stream chat: search failed for collection '{col_id}': {e}")
-                paired = sorted(
-                    zip(context_results, result_collection_ids),
-                    key=lambda x: x[0].similarity_score, reverse=True,
-                )[:chat_request.top_k]
-                context_results = [p[0] for p in paired]
-                result_collection_ids = [p[1] for p in paired]
-            else:
-                try:
-                    indexer = get_indexer(collection_id)
-                except ValueError as e:
-                    yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
-                    return
-                sr = await asyncio.to_thread(
-                    indexer.search, query=search_query, top_k=chat_request.top_k, mode=chat_request.mode,
-                    filters=selection_filters,
-                )
-                context_results = sr["results"]
-                result_collection_ids = [collection_id] * len(context_results)
-
-            rerank_usage = None
-            if chat_request.rerank:
-                context_results, result_collection_ids, rerank_usage = await asyncio.to_thread(
-                    _rerank_context, ai_service, latest_query, context_results,
-                    result_collection_ids, chat_request.top_k,
-                )
-
-            # ---------- structured tables ----------------------------------------
-            overview_ids = (
-                [c["id"] for c in collection_service.get_all_collections()]
-                if chat_request.scope == "all"
-                else [collection_id]
-            )
-            structured_tables, structured_stores = await asyncio.to_thread(
-                collect_structured_tables, overview_ids, selected_ids
-            )
-            structured_ctx = build_structured_context(structured_tables, structured_stores) if structured_tables else {
-                "inline_block": "", "tool_tables": [], "inlined_filenames": set(), "inlined_document_ids": set()
-            }
-            inlined_filenames = structured_ctx["inlined_filenames"]
-            tool_tables = structured_ctx["tool_tables"]
-            inline_block = structured_ctx["inline_block"]
-
-            filtered_results = [
-                (r, cid) for (r, cid) in zip(context_results, result_collection_ids)
-                if r.filename not in inlined_filenames
-            ]
-            context_text = "\n\n---\n\n".join(
-                f"[Source {i+1}: {r.filename}, page {r.page_number}]\n{r.text_snippet}"
-                for i, (r, _) in enumerate(filtered_results)
-            ) or "No relevant context found."
-            evidence = ChatEvidence(filtered_results)
-            filtered_results = evidence.results
-
-            try:
-                collection_overview = await asyncio.to_thread(_build_collection_overview, overview_ids, selected_ids)
-            except Exception as e:
-                logger.warning(f"Stream chat: failed to build collection overview: {e}")
-                collection_overview = "(Collection overview unavailable.)"
-
-            tables_block = describe_tables_for_prompt(tool_tables) if tool_tables else ""
-
-            # ---------- system prompt --------------------------------------------
-            _scope_note = 'all collections' if chat_request.scope == 'all' else 'the current collection'
-            if selected_ids:
-                _scope_note = f"the {len(selected_ids)} source(s) the user selected in the current collection"
-            base_system_parts = [
-                _depth_instructions(chat_request),
-                CITATION_INSTRUCTIONS,
-                f"You are an analytical research assistant working over the user's "
-                f"indexed sources in {_scope_note}.",
-                "Ground every claim in the provided sources, cite them, and say so "
-                "plainly when the sources don't contain the answer rather than guessing.",
-                "Answer the user's question using the COLLECTION OVERVIEW, STRUCTURED TABLES (when provided), and RETRIEVED CONTEXT below.",
-                "Use the COLLECTION OVERVIEW for meta-questions about the knowledge base itself (file counts, available documents, date ranges).",
-            ]
-            if inline_block:
-                base_system_parts.append(
-                    "When STRUCTURED TABLES are included below, they are the FULL contents of CSV/XLSX files as JSONL — every row is present. "
-                    "For any numeric, sum, count, average, filter, date-range, or ranking question about those files, answer DIRECTLY from the JSONL rows and show your arithmetic. "
-                    "Do NOT guess from chunk snippets and do NOT assume data is missing."
-                )
-            if tool_tables:
-                base_system_parts.append(
-                    "For questions about the LARGE tables listed under TOOL USE PROTOCOL, call the structured-query tools — do not estimate from row text."
-                )
-            base_system_parts.append("Use RETRIEVED CONTEXT for prose/document questions, citing [Source N] as needed.")
-
-            expertise_block = ""
-            if chat_request.scope != "all":
-                try:
-                    attached_packs = expertise_store.get_packs_for_collection(collection_id)
-                    if attached_packs:
-                        base_system_parts.append(
-                            "When EXPERTISE is provided, follow its guidance, rules, and frameworks as authoritative instructions for this analysis."
-                        )
-                        expertise_block = (
-                            "EXPERTISE (apply these frameworks when analyzing these sources):\n"
-                            + "\n\n".join(
-                                f"## {p.name}\n{(p.description + chr(10)) if p.description else ''}{p.body}".strip()
-                                for p in attached_packs
-                            )
-                        )
-                except Exception as _ep:
-                    logger.warning("Stream chat: failed to load expertise packs: %s", _ep)
-
-            system_parts = [base_system_parts[0]]
-            if len(base_system_parts) > 1:
-                system_parts = base_system_parts
-            system_text = "\n\n".join(
-                [" ".join(base_system_parts),
-                 f"COLLECTION OVERVIEW:\n{collection_overview}"]
-                + ([expertise_block] if expertise_block else [])
-                + ([inline_block] if inline_block else [])
-                + ([f"PRE-RETRIEVED CONTEXT (optional primer):\n{context_text}"] if context_text and context_text != "No relevant context found." else [])
-                + ([f"LARGE TABLES AVAILABLE:\n{tables_block}"] if tables_block else [])
-            )
-
-            # ---------- agent loop -----------------------------------------------
-            agent_context = {"collection_id": collection_id, "scope": chat_request.scope,
-                             "document_ids": selected_ids}
-            executed_results: list[dict] = []
-            total_input_tokens = (rerank_usage or {}).get("input_tokens", 0)
-            total_output_tokens = (rerank_usage or {}).get("output_tokens", 0)
-            model_used = ai_service.quality_model
-            response_text = ""
-            max_iterations = 8
-
-            if provider.supports_native_tools():
-                is_anthropic = isinstance(provider, AnthropicProvider)
-                tools_spec = _tools_for_depth(
-                    chat_request, anthropic_tools() if is_anthropic else openai_tools(), tool_tables
-                )
-                if _is_quick(chat_request):
-                    max_iterations = 4 if tools_spec else 1
-
-                messages: list[dict] = [
-                    {"role": m.role, "content": m.content} for m in chat_request.messages
-                ]
-
-                for iteration in range(max_iterations):
-                    # Blocking provider round-trip — keep it off the event loop
-                    turn = await asyncio.to_thread(
-                        provider.complete_with_tools,
-                        messages=messages,
-                        tools=tools_spec,
-                        max_tokens=4096,
-                        model=ai_service.quality_model,
-                        system=system_text,
-                    )
-                    usage_iter = turn.get("usage", {}) or {}
-                    total_input_tokens += usage_iter.get("input_tokens", 0)
-                    total_output_tokens += usage_iter.get("output_tokens", 0)
-                    model_used = usage_iter.get("model", model_used)
-
-                    tool_calls = turn.get("tool_calls") or []
-                    thinking = turn.get("text") or ""
-
-                    if not tool_calls:
-                        response_text = thinking.strip()
-                        break
-
-                    # Emit any narration the model produced alongside tool calls
-                    if thinking:
-                        executed_results.append({"tool": "_thinking", "args": {"iteration": iteration}, "result": {"text": thinking}})
-                        yield f"data: {_json.dumps({'type':'thinking','text':thinking})}\n\n"
-
-                    # Emit tool_start for each call
-                    for tc in tool_calls:
-                        yield f"data: {_json.dumps({'type':'tool_start','tool':tc['name'],'args':tc.get('input') or {}})}\n\n"
-
-                    messages.append(turn["assistant_message"])
-
-                    # Execute all tool calls
-                    adapted_calls = [{"tool": tc["name"], **(tc.get("input") or {})} for tc in tool_calls]
-                    iter_results = await asyncio.to_thread(
-                        execute_tool_calls, adapted_calls, agent_context=agent_context
-                    )
-                    evidence.observe(iter_results)
-                    executed_results.extend(iter_results)
-
-                    # Emit tool_end for each result
-                    for tc, res in zip(tool_calls, iter_results):
-                        yield f"data: {_json.dumps({'type':'tool_end','tool':tc['name'],'result':res})}\n\n"
-
-                    # Append results to conversation
-                    if is_anthropic:
-                        tool_result_content = []
-                        for tc, res in zip(tool_calls, iter_results):
-                            payload = res.get("error") or res.get("result") or {}
-                            tool_result_content.append({
-                                "type": "tool_result",
-                                "tool_use_id": tc["id"],
-                                "content": _truncate_tool_result(_json.dumps(payload, default=str)),
-                                **({"is_error": True} if res.get("error") else {}),
-                            })
-                        messages.append({"role": "user", "content": tool_result_content})
-                    else:
-                        for tc, res in zip(tool_calls, iter_results):
-                            payload = res.get("error") or res.get("result") or {}
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc["id"],
-                                "content": _truncate_tool_result(_json.dumps(payload, default=str)),
-                            })
-
-                if not response_text:
-                    try:
-                        turn = await asyncio.to_thread(
-                            provider.complete_with_tools,
-                            messages=messages, tools=[], max_tokens=2048,
-                            model=ai_service.quality_model,
-                            system=system_text + "\n\nDo not call any more tools. Summarize the final answer.",
-                        )
-                        response_text = (turn.get("text") or "").strip()
-                        usage_iter = turn.get("usage", {}) or {}
-                        total_input_tokens += usage_iter.get("input_tokens", 0)
-                        total_output_tokens += usage_iter.get("output_tokens", 0)
-                    except Exception as e:
-                        logger.warning("Stream chat: final-answer pass failed: %s", e)
-                        response_text = "I ran several tool calls but couldn't settle on a final answer — please rephrase or narrow the question."
-
-            else:
-                # ReAct fallback for Ollama — run synchronously then stream the text
-                suffix = ""
-                base_system = " ".join(base_system_parts)
-                history_parts = [
-                    f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
-                    for m in chat_request.messages[:-1]
-                ]
-                history_text = "\n\n".join(history_parts) if history_parts else "(Start of conversation)"
-                tools_block = "" if (_is_quick(chat_request) and not tool_tables) else build_tool_use_instructions()
-
-                def _compose(extra=""):
-                    parts = [base_system, "", f"COLLECTION OVERVIEW:\n{collection_overview}"]
-                    if expertise_block:
-                        parts.extend(["", expertise_block])
-                    if inline_block:
-                        parts.extend(["", inline_block])
-                    parts.extend(["", f"RETRIEVED CONTEXT:\n{context_text}"])
-                    if tables_block:
-                        parts.extend(["", f"LARGE TABLES (use SQL tool calls):\n{tables_block}"])
-                    if tools_block:
-                        parts.extend(["", f"TOOL USE PROTOCOL:\n{tools_block}"])
-                    parts.extend(["", f"CONVERSATION HISTORY:\n{history_text}", "", f"User: {latest_query}"])
-                    if extra:
-                        parts.append(extra)
-                    parts.append("Assistant:")
-                    return "\n\n".join(parts)
-
-                for iteration in range(5 if tools_block else 1):
-                    prompt = _compose(suffix)
-                    result = await asyncio.to_thread(
-                        provider.complete, prompt=prompt, max_tokens=2048, model=ai_service.quality_model
-                    )
-                    raw_text = result["text"]
-                    usage_iter = result.get("usage", {}) or {}
-                    total_input_tokens += usage_iter.get("input_tokens", 0)
-                    total_output_tokens += usage_iter.get("output_tokens", 0)
-                    model_used = usage_iter.get("model", model_used)
-
-                    from services.structured_chat import parse_tool_calls
-                    tool_calls_react = parse_tool_calls(raw_text)
-                    if not tool_calls_react:
-                        response_text = raw_text.strip()
-                        break
-                    for tc in tool_calls_react:
-                        yield f"data: {_json.dumps({'type':'tool_start','tool':tc.get('tool','unknown'),'args':{}})}\n\n"
-                    iter_results = await asyncio.to_thread(
-                        execute_tool_calls, tool_calls_react, agent_context=agent_context
-                    )
-                    evidence.observe(iter_results)
-                    executed_results.extend(iter_results)
-                    for tc, res in zip(tool_calls_react, iter_results):
-                        yield f"data: {_json.dumps({'type':'tool_end','tool':tc.get('tool','unknown'),'result':res})}\n\n"
-                    result_text = _json.dumps([r.get("result") or r.get("error") for r in iter_results], default=str)
-                    suffix += f"\nTool results: {result_text}\nContinue:"
-
-            # ---------- stream the final text word-by-word -----------------------
-            if response_text:
-                words = response_text.split(" ")
+            while True:
+                # Every step of the turn is blocking provider/index work — run
+                # it off the event loop, one event at a time.
+                event = await asyncio.to_thread(next, turn, exhausted)
+                if event is exhausted:
+                    break
+                if event["type"] != "text" or event.get("_whole"):
+                    yield sse(event if event["type"] != "text" else {"type": "text_delta", "delta": event["text"]})
+                    continue
+                words = event["text"].split(" ")
                 for i, word in enumerate(words):
-                    chunk = word + (" " if i < len(words) - 1 else "")
-                    yield f"data: {_json.dumps({'type':'text_delta','delta':chunk})}\n\n"
+                    yield sse({"type": "text_delta", "delta": word + (" " if i < len(words) - 1 else "")})
                     await asyncio.sleep(0.008)
-
-            # ---------- sources --------------------------------------------------
-            base_url = str(request.base_url).rstrip("/")
-            label_cache: dict = {}
-            sources_data = [
-                {
-                    "filename": r.filename,
-                    "page_number": r.page_number,
-                    "text_snippet": r.text_snippet,
-                    "similarity_score": r.similarity_score,
-                    "document_id": r.document_id,
-                    "pdf_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}",
-                    "page_url": f"{base_url}/documents/{r.document_id}/pdf?collection_id={col_id}#page={r.page_number}",
-                    "sensitivity": _source_sensitivity(col_id, r, label_cache),
-                }
-                for r, col_id in filtered_results
-            ]
-            yield f"data: {_json.dumps({'type':'sources','sources':sources_data})}\n\n"
-
-            # ---------- suggested follow-ups ---------------------------------------
-            # After the answer has streamed, so the reader is never kept
-            # waiting on the extra call.
-            related, related_usage = await asyncio.to_thread(
-                _followups, chat_request, provider, ai_service, latest_query,
-                response_text, filtered_results,
-            )
-            total_input_tokens += related_usage.get("input_tokens", 0)
-            total_output_tokens += related_usage.get("output_tokens", 0)
-            if related:
-                yield f"data: {_json.dumps({'type':'related','questions':related})}\n\n"
-
-            if cache_ctx and not executed_results:
-                await asyncio.to_thread(
-                    _cache_store, cache_ctx, response_text, filtered_results, chat_request.provider,
-                    related=related,
-                )
-
-            # ---------- done -----------------------------------------------------
-            # sources ride the done event too: finalizeStreamingMessage commits
-            # them from here (the standalone sources event predates that).
-            record_chat_usage(
-                turn_user, usage_collection, chat_request.provider, model_used,
-                input_tokens=total_input_tokens, output_tokens=total_output_tokens,
-                tool_calls=sum(1 for r in executed_results if r.get("tool") != "_thinking"),
-                duration_ms=int((time.time() - turn_started) * 1000),
-            )
-            yield f"data: {_json.dumps({'type':'done','usage':{'input_tokens':total_input_tokens,'output_tokens':total_output_tokens,'model':model_used},'structured_results':executed_results,'sources':sources_data,'cached':False,'related_questions':related,'depth':chat_request.depth})}\n\n"
-
         except Exception as e:
             logger.exception("Stream chat failed")
-            yield f"data: {_json.dumps({'type':'error','message':str(e)})}\n\n"
+            yield sse({"type": "error", "message": str(e)})
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Access-Control-Allow-Origin": "*"},
     )
 
 

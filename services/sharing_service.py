@@ -134,19 +134,6 @@ class SharingService:
 
         return app_db.get_shares_for_collection(collection_id)
 
-    def get_shared_with_me(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get collections shared with the current user.
-
-        Args:
-            user_id: Current user
-
-        Returns:
-            List of shared collection details
-        """
-        if not user_id:
-            return []
-        return app_db.get_shared_collections(user_id)
-
     def revoke_share(self, share_id: str, owner_id: str) -> Dict[str, Any]:
         """Revoke a share link.
 
