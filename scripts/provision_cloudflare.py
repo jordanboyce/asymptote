@@ -43,9 +43,9 @@ import sys
 import urllib.error
 import urllib.request
 
-ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "71a9952ea49acb57979b8707f6666463")
-HOSTNAME = os.environ.get("CLIO_HOSTNAME", "clio.cyberlion.dev")
-ALLOW_EMAIL = os.environ.get("CLIO_ALLOW_EMAIL", "jordan.boyce@cyberlion.dev")
+ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")  # required: your Cloudflare account ID
+HOSTNAME = os.environ.get("CLIO_HOSTNAME", "clio.example.com")
+ALLOW_EMAIL = os.environ.get("CLIO_ALLOW_EMAIL", "you@example.com")
 TUNNEL_NAME = "clio"
 SERVICE_TOKEN_NAME = "clio-mcp"
 MCP_BYPASS_POLICY_NAME = "mcp-app-token-gate"
@@ -133,6 +133,9 @@ def cf(method, path, body=None, ok_codes=(), optional=False):
 
 
 def main():
+    if not ACCOUNT_ID:
+        sys.exit("CF_ACCOUNT_ID is required — set it to your Cloudflare account ID "
+                 "(dashboard right-sidebar, or `wrangler whoami`).")
     who = cf("GET", "/user/tokens/verify")
     print(f"token ok (status: {who['status']})")
 

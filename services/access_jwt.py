@@ -8,7 +8,7 @@ than a shared password — per-identity, revocable at the edge, and it removes
 the browser's Basic-auth prompt entirely (the "second login" after SSO).
 
 Configuration (config.py):
-  CF_ACCESS_TEAM_DOMAIN  e.g. "cyberlion.cloudflareaccess.com"
+  CF_ACCESS_TEAM_DOMAIN  e.g. "yourteam.cloudflareaccess.com"
   CF_ACCESS_AUD          comma-separated Access application AUD tags (one per
                          Access app that fronts this host, e.g. the UI app and
                          the /mcp app)
