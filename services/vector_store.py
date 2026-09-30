@@ -61,6 +61,13 @@ class VectorStore:
 
         # SQLite metadata store
         self.metadata_store = MetadataStore(self.metadata_db_path)
+        # v3.5 entity backfill: existing collections get their chunk_entities
+        # rows on first open after the schema migration. Synchronous and
+        # usually fast (regex-only extraction); a large corpus pays this once.
+        try:
+            self.metadata_store.backfill_entities_if_empty()
+        except Exception as exc:
+            logger.warning(f"Entity backfill skipped: {exc}")
 
         # Structured table store (lives in the same sqlite db as metadata)
         # Used to answer numeric/aggregation questions over CSV/XLSX sources.
@@ -211,6 +218,22 @@ class VectorStore:
         # Add to BM25 index for keyword search
         bm25_docs = [(chunk.chunk_id, chunk.text) for chunk in chunks]
         self.bm25_index.add_documents_batch(bm25_docs)
+
+        # Entity-graph boost: record which entities each chunk mentions so the
+        # retriever can pull cross-document matches at query time. Extraction
+        # is heuristic (no LLM), cheap, and idempotent — a re-index of the
+        # same chunk_id replaces its rows via INSERT OR REPLACE.
+        try:
+            from services.entity_graph import extract_entities
+            chunk_entities = {
+                chunk.chunk_id: extract_entities(chunk.text)
+                for chunk in chunks
+            }
+            chunk_entities = {cid: ents for cid, ents in chunk_entities.items() if ents}
+            if chunk_entities:
+                self.metadata_store.add_chunk_entities(chunk_entities)
+        except Exception as exc:  # never let indexing fail over the boost
+            logger.warning(f"Entity extraction skipped for batch: {exc}")
 
         logger.info(f"Added {len(chunks)} chunks to index")
 

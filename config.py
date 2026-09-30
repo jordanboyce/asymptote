@@ -141,6 +141,21 @@ class Settings(BaseSettings):
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_candidate_multiplier: int = 5
 
+    # Entity-graph retrieval boost (services/entity_graph.py). Entities are
+    # extracted heuristically per chunk at index time (proper nouns, acronyms,
+    # capitalized phrases — no LLM pass and no egress) and stored in the
+    # collection database. At query time, chunks that share entities with the
+    # query are fused into the semantic/hybrid ranking: cross-document matches
+    # enter as candidates and chunks sharing >= 2 distinct query entities get
+    # a saturating score bonus, rarer entities weighing more. This is the
+    # cheap approximation to GraphRAG's entity-step — it fixes "who worked
+    # with X on Y?" questions where the decisive chunk names the entities but
+    # doesn't resemble the question. Disable if the heuristic extractor is
+    # too noisy on a corpus of e.g. sentence-case acronyms.
+    enable_entity_boost: bool = True
+    entity_boost_weight: float = 0.2       # max bonus added to a chunk's score
+    entity_boost_max_candidates: int = 25  # graph-only chunks fused into the pool
+
 
     # Server configuration. The default binds loopback only: the app has no
     # auth unless AUTH_PASSWORD is set, so reaching the network has to be a

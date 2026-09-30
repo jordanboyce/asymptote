@@ -73,7 +73,7 @@ def test_legacy_rows_backfill_from_disk(tmp_path):
     store = MetadataStore(db)
     assert store.get_storage_bytes() == 123
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT value FROM schema_info WHERE key='version'").fetchone()[0] == "3.4"
+        assert conn.execute("SELECT value FROM schema_info WHERE key='version'").fetchone()[0] == "3.5"
 
 
 # ── The cap itself ──────────────────────────────────────────────────────
