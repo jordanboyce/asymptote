@@ -4,14 +4,14 @@ import sqlite3
 from pathlib import Path
 
 from services.sqlite_utils import sqlite_connect
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 import json
 import logging
 
 logger = logging.getLogger(__name__)
 
 # Current schema version - increment when making breaking changes
-SCHEMA_VERSION = "3.4"
+SCHEMA_VERSION = "3.5"
 
 # v3.3 governance columns on the documents table, in migration order.
 _GOVERNANCE_DOC_COLUMNS = [
@@ -81,6 +81,20 @@ class MetadataStore:
             """)
 
             # Note: idx_source_format is created in _migrate_schema after columns are added
+
+            # v3.5: entity-graph retrieval boost — per-chunk entity mentions.
+            # The migration path also creates this so existing dbs upgrade.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chunk_entities (
+                    chunk_id TEXT NOT NULL,
+                    entity TEXT NOT NULL,
+                    PRIMARY KEY (chunk_id, entity)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity
+                ON chunk_entities(entity)
+            """)
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
@@ -171,6 +185,11 @@ class MetadataStore:
             # Migration from 3.3 to 3.4
             if current_version == "3.3":
                 self._migrate_to_v3_4(conn)
+                current_version = "3.4"
+
+            # Migration from 3.4 to 3.5
+            if current_version == "3.4":
+                self._migrate_to_v3_5(conn)
 
             # Update schema version
             conn.execute("""
@@ -327,6 +346,158 @@ class MetadataStore:
             logger.info(f"Backfilled file_size for {len(updates)} document(s)")
         return len(updates)
 
+    def _migrate_to_v3_5(self, conn: sqlite3.Connection):
+        """Migrate from v3.4 to v3.5 schema (entity graph).
+
+        Adds the chunk_entities table powering entity-graph retrieval
+        boosting (services/entity_graph.py), then backfills entities for all
+        existing chunks with the heuristic extractor. The backfill is
+        idempotent: rows are INSERT OR IGNORE'd, so a re-open after an
+        interrupted migration simply continues.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_entities (
+                chunk_id TEXT NOT NULL,
+                entity TEXT NOT NULL,
+                PRIMARY KEY (chunk_id, entity)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity
+            ON chunk_entities(entity)
+        """)
+        logger.info("Created chunk_entities table")
+
+    def _backfill_entities(self, max_per_chunk: int = 20) -> int:
+        """Extract entities for every chunk that has none yet.
+
+        Runs outside the migration transaction (it can be slow on a large
+        corpus) but is safe to interrupt and re-run: only chunks with zero
+        entity rows are processed. Returns the number of chunks processed.
+        """
+        from services.entity_graph import extract_entities
+
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute("""
+                SELECT c.chunk_id, c.text FROM chunks c
+                LEFT JOIN chunk_entities e ON e.chunk_id = c.chunk_id
+                WHERE e.chunk_id IS NULL
+            """).fetchall()
+
+        processed = 0
+        batch: List[tuple] = []
+        with sqlite_connect(self.db_path) as conn:
+            for chunk_id, text in rows:
+                for ent in extract_entities(text or "", max_per_chunk=max_per_chunk):
+                    batch.append((chunk_id, ent))
+                processed += 1
+                if len(batch) >= 5000:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO chunk_entities (chunk_id, entity) VALUES (?, ?)",
+                        batch,
+                    )
+                    conn.commit()
+                    batch.clear()
+            if batch:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO chunk_entities (chunk_id, entity) VALUES (?, ?)",
+                    batch,
+                )
+                conn.commit()
+        if processed:
+            logger.info(f"Backfilled entities for {processed} chunk(s)")
+        return processed
+
+    def backfill_entities_if_empty(self, max_per_chunk: int = 20) -> int:
+        """Public hook: called after opening a store whose schema is current.
+        No-op for fresh or fully-extracted databases."""
+        with sqlite_connect(self.db_path) as conn:
+            has_chunks = conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone()
+            if not has_chunks:
+                return 0
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_entities'"
+            ).fetchone()
+            if not table_exists:
+                return 0
+        return self._backfill_entities(max_per_chunk=max_per_chunk)
+
+    def add_chunk_entities(self, chunk_entities: Dict[str, List[str]]):
+        """Record extracted entities for chunks. ``chunk_entities`` maps
+        chunk_id -> list of normalized entity strings."""
+        rows = [
+            (chunk_id, ent)
+            for chunk_id, entities in chunk_entities.items()
+            for ent in entities
+        ]
+        if not rows:
+            return
+        with sqlite_connect(self.db_path) as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO chunk_entities (chunk_id, entity) VALUES (?, ?)",
+                rows,
+            )
+            conn.commit()
+
+    def entity_document_frequency(self) -> Dict[str, int]:
+        """Entity -> number of distinct chunks containing it (the 'document
+        frequency' in IR terms, where a chunk is the document)."""
+        with sqlite_connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT entity, COUNT(*) FROM chunk_entities GROUP BY entity"
+            ).fetchall()
+        return {entity: count for entity, count in rows}
+
+    def find_chunks_by_entities(
+        self,
+        entities: List[str],
+        allowed_chunk_ids: Optional[set] = None,
+        min_shared: int = 1,
+        limit: int = 100,
+    ) -> Dict[str, Set[str]]:
+        """Chunks mentioning one or more of ``entities``.
+
+        Returns chunk_id -> set of the queried entities it mentions. Only
+        chunks sharing at least ``min_shared`` distinct entities with the
+        query are returned — callers pass min_shared=2 to require a real
+        cross-entity link. ``allowed_chunk_ids`` applies the same metadata
+        pre-filter the vector search uses.
+        """
+        if not entities:
+            return {}
+        result: Dict[str, Set[str]] = {}
+        with sqlite_connect(self.db_path) as conn:
+            for start in range(0, len(entities), self._IN_CLAUSE_BATCH):
+                batch = entities[start:start + self._IN_CLAUSE_BATCH]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(f"""
+                    SELECT chunk_id, entity FROM chunk_entities
+                    WHERE entity IN ({placeholders})
+                """, batch).fetchall()
+                for chunk_id, entity in rows:
+                    if allowed_chunk_ids is not None and chunk_id not in allowed_chunk_ids:
+                        continue
+                    result.setdefault(chunk_id, set()).add(entity)
+        if min_shared > 1:
+            result = {
+                cid: shared for cid, shared in result.items()
+                if len(shared) >= min_shared
+            }
+        # Deterministic cap: most-connected chunks first.
+        if len(result) > limit:
+            result = dict(
+                sorted(result.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:limit]
+            )
+        return result
+
+    def get_total_entity_chunks(self) -> int:
+        """Chunks carrying at least one entity row."""
+        with sqlite_connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT chunk_id) FROM chunk_entities"
+            ).fetchone()
+        return row[0] if row else 0
+
     def _ensure_v3_1_columns(self, conn: sqlite3.Connection):
         """Ensure v3.1+ columns exist (defensive migration for runtime checks)."""
         doc_columns = self._get_table_columns(conn, "documents")
@@ -346,6 +517,12 @@ class MetadataStore:
         if "file_size" not in doc_columns:
             logger.warning("Running defensive v3.4 migration - file_size column missing")
             self._migrate_to_v3_4(conn)
+            migrated = True
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_entities'"
+        ).fetchone():
+            logger.warning("Running defensive v3.5 migration - chunk_entities table missing")
+            self._migrate_to_v3_5(conn)
             migrated = True
         if migrated:
             conn.execute("""
@@ -637,12 +814,30 @@ class MetadataStore:
             Number of chunks deleted
         """
         with sqlite_connect(self.db_path) as conn:
+            # Collect chunk ids first — chunk_entities has no FK cascade, so
+            # its rows must go before the chunks rows they reference vanish.
+            chunk_ids = [
+                row[0] for row in conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE document_id = ?",
+                    (document_id,),
+                ).fetchall()
+            ]
+
             cursor = conn.execute("""
                 DELETE FROM chunks
                 WHERE document_id = ?
             """, (document_id,))
 
             deleted = cursor.rowcount
+
+            if chunk_ids:
+                for start in range(0, len(chunk_ids), self._IN_CLAUSE_BATCH):
+                    batch = chunk_ids[start:start + self._IN_CLAUSE_BATCH]
+                    placeholders = ",".join("?" for _ in batch)
+                    conn.execute(
+                        f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
+                        batch,
+                    )
 
             conn.execute("""
                 DELETE FROM documents
@@ -1203,5 +1398,9 @@ class MetadataStore:
         with sqlite_connect(self.db_path) as conn:
             conn.execute("DELETE FROM chunks")
             conn.execute("DELETE FROM documents")
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_entities'"
+            ).fetchone():
+                conn.execute("DELETE FROM chunk_entities")
             conn.commit()
             logger.info("Cleared all metadata from database")

@@ -965,6 +965,22 @@ class DocumentIndexer:
                 query_embedding, top_k=fetch_k, allowed_chunk_ids=allowed_chunk_ids
             )
 
+        # Entity-graph boost: fuse chunks that share entities with the query
+        # into the result set. Cross-document matches enter as candidates
+        # (base vector score); chunks sharing >= 2 distinct query entities
+        # also get a saturating bonus, rarer entities weighing more. Off by
+        # config, or a no-op when the query names no known entities.
+        from config import settings as _eg_settings
+        if _eg_settings.enable_entity_boost:
+            results = self._apply_entity_graph(
+                query=query,
+                results=results,
+                fetch_k=fetch_k,
+                mode=mode,
+                query_embedding=locals().get("query_embedding"),
+                allowed_chunk_ids=allowed_chunk_ids,
+            )
+
         # Quarantined documents stay indexed (so an admin can approve them
         # without a re-index) but must never surface: this is the retrieval
         # choke point every surface — search, chat, MCP — comes through.
@@ -1100,6 +1116,145 @@ class DocumentIndexer:
     def save_index(self):
         """Persist the vector store to disk."""
         self.vector_store.save()
+
+    def _apply_entity_graph(
+        self,
+        query: str,
+        results: list,
+        fetch_k: int,
+        mode: "SearchMode",
+        query_embedding,
+        allowed_chunk_ids,
+    ) -> list:
+        """Entity-graph retrieval augmentation (services/entity_graph.py).
+
+        Two effects on the candidate pool:
+
+        1. Surface: chunks sharing at least one query entity but absent from
+           the retrieval results join as candidates — scored by their vector
+           similarity when an embedding is available, otherwise at 0 so the
+           downstream reranker still sees them. This is what finds the
+           cross-document chunk that names "Alice" and "Project Titan"
+           without resembling the question.
+        2. Boost: chunks sharing >= 2 distinct query entities get a
+           saturating score bonus weighted by entity rarity, applied to
+           chunks already in the results too.
+
+        No-op when the query names no entity the corpus knows, when the
+        entity table hasn't been backfilled yet, or when any step throws —
+        the failure mode is always "behave like plain search".
+        """
+        try:
+            from collections import Counter
+            from config import settings as _settings
+            from services.entity_graph import (
+                corpus_filter, extract_entities, graph_boost, related_entities,
+            )
+
+            metadata_store = self.vector_store.metadata_store
+            query_entities = extract_entities(query, max_per_chunk=10)
+            if not query_entities:
+                return results
+
+            # Restrict to entities the corpus actually links (>1 chunk, not
+            # ubiquitous). Substring-aware: "alice" in the query stands for
+            # "alice johnson" in the corpus when the shorter mention is the
+            # natural way of asking about the longer one.
+            df = metadata_store.entity_document_frequency()
+            if not df:
+                return results
+            total_chunks = max(metadata_store.get_total_chunks(), 1)
+            eligible = corpus_filter(Counter(df), total_chunks)
+            resolved = related_entities(
+                {e: df[e] for e in eligible},
+                max_doc_frequency=0.3,
+                query_entities=query_entities,
+            )
+            usable = set(resolved.values())
+            if not usable:
+                return results
+
+            # Rare entities carry more signal: rarity = 1 - df/max_df.
+            max_df = max(df[e] for e in df)
+            rarity = {e: 1.0 - (df[e] / max_df) for e in usable}
+
+            graph_hits = metadata_store.find_chunks_by_entities(
+                list(usable),
+                allowed_chunk_ids=allowed_chunk_ids,
+                min_shared=1,
+                limit=_settings.entity_boost_max_candidates * 4,
+            )
+            if not graph_hits:
+                return results
+
+            by_chunk = {r.chunk_id: r for r in results}
+
+            # Effect 2 first: boost chunks already ranked.
+            for chunk_id, shared in graph_hits.items():
+                if len(shared) >= 2 and chunk_id in by_chunk:
+                    by_chunk[chunk_id].similarity_score += graph_boost(
+                        shared, rarity, weight=_settings.entity_boost_weight)
+
+            # Effect 1: bring in graph-only chunks as candidates.
+            missing = [
+                cid for cid in graph_hits
+                if cid not in by_chunk
+            ][:_settings.entity_boost_max_candidates]
+            if missing:
+                chunk_lookup = metadata_store.get_chunks_by_chunk_ids(missing)
+                doc_infos = metadata_store.get_documents_info(
+                    {c["document_id"] for c in chunk_lookup.values()})
+                from services.vector_store import VectorStore
+                for cid in missing:
+                    chunk = chunk_lookup.get(cid)
+                    if not chunk:
+                        continue
+                    base = 0.0
+                    if query_embedding is not None:
+                        # Score by vector similarity using the stored vector.
+                        base = self._chunk_vector_score(
+                            query_embedding, cid)
+                    result = VectorStore._build_search_result(
+                        chunk, base, doc_infos)
+                    shared = graph_hits[cid]
+                    if len(shared) >= 2:
+                        result.similarity_score += graph_boost(
+                            shared, rarity,
+                            weight=_settings.entity_boost_weight)
+                    by_chunk[cid] = result
+
+            merged = sorted(
+                by_chunk.values(),
+                key=lambda r: r.similarity_score,
+                reverse=True,
+            )
+            return merged[:fetch_k]
+        except Exception as exc:
+            logger.warning(f"Entity-graph boost skipped: {exc}")
+            return results
+
+    def _chunk_vector_score(self, query_embedding, chunk_id: str) -> float:
+        """Cosine similarity between the query vector and one indexed chunk,
+        read back out of the FAISS id-mapped index. 0.0 when the chunk has
+        no vector (e.g. tabular rows indexed without embeddings)."""
+        try:
+            import numpy as np
+            id_by_chunk = self.vector_store.metadata_store.get_ids_for_chunk_ids(
+                [chunk_id])
+            row_id = id_by_chunk.get(chunk_id)
+            if row_id is None:
+                return 0.0
+            with self.vector_store._index_lock:
+                vec = self.vector_store.index.reconstruct(int(row_id))
+            q = query_embedding.reshape(-1).astype(np.float32)
+            q = q / np.linalg.norm(q)
+            v = vec.reshape(-1).astype(np.float32)
+            n = np.linalg.norm(v)
+            if n == 0:
+                return 0.0
+            return float(np.dot(q, v / n))
+        except Exception:
+            return 0.0
 
     def _generate_document_id(self, document_path: Path) -> str:
         """
