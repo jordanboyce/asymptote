@@ -10,8 +10,22 @@
 
 # ── Stage 1: build the Vue frontend ──
 # (debian-based node image: the pinned rollup/esbuild natives are glibc builds)
-FROM node:22-slim AS frontend
+FROM node:24-bookworm-slim AS frontend
 WORKDIR /build
+
+# Trust an optional enterprise CA before npm reaches the registry. Node uses
+# its bundled roots by default, so point both Node and npm at Debian's updated
+# trust store after installing any .crt files supplied in certs/ca/.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY certs/ca/ /tmp/ca/
+RUN if ls /tmp/ca/*.crt 1>/dev/null 2>&1; then \
+      cp /tmp/ca/*.crt /usr/local/share/ca-certificates/ && \
+      update-ca-certificates; \
+    fi && rm -rf /tmp/ca
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+    NPM_CONFIG_CAFILE=/etc/ssl/certs/ca-certificates.crt
+
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./

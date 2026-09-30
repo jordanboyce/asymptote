@@ -25,7 +25,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit, unquote
 
 import httpx
 
-from config import settings
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class FetchedLink:
 
 
 def link_indexing_available() -> bool:
-    return bool(settings.link_indexing_enabled) and not settings.offline_mode
+    return bool(config.settings.link_indexing_enabled) and not config.settings.offline_mode
 
 
 def _resolve_host(host: str) -> List[str]:
@@ -128,7 +128,7 @@ def validate_link(url: str) -> str:
     one that policy forbids.
     """
     if not link_indexing_available():
-        if settings.offline_mode:
+        if config.settings.offline_mode:
             raise LinkRefused("link indexing is unavailable in offline mode")
         raise LinkRefused("link indexing is disabled on this server")
 
@@ -156,7 +156,7 @@ def validate_link(url: str) -> str:
     if not host:
         raise LinkError("link has no host")
 
-    if not settings.link_allow_private_networks:
+    if not config.settings.link_allow_private_networks:
         if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
             raise LinkRefused(f"{host!r} is not a public host")
         for addr in _resolve_host(host):
@@ -304,8 +304,8 @@ def fetch_link(url: str, *, max_bytes: Optional[int] = None,
     server onto 127.0.0.1. The body is streamed and abandoned the moment it
     passes max_bytes.
     """
-    max_bytes = max_bytes or settings.link_max_bytes
-    timeout = timeout or settings.link_fetch_timeout_seconds
+    max_bytes = max_bytes or config.settings.link_max_bytes
+    timeout = timeout or config.settings.link_fetch_timeout_seconds
     url = validate_link(url)
     current = url
     headers = {

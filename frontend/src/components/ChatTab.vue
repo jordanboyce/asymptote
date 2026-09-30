@@ -783,9 +783,7 @@ const cacheThreshold = ref(storedCacheThreshold != null ? Number(storedCacheThre
 let seedingCacheThreshold = false
 const seedCacheThreshold = async () => {
   try {
-    const res = await fetch('/api/chat/cache')
-    if (!res.ok) return
-    const data = await res.json()
+    const { data } = await http.get('/api/chat/cache')
     seedingCacheThreshold = true
     if (data.enabled === false) cacheThreshold.value = null
     else if (storedCacheThreshold == null && typeof data.threshold === 'number') cacheThreshold.value = data.threshold

@@ -12,7 +12,7 @@ from fastapi import HTTPException, UploadFile, File, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from config import settings
+import config
 from services.document_extractor import DocumentExtractor
 from services.collection_service import collection_service
 from services.indexer_manager import indexer_manager
@@ -930,7 +930,7 @@ async def index_links_async(request: IndexLinksRequest) -> UploadJobResponse:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 "Link indexing is unavailable in offline mode"
-                if settings.offline_mode else "Link indexing is disabled on this server"
+                if config.settings.offline_mode else "Link indexing is disabled on this server"
             ),
         )
 

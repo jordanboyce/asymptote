@@ -28,7 +28,7 @@ import threading
 from contextlib import contextmanager
 from typing import Dict, Iterator, Optional
 
-from config import settings
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ def format_bytes(n: int) -> str:
 
 def limit_bytes() -> int:
     """The configured cap; 0 means unlimited."""
-    return max(0, int(settings.collection_storage_limit_bytes or 0))
+    return max(0, int(config.settings.collection_storage_limit_bytes or 0))
 
 
 def usage_bytes(collection_id: str) -> int:
