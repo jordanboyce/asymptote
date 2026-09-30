@@ -1162,13 +1162,16 @@ def validate_api_key(  # sync: provider round-trip runs in the threadpool
                 extra["base_url"] = x_ai_base_url
             provider = create_provider("ollama", **extra)
         elif x_ai_provider == "openai_compatible":
-            if not x_ai_base_url:
+            from config import settings
+            if not x_ai_base_url and not (
+                settings.ai_provider == "openai_compatible" and settings.ai_base_url
+            ):
                 return {"valid": False, "error": "base_url required for openai_compatible provider"}
             provider = create_provider(
                 "openai_compatible",
                 api_key=x_ai_key,
-                base_url=x_ai_base_url,
-                model=x_ai_model or "default",
+                **({"base_url": x_ai_base_url} if x_ai_base_url else {}),
+                **({"model": x_ai_model} if x_ai_model else {}),
             )
         else:
             if not x_ai_key:
@@ -1194,6 +1197,16 @@ def validate_api_key(  # sync: provider round-trip runs in the threadpool
         logger.error(f"API key validation error for {x_ai_provider}: {e}")
 
         # Provide more helpful error messages
+        if x_ai_provider == "openai_compatible":
+            from openai import AuthenticationError, PermissionDeniedError, NotFoundError, APIConnectionError
+            if isinstance(e, AuthenticationError):
+                return {"valid": False, "error": "Endpoint rejected the API key (HTTP 401). Check the credential for this endpoint."}
+            if isinstance(e, PermissionDeniedError):
+                return {"valid": False, "error": "Endpoint denied access (HTTP 403). Check the key's model permissions."}
+            if isinstance(e, NotFoundError):
+                return {"valid": False, "error": "Endpoint returned HTTP 404. Check the base URL (/v1 where required) and model ID."}
+            if isinstance(e, APIConnectionError):
+                return {"valid": False, "error": "Could not connect to the endpoint. Check its address, TLS CA trust, and any required client certificate."}
         if "quota" in error_str.lower() or "insufficient_quota" in error_str.lower():
             return {"valid": False, "error": "Your API key has exceeded its quota. Please add credits to your account."}
         elif "rate" in error_str.lower() and "limit" in error_str.lower():
@@ -1241,13 +1254,15 @@ def list_provider_models(  # sync: provider round-trip runs in the threadpool
                 extra["base_url"] = x_ai_base_url
             provider = create_provider("ollama", **extra)
         elif x_ai_provider == "openai_compatible":
-            if not x_ai_base_url:
+            from config import settings
+            if not x_ai_base_url and not (
+                settings.ai_provider == "openai_compatible" and settings.ai_base_url
+            ):
                 return {"models": [], "error": "base_url required for openai_compatible provider"}
             provider = create_provider(
                 "openai_compatible",
-                api_key=api_key or "none",
-                base_url=x_ai_base_url,
-                model="default",
+                api_key=api_key or "",
+                **({"base_url": x_ai_base_url} if x_ai_base_url else {}),
             )
         else:
             if not api_key:

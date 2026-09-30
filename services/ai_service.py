@@ -768,22 +768,31 @@ class BedrockProvider(AnthropicProvider):
 class OpenAICompatibleProvider(OpenAIProvider):
     """Generic OpenAI-compatible provider for custom endpoints (vLLM, LM Studio, Groq, etc.)."""
 
-    def __init__(self, api_key: str, base_url: str, model: str = "default"):
-        super().__init__(api_key or "none", model=model, base_url=base_url)
+    def __init__(self, api_key: str, base_url: str, model: str = ""):
+        # Proxy settings often supply a host rather than the OpenAI API root.
+        # Do not alter URLs with a path: gateways can expose custom prefixes.
+        base_url = base_url.strip().rstrip("/")
+        if base_url.startswith(("http://", "https://")) and "/" not in base_url.split("://", 1)[1]:
+            base_url += "/v1"
+        super().__init__(api_key or "none", model=model or None, base_url=base_url)
+        self._model_configured = bool(model)
         self.FAST_MODEL = model
         self.QUALITY_MODEL = model
 
     def validate(self) -> bool:
-        try:
+        if not self._model_configured:
+            # Connecting an endpoint before choosing a model should check the
+            # catalog, not send a completion to a made-up model named "default".
+            if not list(self.client.models.list()):
+                raise ValueError("The endpoint returned no models; specify a chat model ID.")
+        else:
             self.client.chat.completions.create(
                 model=self.FAST_MODEL,
                 max_tokens=10,
                 messages=[{"role": "user", "content": "Hi"}],
             )
-            return True
-        except Exception as e:
-            logger.error(f"OpenAI-compatible validation error: {e}")
-            return False
+        # Let the API distinguish authentication, routing, model and TLS errors.
+        return True
 
 
 def apply_deployment_defaults(provider_name: str, api_key, kwargs: dict):
@@ -878,7 +887,7 @@ def create_provider(provider_name: str, api_key: str = None, **kwargs) -> AIProv
         return OpenAICompatibleProvider(
             api_key or "none",
             base_url=base_url,
-            model=kwargs.get("model", "default"),
+            model=kwargs.get("model") or "",
         )
     elif provider_name == "ollama":
         # The fallback is the configured daemon, not a hardcoded localhost:
