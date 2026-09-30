@@ -40,7 +40,7 @@ def test_disabled_in_offline_mode(monkeypatch):
 
 def test_payload_and_headers(monkeypatch):
     monkeypatch.setattr(config.settings, "resend_api_key", "re_test_key")
-    monkeypatch.setattr(config.settings, "resend_from", "Clio <a@cyberlion.dev>")
+    monkeypatch.setattr(config.settings, "resend_from", "Clio <a@example.com>")
     monkeypatch.setattr(config.settings, "offline_mode", False)
 
     captured = {}
@@ -58,8 +58,8 @@ def test_payload_and_headers(monkeypatch):
         share_token="tok-abc-123",
         collection_name="HOA audit",
         permission="readwrite",
-        shared_by="jordan@cyberlion.dev",
-        app_url="https://clio.cyberlion.dev/",
+        shared_by="alice@example.com",
+        app_url="https://clio.example.com/",
         expires_at="2026-09-30T00:00:00",
     )
 
@@ -67,10 +67,10 @@ def test_payload_and_headers(monkeypatch):
     assert captured["auth"] == "Bearer re_test_key"
     body = captured["body"]
     assert body["to"] == ["teammate@example.com"]
-    assert body["from"] == "Clio <a@cyberlion.dev>"
-    assert "HOA audit" in body["subject"] and "jordan@cyberlion.dev" in body["subject"]
+    assert body["from"] == "Clio <a@example.com>"
+    assert "HOA audit" in body["subject"] and "alice@example.com" in body["subject"]
     # Both the deep link and the raw token reach the recipient
-    assert "https://clio.cyberlion.dev/?share_token=tok-abc-123" in body["text"]
+    assert "https://clio.example.com/?share_token=tok-abc-123" in body["text"]
     assert "tok-abc-123" in body["html"]
     assert "read and write" in body["text"]
     assert "2026-09-30" in body["text"]

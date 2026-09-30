@@ -82,7 +82,7 @@ def test_admit_appends_and_preserves_other_rules(monkeypatch):
         "decision": "allow",
         "include": [
             {"email": {"email": "existing@x.com"}},
-            {"email_domain": {"domain": "cyberlion.dev"}},
+            {"email_domain": {"domain": "example.com"}},
         ],
         "require": [{"okta": {"name": "eng"}}],
     }
@@ -98,7 +98,7 @@ def test_admit_appends_and_preserves_other_rules(monkeypatch):
     assert body["decision"] == "allow"
     # normalised, appended, and nothing else disturbed
     assert {"email": {"email": "new@guest.com"}} in body["include"]
-    assert {"email_domain": {"domain": "cyberlion.dev"}} in body["include"]
+    assert {"email_domain": {"domain": "example.com"}} in body["include"]
     assert {"email": {"email": "existing@x.com"}} in body["include"]
     assert body["require"] == [{"okta": {"name": "eng"}}]
 
@@ -131,7 +131,7 @@ def test_revoke_removes_only_that_email(monkeypatch):
     policy = {"name": "p", "decision": "allow", "include": [
         {"email": {"email": "keep@x.com"}},
         {"email": {"email": "drop@x.com"}},
-        {"email_domain": {"domain": "cyberlion.dev"}},
+        {"email_domain": {"domain": "example.com"}},
     ]}
     captured = {}
     _fake_cf(monkeypatch, policy, captured)
@@ -140,7 +140,7 @@ def test_revoke_removes_only_that_email(monkeypatch):
     include = captured["body"]["include"]
     assert {"email": {"email": "drop@x.com"}} not in include
     assert {"email": {"email": "keep@x.com"}} in include
-    assert {"email_domain": {"domain": "cyberlion.dev"}} in include
+    assert {"email_domain": {"domain": "example.com"}} in include
 
 
 def test_revoke_unknown_email_is_a_noop(monkeypatch):
