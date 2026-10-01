@@ -972,7 +972,7 @@ const loadStarters = async () => {
     const { data } = await http.post(
       `/api/chat/starters?collection_id=${encodeURIComponent(collectionStore.currentCollectionId)}`,
       {
-        provider: selectedProvider.value,
+        provider: getAPIProviderName(selectedProvider.value),
         document_ids: selectionStore.active ? selectionStore.currentIds : null,
       },
       { headers: buildProviderHeaders(selectedProvider.value, chatModelOverrides.value[selectedProvider.value] || null) },
@@ -1268,7 +1268,7 @@ const sendMessage = async () => {
         headers: { 'Content-Type': 'application/json', ...providerHeaders },
         body: JSON.stringify({
           messages: apiMessages,
-          provider: selectedProvider.value,
+          provider: getAPIProviderName(selectedProvider.value),
           top_k: topK.value,
           mode: searchMode.value,
           scope: scope.value,
