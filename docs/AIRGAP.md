@@ -37,8 +37,12 @@ resources, zero telemetry, and zero analytics.
 docker compose build --build-arg OFFLINE_BUNDLE=1
 ```
 
-`OFFLINE_BUNDLE=1` bakes every runtime model into the image on top of the
-default embedding model (`all-MiniLM-L6-v2`):
+`OFFLINE_BUNDLE=1` bakes every runtime model into the image via the prefetch
+script, including the default embedding model (`all-MiniLM-L6-v2`) and the
+reranker (both are required; the run fails if either cannot be fetched). The
+embedding model is also gated separately by `BAKE_EMBEDDING`, but that arg
+only matters for the *default* image — it is already covered here, so you do
+not need to pass it with `OFFLINE_BUNDLE=1`:
 
 | Model | Purpose | Approx. size |
 |---|---|---|

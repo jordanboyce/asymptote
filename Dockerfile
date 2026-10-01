@@ -6,7 +6,8 @@
 # site-specific is baked in — the model endpoint, credentials, CA
 # certificates and data all arrive at run time (see docs/ONPREM.md). The only
 # build-time choices are which optional model weights to include
-# (OFFLINE_BUNDLE, WITH_DOCLING), because those are downloads, not config.
+# (OFFLINE_BUNDLE, WITH_DOCLING, BAKE_EMBEDDING), because those are downloads,
+# not config.
 
 # ── Stage 1: build the Vue frontend ──
 # (debian-based node image: the pinned rollup/esbuild natives are glibc builds)
@@ -139,8 +140,18 @@ RUN python -c "import torch, faiss, sentence_transformers, fastapi, uvicorn, ctr
 # Bake the embedding model into the image. Cold starts stay fast on platforms
 # with ephemeral filesystems (Railway, Render, Fly), and the container never
 # needs HuggingFace reachable at runtime.
+#
+# OFF by default: the download needs huggingface.co reachable at build time,
+# which corporate/air-gapped networks (e.g. Z-scaler blocking the hub) refuse.
+# Enable it on a connected network with `docker compose build --build-arg
+# BAKE_EMBEDDING=1`; when it is off, EMBEDDING_PROVIDER must point at a
+# non-local backend (ollama / openai_compatible / a hosted API) or the model
+# is fetched at runtime instead.
+ARG BAKE_EMBEDDING=0
 ENV HF_HOME=/opt/hf-cache
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+RUN if [ "$BAKE_EMBEDDING" = "1" ]; then \
+      python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"; \
+    fi
 
 # Optional full offline bundle for air-gapped deployments: additionally bake
 # the reranker, Whisper (audio transcription), and Docling (local OCR) models

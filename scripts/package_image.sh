@@ -4,6 +4,7 @@
 #
 #   ./scripts/package_image.sh                       # default image
 #   ./scripts/package_image.sh --offline-bundle      # + reranker/Whisper/OCR models
+#   ./scripts/package_image.sh --no-bake-embedding   # skip the built-in embedding model
 #   ./scripts/package_image.sh --tag 1.4.0 --out /media/transfer
 #
 # Produces, in the output directory:
@@ -23,6 +24,7 @@ TAG="local"
 OUT="dist-image"
 OFFLINE_BUNDLE=0
 WITH_DOCLING=0
+BAKE_EMBEDDING=1
 WHISPER_MODEL="base"
 PLATFORM=""
 
@@ -37,6 +39,7 @@ while [ $# -gt 0 ]; do
         --out) OUT="$2"; shift 2 ;;
         --offline-bundle) OFFLINE_BUNDLE=1; shift ;;
         --with-docling) WITH_DOCLING=1; shift ;;
+        --no-bake-embedding) BAKE_EMBEDDING=0; shift ;;
         --whisper-model) WHISPER_MODEL="$2"; shift 2 ;;
         # Build for the target's architecture when it differs from this
         # machine's (an arm64 laptop packaging for an amd64 server).
@@ -49,10 +52,11 @@ done
 IMAGE="clio:${TAG}"
 VCS_REF="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-echo "==> Building ${IMAGE} (offline_bundle=${OFFLINE_BUNDLE}, docling=${WITH_DOCLING})"
+echo "==> Building ${IMAGE} (offline_bundle=${OFFLINE_BUNDLE}, docling=${WITH_DOCLING}, bake_embedding=${BAKE_EMBEDDING})"
 build_args=(
     --build-arg "OFFLINE_BUNDLE=${OFFLINE_BUNDLE}"
     --build-arg "WITH_DOCLING=${WITH_DOCLING}"
+    --build-arg "BAKE_EMBEDDING=${BAKE_EMBEDDING}"
     --build-arg "WHISPER_MODEL=${WHISPER_MODEL}"
     --build-arg "APP_VERSION=${TAG}"
     --build-arg "VCS_REF=${VCS_REF}"
@@ -79,7 +83,7 @@ cp docs/ONPREM.md docs/AIRGAP.md "$OUT/"
 cat > "${OUT}/README.txt" <<EOF
 Clio ${TAG} — offline install bundle
 built $(date -u +%Y-%m-%dT%H:%M:%SZ) from ${VCS_REF}
-offline model bundle: ${OFFLINE_BUNDLE}   docling OCR: ${WITH_DOCLING}
+offline model bundle: ${OFFLINE_BUNDLE}   docling OCR: ${WITH_DOCLING}   bake embedding: ${BAKE_EMBEDDING}
 
 On the target machine:
 

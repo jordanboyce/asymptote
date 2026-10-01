@@ -18,6 +18,10 @@ export const useStatsStore = defineStore('stats', () => {
   const storageLimitBytes = ref(0)
   const storagePercent = ref(0)
   const offline = ref(false)
+  // The configured local embedding model is not in the local cache, so it
+  // would have to be downloaded on first use — impossible on a network that
+  // blocks huggingface.co. Surfaced as a banner until fixed or dismissed.
+  const embeddingModelMissing = ref(false)
   const loaded = ref(false)
 
   let inFlight = null
@@ -43,6 +47,7 @@ export const useStatsStore = defineStore('stats', () => {
         storageLimitBytes.value = statsResponse.data.storage_limit_bytes || 0
         storagePercent.value = statsResponse.data.storage_percent || 0
         offline.value = !!healthResponse.data.offline_mode
+        embeddingModelMissing.value = !!healthResponse.data.embedding?.local_model_missing
         loaded.value = true
       } catch {
         // Stats are decorative; the http interceptor already surfaced any
@@ -62,6 +67,6 @@ export const useStatsStore = defineStore('stats', () => {
 
   return {
     documents, pages, chunks, storageBytes, storageLimitBytes, storagePercent,
-    offline, loaded, fetchStats, fetchStatsDebounced,
+    offline, embeddingModelMissing, loaded, fetchStats, fetchStatsDebounced,
   }
 })

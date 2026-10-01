@@ -12,6 +12,7 @@ from services.document_extractor import DocumentExtractor
 from services.ai_service import detect_ollama
 from services.config_manager import config_manager
 from services.indexer_manager import indexer_manager
+from services.embedder import embedding_availability
 from api.deps import require_admin
 
 from fastapi import APIRouter
@@ -33,6 +34,7 @@ async def health(collection_id: str = "default"):
             "indexed_chunks": stats["total_chunks"],
             "total_documents": stats["total_documents"],
             "total_pages": stats["total_pages"],
+            "embedding": embedding_availability(),
         }
     except Exception as e:
         return {
@@ -40,6 +42,7 @@ async def health(collection_id: str = "default"):
             "offline_mode": settings.offline_mode,
             "indexed_chunks": 0,
             "error": str(e),
+            "embedding": embedding_availability(),
         }
 
 @router.post(

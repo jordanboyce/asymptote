@@ -25,6 +25,12 @@ services:
       # and `docker load` it inside the air gap — see docs/AIRGAP.md.
       # args:
       #   OFFLINE_BUNDLE: "1"
+      # Bake the built-in embedding model (all-MiniLM-L6-v2) into the image.
+      # Needs huggingface.co reachable at build time; leave off on networks
+      # that block the hub and set EMBEDDING_PROVIDER to ollama / a hosted
+      # API instead.
+      args:
+        BAKE_EMBEDDING: "${BAKE_EMBEDDING:-0}"
     container_name: clio
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:8473:8473"

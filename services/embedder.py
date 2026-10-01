@@ -21,6 +21,62 @@ logger = logging.getLogger(__name__)
 EMBED_BATCH_SIZE = 32
 
 
+def local_model_cached(model_name: str) -> bool:
+    """Whether a sentence-transformers model is already in the local HF cache.
+
+    A pure filesystem lookup (no network, no torch load) so a deployment that
+    skipped baking the model — or sits behind a network that blocks
+    huggingface.co — can be told up front that the built-in embedding model is
+    missing, instead of discovering it mid-index.
+
+    A bare name like ``all-MiniLM-L6-v2`` resolves to the
+    ``sentence-transformers/<name>`` repo sentence-transformers actually
+    caches under; a name that already carries an org is used as-is. A local
+    filesystem path means the model ships with the app and is "cached" by
+    construction.
+    """
+    if not model_name:
+        return False
+    if os.path.isdir(model_name):
+        return True
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # huggingface_hub absent — cannot probe; don't nag
+        return True
+    repo = model_name if "/" in model_name else f"sentence-transformers/{model_name}"
+    try:
+        return try_to_load_from_cache(repo, "config.json") is not None
+    except Exception:  # unexpected cache state — default to "available"
+        return True
+
+
+def embedding_availability() -> dict:
+    """Cheap readiness signal for the configured embedding provider.
+
+    ``local_model_missing`` is True only when the provider is ``local`` and the
+    chosen model is not in the local cache — i.e. it will have to be downloaded
+    (which a blocked network cannot do). Remote providers (ollama, a hosted or
+    custom endpoint) are never "missing" here: their own probe reports
+    connectivity.
+    """
+    from config import settings
+
+    if settings.embedding_provider != "local":
+        entry = get_provider(settings.embedding_provider) or {}
+        model = settings.remote_embedding_model or entry.get("default_model", "")
+        return {
+            "provider": settings.embedding_provider,
+            "model": model,
+            "local_model_missing": False,
+        }
+    model = settings.embedding_model
+    return {
+        "provider": "local",
+        "model": model,
+        "local_model_missing": not local_model_cached(model),
+    }
+
+
 class OllamaEmbeddingService:
     """Generates embeddings via Ollama's /api/embed endpoint.
 

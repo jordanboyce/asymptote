@@ -788,6 +788,31 @@
     <!-- Global toast stack + backend-unreachable banner -->
     <Toaster />
 
+    <!-- Embedding model missing: the built-in model is not in the local cache
+         and would have to be downloaded (blocked on this network). Shown until
+         the user fixes the provider or dismisses it. -->
+    <div
+      v-if="statsStore.embeddingModelMissing && !embeddingBannerDismissed"
+      class="fixed top-0 inset-x-0 z-[102] flex justify-center pointer-events-none"
+      role="alert"
+    >
+      <div class="alert alert-warning shadow-lg rounded-t-none rounded-b-lg max-w-xl py-2 pointer-events-auto">
+        <AlertTriangle :size="16" class="shrink-0" aria-hidden="true" />
+        <span class="text-sm">
+          The built-in embedding model isn't available on this server — it would have to be
+          downloaded from the internet, which this network blocks. Add sources and search won't
+          work until you set an embedding provider in Settings → Indexing → Embedding.
+        </span>
+        <button
+          class="btn btn-ghost btn-xs btn-circle shrink-0"
+          aria-label="Dismiss this notice"
+          @click="embeddingBannerDismissed = true"
+        >
+          <X class="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+
     <!-- Create Collection Modal (native showModal: focus trap, Escape, inert background) -->
     <dialog :ref="createModal.dialogRef" class="modal" @close="createModal.onClosed" aria-labelledby="create-collection-title">
       <div class="modal-box">
@@ -1742,6 +1767,10 @@ const shareInitialToken = ref('')
 
 // Background jobs drawer state
 const showJobsDrawer = ref(false)
+
+// Embedding-model-missing banner: the flag comes from /health (via
+// statsStore), but dismissal is a per-session UI concern, not persisted.
+const embeddingBannerDismissed = ref(false)
 
 // First-run onboarding: a full-screen takeover shown when the user has
 // never configured an AI provider. Resolves the "you installed the app but
