@@ -220,8 +220,14 @@
         <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <span class="text-sm">{{ error }}</span>
-        <button class="btn btn-xs btn-ghost" @click="error = ''" aria-label="Dismiss error">✕</button>
+        <div class="min-w-0 flex-1">
+          <p class="text-sm">{{ error }}</p>
+          <details v-if="errorDetail" class="mt-1 text-xs text-base-content/70">
+            <summary class="cursor-pointer hover:text-base-content">Provider details</summary>
+            <pre class="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words font-sans">{{ errorDetail }}</pre>
+          </details>
+        </div>
+        <button class="btn btn-xs btn-ghost" @click="dismissError" aria-label="Dismiss error">✕</button>
       </div>
 
       <!-- Message list -->
@@ -724,6 +730,7 @@ import { useSelectionStore } from '../stores/selectionStore'
 import SlashCommandPicker from './SlashCommandPicker.vue'
 import AISettingsDrawer from './AISettingsDrawer.vue'
 import { runSlashCommand, isSlashCommand } from '../utils/slashCommands'
+import { presentChatError } from '../utils/chatErrors'
 import {
   getConfiguredProviderIds,
   buildProviderHeaders,
@@ -765,6 +772,7 @@ const indexingActive = computed(() =>
 // UI state
 const loading = ref(false)
 const error = ref('')
+const errorDetail = ref('')
 const inputMessage = ref('')
 const messagesEnd = ref(null)
 const messagesContainer = ref(null)
@@ -1227,6 +1235,7 @@ const sendMessage = async () => {
 
   inputMessage.value = ''
   error.value = ''
+  errorDetail.value = ''
   slashPickerOpen.value = false
 
   // Intercept slash commands before hitting the LLM — zero tokens, instant.
@@ -1358,16 +1367,27 @@ const sendMessage = async () => {
           }
         } else if (event.type === 'error') {
           chatStore.removeLastStreamingMessage(collectionId)
-          error.value = event.message || 'Chat failed. Please try again.'
+          setChatError(event.message)
         }
       }
     }
   } catch (err) {
     chatStore.removeLastStreamingMessage(collectionId)
-    error.value = err.message || 'Chat failed. Please try again.'
+    setChatError(err.message)
   } finally {
     loading.value = false
   }
+}
+
+const setChatError = (message) => {
+  const presented = presentChatError(message)
+  error.value = presented.message
+  errorDetail.value = presented.detail
+}
+
+const dismissError = () => {
+  error.value = ''
+  errorDetail.value = ''
 }
 
 const clearChat = () => {
