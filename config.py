@@ -245,12 +245,15 @@ class Settings(BaseSettings):
     # Shared-secret auth. When set, every request (except /health) must present
     # this password via HTTP Basic auth (any username) or
     # `Authorization: Bearer <password>`. Browsers prompt natively, so no login
-    # UI is needed. Required whenever the server is reachable beyond loopback.
+    # UI is needed. Use AUTH_REQUIRE_IDENTITY instead when a verified proxy
+    # identity is the intended gate.
     auth_password: str = ""
+    # Require a verified identity even when AUTH_PASSWORD is unset.
+    auth_require_identity: bool = False
 
     # ── Verified identity (services/identity.py) ─────────────────────────
-    # Which source establishes *who* a request is. Only this decides identity;
-    # AUTH_PASSWORD above decides whether an anonymous caller gets in at all.
+    # Which source establishes *who* a request is. AUTH_REQUIRE_IDENTITY can
+    # also make this source the app's admission gate.
     #
     #   ""                 auto — cloudflare_access when CF_ACCESS_* are set,
     #                      otherwise no verified identity (team appliance).
@@ -575,4 +578,3 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
-

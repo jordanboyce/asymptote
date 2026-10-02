@@ -62,7 +62,7 @@ research tools in chat and MCP clients.
 |---|---|---|---|
 | **Just you, on your machine** | `python main.py` or `docker compose up -d` | Loopback only; no password needed | [Quick Start](#quick-start) |
 | **A team on an internal network** | Docker with `BIND_ADDRESS` and `AUTH_PASSWORD` | Everyone with the password sees the shared corpus | [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
-| **A team reachable from anywhere** | Docker + Cloudflare Tunnel + Access, no inbound ports | Your SSO at the edge; per-person collections with `PRIVATE_COLLECTIONS`; self-serve `/register`; invitations admitted at the edge automatically | [REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md) |
+| **A team reachable from anywhere** | Docker + Cloudflare Tunnel + Access, no inbound ports | Email PIN for an explicit allowlist; Jordan-only Clio administration; `/request-access` contact page | [REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md) |
 | **An organisation hosting it internally** | The portable image, your own IdP (`IDENTITY_PROVIDER=oidc` or an authenticating proxy), your own models (`AI_PROVIDER`) | Identities from Keycloak, Entra ID, Okta, mTLS or Kerberos; private collections; OAuth sign-in for connector clients; a full audit trail | [ONPREM.md](docs/ONPREM.md), [IDENTITY.md](docs/IDENTITY.md), [AGENCY_PILOT.md](docs/AGENCY_PILOT.md) |
 | **Fully air-gapped** | The offline bundle with `OFFLINE_MODE=1` | As above, with cloud providers and model downloads disabled | [AIRGAP.md](docs/AIRGAP.md) |
 | **A hosted PaaS (Railway, Render, Fly.io, Coolify)** | The Dockerfile, a volume at `/app/data`, `AUTH_PASSWORD` | The password, or an SSO proxy in front | [Hosting on a PaaS](#hosting-on-a-paas-railway-render-flyio-coolify-) |
@@ -125,7 +125,7 @@ That's the whole setup — the image builds the frontend, bundles OCR (Tesseract
 
 Choose an access model deliberately. In the default shared-appliance mode, everyone admitted can access the team corpus. `PRIVATE_COLLECTIONS=true` enables collection ownership and read/readwrite sharing, enforced against a verified identity: Cloudflare Access at the edge, your own OIDC provider (`IDENTITY_PROVIDER=oidc` — Keycloak, Entra ID, Okta, PingFederate), or an authenticating reverse proxy (`trusted_header` — mTLS, Kerberos, a site SSO proxy). Configure `ADMIN_EMAILS` for operators. The app refuses to start with private collections on and no identity source it can enforce. Setup and verification: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [docs/IDENTITY.md](docs/IDENTITY.md).
 
-To reach a home or lab box from anywhere without opening a port, put it behind Cloudflare Tunnel + Access; `scripts/provision_cloudflare.py` creates the tunnel, the Access apps and the DNS record in one run. Recipe: [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md).
+To reach a home or lab box from anywhere without opening a port, put it behind Cloudflare Tunnel + Access; `scripts/provision_cloudflare.py` creates the tunnel, the Access apps and the DNS record in one run. Set `CLIO_ALLOW_EMAILS` to the exact addresses to admit; people sign in with Cloudflare's emailed one-time PIN, with no app password or public registration. Recipe: [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md).
 
 People can also ask for access themselves: `REGISTRATION_MODE=approval` (queue for an admin) or `open` (admit matching addresses at once) turns on a public `/register` page, with an optional email-domain allowlist and a seat cap. Each collection holds up to 5 GiB of sources by default (`COLLECTION_STORAGE_LIMIT_BYTES`); usage is shown in the Sources panel.
 
